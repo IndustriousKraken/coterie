@@ -42,7 +42,4 @@ Coterie uses a modular plugin architecture for third-party integrations:
 - **Expense Tracking**: Track and report group expenses with transparency reports
 - **Member Directory**: Opt-in skills/expertise directory
 - **Resource Library**: Share tools, guides, and writeups with access controls
-- **Voting System**: For group decisions and polls
-- **Equipment Checkout**: Track shared hardware and tools
 - **Audit Logging**: Complete trail of all administrative actions
-- **Webhook System**: For custom integrations (future release)
