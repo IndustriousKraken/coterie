@@ -1,0 +1,191 @@
+# Coterie Development TODO
+
+## Phase 1: Core Implementation (Priority: High)
+
+### Database & Repository Layer
+- [ ] Implement SQLite repository for Members
+  - [ ] CRUD operations
+  - [ ] Search and filtering
+  - [ ] Password hashing integration
+- [ ] Implement SQLite repository for Events
+- [ ] Implement SQLite repository for Announcements
+- [ ] Implement SQLite repository for Payments
+- [ ] Add database connection pooling and error handling
+- [ ] Create database seeding script for development
+
+### Authentication & Authorization
+- [ ] Implement session management
+  - [ ] Session creation/validation
+  - [ ] Secure cookie handling
+  - [ ] Session expiry and cleanup
+- [ ] Implement authentication middleware
+  - [ ] Password verification
+  - [ ] Session validation
+  - [ ] Role-based access (member/admin)
+- [ ] Add TOTP/2FA support
+- [ ] Implement password reset flow
+
+### API Handlers
+- [ ] Implement member management handlers
+  - [ ] Create, read, update, delete
+  - [ ] Activation/expiration logic
+  - [ ] Profile management
+- [ ] Implement event management handlers
+  - [ ] CRUD operations
+  - [ ] RSVP/attendance tracking
+  - [ ] iCal feed generation
+- [ ] Implement announcement handlers
+  - [ ] CRUD with visibility controls
+  - [ ] RSS feed generation
+- [ ] Implement public API endpoints
+  - [ ] Member signup
+  - [ ] Public event listing
+  - [ ] Public announcements
+
+### Testing
+- [ ] Unit tests for domain logic
+- [ ] Integration tests for repositories
+- [ ] API endpoint tests
+- [ ] Authentication/authorization tests
+
+## Phase 2: Payment Integration (Priority: High)
+
+### Stripe Integration
+- [ ] Implement Stripe client wrapper
+- [ ] Create payment initiation flow
+- [ ] Handle webhook callbacks
+- [ ] Implement payment status synchronization
+- [ ] Add subscription management
+- [ ] Create payment history views
+
+### Member Dues Management
+- [ ] Automated expiration checking (cron job)
+- [ ] Grace period handling
+- [ ] Payment reminder system
+- [ ] Manual payment recording for cash/check
+
+## Phase 3: Frontend (Priority: Medium)
+
+### Admin Dashboard
+- [ ] Create HTMX base template
+- [ ] Member management interface
+  - [ ] List/search members
+  - [ ] Edit member details
+  - [ ] Manual activation/expiration
+- [ ] Event management interface
+- [ ] Announcement editor
+- [ ] Payment history view
+- [ ] Audit log viewer
+
+### Member Portal
+- [ ] Login/logout pages
+- [ ] Profile management
+- [ ] Event registration
+- [ ] Payment history
+- [ ] Download receipts
+
+### Public Pages
+- [ ] Signup form
+- [ ] Event calendar
+- [ ] Public announcements
+- [ ] Member directory (opt-in)
+
+## Phase 4: Integrations (Priority: Medium)
+
+### Discord Integration
+- [ ] Implement Discord bot with serenity/twilight
+- [ ] Member role management
+- [ ] Expired member room handling
+- [ ] Sync member profiles
+- [ ] Command interface for checking member status
+
+### Unifi Integration
+- [ ] Implement Unifi API client
+- [ ] Access card provisioning
+- [ ] VPN user management
+- [ ] Access revocation on expiry
+- [ ] Sync scheduling
+
+### Calendar Integration
+- [ ] Google Calendar sync
+- [ ] Office 365 calendar sync
+- [ ] CalDAV support
+
+## Phase 5: Extended Features (Priority: Low)
+
+### Expense Tracking
+- [ ] Expense entry interface
+- [ ] Receipt upload and storage
+- [ ] Category management
+- [ ] Quarterly report generation
+- [ ] Public transparency dashboard
+
+### Member Features
+- [ ] Skills directory
+- [ ] Blog aggregation from RSS feeds
+- [ ] Achievement badges
+- [ ] Equipment checkout system
+- [ ] Voting/polls system
+
+### Communication
+- [ ] Email notification system
+- [ ] Announcement digests
+- [ ] Event reminders
+- [ ] Welcome emails for new members
+
+### Advanced Admin Features
+- [ ] Bulk member import/export
+- [ ] Custom fields for members
+- [ ] Report builder
+- [ ] Backup and restore tools
+- [ ] Multi-tenant support (for other groups using the software)
+
+## Phase 6: Operations (Priority: Medium)
+
+### Deployment & Operations
+- [ ] Docker containerization
+- [ ] SystemD service files
+- [ ] Caddy configuration examples
+- [ ] Backup scripts
+- [ ] Monitoring and alerting setup
+- [ ] Rate limiting implementation
+
+### Documentation
+- [ ] API documentation (OpenAPI/Swagger)
+- [ ] Administrator guide
+- [ ] Installation guide
+- [ ] Contributing guidelines
+- [ ] Security policy
+
+### Performance & Security
+- [ ] Security audit
+- [ ] Performance profiling
+- [ ] Database query optimization
+- [ ] Caching strategy (Redis optional)
+- [ ] GDPR compliance tools
+
+## Development Environment
+
+### Tooling
+- [ ] Development container setup
+- [ ] Pre-commit hooks
+- [ ] CI/CD pipeline (GitHub Actions)
+- [ ] Database migration tooling
+- [ ] Development seed data
+
+## Notes
+
+- **Current Status**: Basic architecture and structure complete
+- **Next Step**: Implement SQLite repositories and authentication
+- **Blocking Issues**: None currently
+- **Dependencies**: Need to evaluate specific Discord and Unifi API libraries
+
+## Quick Start Tasks
+
+For getting a minimal viable product running:
+
+1. Implement member repository with SQLite
+2. Add basic authentication (no 2FA initially)
+3. Create simple HTMX admin interface for member management
+4. Add Stripe webhook handler for payment processing
+5. Deploy to a VPS with SQLite and Caddy
