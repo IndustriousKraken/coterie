@@ -1,5 +1,7 @@
 # Coterie
 
+Status: Active Development, pre alpha.
+
 Coterie is a secure, lightweight member management system designed for small to medium-sized groups, clubs, and organizations. Built with security and maintainability in mind, it provides a simple yet powerful platform for managing memberships without the complexity of enterprise solutions.
 
 ## Overview
