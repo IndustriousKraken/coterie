@@ -1,14 +1,10 @@
 use axum::{
-    extract::{Path, State},
+    extract::Path,
     http::StatusCode,
-    Json,
 };
 use uuid::Uuid;
 
-use crate::{
-    api::state::AppState,
-    error::Result,
-};
+use crate::error::Result;
 
 pub async fn create() -> Result<StatusCode> {
     Ok(StatusCode::NOT_IMPLEMENTED)

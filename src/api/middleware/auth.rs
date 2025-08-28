@@ -1,15 +1,12 @@
 use axum::{
     extract::{Request, State},
-    http::StatusCode,
     middleware::Next,
-    response::{IntoResponse, Response},
+    response::Response,
 };
 use axum_extra::extract::CookieJar;
-use uuid::Uuid;
 
 use crate::{
     api::state::AppState,
-    auth::AuthService,
     domain::{Member, MemberStatus},
     error::AppError,
     repository::{MemberRepository, SqliteMemberRepository},

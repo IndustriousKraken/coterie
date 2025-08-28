@@ -35,6 +35,26 @@ async fn main() -> anyhow::Result<()> {
         .run(&db_pool)
         .await?;
 
+    // Check if database already has data
+    let existing_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM members")
+        .fetch_one(&db_pool)
+        .await?;
+    
+    if existing_count > 0 {
+        println!("⚠️  Database already contains data. Clearing existing data...");
+        
+        // Clear data in reverse order of foreign key dependencies
+        sqlx::query("DELETE FROM payments").execute(&db_pool).await?;
+        sqlx::query("DELETE FROM event_attendance").execute(&db_pool).await?;
+        sqlx::query("DELETE FROM events").execute(&db_pool).await?;
+        sqlx::query("DELETE FROM announcements").execute(&db_pool).await?;
+        sqlx::query("DELETE FROM sessions").execute(&db_pool).await?;
+        sqlx::query("DELETE FROM member_profiles").execute(&db_pool).await?;
+        sqlx::query("DELETE FROM members").execute(&db_pool).await?;
+        
+        println!("  ✅ Existing data cleared");
+    }
+
     // Initialize repositories
     let member_repo = SqliteMemberRepository::new(db_pool.clone());
     let event_repo = SqliteEventRepository::new(db_pool.clone());

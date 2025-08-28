@@ -1,11 +1,5 @@
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use argon2::password_hash::{SaltString, rand_core::OsRng};
-use axum::{
-    extract::{State, Extension},
-    http::{Request, StatusCode},
-    middleware::Next,
-    response::Response,
-};
 use chrono::{Duration, Utc};
 use cookie::{Cookie, SameSite};
 use sqlx::SqlitePool;

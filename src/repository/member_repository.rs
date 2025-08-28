@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use chrono::{DateTime, Utc, TimeZone, NaiveDateTime};
+use chrono::{DateTime, Utc, NaiveDateTime};
 use sqlx::{SqlitePool, FromRow};
 use uuid::Uuid;
 

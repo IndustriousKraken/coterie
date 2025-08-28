@@ -20,8 +20,10 @@ pub fn create_app(service_context: Arc<ServiceContext>) -> Router {
     let app_state = AppState::new(service_context);
 
     Router::new()
-        // Health check
-        .route("/health", get(|| async { "OK" }))
+        // Root and health endpoints
+        .route("/", get(handlers::root::root))
+        .route("/health", get(handlers::root::health_check))
+        .route("/api", get(handlers::root::api_info))
         
         // Auth routes
         .route("/auth/login", post(handlers::auth::login))
@@ -48,8 +50,8 @@ pub fn create_app(service_context: Arc<ServiceContext>) -> Router {
 fn api_routes(state: AppState) -> Router<AppState> {
     Router::new()
         .nest("/members", member_routes(state.clone()))
-        .nest("/events", event_routes())
-        .nest("/announcements", announcement_routes())
+        .nest("/events", event_routes_with_auth(state.clone()))
+        .nest("/announcements", announcement_routes_with_auth(state.clone()))
         .nest("/payments", payment_routes())
 }
 
@@ -68,24 +70,40 @@ fn member_routes(state: AppState) -> Router<AppState> {
         ))
 }
 
-fn event_routes() -> Router<AppState> {
+fn event_routes_with_auth(state: AppState) -> Router<AppState> {
     Router::new()
+        // Public routes (no auth required for viewing)
         .route("/", get(handlers::events::list))
-        .route("/", post(handlers::events::create))
         .route("/:id", get(handlers::events::get))
-        .route("/:id", put(handlers::events::update))
-        .route("/:id", delete(handlers::events::delete))
-        .route("/:id/register", post(handlers::events::register))
-        .route("/:id/cancel", post(handlers::events::cancel))
+        // Protected routes - wrapped in a nested router with auth middleware
+        .nest("/", Router::new()
+            .route("/", post(handlers::events::create))
+            .route("/:id", put(handlers::events::update))
+            .route("/:id", delete(handlers::events::delete))
+            .route("/:id/register", post(handlers::events::register))
+            .route("/:id/cancel", post(handlers::events::cancel))
+            .route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                middleware::auth::require_auth,
+            ))
+        )
 }
 
-fn announcement_routes() -> Router<AppState> {
+fn announcement_routes_with_auth(state: AppState) -> Router<AppState> {
     Router::new()
+        // Public routes (no auth required for viewing public announcements)
         .route("/", get(handlers::announcements::list))
-        .route("/", post(handlers::announcements::create))
         .route("/:id", get(handlers::announcements::get))
-        .route("/:id", put(handlers::announcements::update))
-        .route("/:id", delete(handlers::announcements::delete))
+        // Protected routes - require auth
+        .nest("/", Router::new()
+            .route("/", post(handlers::announcements::create))
+            .route("/:id", put(handlers::announcements::update))
+            .route("/:id", delete(handlers::announcements::delete))
+            .route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                middleware::auth::require_auth,
+            ))
+        )
 }
 
 fn payment_routes() -> Router<AppState> {
@@ -96,7 +114,7 @@ fn payment_routes() -> Router<AppState> {
         .route("/webhook/stripe", post(handlers::payments::stripe_webhook))
 }
 
-fn public_routes(state: AppState) -> Router<AppState> {
+fn public_routes(_state: AppState) -> Router<AppState> {
     Router::new()
         .route("/signup", post(handlers::public::signup))
         .route("/events", get(handlers::public::list_events))

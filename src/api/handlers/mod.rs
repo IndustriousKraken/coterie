@@ -5,3 +5,4 @@ pub mod events;
 pub mod members;
 pub mod payments;
 pub mod public;
+pub mod root;

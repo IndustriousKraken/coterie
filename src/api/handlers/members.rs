@@ -10,7 +10,6 @@ use crate::{
     api::{middleware::auth::CurrentUser, state::AppState},
     domain::{CreateMemberRequest, Member, MemberStatus, UpdateMemberRequest},
     error::{AppError, Result},
-    repository::MemberRepository,
 };
 
 #[derive(Debug, Deserialize)]
