@@ -54,6 +54,7 @@ pub struct CreateMemberRequest {
     pub email: String,
     pub username: String,
     pub full_name: String,
+    pub password: String,
     pub membership_type: MembershipType,
 }
 

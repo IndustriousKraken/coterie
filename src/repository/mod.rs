@@ -4,8 +4,14 @@ use crate::domain::*;
 use crate::error::Result;
 
 pub mod member_repository;
+pub mod event_repository;
+pub mod announcement_repository;
+pub mod payment_repository;
 
 pub use member_repository::SqliteMemberRepository;
+pub use event_repository::SqliteEventRepository;
+pub use announcement_repository::SqliteAnnouncementRepository;
+pub use payment_repository::SqlitePaymentRepository;
 
 #[async_trait]
 pub trait MemberRepository: Send + Sync {

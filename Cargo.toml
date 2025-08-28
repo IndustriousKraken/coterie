@@ -3,6 +3,18 @@ name = "coterie"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "coterie"
+path = "src/lib.rs"
+
+[[bin]]
+name = "coterie"
+path = "src/main.rs"
+
+[[bin]]
+name = "seed"
+path = "src/bin/seed.rs"
+
 [dependencies]
 # Web framework
 axum = { version = "0.7", features = ["macros"] }

@@ -3,32 +3,38 @@
 ## Phase 1: Core Implementation (Priority: High)
 
 ### Database & Repository Layer
-- [ ] Implement SQLite repository for Members
-  - [ ] CRUD operations
-  - [ ] Search and filtering
-  - [ ] Password hashing integration
-- [ ] Implement SQLite repository for Events
-- [ ] Implement SQLite repository for Announcements
-- [ ] Implement SQLite repository for Payments
-- [ ] Add database connection pooling and error handling
-- [ ] Create database seeding script for development
+- [x] Implement SQLite repository for Members
+  - [x] CRUD operations
+  - [x] Search and filtering (by email, username, id)
+  - [x] Password hashing integration (Argon2id)
+- [x] Implement SQLite repository for Events
+  - [x] CRUD operations with proper type conversions
+  - [x] Attendance registration/cancellation
+- [x] Implement SQLite repository for Announcements
+  - [x] CRUD operations with visibility control
+  - [x] List by recent, public, featured
+- [x] Implement SQLite repository for Payments
+  - [x] CRUD operations with status tracking
+  - [x] Find by member and Stripe ID
+- [x] Add database connection pooling and error handling
+- [x] Create database seeding script for development (`cargo run --bin seed`)
 
 ### Authentication & Authorization
-- [ ] Implement session management
-  - [ ] Session creation/validation
-  - [ ] Secure cookie handling
-  - [ ] Session expiry and cleanup
-- [ ] Implement authentication middleware
-  - [ ] Password verification
-  - [ ] Session validation
-  - [ ] Role-based access (member/admin)
+- [x] Implement session management
+  - [x] Session creation/validation
+  - [x] Secure cookie handling
+  - [x] Session expiry and cleanup
+- [x] Implement authentication middleware
+  - [x] Password verification
+  - [x] Session validation
+  - [x] Role-based access (member/admin)
 - [ ] Add TOTP/2FA support
 - [ ] Implement password reset flow
 
 ### API Handlers
-- [ ] Implement member management handlers
-  - [ ] Create, read, update, delete
-  - [ ] Activation/expiration logic
+- [x] Implement member management handlers
+  - [x] Create, read, update, delete
+  - [x] Activation/expiration logic
   - [ ] Profile management
 - [ ] Implement event management handlers
   - [ ] CRUD operations
@@ -44,9 +50,9 @@
 
 ### Testing
 - [ ] Unit tests for domain logic
-- [ ] Integration tests for repositories
+- [x] Integration tests for repositories (Member repository tested)
 - [ ] API endpoint tests
-- [ ] Authentication/authorization tests
+- [x] Authentication/authorization tests (Basic auth tested)
 
 ## Phase 2: Payment Integration (Priority: High)
 
@@ -175,10 +181,22 @@
 
 ## Notes
 
-- **Current Status**: Basic architecture and structure complete
-- **Next Step**: Implement SQLite repositories and authentication
+- **Current Status**: All core repositories implemented, authentication complete, ready for API handlers and testing
+- **Next Step**: Create database seeding script, implement remaining API handlers, add integration tests
 - **Blocking Issues**: None currently
 - **Dependencies**: Need to evaluate specific Discord and Unifi API libraries
+- **Completed Today**: 
+  - ✅ SQLite Member Repository with full CRUD
+  - ✅ SQLite Event Repository with attendance tracking
+  - ✅ SQLite Announcement Repository with visibility control
+  - ✅ SQLite Payment Repository with status management
+  - ✅ Authentication system with sessions
+  - ✅ Password hashing with Argon2id
+  - ✅ Auth middleware (require_auth, require_admin)
+  - ✅ Member management API handlers
+  - ✅ Integration tests for member repository
+  - ✅ All repositories now fully implemented and compiling
+  - ✅ Database seeding script with test data
 
 ## Quick Start Tasks
 

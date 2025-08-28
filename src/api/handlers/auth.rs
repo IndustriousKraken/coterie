@@ -43,14 +43,14 @@ pub async fn login(
         .await?
         .ok_or(AppError::Unauthorized)?;
     
-    // Create session
-    let session = state.service_context.auth_service
+    // Create session (returns both session and token)
+    let (_session, token) = state.service_context.auth_service
         .create_session(member.id, 24)
         .await?;
     
-    // Create cookie
+    // Create cookie with the actual token
     let cookie = state.service_context.auth_service
-        .create_session_cookie(&session.id, false);
+        .create_session_cookie(&token, false);
     
     Ok((
         jar.add(cookie),

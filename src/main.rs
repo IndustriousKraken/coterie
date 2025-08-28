@@ -55,9 +55,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize repositories
     let member_repo = Arc::new(repository::SqliteMemberRepository::new(db_pool.clone()));
-    let event_repo = Arc::new(StubEventRepo {});
-    let announcement_repo = Arc::new(StubAnnouncementRepo {});
-    let payment_repo = Arc::new(StubPaymentRepo {});
+    let event_repo = Arc::new(repository::SqliteEventRepository::new(db_pool.clone()));
+    let announcement_repo = Arc::new(repository::SqliteAnnouncementRepository::new(db_pool.clone()));
+    let payment_repo = Arc::new(repository::SqlitePaymentRepository::new(db_pool.clone()));
 
     // Initialize integration manager
     let integration_manager = Arc::new(IntegrationManager::new());
@@ -103,119 +103,4 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
-}
-
-// Temporary stub implementations - these would be replaced with actual SQLite implementations
-struct StubMemberRepo;
-struct StubEventRepo;
-struct StubAnnouncementRepo;
-struct StubPaymentRepo;
-
-use async_trait::async_trait;
-use uuid::Uuid;
-use crate::domain::*;
-use crate::error::Result;
-use crate::repository::*;
-
-#[async_trait]
-impl MemberRepository for StubMemberRepo {
-    async fn create(&self, _member: CreateMemberRequest) -> Result<Member> {
-        unimplemented!("SQLite implementation needed")
-    }
-    async fn find_by_id(&self, _id: Uuid) -> Result<Option<Member>> {
-        Ok(None)
-    }
-    async fn find_by_email(&self, _email: &str) -> Result<Option<Member>> {
-        Ok(None)
-    }
-    async fn find_by_username(&self, _username: &str) -> Result<Option<Member>> {
-        Ok(None)
-    }
-    async fn list(&self, _limit: i64, _offset: i64) -> Result<Vec<Member>> {
-        Ok(vec![])
-    }
-    async fn list_active(&self) -> Result<Vec<Member>> {
-        Ok(vec![])
-    }
-    async fn list_expired(&self) -> Result<Vec<Member>> {
-        Ok(vec![])
-    }
-    async fn update(&self, _id: Uuid, _update: UpdateMemberRequest) -> Result<Member> {
-        unimplemented!("SQLite implementation needed")
-    }
-    async fn delete(&self, _id: Uuid) -> Result<()> {
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl EventRepository for StubEventRepo {
-    async fn create(&self, _event: Event) -> Result<Event> {
-        unimplemented!("SQLite implementation needed")
-    }
-    async fn find_by_id(&self, _id: Uuid) -> Result<Option<Event>> {
-        Ok(None)
-    }
-    async fn list_upcoming(&self, _limit: i64) -> Result<Vec<Event>> {
-        Ok(vec![])
-    }
-    async fn list_public(&self) -> Result<Vec<Event>> {
-        Ok(vec![])
-    }
-    async fn update(&self, _id: Uuid, _event: Event) -> Result<Event> {
-        unimplemented!("SQLite implementation needed")
-    }
-    async fn delete(&self, _id: Uuid) -> Result<()> {
-        Ok(())
-    }
-    async fn register_attendance(&self, _event_id: Uuid, _member_id: Uuid) -> Result<()> {
-        Ok(())
-    }
-    async fn cancel_attendance(&self, _event_id: Uuid, _member_id: Uuid) -> Result<()> {
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl AnnouncementRepository for StubAnnouncementRepo {
-    async fn create(&self, _announcement: Announcement) -> Result<Announcement> {
-        unimplemented!("SQLite implementation needed")
-    }
-    async fn find_by_id(&self, _id: Uuid) -> Result<Option<Announcement>> {
-        Ok(None)
-    }
-    async fn list_recent(&self, _limit: i64) -> Result<Vec<Announcement>> {
-        Ok(vec![])
-    }
-    async fn list_public(&self) -> Result<Vec<Announcement>> {
-        Ok(vec![])
-    }
-    async fn list_featured(&self) -> Result<Vec<Announcement>> {
-        Ok(vec![])
-    }
-    async fn update(&self, _id: Uuid, _announcement: Announcement) -> Result<Announcement> {
-        unimplemented!("SQLite implementation needed")
-    }
-    async fn delete(&self, _id: Uuid) -> Result<()> {
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl PaymentRepository for StubPaymentRepo {
-    async fn create(&self, _payment: Payment) -> Result<Payment> {
-        unimplemented!("SQLite implementation needed")
-    }
-    async fn find_by_id(&self, _id: Uuid) -> Result<Option<Payment>> {
-        Ok(None)
-    }
-    async fn find_by_member(&self, _member_id: Uuid) -> Result<Vec<Payment>> {
-        Ok(vec![])
-    }
-    async fn find_by_stripe_id(&self, _stripe_id: &str) -> Result<Option<Payment>> {
-        Ok(None)
-    }
-    async fn update_status(&self, _id: Uuid, _status: PaymentStatus) -> Result<Payment> {
-        unimplemented!("SQLite implementation needed")
-    }
 }

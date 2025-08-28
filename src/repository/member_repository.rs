@@ -110,7 +110,7 @@ impl MemberRepository for SqliteMemberRepository {
         let argon2 = Argon2::default();
         
         let password_hash = argon2
-            .hash_password(b"temporary_password", &salt) // This should come from the request in a real implementation
+            .hash_password(request.password.as_bytes(), &salt)
             .map_err(|e| AppError::Database(e.to_string()))?
             .to_string();
 

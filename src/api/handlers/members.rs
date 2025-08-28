@@ -107,11 +107,9 @@ pub async fn create(
         email: dto.email,
         username: dto.username,
         full_name: dto.full_name,
+        password: dto.password,
         membership_type,
     };
-    
-    // TODO: Hash the password and store it
-    // For now, the repository uses a temporary password
     
     let member = state.service_context.member_repo
         .create(request)

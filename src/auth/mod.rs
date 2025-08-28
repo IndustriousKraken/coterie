@@ -53,7 +53,7 @@ impl AuthService {
         Ok(password_hash.to_string())
     }
 
-    pub async fn create_session(&self, member_id: Uuid, duration_hours: i64) -> Result<Session> {
+    pub async fn create_session(&self, member_id: Uuid, duration_hours: i64) -> Result<(Session, String)> {
         let token = generate_token();
         let expires_at = Utc::now() + Duration::hours(duration_hours);
         
@@ -61,7 +61,7 @@ impl AuthService {
             .create(member_id, &token, expires_at)
             .await?;
         
-        Ok(session)
+        Ok((session, token))
     }
 
     pub async fn validate_session(&self, token: &str) -> Result<Option<Session>> {
