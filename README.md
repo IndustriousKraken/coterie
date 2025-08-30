@@ -13,11 +13,45 @@ member status, activate/approve memberships, and update member details.
 
 At its core, Coterie strives to do one thing very well: to make sure you know who is in your group, and who is not.
 
+## Architecture
+
+Coterie uses a **dual-frontend architecture** to separate public-facing content from member management:
+
+```
+┌─────────────────────┐         ┌──────────────────────┐
+│  Public Website     │         │  Management Portal   │
+│  (Static Site)      │         │  (HTMX + Alpine.js)  │
+├─────────────────────┤         ├──────────────────────┤
+│ • Marketing pages   │         │ • Member dashboard   │
+│ • Event calendar    │         │ • Admin panel        │
+│ • Announcements     │         │ • Payment management │
+│ • Signup form       │         │ • Profile editing    │
+│ • Member directory  │         │ • Event RSVP         │
+└──────────┬──────────┘         └──────────┬───────────┘
+           │                                │
+           ▼                                ▼
+     Public APIs                     Protected APIs
+           │                                │
+           └────────────┬───────────────────┘
+                        │
+                 ┌──────▼──────┐
+                 │   Coterie    │
+                 │   Backend    │
+                 └──────────────┘
+```
+
+- **Public Website**: Your existing website (built with any technology) consumes Coterie's public APIs to display events, announcements, and handle signups
+- **Management Portal**: Built-in admin and member interface served by Coterie for account management
+- **Coterie Backend**: Single Rust binary providing both public and authenticated APIs
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed integration examples.
+
 ## Technology Stack
 
-- **Backend**: Rust (using Axum or Actix-web framework)
+- **Backend**: Rust (using Axum web framework)
 - **Database**: SQLite with WAL mode
-- **Frontend**: HTMX + Alpine.js for minimal, secure interfaces
+- **Management Portal**: HTMX + Alpine.js for minimal, secure interfaces
+- **Public Website**: Any static site generator or framework (your choice)
 - **Authentication**: Session-based with secure cookies, Argon2id for password hashing, TOTP for 2FA
 - **Deployment**: Single binary deployment with Caddy reverse proxy
 
