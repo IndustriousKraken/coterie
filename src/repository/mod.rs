@@ -55,5 +55,6 @@ pub trait PaymentRepository: Send + Sync {
     async fn find_by_id(&self, id: Uuid) -> Result<Option<Payment>>;
     async fn find_by_member(&self, member_id: Uuid) -> Result<Vec<Payment>>;
     async fn find_by_stripe_id(&self, stripe_id: &str) -> Result<Option<Payment>>;
+    async fn update(&self, id: Uuid, payment: Payment) -> Result<Payment>;
     async fn update_status(&self, id: Uuid, status: PaymentStatus) -> Result<Payment>;
 }

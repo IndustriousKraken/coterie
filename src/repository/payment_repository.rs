@@ -191,6 +191,47 @@ impl PaymentRepository for SqlitePaymentRepository {
         }
     }
 
+    async fn update(&self, id: Uuid, payment: Payment) -> Result<Payment> {
+        let id_str = id.to_string();
+        let now = Utc::now().naive_utc();
+        let status_str = Self::payment_status_to_str(&payment.status);
+        let method_str = Self::payment_method_to_str(&payment.payment_method);
+        let paid_at_naive = payment.paid_at.map(|dt| dt.naive_utc());
+
+        sqlx::query(
+            r#"
+            UPDATE payments
+            SET member_id = ?,
+                amount_cents = ?,
+                currency = ?,
+                status = ?,
+                payment_method = ?,
+                stripe_payment_id = ?,
+                description = ?,
+                paid_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            "#
+        )
+        .bind(payment.member_id.to_string())
+        .bind(payment.amount_cents as i32)
+        .bind(&payment.currency)
+        .bind(status_str)
+        .bind(method_str)
+        .bind(&payment.stripe_payment_id)
+        .bind(&payment.description)
+        .bind(paid_at_naive)
+        .bind(now)
+        .bind(&id_str)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        self.find_by_id(id).await?.ok_or_else(|| {
+            AppError::Database("Failed to retrieve updated payment".to_string())
+        })
+    }
+
     async fn update_status(&self, id: Uuid, status: PaymentStatus) -> Result<Payment> {
         let id_str = id.to_string();
         let status_str = Self::payment_status_to_str(&status);

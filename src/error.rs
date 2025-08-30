@@ -39,6 +39,12 @@ pub enum AppError {
     
     #[error("Validation error: {0}")]
     Validation(String),
+    
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
+    
+    #[error("External service error: {0}")]
+    External(String),
 }
 
 impl IntoResponse for AppError {
@@ -63,6 +69,11 @@ impl IntoResponse for AppError {
                 (StatusCode::SERVICE_UNAVAILABLE, msg.as_str())
             }
             AppError::Validation(ref msg) => (StatusCode::UNPROCESSABLE_ENTITY, msg.as_str()),
+            AppError::ServiceUnavailable(ref msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.as_str()),
+            AppError::External(ref msg) => {
+                tracing::error!("External service error: {}", msg);
+                (StatusCode::BAD_GATEWAY, msg.as_str())
+            }
         };
 
         let body = Json(json!({

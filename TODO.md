@@ -36,17 +36,17 @@
   - [x] Create, read, update, delete
   - [x] Activation/expiration logic
   - [ ] Profile management
-- [ ] Implement event management handlers
-  - [ ] CRUD operations
-  - [ ] RSVP/attendance tracking
-  - [ ] iCal feed generation
-- [ ] Implement announcement handlers
-  - [ ] CRUD with visibility controls
-  - [ ] RSS feed generation
-- [ ] Implement public API endpoints
-  - [ ] Member signup
-  - [ ] Public event listing
-  - [ ] Public announcements
+- [x] Implement event management handlers
+  - [x] CRUD operations
+  - [x] RSVP/attendance tracking
+  - [x] iCal feed generation
+- [x] Implement announcement handlers
+  - [x] CRUD with visibility controls
+  - [x] RSS feed generation
+- [x] Implement public API endpoints
+  - [x] Member signup
+  - [x] Public event listing
+  - [x] Public announcements
 
 ### Testing
 - [ ] Unit tests for domain logic
@@ -57,18 +57,18 @@
 ## Phase 2: Payment Integration (Priority: High)
 
 ### Stripe Integration
-- [ ] Implement Stripe client wrapper
-- [ ] Create payment initiation flow
-- [ ] Handle webhook callbacks
-- [ ] Implement payment status synchronization
+- [x] Implement Stripe client wrapper
+- [x] Create payment initiation flow
+- [x] Handle webhook callbacks
+- [x] Implement payment status synchronization
 - [ ] Add subscription management
-- [ ] Create payment history views
+- [x] Create payment history views
 
 ### Member Dues Management
 - [ ] Automated expiration checking (cron job)
 - [ ] Grace period handling
 - [ ] Payment reminder system
-- [ ] Manual payment recording for cash/check
+- [x] Manual payment recording for cash/check
 
 ## Phase 3: Frontend (Priority: Medium)
 

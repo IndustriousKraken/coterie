@@ -6,3 +6,4 @@ pub mod members;
 pub mod payments;
 pub mod public;
 pub mod root;
+pub mod settings;

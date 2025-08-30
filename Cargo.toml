@@ -59,5 +59,8 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 validator = { version = "0.18", features = ["derive"] }
 
+# Payment processing
+stripe = { package = "async-stripe", version = "0.39", default-features = false, features = ["runtime-tokio-hyper", "checkout", "webhook-events", "connect"] }
+
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

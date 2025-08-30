@@ -4,6 +4,7 @@ mod config;
 mod domain;
 mod error;
 mod integrations;
+mod payments;
 mod repository;
 mod service;
 
@@ -85,14 +86,33 @@ async fn main() -> anyhow::Result<()> {
         member_repo,
         event_repo,
         announcement_repo,
-        payment_repo,
+        payment_repo.clone(),
         integration_manager,
         auth_service,
         db_pool.clone(),
     ));
 
+    // Initialize Stripe client if configured
+    let stripe_client = if settings.stripe.enabled {
+        if let (Some(api_key), Some(webhook_secret)) = 
+            (settings.stripe.secret_key.clone(), settings.stripe.webhook_secret.clone()) {
+            tracing::info!("Stripe payment processing enabled");
+            Some(Arc::new(payments::StripeClient::new(
+                api_key,
+                webhook_secret,
+                payment_repo,
+            )))
+        } else {
+            tracing::warn!("Stripe enabled but missing configuration");
+            None
+        }
+    } else {
+        tracing::info!("Stripe payment processing disabled");
+        None
+    };
+
     // Create and run app
-    let app = api::create_app(service_context);
+    let app = api::create_app(service_context, stripe_client, Arc::new(settings.clone()));
 
     let listener = tokio::net::TcpListener::bind(
         format!("{}:{}", settings.server.host, settings.server.port)

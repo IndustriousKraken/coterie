@@ -13,11 +13,19 @@ use tower_http::{
 };
 use std::sync::Arc;
 
-use crate::service::ServiceContext;
+use crate::{
+    config::Settings,
+    payments::StripeClient,
+    service::ServiceContext,
+};
 use state::AppState;
 
-pub fn create_app(service_context: Arc<ServiceContext>) -> Router {
-    let app_state = AppState::new(service_context);
+pub fn create_app(
+    service_context: Arc<ServiceContext>,
+    stripe_client: Option<Arc<StripeClient>>,
+    settings: Arc<Settings>,
+) -> Router {
+    let app_state = AppState::new(service_context, stripe_client, settings);
 
     Router::new()
         // Root and health endpoints
@@ -52,7 +60,7 @@ fn api_routes(state: AppState) -> Router<AppState> {
         .nest("/members", member_routes(state.clone()))
         .nest("/events", event_routes_with_auth(state.clone()))
         .nest("/announcements", announcement_routes_with_auth(state.clone()))
-        .nest("/payments", payment_routes())
+        .nest("/payments", payment_routes(state.clone()))
 }
 
 fn member_routes(state: AppState) -> Router<AppState> {
@@ -106,12 +114,22 @@ fn announcement_routes_with_auth(state: AppState) -> Router<AppState> {
         )
 }
 
-fn payment_routes() -> Router<AppState> {
+fn payment_routes(state: AppState) -> Router<AppState> {
     Router::new()
-        .route("/", post(handlers::payments::create))
-        .route("/:id", get(handlers::payments::get))
-        .route("/member/:member_id", get(handlers::payments::list_by_member))
+        // Public webhook endpoint (no auth)
         .route("/webhook/stripe", post(handlers::payments::stripe_webhook))
+        // Protected payment endpoints
+        .nest("/", Router::new()
+            .route("/", post(handlers::payments::create))
+            .route("/:id", get(handlers::payments::get))
+            .route("/member/:member_id", get(handlers::payments::list_by_member))
+            .route("/manual", post(handlers::payments::create_manual))
+            .route("/waive", post(handlers::payments::waive))
+            .route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                middleware::auth::require_auth,
+            ))
+        )
 }
 
 fn public_routes(_state: AppState) -> Router<AppState> {
@@ -128,6 +146,14 @@ fn admin_routes(state: AppState) -> Router<AppState> {
         .route("/stats", get(handlers::admin::stats))
         .route("/audit-log", get(handlers::admin::audit_log))
         .route("/expired-check", post(handlers::admin::check_expired))
+        // Settings management routes
+        .route("/settings", get(handlers::settings::list_settings))
+        .route("/settings/batch", put(handlers::settings::batch_update))
+        .route("/settings/category/:category", get(handlers::settings::get_category))
+        .route("/settings/payment-config", get(handlers::settings::get_payment_config))
+        .route("/settings/membership-config", get(handlers::settings::get_membership_config))
+        .route("/settings/:key", get(handlers::settings::get_setting))
+        .route("/settings/:key", put(handlers::settings::update_setting))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::auth::require_admin,
