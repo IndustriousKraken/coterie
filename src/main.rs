@@ -7,6 +7,7 @@ mod integrations;
 mod payments;
 mod repository;
 mod service;
+mod web;
 
 use std::sync::Arc;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -111,8 +112,19 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    // Create and run app
-    let app = api::create_app(service_context, stripe_client, Arc::new(settings.clone()));
+    // Create API app
+    let api_app = api::create_app(service_context.clone(), stripe_client.clone(), Arc::new(settings.clone()));
+    
+    // Create web app state separately
+    let web_app_state = api::state::AppState::new(
+        service_context,
+        stripe_client,
+        Arc::new(settings.clone()),
+    );
+    let web_app = web::create_web_routes(web_app_state);
+    
+    // Combine API and web routes
+    let app = api_app.merge(web_app);
 
     let listener = tokio::net::TcpListener::bind(
         format!("{}:{}", settings.server.host, settings.server.port)

@@ -1,0 +1,143 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Dashboard - Coterie{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="mb-8">
+        <h1 class="text-3xl font-bold text-gray-900">Welcome, {{ member.full_name }}!</h1>
+        <p class="mt-2 text-sm text-gray-600">Member since {{ member.joined_at }}</p>
+    </div>
+
+    <!-- Member Status Card -->
+    <div class="bg-white rounded-lg shadow-sm p-6 mb-6">
+        <h2 class="text-lg font-semibold mb-4">Membership Status</h2>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+                <p class="text-sm text-gray-600">Status</p>
+                <p class="text-lg font-medium">
+                    {% if member.status == "Active" %}
+                        <span class="text-green-600">● Active</span>
+                    {% else if member.status == "Pending" %}
+                        <span class="text-yellow-600">● Pending</span>
+                    {% else if member.status == "Expired" %}
+                        <span class="text-red-600">● Expired</span>
+                    {% else %}
+                        <span class="text-gray-600">● {{ member.status }}</span>
+                    {% endif %}
+                </p>
+            </div>
+            <div>
+                <p class="text-sm text-gray-600">Membership Type</p>
+                <p class="text-lg font-medium">{{ member.membership_type }}</p>
+            </div>
+            <div>
+                <p class="text-sm text-gray-600">Dues Paid Until</p>
+                <p class="text-lg font-medium">
+                    {% if let Some(dues_date) = member.dues_paid_until.as_ref() %}
+                        {{ dues_date }}
+                    {% else %}
+                        <span class="text-gray-400">Not paid</span>
+                    {% endif %}
+                </p>
+            </div>
+        </div>
+        
+        {% if member.status == "Expired" || member.dues_paid_until.is_none() %}
+        <div class="mt-4 p-4 bg-yellow-50 rounded-md">
+            <p class="text-sm text-yellow-800">
+                Your membership has expired or payment is pending. 
+                <a href="/portal/payments/new" class="font-medium underline">Renew now</a>
+            </p>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Upcoming Events -->
+        <div class="bg-white rounded-lg shadow-sm p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-semibold">Upcoming Events</h2>
+                <a href="/portal/events" class="text-sm text-blue-600 hover:text-blue-800">View all →</a>
+            </div>
+            
+            <div id="upcoming-events" 
+                 hx-get="/portal/api/events/upcoming"
+                 hx-trigger="load"
+                 hx-swap="innerHTML">
+                <div class="animate-pulse">
+                    <div class="h-4 bg-gray-200 rounded w-3/4 mb-2"></div>
+                    <div class="h-4 bg-gray-200 rounded w-1/2"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Recent Payments -->
+        <div class="bg-white rounded-lg shadow-sm p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-semibold">Recent Payments</h2>
+                <a href="/portal/payments" class="text-sm text-blue-600 hover:text-blue-800">View all →</a>
+            </div>
+            
+            <div id="recent-payments"
+                 hx-get="/portal/api/payments/recent"
+                 hx-trigger="load"
+                 hx-swap="innerHTML">
+                <div class="animate-pulse">
+                    <div class="h-4 bg-gray-200 rounded w-3/4 mb-2"></div>
+                    <div class="h-4 bg-gray-200 rounded w-1/2"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Actions -->
+    <div class="mt-6 bg-white rounded-lg shadow-sm p-6">
+        <h2 class="text-lg font-semibold mb-4">Quick Actions</h2>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <a href="/portal/profile" 
+               class="text-center p-4 border rounded-lg hover:bg-gray-50 transition">
+                <svg class="w-8 h-8 mx-auto mb-2 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path>
+                </svg>
+                <span class="text-sm">Edit Profile</span>
+            </a>
+            
+            <a href="/portal/payments/new" 
+               class="text-center p-4 border rounded-lg hover:bg-gray-50 transition">
+                <svg class="w-8 h-8 mx-auto mb-2 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path>
+                </svg>
+                <span class="text-sm">Pay Dues</span>
+            </a>
+            
+            <a href="/portal/events" 
+               class="text-center p-4 border rounded-lg hover:bg-gray-50 transition">
+                <svg class="w-8 h-8 mx-auto mb-2 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                </svg>
+                <span class="text-sm">View Events</span>
+            </a>
+            
+            <a href="/portal/settings" 
+               class="text-center p-4 border rounded-lg hover:bg-gray-50 transition">
+                <svg class="w-8 h-8 mx-auto mb-2 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                </svg>
+                <span class="text-sm">Settings</span>
+            </a>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Auto-refresh dashboard data every 30 seconds
+    setInterval(() => {
+        htmx.trigger('#upcoming-events', 'load');
+        htmx.trigger('#recent-payments', 'load');
+    }, 30000);
+</script>
+{% endblock %}

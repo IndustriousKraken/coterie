@@ -7,3 +7,4 @@ pub mod integrations;
 pub mod payments;
 pub mod repository;
 pub mod service;
+pub mod web;

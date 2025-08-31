@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Coterie{% endblock %}</title>
+    
+    <!-- HTMX -->
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <!-- HTMX Extensions -->
+    <script src="https://unpkg.com/htmx.org@1.9.10/dist/ext/json-enc.js"></script>
+    
+    <!-- Alpine.js -->
+    <script defer src="https://unpkg.com/alpinejs@3.13.5/dist/cdn.min.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Custom styles -->
+    <style>
+        [x-cloak] { display: none !important; }
+        
+        .htmx-indicator {
+            display: none;
+        }
+        .htmx-request .htmx-indicator {
+            display: inline-block;
+        }
+        .htmx-request.htmx-indicator {
+            display: inline-block;
+        }
+    </style>
+    
+    {% block head %}{% endblock %}
+</head>
+<body class="bg-gray-50">
+    <!-- Navigation -->
+    <nav class="bg-white shadow-sm border-b">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <a href="/" class="text-xl font-semibold text-gray-900">
+                        Coterie
+                    </a>
+                    
+                    {% if current_user.is_some() %}
+                    <div class="ml-10 flex items-baseline space-x-4">
+                        <a href="/portal/dashboard" 
+                           class="text-gray-700 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
+                            Dashboard
+                        </a>
+                        <a href="/portal/events" 
+                           class="text-gray-700 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
+                            Events
+                        </a>
+                        <a href="/portal/payments" 
+                           class="text-gray-700 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
+                            Payments
+                        </a>
+                        
+                        {% if is_admin %}
+                        <div class="relative" x-data="{ open: false }">
+                            <button @click="open = !open" 
+                                    class="text-gray-700 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
+                                Admin ▼
+                            </button>
+                            <div x-show="open" 
+                                 @click.away="open = false"
+                                 x-cloak
+                                 class="absolute z-10 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5">
+                                <a href="/portal/admin/members" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                    Manage Members
+                                </a>
+                                <a href="/portal/admin/events" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                    Manage Events
+                                </a>
+                                <a href="/portal/admin/announcements" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                    Announcements
+                                </a>
+                                <a href="/portal/admin/settings" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                    Settings
+                                </a>
+                                <a href="/portal/admin/audit" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                    Audit Log
+                                </a>
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+                </div>
+                
+                <div class="flex items-center">
+                    {% if let Some(user) = current_user %}
+                    <span class="text-sm text-gray-600 mr-4">
+                        {{ user.username }}
+                    </span>
+                    <button hx-post="/logout" 
+                            hx-target="body"
+                            class="text-sm text-gray-700 hover:text-gray-900">
+                        Logout
+                    </button>
+                    {% else %}
+                    <a href="/login" class="text-sm text-gray-700 hover:text-gray-900">
+                        Login
+                    </a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </nav>
+    
+    <!-- Toast notifications -->
+    <div id="toast-container" class="fixed top-4 right-4 z-50"></div>
+    
+    <!-- Main content -->
+    <main class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+        {% block content %}{% endblock %}
+    </main>
+    
+    <!-- Loading indicator -->
+    <div class="htmx-indicator fixed top-0 left-0 right-0 h-1 bg-blue-600"></div>
+    
+    <!-- Global scripts -->
+    <script>
+        // HTMX configuration
+        document.body.addEventListener('htmx:configRequest', (event) => {
+            // Add CSRF token if needed
+            event.detail.headers['X-Requested-With'] = 'XMLHttpRequest';
+        });
+        
+        // Handle HTMX errors
+        document.body.addEventListener('htmx:responseError', (event) => {
+            console.error('HTMX error:', event.detail);
+            showToast('An error occurred. Please try again.', 'error');
+        });
+        
+        // Toast notifications
+        function showToast(message, type = 'info') {
+            const colors = {
+                'info': 'bg-blue-500',
+                'success': 'bg-green-500',
+                'error': 'bg-red-500',
+                'warning': 'bg-yellow-500'
+            };
+            
+            const toast = document.createElement('div');
+            toast.className = `${colors[type]} text-white px-6 py-3 rounded-lg shadow-lg mb-2`;
+            toast.textContent = message;
+            
+            document.getElementById('toast-container').appendChild(toast);
+            
+            setTimeout(() => {
+                toast.remove();
+            }, 5000);
+        }
+        
+        // Listen for server-sent events for notifications
+        document.body.addEventListener('htmx:afterSwap', (event) => {
+            if (event.detail.xhr.getResponseHeader('X-Toast')) {
+                const toast = JSON.parse(event.detail.xhr.getResponseHeader('X-Toast'));
+                showToast(toast.message, toast.type);
+            }
+        });
+    </script>
+    
+    {% block scripts %}{% endblock %}
+</body>
+</html>
