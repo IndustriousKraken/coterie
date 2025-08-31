@@ -39,3 +39,6 @@ target/
 # Temporary files
 tmp/
 temp/
+
+# AI
+.claude/
