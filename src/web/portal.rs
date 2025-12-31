@@ -1,6 +1,6 @@
 use axum::{
     Router,
-    routing::get,
+    routing::{get, post},
     middleware,
 };
 use crate::api::state::AppState;
@@ -9,19 +9,26 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
     Router::new()
         // Member routes
         .route("/dashboard", get(member_dashboard))
-        .route("/events", get(|| async { "Events page (TODO)" }))
-        .route("/payments", get(|| async { "Payments page (TODO)" }))
-        .route("/profile", get(|| async { "Profile page (TODO)" }))
-        
+        .route("/events", get(events_page))
+        .route("/payments", get(payments_page))
+        .route("/profile", get(profile_page))
+        .route("/profile", post(update_profile))
+        .route("/profile/password", post(update_password))
+
         // API endpoints for dashboard
         .route("/api/events/upcoming", get(upcoming_events))
+        .route("/api/events/list", get(events_list_api))
         .route("/api/payments/recent", get(recent_payments))
-        
+        .route("/api/payments/list", get(payments_list_api))
+        .route("/api/payments/summary", get(payments_summary_api))
+        .route("/api/payments/dues-status", get(dues_status_api))
+        .route("/api/payments/next-due", get(next_due_api))
+
         // Admin routes
         .route("/admin", get(|| async { "Admin dashboard (TODO)" }))
         .route("/admin/members", get(|| async { "Admin members page (TODO)" }))
         .route("/admin/settings", get(|| async { "Admin settings page (TODO)" }))
-        
+
         // Require authentication for all portal routes
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -35,7 +42,7 @@ use axum::{
     response::IntoResponse,
     Extension,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     api::{
@@ -68,7 +75,6 @@ pub struct MemberInfo {
 }
 
 async fn member_dashboard(
-    State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
 ) -> impl IntoResponse {
     let user_info = UserInfo {
@@ -89,8 +95,11 @@ async fn member_dashboard(
             .map(|d| d.format("%B %d, %Y").to_string()),
     };
     
-    // TODO: Check if user is admin based on role or membership type
-    let is_admin = false;
+    // Check if user is admin (notes field contains "ADMIN")
+    let is_admin = current_user.member.notes
+        .as_ref()
+        .map(|n| n.contains("ADMIN"))
+        .unwrap_or(false);
     
     let template = MemberDashboardTemplate {
         current_user: Some(user_info),
@@ -239,7 +248,7 @@ async fn recent_payments(
                 "Failed" => "text-red-600",
                 _ => "text-gray-600",
             };
-            
+
             html.push_str(&format!(
                 r#"
                 <div class="flex justify-between items-center py-2 border-b">
@@ -263,6 +272,459 @@ async fn recent_payments(
         html.push_str("</div>");
         html
     };
-    
+
     axum::response::Html(html)
+}
+
+// Profile page
+#[derive(Template)]
+#[template(path = "portal/profile.html")]
+pub struct ProfileTemplate {
+    pub current_user: Option<UserInfo>,
+    pub is_admin: bool,
+    pub member: MemberInfo,
+    pub csrf_token: String,
+}
+
+async fn profile_page(
+    Extension(current_user): Extension<CurrentUser>,
+) -> impl IntoResponse {
+    let user_info = UserInfo {
+        id: current_user.member.id.to_string(),
+        username: current_user.member.username.clone(),
+        email: current_user.member.email.clone(),
+    };
+
+    let member_info = MemberInfo {
+        id: current_user.member.id.to_string(),
+        username: current_user.member.username.clone(),
+        full_name: current_user.member.full_name.clone(),
+        email: current_user.member.email.clone(),
+        status: format!("{:?}", current_user.member.status),
+        membership_type: format!("{:?}", current_user.member.membership_type),
+        joined_at: current_user.member.joined_at.format("%B %d, %Y").to_string(),
+        dues_paid_until: current_user.member.dues_paid_until
+            .map(|d| d.format("%B %d, %Y").to_string()),
+    };
+
+    let is_admin = current_user.member.notes
+        .as_ref()
+        .map(|n| n.contains("ADMIN"))
+        .unwrap_or(false);
+
+    // TODO: Implement proper CSRF tokens
+    let csrf_token = "placeholder".to_string();
+
+    let template = ProfileTemplate {
+        current_user: Some(user_info),
+        is_admin,
+        member: member_info,
+        csrf_token,
+    };
+
+    HtmlTemplate(template)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateProfileRequest {
+    pub full_name: String,
+    #[allow(dead_code)]
+    pub csrf_token: String,
+}
+
+async fn update_profile(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+    axum::Form(form): axum::Form<UpdateProfileRequest>,
+) -> axum::response::Response {
+    use crate::domain::UpdateMemberRequest;
+
+    let update = UpdateMemberRequest {
+        full_name: Some(form.full_name.clone()),
+        ..Default::default()
+    };
+
+    match state.service_context.member_repo.update(current_user.member.id, update).await {
+        Ok(_) => {
+            // Redirect back to profile with success message
+            axum::response::Response::builder()
+                .status(200)
+                .header("HX-Redirect", "/portal/profile")
+                .header("X-Toast", r#"{"message":"Profile updated successfully!","type":"success"}"#)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        }
+        Err(e) => {
+            let html = format!(
+                "<div class=\"p-4 bg-red-50 text-red-800 rounded-md\">Failed to update profile: {}</div>",
+                e
+            );
+            axum::response::Html(html).into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdatePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+    pub confirm_password: String,
+    #[allow(dead_code)]
+    pub csrf_token: String,
+}
+
+async fn update_password(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+    axum::Form(form): axum::Form<UpdatePasswordRequest>,
+) -> impl IntoResponse {
+    // Validate passwords match
+    if form.new_password != form.confirm_password {
+        return axum::response::Html(
+            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">
+                New passwords do not match
+            </div>"#.to_string()
+        );
+    }
+
+    // Validate password length
+    if form.new_password.len() < 8 {
+        return axum::response::Html(
+            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">
+                Password must be at least 8 characters
+            </div>"#.to_string()
+        );
+    }
+
+    // Verify current password
+    let password_hash = crate::auth::get_password_hash(
+        &state.service_context.db_pool,
+        &current_user.member.email
+    ).await.ok().flatten();
+
+    let password_valid = if let Some(hash) = password_hash {
+        crate::auth::AuthService::verify_password(&form.current_password, &hash)
+            .await
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    if !password_valid {
+        return axum::response::Html(
+            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">
+                Current password is incorrect
+            </div>"#.to_string()
+        );
+    }
+
+    // Hash new password and update
+    use argon2::{Argon2, PasswordHasher};
+    use argon2::password_hash::{SaltString, rand_core::OsRng};
+
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+
+    let new_hash = match argon2.hash_password(form.new_password.as_bytes(), &salt) {
+        Ok(hash) => hash.to_string(),
+        Err(_) => {
+            return axum::response::Html(
+                r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">
+                    Failed to update password
+                </div>"#.to_string()
+            );
+        }
+    };
+
+    // Update password in database
+    let result = sqlx::query("UPDATE members SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind(&new_hash)
+        .bind(current_user.member.id.to_string())
+        .execute(&state.service_context.db_pool)
+        .await;
+
+    match result {
+        Ok(_) => axum::response::Html(
+            r#"<div class="p-3 bg-green-50 text-green-800 rounded-md text-sm">
+                Password updated successfully!
+            </div>"#.to_string()
+        ),
+        Err(_) => axum::response::Html(
+            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">
+                Failed to update password
+            </div>"#.to_string()
+        ),
+    }
+}
+
+// Events page
+#[derive(Template)]
+#[template(path = "portal/events.html")]
+pub struct EventsTemplate {
+    pub current_user: Option<UserInfo>,
+    pub is_admin: bool,
+}
+
+async fn events_page(
+    State(_state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+) -> impl IntoResponse {
+    let user_info = UserInfo {
+        id: current_user.member.id.to_string(),
+        username: current_user.member.username.clone(),
+        email: current_user.member.email.clone(),
+    };
+
+    let is_admin = current_user.member.notes
+        .as_ref()
+        .map(|n| n.contains("ADMIN"))
+        .unwrap_or(false);
+
+    let template = EventsTemplate {
+        current_user: Some(user_info),
+        is_admin,
+    };
+
+    HtmlTemplate(template)
+}
+
+// Payments page
+#[derive(Template)]
+#[template(path = "portal/payments.html")]
+pub struct PaymentsTemplate {
+    pub current_user: Option<UserInfo>,
+    pub is_admin: bool,
+}
+
+async fn payments_page(
+    State(_state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+) -> impl IntoResponse {
+    let user_info = UserInfo {
+        id: current_user.member.id.to_string(),
+        username: current_user.member.username.clone(),
+        email: current_user.member.email.clone(),
+    };
+
+    let is_admin = current_user.member.notes
+        .as_ref()
+        .map(|n| n.contains("ADMIN"))
+        .unwrap_or(false);
+
+    let template = PaymentsTemplate {
+        current_user: Some(user_info),
+        is_admin,
+    };
+
+    HtmlTemplate(template)
+}
+
+// API endpoint for events list (for events page)
+#[derive(Debug, Deserialize)]
+pub struct EventsListQuery {
+    pub event_type: Option<String>,
+    pub show_past: Option<bool>,
+}
+
+async fn events_list_api(
+    State(state): State<AppState>,
+    Extension(_current_user): Extension<CurrentUser>,
+    Query(query): Query<EventsListQuery>,
+) -> impl IntoResponse {
+    // Get upcoming events (past events not currently supported)
+    let events = state.service_context.event_repo
+        .list_upcoming(50)
+        .await
+        .unwrap_or_default();
+
+    let now = chrono::Utc::now();
+
+    // Filter events by type (past events not currently supported by repository)
+    let filtered_events: Vec<_> = events.into_iter()
+        .filter(|e| {
+            // Filter by type
+            if let Some(ref event_type) = query.event_type {
+                if !event_type.is_empty() && format!("{:?}", e.event_type) != *event_type {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    if filtered_events.is_empty() {
+        return axum::response::Html(
+            r#"<div class="bg-white rounded-lg shadow-sm p-6 text-center text-gray-500">
+                No events found matching your criteria
+            </div>"#.to_string()
+        );
+    }
+
+    let mut html = String::new();
+    html.push_str(r#"<div class="space-y-4">"#);
+
+    for event in filtered_events {
+        let is_past = event.start_time < now;
+        let type_badge_color = match format!("{:?}", event.event_type).as_str() {
+            "Meeting" => "bg-blue-100 text-blue-800",
+            "Workshop" => "bg-purple-100 text-purple-800",
+            "CTF" => "bg-red-100 text-red-800",
+            "Social" => "bg-green-100 text-green-800",
+            "Training" => "bg-yellow-100 text-yellow-800",
+            _ => "bg-gray-100 text-gray-800",
+        };
+
+        html.push_str(&format!(
+            r#"<div class="bg-white rounded-lg shadow-sm p-6 {}">
+                <div class="flex justify-between items-start">
+                    <div>
+                        <div class="flex items-center gap-2 mb-2">
+                            <span class="px-2 py-1 text-xs font-medium rounded {}">{:?}</span>
+                            {}
+                        </div>
+                        <h3 class="text-lg font-semibold text-gray-900">{}</h3>
+                        <p class="text-sm text-gray-600 mt-1">{}</p>
+                        <div class="mt-2 text-sm text-gray-500">
+                            <p>{} at {}</p>
+                            {}
+                        </div>
+                    </div>
+                    <div class="text-right">
+                        {}
+                    </div>
+                </div>
+            </div>"#,
+            if is_past { "opacity-60" } else { "" },
+            type_badge_color,
+            event.event_type,
+            if is_past { r#"<span class="text-xs text-gray-500">Past event</span>"# } else { "" },
+            event.title,
+            event.description,
+            event.start_time.format("%B %d, %Y"),
+            event.start_time.format("%l:%M %p"),
+            event.location.map(|l| format!(r#"<p>Location: {}</p>"#, l)).unwrap_or_default(),
+            if !is_past {
+                format!(
+                    r#"<button hx-post="/portal/api/events/{}/rsvp"
+                               hx-swap="outerHTML"
+                               class="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
+                        RSVP
+                    </button>"#,
+                    event.id
+                )
+            } else {
+                String::new()
+            }
+        ));
+    }
+
+    html.push_str("</div>");
+    axum::response::Html(html)
+}
+
+// API endpoint for full payments list
+async fn payments_list_api(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+) -> impl IntoResponse {
+    let payments = state.service_context.payment_repo
+        .find_by_member(current_user.member.id)
+        .await
+        .unwrap_or_default();
+
+    if payments.is_empty() {
+        return axum::response::Html(
+            r#"<div class="p-6 text-center text-gray-500">
+                No payment history
+            </div>"#.to_string()
+        );
+    }
+
+    let mut html = String::from(r#"<div class="divide-y">"#);
+
+    for payment in payments {
+        let status_badge = match format!("{:?}", payment.status).as_str() {
+            "Completed" => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-green-100 text-green-800">Completed</span>"#,
+            "Pending" => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-yellow-100 text-yellow-800">Pending</span>"#,
+            "Failed" => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-red-100 text-red-800">Failed</span>"#,
+            "Refunded" => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-800">Refunded</span>"#,
+            _ => "",
+        };
+
+        let description = if payment.description.is_empty() {
+            "Membership dues".to_string()
+        } else {
+            payment.description.clone()
+        };
+
+        html.push_str(&format!(
+            r#"<div class="px-6 py-4 flex justify-between items-center">
+                <div>
+                    <p class="font-medium text-gray-900">{}</p>
+                    <p class="text-sm text-gray-500">{}</p>
+                </div>
+                <div class="text-right">
+                    <p class="font-medium text-gray-900">${:.2}</p>
+                    <div class="mt-1">{}</div>
+                </div>
+            </div>"#,
+            description,
+            payment.created_at.format("%B %d, %Y"),
+            payment.amount_cents as f64 / 100.0,
+            status_badge
+        ));
+    }
+
+    html.push_str("</div>");
+    axum::response::Html(html)
+}
+
+// API endpoint for payments summary
+async fn payments_summary_api(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+) -> impl IntoResponse {
+    use crate::domain::PaymentStatus;
+
+    let payments = state.service_context.payment_repo
+        .find_by_member(current_user.member.id)
+        .await
+        .unwrap_or_default();
+
+    let total: i64 = payments.iter()
+        .filter(|p| p.status == PaymentStatus::Completed)
+        .map(|p| p.amount_cents)
+        .sum();
+
+    axum::response::Html(format!("${:.2}", total as f64 / 100.0))
+}
+
+// API endpoint for dues status
+async fn dues_status_api(
+    Extension(current_user): Extension<CurrentUser>,
+) -> impl IntoResponse {
+    let status = if let Some(dues_until) = current_user.member.dues_paid_until {
+        if dues_until > chrono::Utc::now() {
+            r#"<span class="text-green-600">Current</span>"#
+        } else {
+            r#"<span class="text-red-600">Expired</span>"#
+        }
+    } else {
+        r#"<span class="text-yellow-600">Unpaid</span>"#
+    };
+
+    axum::response::Html(status.to_string())
+}
+
+// API endpoint for next due date
+async fn next_due_api(
+    Extension(current_user): Extension<CurrentUser>,
+) -> impl IntoResponse {
+    let next_due = if let Some(dues_until) = current_user.member.dues_paid_until {
+        dues_until.format("%B %d, %Y").to_string()
+    } else {
+        "—".to_string()
+    };
+
+    axum::response::Html(next_due)
 }

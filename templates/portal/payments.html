@@ -1,0 +1,74 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Payments - Coterie{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="mb-8 flex justify-between items-center">
+        <div>
+            <h1 class="text-3xl font-bold text-gray-900">Payment History</h1>
+            <p class="mt-2 text-sm text-gray-600">View your payment history and manage dues</p>
+        </div>
+        <a href="/portal/payments/new"
+           class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+            Pay Dues
+        </a>
+    </div>
+
+    <!-- Payment Summary -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+        <div class="bg-white rounded-lg shadow-sm p-6">
+            <h3 class="text-sm font-medium text-gray-500">Total Paid</h3>
+            <p id="total-paid"
+               hx-get="/portal/api/payments/summary"
+               hx-trigger="load"
+               hx-swap="innerHTML"
+               class="text-2xl font-bold text-gray-900 mt-1">
+                <span class="animate-pulse bg-gray-200 rounded h-8 w-24 inline-block"></span>
+            </p>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm p-6">
+            <h3 class="text-sm font-medium text-gray-500">Dues Status</h3>
+            <p id="dues-status"
+               hx-get="/portal/api/payments/dues-status"
+               hx-trigger="load"
+               hx-swap="innerHTML"
+               class="text-2xl font-bold mt-1">
+                <span class="animate-pulse bg-gray-200 rounded h-8 w-24 inline-block"></span>
+            </p>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm p-6">
+            <h3 class="text-sm font-medium text-gray-500">Next Due Date</h3>
+            <p id="next-due"
+               hx-get="/portal/api/payments/next-due"
+               hx-trigger="load"
+               hx-swap="innerHTML"
+               class="text-2xl font-bold text-gray-900 mt-1">
+                <span class="animate-pulse bg-gray-200 rounded h-8 w-24 inline-block"></span>
+            </p>
+        </div>
+    </div>
+
+    <!-- Payments List -->
+    <div class="bg-white rounded-lg shadow-sm">
+        <div class="px-6 py-4 border-b">
+            <h2 class="text-lg font-semibold">Payment History</h2>
+        </div>
+        <div id="payments-list"
+             hx-get="/portal/api/payments/list"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+            <div class="p-6 animate-pulse space-y-4">
+                <div class="flex justify-between">
+                    <div class="h-4 bg-gray-200 rounded w-1/3"></div>
+                    <div class="h-4 bg-gray-200 rounded w-1/6"></div>
+                </div>
+                <div class="flex justify-between">
+                    <div class="h-4 bg-gray-200 rounded w-1/3"></div>
+                    <div class="h-4 bg-gray-200 rounded w-1/6"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,71 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Events - Coterie{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="mb-8 flex justify-between items-center">
+        <div>
+            <h1 class="text-3xl font-bold text-gray-900">Events</h1>
+            <p class="mt-2 text-sm text-gray-600">Browse and register for upcoming events</p>
+        </div>
+        {% if is_admin %}
+        <a href="/portal/admin/events/new"
+           class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+            Create Event
+        </a>
+        {% endif %}
+    </div>
+
+    <!-- Filters -->
+    <div class="bg-white rounded-lg shadow-sm p-4 mb-6">
+        <div class="flex flex-wrap gap-4 items-center">
+            <div>
+                <label class="text-sm font-medium text-gray-700">Filter by type:</label>
+                <select id="event-type-filter"
+                        hx-get="/portal/api/events/list"
+                        hx-target="#events-list"
+                        hx-trigger="change"
+                        hx-include="#show-past-filter"
+                        name="event_type"
+                        class="ml-2 border-gray-300 rounded-md text-sm">
+                    <option value="">All Types</option>
+                    <option value="Meeting">Meeting</option>
+                    <option value="Workshop">Workshop</option>
+                    <option value="CTF">CTF</option>
+                    <option value="Social">Social</option>
+                    <option value="Training">Training</option>
+                </select>
+            </div>
+            <div class="flex items-center">
+                <input type="checkbox"
+                       id="show-past-filter"
+                       name="show_past"
+                       hx-get="/portal/api/events/list"
+                       hx-target="#events-list"
+                       hx-trigger="change"
+                       hx-include="#event-type-filter"
+                       class="h-4 w-4 text-blue-600 rounded border-gray-300">
+                <label for="show-past-filter" class="ml-2 text-sm text-gray-700">Show past events</label>
+            </div>
+        </div>
+    </div>
+
+    <!-- Events List -->
+    <div id="events-list"
+         hx-get="/portal/api/events/list"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+        <div class="animate-pulse space-y-4">
+            <div class="bg-white rounded-lg shadow-sm p-6">
+                <div class="h-6 bg-gray-200 rounded w-1/3 mb-2"></div>
+                <div class="h-4 bg-gray-200 rounded w-2/3"></div>
+            </div>
+            <div class="bg-white rounded-lg shadow-sm p-6">
+                <div class="h-6 bg-gray-200 rounded w-1/3 mb-2"></div>
+                <div class="h-4 bg-gray-200 rounded w-2/3"></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

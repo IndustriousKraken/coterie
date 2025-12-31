@@ -73,7 +73,7 @@
 ## Phase 3: Frontend (Priority: Medium)
 
 ### Admin Dashboard
-- [ ] Create HTMX base template
+- [x] Create HTMX base template
 - [ ] Member management interface
   - [ ] List/search members
   - [ ] Edit member details
@@ -84,10 +84,12 @@
 - [ ] Audit log viewer
 
 ### Member Portal
-- [ ] Login/logout pages
-- [ ] Profile management
-- [ ] Event registration
-- [ ] Payment history
+- [x] Login/logout pages
+- [x] Member dashboard with status, events, payments
+- [x] Profile management (view/edit name, change password)
+- [x] Events listing page with filtering
+- [x] Payment history page with summary
+- [ ] Event RSVP functionality
 - [ ] Download receipts
 
 ### Public Pages
