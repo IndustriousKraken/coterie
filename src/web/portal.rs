@@ -767,6 +767,8 @@ pub struct AdminMembersTemplate {
     pub search_query: String,
     pub status_filter: String,
     pub type_filter: String,
+    pub sort_field: String,
+    pub sort_order: String,
 }
 
 #[derive(Clone)]
@@ -789,6 +791,8 @@ pub struct AdminMembersQuery {
     #[serde(rename = "type")]
     pub member_type: Option<String>,
     pub page: Option<i64>,
+    pub sort: Option<String>,  // name, status, type, joined, dues
+    pub order: Option<String>, // asc, desc
 }
 
 async fn admin_members_page(
@@ -818,6 +822,8 @@ async fn admin_members_page(
             search_query: String::new(),
             status_filter: String::new(),
             type_filter: String::new(),
+            sort_field: "name".to_string(),
+            sort_order: "asc".to_string(),
         });
     }
 
@@ -848,8 +854,12 @@ async fn admin_members_page(
     let status_filter = query.status.clone().unwrap_or_default();
     let type_filter = query.member_type.clone().unwrap_or_default();
 
+    // Sort parameters
+    let sort_field = query.sort.clone().unwrap_or_else(|| "name".to_string());
+    let sort_order = query.order.clone().unwrap_or_else(|| "asc".to_string());
+
     // Filter members
-    let filtered_members: Vec<_> = all_members.into_iter()
+    let mut filtered_members: Vec<_> = all_members.into_iter()
         .filter(|m| {
             // Search filter
             if !search_query.is_empty() {
@@ -875,6 +885,35 @@ async fn admin_members_page(
             true
         })
         .collect();
+
+    // Sort members
+    filtered_members.sort_by(|a, b| {
+        let cmp = match sort_field.as_str() {
+            "name" => {
+                // Sort by last name, then first name
+                let a_parts: Vec<&str> = a.full_name.split_whitespace().collect();
+                let b_parts: Vec<&str> = b.full_name.split_whitespace().collect();
+                let a_last = a_parts.last().unwrap_or(&"");
+                let b_last = b_parts.last().unwrap_or(&"");
+                a_last.to_lowercase().cmp(&b_last.to_lowercase())
+                    .then_with(|| a.full_name.to_lowercase().cmp(&b.full_name.to_lowercase()))
+            }
+            "status" => format!("{:?}", a.status).cmp(&format!("{:?}", b.status)),
+            "type" => format!("{:?}", a.membership_type).cmp(&format!("{:?}", b.membership_type)),
+            "joined" => a.joined_at.cmp(&b.joined_at),
+            "dues" => {
+                // None values sort last
+                match (&a.dues_paid_until, &b.dues_paid_until) {
+                    (Some(a_date), Some(b_date)) => a_date.cmp(b_date),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                }
+            }
+            _ => a.full_name.to_lowercase().cmp(&b.full_name.to_lowercase()),
+        };
+        if sort_order == "desc" { cmp.reverse() } else { cmp }
+    });
 
     let total_members = filtered_members.len() as i64;
     let total_pages = (total_members + per_page - 1) / per_page;
@@ -918,6 +957,8 @@ async fn admin_members_page(
         search_query: query.q.unwrap_or_default(),
         status_filter: query.status.unwrap_or_default(),
         type_filter: query.member_type.unwrap_or_default(),
+        sort_field,
+        sort_order,
     };
 
     HtmlTemplate(template)

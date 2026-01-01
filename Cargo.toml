@@ -66,5 +66,8 @@ askama_axum = "0.4"
 # Payment processing
 stripe = { package = "async-stripe", version = "0.39", default-features = false, features = ["runtime-tokio-hyper", "checkout", "webhook-events", "connect"] }
 
+# Data generation for seeding (used by seed binary)
+fake = { version = "2.9", features = ["derive"] }
+
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
