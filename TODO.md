@@ -78,8 +78,10 @@
 - [x] Member management interface
   - [x] List/search members with filtering
   - [x] Activate/suspend members
-  - [ ] Edit member details
-  - [ ] Manual expiration
+  - [x] View member details page
+  - [x] Edit member details
+  - [x] Add new member
+  - [x] Manual dues expiration/extension
 - [ ] Event management interface
 - [ ] Announcement editor
 - [ ] Payment history view
@@ -189,22 +191,18 @@
 
 ## Notes
 
-- **Current Status**: All core repositories implemented, authentication complete, ready for API handlers and testing
-- **Next Step**: Create database seeding script, implement remaining API handlers, add integration tests
+- **Current Status**: Core functionality complete. Admin portal fully functional with member management.
+- **Next Step**: Event management interface, RSVP functionality, seed data improvements
 - **Blocking Issues**: None currently
 - **Dependencies**: Need to evaluate specific Discord and Unifi API libraries
-- **Completed Today**: 
-  - ✅ SQLite Member Repository with full CRUD
-  - ✅ SQLite Event Repository with attendance tracking
-  - ✅ SQLite Announcement Repository with visibility control
-  - ✅ SQLite Payment Repository with status management
-  - ✅ Authentication system with sessions
-  - ✅ Password hashing with Argon2id
-  - ✅ Auth middleware (require_auth, require_admin)
-  - ✅ Member management API handlers
-  - ✅ Integration tests for member repository
-  - ✅ All repositories now fully implemented and compiling
-  - ✅ Database seeding script with test data
+- **Recently Completed**:
+  - ✅ Admin member list with search/filter/pagination
+  - ✅ Admin member detail page with full editing
+  - ✅ Admin add new member page
+  - ✅ Manual dues management (extend, set date, expire)
+  - ✅ CSRF protection for all forms
+  - ✅ Content negotiation for root endpoint (browsers redirect to login, API clients get JSON)
+  - ✅ Updated README with Quick Start and endpoint documentation
 
 ## Quick Start Tasks
 

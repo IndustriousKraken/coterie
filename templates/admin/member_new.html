@@ -1,0 +1,142 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Add New Member - Coterie Admin{% endblock %}
+
+{% block head %}
+<meta name="csrf-token" content="{{ csrf_token }}">
+{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <!-- Header -->
+    <div class="mb-6">
+        <div class="flex items-center gap-2 text-sm text-gray-500 mb-2">
+            <a href="/portal/admin/members" class="hover:text-gray-700">Members</a>
+            <span>/</span>
+            <span>Add New Member</span>
+        </div>
+        <h1 class="text-2xl font-bold text-gray-900">Add New Member</h1>
+        <p class="mt-1 text-gray-600">Create a new member account</p>
+    </div>
+
+    <div class="max-w-2xl">
+        <div class="bg-white rounded-lg shadow-sm">
+            <form action="/portal/admin/members/new" method="post" class="p-6 space-y-6">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+                <!-- Account Information -->
+                <div>
+                    <h2 class="text-lg font-semibold text-gray-900 mb-4">Account Information</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label for="email" class="block text-sm font-medium text-gray-700 mb-1">
+                                Email <span class="text-red-500">*</span>
+                            </label>
+                            <input type="email"
+                                   id="email"
+                                   name="email"
+                                   required
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                   placeholder="member@example.com">
+                        </div>
+                        <div>
+                            <label for="username" class="block text-sm font-medium text-gray-700 mb-1">
+                                Username <span class="text-red-500">*</span>
+                            </label>
+                            <input type="text"
+                                   id="username"
+                                   name="username"
+                                   required
+                                   pattern="[a-zA-Z0-9_]+"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                   placeholder="username">
+                            <p class="text-xs text-gray-400 mt-1">Letters, numbers, and underscores only</p>
+                        </div>
+                        <div class="md:col-span-2">
+                            <label for="full_name" class="block text-sm font-medium text-gray-700 mb-1">
+                                Full Name <span class="text-red-500">*</span>
+                            </label>
+                            <input type="text"
+                                   id="full_name"
+                                   name="full_name"
+                                   required
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                   placeholder="Jane Doe">
+                        </div>
+                        <div class="md:col-span-2">
+                            <label for="password" class="block text-sm font-medium text-gray-700 mb-1">
+                                Password <span class="text-red-500">*</span>
+                            </label>
+                            <input type="password"
+                                   id="password"
+                                   name="password"
+                                   required
+                                   minlength="8"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                   placeholder="Minimum 8 characters">
+                            <p class="text-xs text-gray-400 mt-1">Member can change this after logging in</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Membership Details -->
+                <div class="pt-4 border-t">
+                    <h2 class="text-lg font-semibold text-gray-900 mb-4">Membership Details</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label for="membership_type" class="block text-sm font-medium text-gray-700 mb-1">
+                                Membership Type
+                            </label>
+                            <select id="membership_type"
+                                    name="membership_type"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="Regular">Regular</option>
+                                <option value="Student">Student</option>
+                                <option value="Corporate">Corporate</option>
+                                <option value="Lifetime">Lifetime</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="status" class="block text-sm font-medium text-gray-700 mb-1">
+                                Initial Status
+                            </label>
+                            <select id="status"
+                                    name="status"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="Pending">Pending (awaiting payment)</option>
+                                <option value="Active">Active</option>
+                                <option value="Honorary">Honorary (no dues required)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Admin Notes -->
+                <div class="pt-4 border-t">
+                    <h2 class="text-lg font-semibold text-gray-900 mb-4">Admin Notes</h2>
+                    <div>
+                        <textarea id="notes"
+                                  name="notes"
+                                  rows="3"
+                                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                  placeholder="Internal notes about this member..."></textarea>
+                        <p class="text-xs text-gray-400 mt-1">Include "ADMIN" to grant admin privileges</p>
+                    </div>
+                </div>
+
+                <!-- Actions -->
+                <div class="pt-4 border-t flex justify-between items-center">
+                    <a href="/portal/admin/members"
+                       class="px-4 py-2 text-gray-600 hover:text-gray-800">
+                        Cancel
+                    </a>
+                    <button type="submit"
+                            class="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 font-medium">
+                        Create Member
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

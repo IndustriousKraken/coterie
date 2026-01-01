@@ -27,8 +27,16 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         // Admin routes
         .route("/admin", get(|| async { "Admin dashboard (TODO)" }))
         .route("/admin/members", get(admin_members_page))
+        .route("/admin/members/new", get(admin_new_member_page))
+        .route("/admin/members/new", post(admin_create_member))
+        .route("/admin/members/:id", get(admin_member_detail_page))
+        .route("/admin/members/:id/update", post(admin_update_member))
         .route("/admin/members/:id/activate", post(admin_activate_member))
         .route("/admin/members/:id/suspend", post(admin_suspend_member))
+        .route("/admin/members/:id/extend-dues", post(admin_extend_dues))
+        .route("/admin/members/:id/set-dues", post(admin_set_dues))
+        .route("/admin/members/:id/expire-now", post(admin_expire_now))
+        .route("/admin/members/:id/payments", get(admin_member_payments))
         .route("/admin/settings", get(|| async { "Admin settings page (TODO)" }))
 
         // CSRF protection for state-changing requests (runs after auth)
@@ -1054,6 +1062,513 @@ async fn admin_suspend_member(
                 "<tr><td colspan='6' class='px-6 py-4 text-red-600'>Error: {}</td></tr>",
                 e
             ))
+        }
+    }
+}
+
+// ============================================================================
+// Admin Member Detail Handlers
+// ============================================================================
+
+#[derive(Template)]
+#[template(path = "admin/member_detail.html")]
+pub struct AdminMemberDetailTemplate {
+    pub current_user: Option<UserInfo>,
+    pub is_admin: bool,
+    pub csrf_token: String,
+    pub member: AdminMemberDetailInfo,
+}
+
+pub struct AdminMemberDetailInfo {
+    pub id: String,
+    pub email: String,
+    pub username: String,
+    pub full_name: String,
+    pub initials: String,
+    pub status: String,
+    pub membership_type: String,
+    pub joined_at: String,
+    pub dues_paid_until: Option<String>,
+    pub dues_expired: bool,
+    pub bypass_dues: bool,
+    pub notes: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+async fn admin_member_detail_page(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+    Extension(session_info): Extension<SessionInfo>,
+    Path(member_id): Path<String>,
+) -> axum::response::Response {
+    use crate::repository::MemberRepository;
+
+    // Check admin access
+    let is_admin = current_user.member.notes
+        .as_ref()
+        .map(|n| n.contains("ADMIN"))
+        .unwrap_or(false);
+
+    if !is_admin {
+        return axum::response::Redirect::to("/portal/dashboard").into_response();
+    }
+
+    let id = match uuid::Uuid::parse_str(&member_id) {
+        Ok(id) => id,
+        Err(_) => return axum::response::Redirect::to("/portal/admin/members").into_response(),
+    };
+
+    let member = match state.service_context.member_repo.find_by_id(id).await {
+        Ok(Some(m)) => m,
+        _ => return axum::response::Redirect::to("/portal/admin/members").into_response(),
+    };
+
+    let user_info = UserInfo {
+        id: current_user.member.id.to_string(),
+        username: current_user.member.username.clone(),
+        email: current_user.member.email.clone(),
+    };
+
+    let csrf_token = state.service_context.csrf_service
+        .generate_token(&session_info.session_id)
+        .await
+        .unwrap_or_else(|_| "error".to_string());
+
+    let initials: String = member.full_name
+        .split_whitespace()
+        .filter_map(|word| word.chars().next())
+        .take(2)
+        .collect::<String>()
+        .to_uppercase();
+
+    let now = chrono::Utc::now();
+    let dues_expired = member.dues_paid_until
+        .map(|d| d < now)
+        .unwrap_or(true);
+
+    let member_info = AdminMemberDetailInfo {
+        id: member.id.to_string(),
+        email: member.email,
+        username: member.username,
+        full_name: member.full_name,
+        initials: if initials.is_empty() { "?".to_string() } else { initials },
+        status: format!("{:?}", member.status),
+        membership_type: format!("{:?}", member.membership_type),
+        joined_at: member.joined_at.format("%B %d, %Y").to_string(),
+        dues_paid_until: member.dues_paid_until.map(|d| d.format("%B %d, %Y").to_string()),
+        dues_expired,
+        bypass_dues: member.bypass_dues,
+        notes: member.notes.unwrap_or_default(),
+        created_at: member.created_at.format("%B %d, %Y").to_string(),
+        updated_at: member.updated_at.format("%B %d, %Y at %l:%M %p").to_string(),
+    };
+
+    let template = AdminMemberDetailTemplate {
+        current_user: Some(user_info),
+        is_admin,
+        csrf_token,
+        member: member_info,
+    };
+
+    HtmlTemplate(template).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AdminUpdateMemberForm {
+    pub full_name: String,
+    pub membership_type: String,
+    pub notes: Option<String>,
+    pub bypass_dues: Option<String>,
+    #[allow(dead_code)]
+    pub csrf_token: String,
+}
+
+async fn admin_update_member(
+    State(state): State<AppState>,
+    Extension(_current_user): Extension<CurrentUser>,
+    Path(member_id): Path<String>,
+    axum::Form(form): axum::Form<AdminUpdateMemberForm>,
+) -> impl IntoResponse {
+    use crate::repository::MemberRepository;
+    use crate::domain::{UpdateMemberRequest, MembershipType};
+
+    let id = match uuid::Uuid::parse_str(&member_id) {
+        Ok(id) => id,
+        Err(_) => return axum::response::Html(
+            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Invalid member ID</div>"#.to_string()
+        ),
+    };
+
+    let membership_type = match form.membership_type.as_str() {
+        "Regular" => MembershipType::Regular,
+        "Student" => MembershipType::Student,
+        "Corporate" => MembershipType::Corporate,
+        "Lifetime" => MembershipType::Lifetime,
+        _ => MembershipType::Regular,
+    };
+
+    let update = UpdateMemberRequest {
+        full_name: Some(form.full_name),
+        membership_type: Some(membership_type),
+        notes: Some(form.notes.unwrap_or_default()),
+        bypass_dues: Some(form.bypass_dues.is_some()),
+        ..Default::default()
+    };
+
+    match state.service_context.member_repo.update(id, update).await {
+        Ok(_) => axum::response::Html(
+            r#"<div class="p-3 bg-green-50 text-green-800 rounded-md text-sm">Member updated successfully!</div>"#.to_string()
+        ),
+        Err(e) => axum::response::Html(format!(
+            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Error: {}</div>"#,
+            e
+        )),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExtendDuesForm {
+    pub months: i32,
+    #[allow(dead_code)]
+    pub csrf_token: String,
+}
+
+async fn admin_extend_dues(
+    State(state): State<AppState>,
+    Extension(_current_user): Extension<CurrentUser>,
+    Path(member_id): Path<String>,
+    axum::Form(form): axum::Form<ExtendDuesForm>,
+) -> impl IntoResponse {
+    use crate::repository::MemberRepository;
+    use chrono::Months;
+
+    let id = match uuid::Uuid::parse_str(&member_id) {
+        Ok(id) => id,
+        Err(_) => return axum::response::Html(
+            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Invalid member ID</div>"#.to_string()
+        ),
+    };
+
+    // Get current member
+    let member = match state.service_context.member_repo.find_by_id(id).await {
+        Ok(Some(m)) => m,
+        _ => return axum::response::Html(
+            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Member not found</div>"#.to_string()
+        ),
+    };
+
+    // Calculate new dues date
+    let now = chrono::Utc::now();
+    let base_date = member.dues_paid_until
+        .filter(|d| *d > now)
+        .unwrap_or(now);
+
+    let new_dues_date = base_date
+        .checked_add_months(Months::new(form.months as u32))
+        .unwrap_or(base_date);
+
+    // Update in database
+    let result = sqlx::query("UPDATE members SET dues_paid_until = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind(new_dues_date)
+        .bind(member_id)
+        .execute(&state.service_context.db_pool)
+        .await;
+
+    match result {
+        Ok(_) => axum::response::Html(format!(
+            r#"<div class="p-3 bg-green-50 text-green-800 rounded-md text-sm">
+                Dues extended! New expiration: {}
+                <script>setTimeout(() => location.reload(), 1500)</script>
+            </div>"#,
+            new_dues_date.format("%B %d, %Y")
+        )),
+        Err(e) => axum::response::Html(format!(
+            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Error: {}</div>"#,
+            e
+        )),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetDuesForm {
+    pub dues_until: String,
+    #[allow(dead_code)]
+    pub csrf_token: String,
+}
+
+async fn admin_set_dues(
+    State(state): State<AppState>,
+    Extension(_current_user): Extension<CurrentUser>,
+    Path(member_id): Path<String>,
+    axum::Form(form): axum::Form<SetDuesForm>,
+) -> impl IntoResponse {
+    use chrono::NaiveDate;
+
+    let id = match uuid::Uuid::parse_str(&member_id) {
+        Ok(id) => id,
+        Err(_) => return axum::response::Html(
+            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Invalid member ID</div>"#.to_string()
+        ),
+    };
+
+    // Parse the date
+    let naive_date = match NaiveDate::parse_from_str(&form.dues_until, "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => return axum::response::Html(
+            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Invalid date format</div>"#.to_string()
+        ),
+    };
+
+    // Convert to DateTime<Utc> at end of day
+    let dues_date = naive_date
+        .and_hms_opt(23, 59, 59)
+        .unwrap()
+        .and_utc();
+
+    // Update in database
+    let result = sqlx::query("UPDATE members SET dues_paid_until = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind(dues_date)
+        .bind(id.to_string())
+        .execute(&state.service_context.db_pool)
+        .await;
+
+    match result {
+        Ok(_) => axum::response::Html(format!(
+            r#"<div class="p-3 bg-green-50 text-green-800 rounded-md text-sm">
+                Dues date set to: {}
+                <script>setTimeout(() => location.reload(), 1500)</script>
+            </div>"#,
+            dues_date.format("%B %d, %Y")
+        )),
+        Err(e) => axum::response::Html(format!(
+            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Error: {}</div>"#,
+            e
+        )),
+    }
+}
+
+async fn admin_expire_now(
+    State(state): State<AppState>,
+    Extension(_current_user): Extension<CurrentUser>,
+    Path(member_id): Path<String>,
+) -> impl IntoResponse {
+    let id = match uuid::Uuid::parse_str(&member_id) {
+        Ok(id) => id,
+        Err(_) => return axum::response::Html(
+            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Invalid member ID</div>"#.to_string()
+        ),
+    };
+
+    // Set dues to yesterday
+    let yesterday = chrono::Utc::now() - chrono::Duration::days(1);
+
+    let result = sqlx::query("UPDATE members SET dues_paid_until = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind(yesterday)
+        .bind(id.to_string())
+        .execute(&state.service_context.db_pool)
+        .await;
+
+    match result {
+        Ok(_) => axum::response::Html(
+            r#"<div class="p-3 bg-yellow-50 text-yellow-800 rounded-md text-sm">
+                Member dues have been expired.
+                <script>setTimeout(() => location.reload(), 1500)</script>
+            </div>"#.to_string()
+        ),
+        Err(e) => axum::response::Html(format!(
+            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Error: {}</div>"#,
+            e
+        )),
+    }
+}
+
+async fn admin_member_payments(
+    State(state): State<AppState>,
+    Extension(_current_user): Extension<CurrentUser>,
+    Path(member_id): Path<String>,
+) -> impl IntoResponse {
+    let id = match uuid::Uuid::parse_str(&member_id) {
+        Ok(id) => id,
+        Err(_) => return axum::response::Html(
+            r#"<div class="p-6 text-center text-red-600">Invalid member ID</div>"#.to_string()
+        ),
+    };
+
+    let payments = state.service_context.payment_repo
+        .find_by_member(id)
+        .await
+        .unwrap_or_default();
+
+    if payments.is_empty() {
+        return axum::response::Html(
+            r#"<div class="p-6 text-center text-gray-500">No payment history for this member</div>"#.to_string()
+        );
+    }
+
+    let mut html = String::new();
+
+    for payment in payments {
+        let status_badge = match format!("{:?}", payment.status).as_str() {
+            "Completed" => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-green-100 text-green-800">Completed</span>"#,
+            "Pending" => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-yellow-100 text-yellow-800">Pending</span>"#,
+            "Failed" => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-red-100 text-red-800">Failed</span>"#,
+            "Refunded" => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-800">Refunded</span>"#,
+            _ => "",
+        };
+
+        let description = if payment.description.is_empty() {
+            "Membership dues".to_string()
+        } else {
+            payment.description.clone()
+        };
+
+        html.push_str(&format!(
+            r#"<div class="px-6 py-4 flex justify-between items-center">
+                <div>
+                    <p class="font-medium text-gray-900">{}</p>
+                    <p class="text-sm text-gray-500">{}</p>
+                </div>
+                <div class="text-right">
+                    <p class="font-medium text-gray-900">${:.2}</p>
+                    <div class="mt-1">{}</div>
+                </div>
+            </div>"#,
+            description,
+            payment.created_at.format("%B %d, %Y"),
+            payment.amount_cents as f64 / 100.0,
+            status_badge
+        ));
+    }
+
+    axum::response::Html(html)
+}
+
+// ============================================================================
+// Admin New Member Handlers
+// ============================================================================
+
+#[derive(Template)]
+#[template(path = "admin/member_new.html")]
+pub struct AdminNewMemberTemplate {
+    pub current_user: Option<UserInfo>,
+    pub is_admin: bool,
+    pub csrf_token: String,
+}
+
+async fn admin_new_member_page(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+    Extension(session_info): Extension<SessionInfo>,
+) -> axum::response::Response {
+    // Check admin access
+    let is_admin = current_user.member.notes
+        .as_ref()
+        .map(|n| n.contains("ADMIN"))
+        .unwrap_or(false);
+
+    if !is_admin {
+        return axum::response::Redirect::to("/portal/dashboard").into_response();
+    }
+
+    let user_info = UserInfo {
+        id: current_user.member.id.to_string(),
+        username: current_user.member.username.clone(),
+        email: current_user.member.email.clone(),
+    };
+
+    let csrf_token = state.service_context.csrf_service
+        .generate_token(&session_info.session_id)
+        .await
+        .unwrap_or_else(|_| "error".to_string());
+
+    let template = AdminNewMemberTemplate {
+        current_user: Some(user_info),
+        is_admin,
+        csrf_token,
+    };
+
+    HtmlTemplate(template).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AdminCreateMemberForm {
+    pub email: String,
+    pub username: String,
+    pub full_name: String,
+    pub password: String,
+    pub membership_type: String,
+    pub status: String,
+    pub notes: Option<String>,
+    #[allow(dead_code)]
+    pub csrf_token: String,
+}
+
+async fn admin_create_member(
+    State(state): State<AppState>,
+    Extension(_current_user): Extension<CurrentUser>,
+    axum::Form(form): axum::Form<AdminCreateMemberForm>,
+) -> axum::response::Response {
+    use crate::repository::MemberRepository;
+    use crate::domain::{CreateMemberRequest, MembershipType, MemberStatus, UpdateMemberRequest};
+
+    let membership_type = match form.membership_type.as_str() {
+        "Regular" => MembershipType::Regular,
+        "Student" => MembershipType::Student,
+        "Corporate" => MembershipType::Corporate,
+        "Lifetime" => MembershipType::Lifetime,
+        _ => MembershipType::Regular,
+    };
+
+    let create_request = CreateMemberRequest {
+        email: form.email.clone(),
+        username: form.username.clone(),
+        full_name: form.full_name.clone(),
+        password: form.password,
+        membership_type,
+    };
+
+    match state.service_context.member_repo.create(create_request).await {
+        Ok(member) => {
+            // Set status if not pending
+            let status = match form.status.as_str() {
+                "Active" => Some(MemberStatus::Active),
+                "Expired" => Some(MemberStatus::Expired),
+                "Suspended" => Some(MemberStatus::Suspended),
+                "Honorary" => Some(MemberStatus::Honorary),
+                _ => None,
+            };
+
+            if status.is_some() || form.notes.is_some() {
+                let update = UpdateMemberRequest {
+                    status,
+                    notes: form.notes,
+                    ..Default::default()
+                };
+                let _ = state.service_context.member_repo.update(member.id, update).await;
+            }
+
+            axum::response::Redirect::to(&format!("/portal/admin/members/{}", member.id)).into_response()
+        }
+        Err(e) => {
+            // Return error page
+            axum::response::Html(format!(
+                r#"<!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Error - Coterie</title>
+                    <script src="https://cdn.tailwindcss.com"></script>
+                </head>
+                <body class="bg-gray-100 min-h-screen flex items-center justify-center">
+                    <div class="bg-white p-8 rounded-lg shadow-md max-w-md">
+                        <h1 class="text-xl font-bold text-red-600 mb-4">Error Creating Member</h1>
+                        <p class="text-gray-700 mb-4">{}</p>
+                        <a href="/portal/admin/members/new" class="text-blue-600 hover:underline">Go back and try again</a>
+                    </div>
+                </body>
+                </html>"#,
+                e
+            )).into_response()
         }
     }
 }
