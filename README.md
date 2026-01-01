@@ -2,6 +2,17 @@
 
 Status: Active Development, pre alpha.
 
+Run it:
+`cargo run`
+http://127.0.0.1:8080/login
+
+in dev:
+admin@coterie.local admin123
+alice@example.com password123
+try also bob, charlie, dave (pending member)
+
+paths: /login, /portal/dashboard, /portal/profile, /portal/events, /portal/payments
+
 Coterie is a secure, lightweight member management system designed for small to medium-sized groups, clubs, and organizations. Built with security and maintainability in mind, it provides a simple yet powerful platform for managing memberships without the complexity of enterprise solutions.
 
 ## Overview
@@ -35,9 +46,9 @@ Coterie uses a **dual-frontend architecture** to separate public-facing content 
            └────────────┬───────────────────┘
                         │
                  ┌──────▼──────┐
-                 │   Coterie    │
-                 │   Backend    │
-                 └──────────────┘
+                 │   Coterie   │
+                 │   Backend   │
+                 └─────────────┘
 ```
 
 - **Public Website**: Your existing website (built with any technology) consumes Coterie's public APIs to display events, announcements, and handle signups
