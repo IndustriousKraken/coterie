@@ -17,6 +17,11 @@ pub struct CurrentUser {
     pub member: Member,
 }
 
+#[derive(Clone)]
+pub struct SessionInfo {
+    pub session_id: String,
+}
+
 pub async fn require_auth(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -54,8 +59,9 @@ pub async fn require_auth(
         }
     }
 
-    // Insert current user into request extensions
+    // Insert current user and session info into request extensions
     request.extensions_mut().insert(CurrentUser { member });
+    request.extensions_mut().insert(SessionInfo { session_id: session.id.clone() });
 
     Ok(next.run(request).await)
 }
@@ -95,8 +101,51 @@ pub async fn require_admin(
         return Err(AppError::Forbidden);
     }
 
-    // Insert current user into request extensions
+    // Insert current user and session info into request extensions
     request.extensions_mut().insert(CurrentUser { member });
+    request.extensions_mut().insert(SessionInfo { session_id: session.id.clone() });
+
+    Ok(next.run(request).await)
+}
+
+/// CSRF validation middleware - validates token on state-changing requests
+pub async fn require_csrf(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, AppError> {
+    use axum::http::Method;
+
+    // Only validate on state-changing methods
+    let method = request.method().clone();
+    if method == Method::GET || method == Method::HEAD || method == Method::OPTIONS {
+        return Ok(next.run(request).await);
+    }
+
+    // Get session info from extensions (set by require_auth)
+    let session_info = request
+        .extensions()
+        .get::<SessionInfo>()
+        .ok_or(AppError::Forbidden)?
+        .clone();
+
+    // Get CSRF token from header
+    let csrf_token = request
+        .headers()
+        .get("X-CSRF-Token")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| AppError::Forbidden)?;
+
+    // Validate token
+    let is_valid = state
+        .service_context
+        .csrf_service
+        .validate_token(&session_info.session_id, csrf_token)
+        .await?;
+
+    if !is_valid {
+        return Err(AppError::Forbidden);
+    }
 
     Ok(next.run(request).await)
 }

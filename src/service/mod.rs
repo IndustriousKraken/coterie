@@ -5,7 +5,7 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 use crate::repository::*;
 use crate::integrations::IntegrationManager;
-use crate::auth::AuthService;
+use crate::auth::{AuthService, CsrfService};
 use settings_service::SettingsService;
 
 pub struct ServiceContext {
@@ -15,6 +15,7 @@ pub struct ServiceContext {
     pub payment_repo: Arc<dyn PaymentRepository>,
     pub integration_manager: Arc<IntegrationManager>,
     pub auth_service: Arc<AuthService>,
+    pub csrf_service: Arc<CsrfService>,
     pub settings_service: Arc<SettingsService>,
     pub db_pool: SqlitePool,
 }
@@ -30,7 +31,8 @@ impl ServiceContext {
         db_pool: SqlitePool,
     ) -> Self {
         let settings_service = Arc::new(SettingsService::new(db_pool.clone()));
-        
+        let csrf_service = Arc::new(CsrfService::new(db_pool.clone()));
+
         Self {
             member_repo,
             event_repo,
@@ -38,6 +40,7 @@ impl ServiceContext {
             payment_repo,
             integration_manager,
             auth_service,
+            csrf_service,
             settings_service,
             db_pool,
         }

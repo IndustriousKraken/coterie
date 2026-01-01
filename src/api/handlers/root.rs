@@ -23,7 +23,7 @@ pub async fn root() -> impl IntoResponse {
             "public": "/public",
             "admin": "/admin"
         },
-        "documentation": "https://github.com/yourusername/coterie"
+        "documentation": "https://github.com/IndustriousKraken/coterie"
     }))
 }
 

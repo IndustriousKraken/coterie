@@ -125,8 +125,13 @@
     <script>
         // HTMX configuration
         document.body.addEventListener('htmx:configRequest', (event) => {
-            // Add CSRF token if needed
             event.detail.headers['X-Requested-With'] = 'XMLHttpRequest';
+
+            // Add CSRF token from meta tag if present
+            const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+            if (csrfMeta) {
+                event.detail.headers['X-CSRF-Token'] = csrfMeta.content;
+            }
         });
         
         // Handle HTMX errors

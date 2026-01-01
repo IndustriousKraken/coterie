@@ -134,7 +134,7 @@ https://api.yourorg.com/public/feed/rss
 ### Management Portal
 - Session-based authentication
 - Secure cookies (HttpOnly, SameSite, Secure)
-- CSRF protection (pending implementation)
+- CSRF protection via token validation on state-changing requests
 - Role-based access control (member vs admin)
 
 ### Static Site

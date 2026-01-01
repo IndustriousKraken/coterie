@@ -28,6 +28,7 @@
   - [x] Password verification
   - [x] Session validation
   - [x] Role-based access (member/admin)
+- [x] CSRF protection for state-changing requests
 - [ ] Add TOTP/2FA support
 - [ ] Implement password reset flow
 
@@ -179,7 +180,11 @@
 - [ ] Pre-commit hooks
 - [ ] CI/CD pipeline (GitHub Actions)
 - [ ] Database migration tooling
-- [ ] Development seed data
+
+### Seed Data Improvements
+- [x] Basic seed script with test accounts
+- [ ] Realistic payment history (monthly dues over 1+ years per member)
+- [ ] More calendar events (variety of types, past and upcoming)
 
 ## Notes
 

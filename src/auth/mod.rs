@@ -10,9 +10,11 @@ use crate::{
     error::{AppError, Result},
 };
 
+pub mod csrf;
 pub mod session;
 
 use session::{Session, SessionStore};
+pub use csrf::CsrfService;
 
 pub struct AuthService {
     session_store: SessionStore,

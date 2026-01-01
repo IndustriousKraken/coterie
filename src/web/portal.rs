@@ -29,7 +29,12 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/admin/members", get(|| async { "Admin members page (TODO)" }))
         .route("/admin/settings", get(|| async { "Admin settings page (TODO)" }))
 
-        // Require authentication for all portal routes
+        // CSRF protection for state-changing requests (runs after auth)
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::api::middleware::auth::require_csrf,
+        ))
+        // Require authentication for all portal routes (runs first)
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             crate::api::middleware::auth::require_auth,
@@ -46,7 +51,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     api::{
-        middleware::auth::CurrentUser,
+        middleware::auth::{CurrentUser, SessionInfo},
         handlers::{
             events::{ListEventsQuery, list as list_events},
             payments::{ListPaymentsQuery, list_by_member as list_payments},
@@ -287,7 +292,9 @@ pub struct ProfileTemplate {
 }
 
 async fn profile_page(
+    State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
+    Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
     let user_info = UserInfo {
         id: current_user.member.id.to_string(),
@@ -312,8 +319,11 @@ async fn profile_page(
         .map(|n| n.contains("ADMIN"))
         .unwrap_or(false);
 
-    // TODO: Implement proper CSRF tokens
-    let csrf_token = "placeholder".to_string();
+    // Generate CSRF token for this session
+    let csrf_token = state.service_context.csrf_service
+        .generate_token(&session_info.session_id)
+        .await
+        .unwrap_or_else(|_| "error".to_string());
 
     let template = ProfileTemplate {
         current_user: Some(user_info),
