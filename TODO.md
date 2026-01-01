@@ -186,8 +186,8 @@
 
 ### Seed Data Improvements
 - [x] Basic seed script with test accounts
-- [ ] Realistic payment history (monthly dues over 1+ years per member)
-- [ ] More calendar events (variety of types, past and upcoming)
+- [x] Realistic payment history (monthly dues over 1+ years per member)
+- [x] More calendar events (variety of types, past and upcoming)
 
 ## Notes
 
