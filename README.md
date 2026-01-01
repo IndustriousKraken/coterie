@@ -2,16 +2,63 @@
 
 Status: Active Development, pre alpha.
 
-Run it:
-`cargo run --bin coterie`
-http://127.0.0.1:8080/login
+## Quick Start
 
-in dev:
-admin@coterie.local admin123
-alice@example.com password123
-try also bob, charlie, dave (pending member)
+```bash
+# Seed the database with test data (optional, clears existing data)
+cargo run --bin seed
 
-paths: /login, /portal/dashboard, /portal/profile, /portal/events, /portal/payments
+# Run the server
+cargo run --bin coterie
+```
+
+**Server runs at**: http://127.0.0.1:8080
+
+### Accessing the System
+
+Coterie serves both a **web portal** (for browsers) and a **JSON API** (for integrations).
+
+| Access Method | What You Get |
+|---------------|--------------|
+| Browser → `http://127.0.0.1:8080/` | Redirects to login page |
+| `curl http://127.0.0.1:8080/` | JSON with API endpoint listing |
+| `curl http://127.0.0.1:8080/health` | Health check JSON |
+
+### Web Portal Routes
+
+| Route | Description |
+|-------|-------------|
+| `/login` | Login page |
+| `/portal/dashboard` | Member dashboard |
+| `/portal/profile` | Edit profile, change password |
+| `/portal/events` | View and RSVP to events |
+| `/portal/payments` | Payment history |
+| `/portal/admin/members` | Admin: manage members |
+
+### API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Health check |
+| `GET /api` | API info |
+| `GET /public/events` | Public events (JSON or iCal) |
+| `GET /public/announcements` | Public announcements |
+| `GET /public/feed/rss` | RSS feed |
+| `GET /public/feed/calendar` | iCal calendar feed |
+| `POST /public/signup` | Register new member |
+| `GET/POST /api/members` | Member management (auth required) |
+| `GET/POST /api/events` | Event management (auth required) |
+| `GET/POST /api/payments` | Payment management (auth required) |
+
+### Test Credentials (Development)
+
+| User | Email | Password | Role |
+|------|-------|----------|------|
+| Admin | admin@coterie.local | admin123 | Admin |
+| Alice | alice@example.com | password123 | Active member |
+| Bob | bob@example.com | password123 | Active student |
+| Charlie | charlie@example.com | password123 | Expired |
+| Dave | dave@example.com | password123 | Pending |
 
 Coterie is a secure, lightweight member management system designed for small to medium-sized groups, clubs, and organizations. Built with security and maintainability in mind, it provides a simple yet powerful platform for managing memberships without the complexity of enterprise solutions.
 

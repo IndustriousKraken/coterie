@@ -1,4 +1,8 @@
-use axum::{http::StatusCode, Json, response::IntoResponse};
+use axum::{
+    http::{header, StatusCode, HeaderMap},
+    Json,
+    response::{IntoResponse, Response, Redirect},
+};
 use serde::Serialize;
 use serde_json::json;
 
@@ -10,21 +14,51 @@ pub struct ApiInfo {
     pub status: String,
 }
 
-pub async fn root() -> impl IntoResponse {
-    Json(json!({
-        "name": "Coterie API",
-        "version": env!("CARGO_PKG_VERSION"),
-        "description": "Member management system for clubs and organizations",
-        "status": "operational",
-        "endpoints": {
-            "health": "/health",
-            "api": "/api",
-            "auth": "/auth/login",
-            "public": "/public",
-            "admin": "/admin"
-        },
-        "documentation": "https://github.com/IndustriousKraken/coterie"
-    }))
+/// Root endpoint with content negotiation:
+/// - Browsers (Accept: text/html) get redirected to /login
+/// - API clients (Accept: application/json) get API info JSON
+pub async fn root(headers: HeaderMap) -> Response {
+    // Check if the client prefers HTML (browser)
+    let accepts_html = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("text/html"))
+        .unwrap_or(false);
+
+    if accepts_html {
+        Redirect::to("/login").into_response()
+    } else {
+        Json(json!({
+            "name": "Coterie API",
+            "version": env!("CARGO_PKG_VERSION"),
+            "description": "Member management system for clubs and organizations",
+            "status": "operational",
+            "endpoints": {
+                "health": "GET /health - Health check",
+                "api_info": "GET /api - API information",
+                "public": {
+                    "signup": "POST /public/signup - Register new member",
+                    "events": "GET /public/events - List public events",
+                    "announcements": "GET /public/announcements - List public announcements",
+                    "rss": "GET /public/feed/rss - RSS feed",
+                    "calendar": "GET /public/feed/calendar - iCal feed"
+                },
+                "auth": {
+                    "login": "POST /api/auth/login - Authenticate",
+                    "logout": "POST /api/auth/logout - End session"
+                },
+                "members": "GET/POST /api/members - Member management (authenticated)",
+                "events": "GET/POST /api/events - Event management (authenticated)",
+                "payments": "GET/POST /api/payments - Payment management (authenticated)"
+            },
+            "portal": {
+                "login": "/login - Web login page",
+                "dashboard": "/portal/dashboard - Member dashboard",
+                "admin": "/portal/admin/members - Admin interface"
+            },
+            "documentation": "https://github.com/IndustriousKraken/coterie"
+        })).into_response()
+    }
 }
 
 pub async fn health_check() -> impl IntoResponse {

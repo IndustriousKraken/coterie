@@ -75,10 +75,11 @@
 
 ### Admin Dashboard
 - [x] Create HTMX base template
-- [ ] Member management interface
-  - [ ] List/search members
+- [x] Member management interface
+  - [x] List/search members with filtering
+  - [x] Activate/suspend members
   - [ ] Edit member details
-  - [ ] Manual activation/expiration
+  - [ ] Manual expiration
 - [ ] Event management interface
 - [ ] Announcement editor
 - [ ] Payment history view
