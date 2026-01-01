@@ -3,7 +3,7 @@
 Status: Active Development, pre alpha.
 
 Run it:
-`cargo run`
+`cargo run --bin coterie`
 http://127.0.0.1:8080/login
 
 in dev:
