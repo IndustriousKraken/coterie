@@ -1,0 +1,82 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Announcement Management - Coterie Admin{% endblock %}
+
+{% block head %}
+<meta name="csrf-token" content="{{ csrf_token }}">
+{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="mb-6 flex justify-between items-center">
+        <div>
+            <h1 class="text-3xl font-bold text-gray-900">Announcement Management</h1>
+            <p class="mt-1 text-sm text-gray-600">{{ total_announcements }} announcements</p>
+        </div>
+        <a href="/portal/admin/announcements/new"
+           class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+            Create Announcement
+        </a>
+    </div>
+
+    <!-- Search and Filters -->
+    <div class="bg-white rounded-lg shadow-sm p-4 mb-6">
+        <form hx-get="/portal/admin/announcements"
+              hx-target="#announcements-table-container"
+              hx-push-url="true"
+              class="flex flex-wrap gap-4 items-end">
+            <input type="hidden" name="sort" value="{{ sort_field }}">
+            <input type="hidden" name="order" value="{{ sort_order }}">
+            <div class="flex-1 min-w-[200px]">
+                <label for="search" class="block text-sm font-medium text-gray-700">Search</label>
+                <input type="text"
+                       id="search"
+                       name="q"
+                       value="{{ search_query }}"
+                       placeholder="Title or content..."
+                       class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+            </div>
+            <div>
+                <label for="type" class="block text-sm font-medium text-gray-700">Type</label>
+                <select id="type"
+                        name="type"
+                        class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                    <option value="">All Types</option>
+                    <option value="News" {% if type_filter == "News" %}selected{% endif %}>News</option>
+                    <option value="Achievement" {% if type_filter == "Achievement" %}selected{% endif %}>Achievement</option>
+                    <option value="Meeting" {% if type_filter == "Meeting" %}selected{% endif %}>Meeting</option>
+                    <option value="CTFResult" {% if type_filter == "CTFResult" %}selected{% endif %}>CTF Result</option>
+                    <option value="General" {% if type_filter == "General" %}selected{% endif %}>General</option>
+                </select>
+            </div>
+            <div>
+                <label for="status" class="block text-sm font-medium text-gray-700">Status</label>
+                <select id="status"
+                        name="status"
+                        class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                    <option value="">All</option>
+                    <option value="published" {% if status_filter == "published" %}selected{% endif %}>Published</option>
+                    <option value="draft" {% if status_filter == "draft" %}selected{% endif %}>Draft</option>
+                    <option value="featured" {% if status_filter == "featured" %}selected{% endif %}>Featured</option>
+                    <option value="public" {% if status_filter == "public" %}selected{% endif %}>Public</option>
+                </select>
+            </div>
+            <button type="submit"
+                    class="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 text-sm font-medium">
+                Filter
+            </button>
+            {% if search_query.len() > 0 || type_filter.len() > 0 || status_filter.len() > 0 %}
+            <a href="/portal/admin/announcements"
+               class="px-4 py-2 text-gray-500 hover:text-gray-700 text-sm">
+                Clear
+            </a>
+            {% endif %}
+        </form>
+    </div>
+
+    <!-- Announcements Table -->
+    <div id="announcements-table-container" class="bg-white rounded-lg shadow-sm overflow-hidden">
+        {% include "admin/announcements_table.html" %}
+    </div>
+</div>
+{% endblock %}

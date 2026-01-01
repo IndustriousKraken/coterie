@@ -88,7 +88,22 @@
   - [x] Create new event
   - [x] Edit event details
   - [x] Delete event
-- [ ] Announcement editor
+  - [ ] Recurring events
+    - [ ] Recurrence patterns (daily, weekly, monthly, yearly)
+    - [ ] Custom patterns (e.g., "2nd Wednesday", "every other week")
+    - [ ] Repeat count (e.g., "for 10 occurrences") or end date
+    - [ ] Repeat forever option
+    - [ ] Edit single vs. all future occurrences
+    - [ ] Cancel single occurrence without deleting series
+- [x] Announcement editor
+  - [x] List/search with filtering (type, status)
+  - [x] Create/edit/delete announcements
+  - [x] Publish/unpublish workflow
+  - [ ] Announcement distribution
+    - [ ] RSS feed for public announcements (frontend)
+    - [ ] Push to Discord channel on publish
+    - [ ] Scheduled delivery to chat (publish now vs. schedule for later)
+    - [ ] Support for other chat APIs (Slack, Matrix, etc.)
 - [ ] Payment history view
 - [ ] Audit log viewer
 
@@ -196,11 +211,14 @@
 
 ## Notes
 
-- **Current Status**: Core functionality complete. Admin portal fully functional with member and event management.
-- **Next Step**: Announcement editor, RSVP functionality, public pages
+- **Current Status**: Core functionality complete. Admin portal fully functional with member, event, and announcement management.
+- **Next Step**: RSVP functionality, public pages, announcement distribution
 - **Blocking Issues**: None currently
 - **Dependencies**: Need to evaluate specific Discord and Unifi API libraries
 - **Recently Completed**:
+  - ✅ Admin announcement editor with full CRUD
+  - ✅ Announcement filtering by type and status (published/draft/featured/public)
+  - ✅ Publish/unpublish workflow for announcements
   - ✅ Admin event management interface with full CRUD
   - ✅ Event filtering by type, visibility, and time (upcoming/past/all)
   - ✅ Sortable table columns for members and events

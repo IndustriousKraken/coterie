@@ -128,6 +128,27 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         }
     }
 
+    async fn list(&self, limit: i64, offset: i64) -> Result<Vec<Announcement>> {
+        let rows = sqlx::query_as::<_, AnnouncementRow>(
+            r#"
+            SELECT id, title, content, announcement_type, is_public, featured,
+                   published_at, created_by, created_at, updated_at
+            FROM announcements
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+            "#
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        rows.into_iter()
+            .map(Self::row_to_announcement)
+            .collect()
+    }
+
     async fn list_recent(&self, limit: i64) -> Result<Vec<Announcement>> {
         let rows = sqlx::query_as::<_, AnnouncementRow>(
             r#"

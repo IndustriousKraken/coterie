@@ -44,6 +44,7 @@ pub trait EventRepository: Send + Sync {
 pub trait AnnouncementRepository: Send + Sync {
     async fn create(&self, announcement: Announcement) -> Result<Announcement>;
     async fn find_by_id(&self, id: Uuid) -> Result<Option<Announcement>>;
+    async fn list(&self, limit: i64, offset: i64) -> Result<Vec<Announcement>>;
     async fn list_recent(&self, limit: i64) -> Result<Vec<Announcement>>;
     async fn list_public(&self) -> Result<Vec<Announcement>>;
     async fn list_featured(&self) -> Result<Vec<Announcement>>;

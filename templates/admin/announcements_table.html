@@ -1,0 +1,125 @@
+<table class="min-w-full divide-y divide-gray-200">
+    <thead class="bg-gray-50">
+        <tr>
+            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <a href="?sort=title&order={% if sort_field == "title" %}{% if sort_order == "asc" %}desc{% else %}asc{% endif %}{% else %}asc{% endif %}{% if search_query.len() > 0 %}&q={{ search_query }}{% endif %}{% if type_filter.len() > 0 %}&type={{ type_filter }}{% endif %}{% if status_filter.len() > 0 %}&status={{ status_filter }}{% endif %}"
+                   class="flex items-center hover:text-gray-700 cursor-pointer">
+                    Title{% if sort_field == "title" %}<span class="ml-1">{% if sort_order == "asc" %}▲{% else %}▼{% endif %}</span>{% endif %}
+                </a>
+            </th>
+            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <a href="?sort=type&order={% if sort_field == "type" %}{% if sort_order == "asc" %}desc{% else %}asc{% endif %}{% else %}asc{% endif %}{% if search_query.len() > 0 %}&q={{ search_query }}{% endif %}{% if type_filter.len() > 0 %}&type={{ type_filter }}{% endif %}{% if status_filter.len() > 0 %}&status={{ status_filter }}{% endif %}"
+                   class="flex items-center hover:text-gray-700 cursor-pointer">
+                    Type{% if sort_field == "type" %}<span class="ml-1">{% if sort_order == "asc" %}▲{% else %}▼{% endif %}</span>{% endif %}
+                </a>
+            </th>
+            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                Status
+            </th>
+            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <a href="?sort=published_at&order={% if sort_field == "published_at" %}{% if sort_order == "asc" %}desc{% else %}asc{% endif %}{% else %}desc{% endif %}{% if search_query.len() > 0 %}&q={{ search_query }}{% endif %}{% if type_filter.len() > 0 %}&type={{ type_filter }}{% endif %}{% if status_filter.len() > 0 %}&status={{ status_filter }}{% endif %}"
+                   class="flex items-center hover:text-gray-700 cursor-pointer">
+                    Published{% if sort_field == "published_at" %}<span class="ml-1">{% if sort_order == "asc" %}▲{% else %}▼{% endif %}</span>{% endif %}
+                </a>
+            </th>
+            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <a href="?sort=created_at&order={% if sort_field == "created_at" %}{% if sort_order == "asc" %}desc{% else %}asc{% endif %}{% else %}desc{% endif %}{% if search_query.len() > 0 %}&q={{ search_query }}{% endif %}{% if type_filter.len() > 0 %}&type={{ type_filter }}{% endif %}{% if status_filter.len() > 0 %}&status={{ status_filter }}{% endif %}"
+                   class="flex items-center hover:text-gray-700 cursor-pointer">
+                    Created{% if sort_field == "created_at" %}<span class="ml-1">{% if sort_order == "asc" %}▲{% else %}▼{% endif %}</span>{% endif %}
+                </a>
+            </th>
+            <th scope="col" class="relative px-6 py-3">
+                <span class="sr-only">Actions</span>
+            </th>
+        </tr>
+    </thead>
+    <tbody class="bg-white divide-y divide-gray-200">
+        {% for announcement in announcements %}
+        <tr class="hover:bg-gray-50">
+            <td class="px-6 py-4">
+                <div>
+                    <div class="text-sm font-medium text-gray-900">{{ announcement.title }}</div>
+                    <div class="text-xs text-gray-500 truncate max-w-md">{{ announcement.content_preview }}</div>
+                </div>
+            </td>
+            <td class="px-6 py-4 whitespace-nowrap">
+                {% if announcement.announcement_type == "News" %}
+                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800">News</span>
+                {% else if announcement.announcement_type == "Achievement" %}
+                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-yellow-100 text-yellow-800">Achievement</span>
+                {% else if announcement.announcement_type == "Meeting" %}
+                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-purple-100 text-purple-800">Meeting</span>
+                {% else if announcement.announcement_type == "CTFResult" %}
+                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">CTF Result</span>
+                {% else %}
+                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-800">General</span>
+                {% endif %}
+            </td>
+            <td class="px-6 py-4 whitespace-nowrap">
+                <div class="flex flex-wrap gap-1">
+                    {% if announcement.is_published %}
+                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">Published</span>
+                    {% else %}
+                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-600">Draft</span>
+                    {% endif %}
+                    {% if announcement.is_public %}
+                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800">Public</span>
+                    {% endif %}
+                    {% if announcement.featured %}
+                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-yellow-100 text-yellow-800">Featured</span>
+                    {% endif %}
+                </div>
+            </td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                {% if let Some(pub_date) = announcement.published_at.as_ref() %}
+                    {{ pub_date }}
+                {% else %}
+                    <span class="text-gray-400">-</span>
+                {% endif %}
+            </td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                {{ announcement.created_at }}
+            </td>
+            <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                <a href="/portal/admin/announcements/{{ announcement.id }}"
+                   class="text-blue-600 hover:text-blue-900">
+                    Edit
+                </a>
+            </td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="6" class="px-6 py-12 text-center text-gray-500">
+                No announcements found matching your criteria
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if total_pages > 1 %}
+<!-- Pagination -->
+<div class="bg-white px-4 py-3 border-t border-gray-200 sm:px-6">
+    <div class="flex items-center justify-between">
+        <div class="text-sm text-gray-700">
+            Showing <span class="font-medium">{{ (current_page - 1) * per_page + 1 }}</span>
+            to <span class="font-medium">{{ std::cmp::min(current_page * per_page, total_announcements) }}</span>
+            of <span class="font-medium">{{ total_announcements }}</span> announcements
+        </div>
+        <nav class="flex gap-1">
+            {% if current_page > 1 %}
+            <a href="?page={{ current_page - 1 }}{% if search_query.len() > 0 %}&q={{ search_query }}{% endif %}{% if type_filter.len() > 0 %}&type={{ type_filter }}{% endif %}{% if status_filter.len() > 0 %}&status={{ status_filter }}{% endif %}&sort={{ sort_field }}&order={{ sort_order }}"
+               class="px-3 py-2 text-sm text-gray-500 hover:bg-gray-100 rounded">
+                Previous
+            </a>
+            {% endif %}
+            {% if current_page < total_pages %}
+            <a href="?page={{ current_page + 1 }}{% if search_query.len() > 0 %}&q={{ search_query }}{% endif %}{% if type_filter.len() > 0 %}&type={{ type_filter }}{% endif %}{% if status_filter.len() > 0 %}&status={{ status_filter }}{% endif %}&sort={{ sort_field }}&order={{ sort_order }}"
+               class="px-3 py-2 text-sm text-gray-500 hover:bg-gray-100 rounded">
+                Next
+            </a>
+            {% endif %}
+        </nav>
+    </div>
+</div>
+{% endif %}
