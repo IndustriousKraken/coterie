@@ -158,6 +158,28 @@ impl EventRepository for SqliteEventRepository {
         }
     }
 
+    async fn list(&self, limit: i64, offset: i64) -> Result<Vec<Event>> {
+        let rows = sqlx::query_as::<_, EventRow>(
+            r#"
+            SELECT id, title, description, event_type, visibility,
+                   start_time, end_time, location, max_attendees, rsvp_required,
+                   created_by, created_at, updated_at
+            FROM events
+            ORDER BY start_time DESC
+            LIMIT ? OFFSET ?
+            "#
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        rows.into_iter()
+            .map(Self::row_to_event)
+            .collect()
+    }
+
     async fn list_upcoming(&self, limit: i64) -> Result<Vec<Event>> {
         let now = Utc::now().naive_utc();
         
@@ -280,7 +302,7 @@ impl EventRepository for SqliteEventRepository {
     async fn cancel_attendance(&self, event_id: Uuid, member_id: Uuid) -> Result<()> {
         let event_id_str = event_id.to_string();
         let member_id_str = member_id.to_string();
-        
+
         sqlx::query(
             r#"
             UPDATE event_attendance
@@ -295,5 +317,23 @@ impl EventRepository for SqliteEventRepository {
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         Ok(())
+    }
+
+    async fn get_attendee_count(&self, event_id: Uuid) -> Result<i64> {
+        let event_id_str = event_id.to_string();
+
+        let row: (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*) as count
+            FROM event_attendance
+            WHERE event_id = ? AND status = 'Registered'
+            "#
+        )
+        .bind(&event_id_str)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Ok(row.0)
     }
 }

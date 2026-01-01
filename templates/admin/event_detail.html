@@ -1,0 +1,201 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}{{ event.title }} - Event Details{% endblock %}
+
+{% block head %}
+<meta name="csrf-token" content="{{ csrf_token }}">
+{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <!-- Header -->
+    <div class="mb-6">
+        <div class="flex items-center gap-2 text-sm text-gray-500 mb-2">
+            <a href="/portal/admin/events" class="hover:text-gray-700">Events</a>
+            <span>/</span>
+            <span>{{ event.title }}</span>
+        </div>
+        <div class="flex justify-between items-start">
+            <div>
+                <h1 class="text-2xl font-bold text-gray-900">{{ event.title }}</h1>
+                <p class="text-gray-500">{{ event.start_time }}</p>
+            </div>
+            <div class="flex gap-2">
+                {% if event.is_past %}
+                <span class="px-3 py-1 text-sm font-semibold rounded-full bg-gray-100 text-gray-600">Past Event</span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Main Info Column -->
+        <div class="lg:col-span-2 space-y-6">
+            <!-- Event Details Card -->
+            <div class="bg-white rounded-lg shadow-sm">
+                <div class="px-6 py-4 border-b border-gray-200">
+                    <h2 class="text-lg font-semibold text-gray-900">Event Details</h2>
+                </div>
+                <form hx-post="/portal/admin/events/{{ event.id }}/update"
+                      hx-target="#update-result"
+                      hx-swap="innerHTML"
+                      class="p-6 space-y-4">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+                    <div id="update-result"></div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Title</label>
+                        <input type="text"
+                               name="title"
+                               value="{{ event.title }}"
+                               required
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                        <textarea name="description"
+                                  rows="4"
+                                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">{{ event.description }}</textarea>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Event Type</label>
+                            <select name="event_type"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="Meeting" {% if event.event_type == "Meeting" %}selected{% endif %}>Meeting</option>
+                                <option value="Workshop" {% if event.event_type == "Workshop" %}selected{% endif %}>Workshop</option>
+                                <option value="CTF" {% if event.event_type == "CTF" %}selected{% endif %}>CTF</option>
+                                <option value="Social" {% if event.event_type == "Social" %}selected{% endif %}>Social</option>
+                                <option value="Training" {% if event.event_type == "Training" %}selected{% endif %}>Training</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Visibility</label>
+                            <select name="visibility"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="Public" {% if event.visibility == "Public" %}selected{% endif %}>Public</option>
+                                <option value="MembersOnly" {% if event.visibility == "MembersOnly" %}selected{% endif %}>Members Only</option>
+                                <option value="AdminOnly" {% if event.visibility == "AdminOnly" %}selected{% endif %}>Admin Only</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Start Time</label>
+                            <input type="datetime-local"
+                                   name="start_time"
+                                   value="{{ event.start_time_input }}"
+                                   required
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">End Time</label>
+                            <input type="datetime-local"
+                                   name="end_time"
+                                   value="{% if let Some(end) = event.end_time_input.as_ref() %}{{ end }}{% endif %}"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <p class="text-xs text-gray-400 mt-1">Optional</p>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Location</label>
+                        <input type="text"
+                               name="location"
+                               value="{% if let Some(loc) = event.location.as_ref() %}{{ loc }}{% endif %}"
+                               placeholder="e.g., Room 101, Online via Zoom, etc."
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Max Attendees</label>
+                            <input type="number"
+                                   name="max_attendees"
+                                   value="{% if let Some(max) = event.max_attendees %}{{ max }}{% endif %}"
+                                   min="1"
+                                   placeholder="Leave empty for unlimited"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        </div>
+                        <div class="flex items-center pt-6">
+                            <label class="flex items-center gap-2">
+                                <input type="checkbox"
+                                       name="rsvp_required"
+                                       value="true"
+                                       {% if event.rsvp_required %}checked{% endif %}
+                                       class="h-4 w-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500">
+                                <span class="text-sm text-gray-700">RSVP Required</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="pt-4 border-t">
+                        <button type="submit"
+                                class="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
+                            Save Changes
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="space-y-6">
+            <!-- Stats Card -->
+            <div class="bg-white rounded-lg shadow-sm p-6">
+                <h3 class="text-sm font-medium text-gray-500 mb-3">Attendance</h3>
+                <div class="text-3xl font-bold text-gray-900">
+                    {{ event.attendee_count }}{% if let Some(max) = event.max_attendees %}<span class="text-lg text-gray-500">/{{ max }}</span>{% endif %}
+                </div>
+                <p class="text-sm text-gray-500 mt-1">registered attendees</p>
+            </div>
+
+            <!-- Info Card -->
+            <div class="bg-white rounded-lg shadow-sm p-6">
+                <h3 class="text-sm font-medium text-gray-500 mb-3">Event Info</h3>
+                <dl class="space-y-3">
+                    <div>
+                        <dt class="text-xs text-gray-400">Type</dt>
+                        <dd class="text-sm text-gray-900">{{ event.event_type }}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-xs text-gray-400">Visibility</dt>
+                        <dd class="text-sm text-gray-900">{{ event.visibility }}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-xs text-gray-400">Created</dt>
+                        <dd class="text-sm text-gray-900">{{ event.created_at }}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-xs text-gray-400">Last Updated</dt>
+                        <dd class="text-sm text-gray-900">{{ event.updated_at }}</dd>
+                    </div>
+                </dl>
+            </div>
+
+            <!-- Danger Zone -->
+            <div class="bg-white rounded-lg shadow-sm p-6">
+                <h3 class="text-sm font-medium text-red-600 mb-3">Danger Zone</h3>
+                <form hx-post="/portal/admin/events/{{ event.id }}/delete"
+                      hx-confirm="Are you sure you want to delete this event? This cannot be undone.">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit"
+                            class="w-full px-3 py-2 text-sm text-red-600 border border-red-300 rounded-md hover:bg-red-50">
+                        Delete Event
+                    </button>
+                </form>
+            </div>
+
+            <!-- Event ID Card -->
+            <div class="bg-white rounded-lg shadow-sm p-6">
+                <h3 class="text-sm font-medium text-gray-500 mb-2">Event ID</h3>
+                <code class="text-xs text-gray-600 break-all">{{ event.id }}</code>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

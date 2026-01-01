@@ -1,0 +1,216 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Event Management - Coterie Admin{% endblock %}
+
+{% block head %}
+<meta name="csrf-token" content="{{ csrf_token }}">
+{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="mb-6 flex justify-between items-center">
+        <div>
+            <h1 class="text-3xl font-bold text-gray-900">Event Management</h1>
+            <p class="mt-1 text-sm text-gray-600">{{ total_events }} events</p>
+        </div>
+        <a href="/portal/admin/events/new"
+           class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+            Create Event
+        </a>
+    </div>
+
+    <!-- Search and Filters -->
+    <div class="bg-white rounded-lg shadow-sm p-4 mb-6">
+        <form hx-get="/portal/admin/events"
+              hx-target="#events-table-container"
+              hx-push-url="true"
+              class="flex flex-wrap gap-4 items-end">
+            <input type="hidden" name="sort" value="{{ sort_field }}">
+            <input type="hidden" name="order" value="{{ sort_order }}">
+            <div class="flex-1 min-w-[200px]">
+                <label for="search" class="block text-sm font-medium text-gray-700">Search</label>
+                <input type="text"
+                       id="search"
+                       name="q"
+                       value="{{ search_query }}"
+                       placeholder="Title, description, or location..."
+                       class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+            </div>
+            <div>
+                <label for="type" class="block text-sm font-medium text-gray-700">Type</label>
+                <select id="type"
+                        name="type"
+                        class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                    <option value="">All Types</option>
+                    <option value="Meeting" {% if type_filter == "Meeting" %}selected{% endif %}>Meeting</option>
+                    <option value="Workshop" {% if type_filter == "Workshop" %}selected{% endif %}>Workshop</option>
+                    <option value="CTF" {% if type_filter == "CTF" %}selected{% endif %}>CTF</option>
+                    <option value="Social" {% if type_filter == "Social" %}selected{% endif %}>Social</option>
+                    <option value="Training" {% if type_filter == "Training" %}selected{% endif %}>Training</option>
+                </select>
+            </div>
+            <div>
+                <label for="visibility" class="block text-sm font-medium text-gray-700">Visibility</label>
+                <select id="visibility"
+                        name="visibility"
+                        class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                    <option value="">All</option>
+                    <option value="Public" {% if visibility_filter == "Public" %}selected{% endif %}>Public</option>
+                    <option value="MembersOnly" {% if visibility_filter == "MembersOnly" %}selected{% endif %}>Members Only</option>
+                    <option value="AdminOnly" {% if visibility_filter == "AdminOnly" %}selected{% endif %}>Admin Only</option>
+                </select>
+            </div>
+            <div>
+                <label for="time" class="block text-sm font-medium text-gray-700">Time</label>
+                <select id="time"
+                        name="time"
+                        class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                    <option value="upcoming" {% if time_filter == "upcoming" %}selected{% endif %}>Upcoming</option>
+                    <option value="past" {% if time_filter == "past" %}selected{% endif %}>Past</option>
+                    <option value="all" {% if time_filter == "all" %}selected{% endif %}>All</option>
+                </select>
+            </div>
+            <button type="submit"
+                    class="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 text-sm font-medium">
+                Filter
+            </button>
+            {% if search_query.len() > 0 || type_filter.len() > 0 || visibility_filter.len() > 0 || time_filter != "upcoming" %}
+            <a href="/portal/admin/events"
+               class="px-4 py-2 text-gray-500 hover:text-gray-700 text-sm">
+                Clear
+            </a>
+            {% endif %}
+        </form>
+    </div>
+
+    <!-- Events Table -->
+    <div id="events-table-container" class="bg-white rounded-lg shadow-sm overflow-hidden">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        <a href="?sort=title&order={% if sort_field == "title" %}{% if sort_order == "asc" %}desc{% else %}asc{% endif %}{% else %}asc{% endif %}&time={{ time_filter }}{% if search_query.len() > 0 %}&q={{ search_query }}{% endif %}{% if type_filter.len() > 0 %}&type={{ type_filter }}{% endif %}{% if visibility_filter.len() > 0 %}&visibility={{ visibility_filter }}{% endif %}"
+                           class="flex items-center hover:text-gray-700 cursor-pointer">
+                            Event{% if sort_field == "title" %}<span class="ml-1">{% if sort_order == "asc" %}▲{% else %}▼{% endif %}</span>{% endif %}
+                        </a>
+                    </th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        <a href="?sort=type&order={% if sort_field == "type" %}{% if sort_order == "asc" %}desc{% else %}asc{% endif %}{% else %}asc{% endif %}&time={{ time_filter }}{% if search_query.len() > 0 %}&q={{ search_query }}{% endif %}{% if type_filter.len() > 0 %}&type={{ type_filter }}{% endif %}{% if visibility_filter.len() > 0 %}&visibility={{ visibility_filter }}{% endif %}"
+                           class="flex items-center hover:text-gray-700 cursor-pointer">
+                            Type{% if sort_field == "type" %}<span class="ml-1">{% if sort_order == "asc" %}▲{% else %}▼{% endif %}</span>{% endif %}
+                        </a>
+                    </th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        <a href="?sort=start_time&order={% if sort_field == "start_time" %}{% if sort_order == "asc" %}desc{% else %}asc{% endif %}{% else %}asc{% endif %}&time={{ time_filter }}{% if search_query.len() > 0 %}&q={{ search_query }}{% endif %}{% if type_filter.len() > 0 %}&type={{ type_filter }}{% endif %}{% if visibility_filter.len() > 0 %}&visibility={{ visibility_filter }}{% endif %}"
+                           class="flex items-center hover:text-gray-700 cursor-pointer">
+                            Date/Time{% if sort_field == "start_time" %}<span class="ml-1">{% if sort_order == "asc" %}▲{% else %}▼{% endif %}</span>{% endif %}
+                        </a>
+                    </th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        <a href="?sort=visibility&order={% if sort_field == "visibility" %}{% if sort_order == "asc" %}desc{% else %}asc{% endif %}{% else %}asc{% endif %}&time={{ time_filter }}{% if search_query.len() > 0 %}&q={{ search_query }}{% endif %}{% if type_filter.len() > 0 %}&type={{ type_filter }}{% endif %}{% if visibility_filter.len() > 0 %}&visibility={{ visibility_filter }}{% endif %}"
+                           class="flex items-center hover:text-gray-700 cursor-pointer">
+                            Visibility{% if sort_field == "visibility" %}<span class="ml-1">{% if sort_order == "asc" %}▲{% else %}▼{% endif %}</span>{% endif %}
+                        </a>
+                    </th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Attendees
+                    </th>
+                    <th scope="col" class="relative px-6 py-3">
+                        <span class="sr-only">Actions</span>
+                    </th>
+                </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-gray-200">
+                {% for event in events %}
+                <tr class="hover:bg-gray-50 {% if event.is_past %}opacity-60{% endif %}">
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div>
+                            <div class="text-sm font-medium text-gray-900">{{ event.title }}</div>
+                            {% if let Some(loc) = event.location.as_ref() %}
+                            <div class="text-xs text-gray-500">{{ loc }}</div>
+                            {% endif %}
+                        </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        {% if event.event_type == "Meeting" %}
+                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800">Meeting</span>
+                        {% else if event.event_type == "Workshop" %}
+                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-purple-100 text-purple-800">Workshop</span>
+                        {% else if event.event_type == "CTF" %}
+                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">CTF</span>
+                        {% else if event.event_type == "Social" %}
+                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">Social</span>
+                        {% else if event.event_type == "Training" %}
+                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-yellow-100 text-yellow-800">Training</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        <div>{{ event.start_time }}</div>
+                        {% if let Some(end) = event.end_time.as_ref() %}
+                        <div class="text-xs text-gray-400">until {{ end }}</div>
+                        {% endif %}
+                        {% if event.is_past %}
+                        <span class="text-xs text-gray-400">(Past)</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {% if event.visibility == "Public" %}
+                            <span class="text-green-600">Public</span>
+                        {% else if event.visibility == "MembersOnly" %}
+                            <span class="text-blue-600">Members</span>
+                        {% else if event.visibility == "AdminOnly" %}
+                            <span class="text-gray-600">Admin</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {{ event.attendee_count }}{% if let Some(max) = event.max_attendees %}/{{ max }}{% endif %}
+                        {% if event.rsvp_required %}
+                        <span class="text-xs text-gray-400">(RSVP)</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <a href="/portal/admin/events/{{ event.id }}"
+                           class="text-blue-600 hover:text-blue-900">
+                            Edit
+                        </a>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="6" class="px-6 py-12 text-center text-gray-500">
+                        No events found matching your criteria
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        {% if total_pages > 1 %}
+        <!-- Pagination -->
+        <div class="bg-white px-4 py-3 border-t border-gray-200 sm:px-6">
+            <div class="flex items-center justify-between">
+                <div class="text-sm text-gray-700">
+                    Showing <span class="font-medium">{{ (current_page - 1) * per_page + 1 }}</span>
+                    to <span class="font-medium">{{ std::cmp::min(current_page * per_page, total_events) }}</span>
+                    of <span class="font-medium">{{ total_events }}</span> events
+                </div>
+                <nav class="flex gap-1">
+                    {% if current_page > 1 %}
+                    <a href="?page={{ current_page - 1 }}&time={{ time_filter }}{% if search_query.len() > 0 %}&q={{ search_query }}{% endif %}{% if type_filter.len() > 0 %}&type={{ type_filter }}{% endif %}{% if visibility_filter.len() > 0 %}&visibility={{ visibility_filter }}{% endif %}&sort={{ sort_field }}&order={{ sort_order }}"
+                       class="px-3 py-2 text-sm text-gray-500 hover:bg-gray-100 rounded">
+                        Previous
+                    </a>
+                    {% endif %}
+                    {% if current_page < total_pages %}
+                    <a href="?page={{ current_page + 1 }}&time={{ time_filter }}{% if search_query.len() > 0 %}&q={{ search_query }}{% endif %}{% if type_filter.len() > 0 %}&type={{ type_filter }}{% endif %}{% if visibility_filter.len() > 0 %}&visibility={{ visibility_filter }}{% endif %}&sort={{ sort_field }}&order={{ sort_order }}"
+                       class="px-3 py-2 text-sm text-gray-500 hover:bg-gray-100 rounded">
+                        Next
+                    </a>
+                    {% endif %}
+                </nav>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

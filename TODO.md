@@ -82,7 +82,12 @@
   - [x] Edit member details
   - [x] Add new member
   - [x] Manual dues expiration/extension
-- [ ] Event management interface
+- [x] Event management interface
+  - [x] List/search events with filtering (type, visibility, time)
+  - [x] Sortable columns
+  - [x] Create new event
+  - [x] Edit event details
+  - [x] Delete event
 - [ ] Announcement editor
 - [ ] Payment history view
 - [ ] Audit log viewer
@@ -191,18 +196,20 @@
 
 ## Notes
 
-- **Current Status**: Core functionality complete. Admin portal fully functional with member management.
-- **Next Step**: Event management interface, RSVP functionality, seed data improvements
+- **Current Status**: Core functionality complete. Admin portal fully functional with member and event management.
+- **Next Step**: Announcement editor, RSVP functionality, public pages
 - **Blocking Issues**: None currently
 - **Dependencies**: Need to evaluate specific Discord and Unifi API libraries
 - **Recently Completed**:
+  - ✅ Admin event management interface with full CRUD
+  - ✅ Event filtering by type, visibility, and time (upcoming/past/all)
+  - ✅ Sortable table columns for members and events
+  - ✅ Seed data scaled to 100 members with faker
   - ✅ Admin member list with search/filter/pagination
   - ✅ Admin member detail page with full editing
   - ✅ Admin add new member page
   - ✅ Manual dues management (extend, set date, expire)
   - ✅ CSRF protection for all forms
-  - ✅ Content negotiation for root endpoint (browsers redirect to login, API clients get JSON)
-  - ✅ Updated README with Quick Start and endpoint documentation
 
 ## Quick Start Tasks
 

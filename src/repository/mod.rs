@@ -30,12 +30,14 @@ pub trait MemberRepository: Send + Sync {
 pub trait EventRepository: Send + Sync {
     async fn create(&self, event: Event) -> Result<Event>;
     async fn find_by_id(&self, id: Uuid) -> Result<Option<Event>>;
+    async fn list(&self, limit: i64, offset: i64) -> Result<Vec<Event>>;
     async fn list_upcoming(&self, limit: i64) -> Result<Vec<Event>>;
     async fn list_public(&self) -> Result<Vec<Event>>;
     async fn update(&self, id: Uuid, event: Event) -> Result<Event>;
     async fn delete(&self, id: Uuid) -> Result<()>;
     async fn register_attendance(&self, event_id: Uuid, member_id: Uuid) -> Result<()>;
     async fn cancel_attendance(&self, event_id: Uuid, member_id: Uuid) -> Result<()>;
+    async fn get_attendee_count(&self, event_id: Uuid) -> Result<i64>;
 }
 
 #[async_trait]
