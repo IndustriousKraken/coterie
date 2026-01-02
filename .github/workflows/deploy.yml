@@ -36,6 +36,7 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/coterie dist/
+          cp target/release/seed dist/
           cp -r templates dist/
           cp -r migrations dist/
           cp -r deploy dist/

@@ -85,7 +85,9 @@ sudo systemctl start coterie
 To populate with test data:
 ```bash
 cd /opt/coterie
-sudo -u coterie ./coterie seed
+sudo systemctl stop coterie  # stop if running
+sudo -u coterie ./seed
+sudo systemctl start coterie
 ```
 
 ## Useful Commands
