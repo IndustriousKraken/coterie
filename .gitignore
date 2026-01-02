@@ -17,6 +17,7 @@ target/
 .env
 .env.*
 !.env.example
+!deploy/.env.staging
 
 # Database files
 *.db
