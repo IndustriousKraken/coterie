@@ -1,0 +1,23 @@
+[Unit]
+Description=Coterie Member Management System
+After=network.target
+
+[Service]
+Type=simple
+User=coterie
+Group=coterie
+WorkingDirectory=/opt/coterie
+EnvironmentFile=/opt/coterie/.env
+ExecStart=/opt/coterie/coterie
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/coterie/data
+
+[Install]
+WantedBy=multi-user.target

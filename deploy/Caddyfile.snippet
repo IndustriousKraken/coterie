@@ -1,0 +1,18 @@
+# Add this to your existing Caddyfile
+# Replace coterie.yourdomain.com with your actual staging domain
+
+coterie.yourdomain.com {
+    reverse_proxy localhost:8080
+
+    # Optional: Add security headers
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    # Optional: Enable access logging
+    log {
+        output file /var/log/caddy/coterie-access.log
+    }
+}

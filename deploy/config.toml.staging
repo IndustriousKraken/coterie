@@ -1,0 +1,37 @@
+# Coterie Staging Configuration
+# Copy this to /opt/coterie/config.toml
+
+[server]
+port = 8080
+host = "127.0.0.1"  # Caddy reverse proxies to this
+
+[database]
+url = "sqlite:///opt/coterie/data/coterie.db"
+max_connections = 5
+
+[auth]
+# Generate with: openssl rand -hex 32
+session_secret = "CHANGE_ME_GENERATE_A_RANDOM_STRING"
+session_duration_hours = 24
+
+[features]
+discord_integration = false
+unifi_integration = false
+payments = false
+
+[discord]
+bot_token = ""
+guild_id = ""
+member_role_id = ""
+
+[unifi]
+controller_url = ""
+username = ""
+password = ""
+site_id = "default"
+
+[stripe]
+enabled = false
+publishable_key = ""
+secret_key = ""
+webhook_secret = ""
