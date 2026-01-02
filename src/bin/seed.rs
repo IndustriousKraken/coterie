@@ -170,7 +170,7 @@ async fn main() -> anyhow::Result<()> {
     let mut rng = rand::thread_rng();
 
     // Initialize database connection
-    let database_url = std::env::var("COTERIE_DATABASE_URL")
+    let database_url = std::env::var("COTERIE__DATABASE__URL")
         .unwrap_or_else(|_| "sqlite:coterie.db".to_string());
 
     let db_pool = SqlitePoolOptions::new()

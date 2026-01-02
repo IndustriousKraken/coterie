@@ -75,8 +75,8 @@ impl Settings {
             .add_source(File::with_name("config/default").required(false))
             .add_source(File::with_name("config/local").required(false))
             
-            // Add environment variables (with COTERIE_ prefix)
-            .add_source(Environment::with_prefix("COTERIE").separator("_"))
+            // Add environment variables (with COTERIE__ prefix, double underscore separates levels)
+            .add_source(Environment::with_prefix("COTERIE").separator("__"))
             
             .build()?;
 
