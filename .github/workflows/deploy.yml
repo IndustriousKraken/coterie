@@ -39,7 +39,6 @@ jobs:
           cp -r templates dist/
           cp -r migrations dist/
           cp -r deploy dist/
-          cp config.toml.example dist/config.toml.example
 
       - name: Deploy to server
         uses: easingthemes/ssh-deploy@main
