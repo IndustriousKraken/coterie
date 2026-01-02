@@ -6,7 +6,9 @@ pub struct Settings {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub auth: AuthConfig,
+    #[serde(default)]
     pub stripe: StripeConfig,
+    #[serde(default)]
     pub integrations: IntegrationConfig,
 }
 
@@ -30,14 +32,15 @@ pub struct AuthConfig {
     pub totp_issuer: String,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct StripeConfig {
     pub secret_key: Option<String>,
     pub webhook_secret: Option<String>,
+    #[serde(default)]
     pub enabled: bool,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct IntegrationConfig {
     pub discord: Option<DiscordConfig>,
     pub unifi: Option<UnifiConfig>,
