@@ -7,27 +7,27 @@
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin coterie
 ```
 
-### 2. Create directories
+### 2. Create deploy user
+```bash
+sudo useradd -m -s /bin/bash deploy
+sudo usermod -aG coterie deploy
+```
+
+### 3. Create directories
 ```bash
 sudo mkdir -p /opt/coterie/data
 sudo chown -R coterie:coterie /opt/coterie
+sudo chmod -R g+w /opt/coterie
 ```
 
-### 3. Configure environment
+### 4. Set up sudoers for deploy user
 ```bash
-# Copy and edit the config files
-sudo cp /opt/coterie/deploy/.env.staging /opt/coterie/.env
-sudo cp /opt/coterie/deploy/config.toml.staging /opt/coterie/config.toml
-
-# Generate a session secret
-openssl rand -hex 32
-
-# Edit .env and config.toml with your values
-sudo nano /opt/coterie/.env
-sudo nano /opt/coterie/config.toml
+# Replace 'deploy' with your actual SSH user if different
+echo "deploy ALL=(ALL) NOPASSWD: /bin/systemctl restart coterie, /bin/systemctl daemon-reload, /bin/cp /opt/coterie/deploy/coterie.service /etc/systemd/system/, /bin/chown -R coterie\:coterie /opt/coterie" | sudo tee /etc/sudoers.d/coterie
+sudo chmod 440 /etc/sudoers.d/coterie
 ```
 
-### 4. Add Caddy config
+### 5. Add Caddy config
 ```bash
 # Edit your Caddyfile (usually /etc/caddy/Caddyfile)
 # Add the contents of Caddyfile.snippet, updating the domain
@@ -35,19 +35,12 @@ sudo nano /opt/coterie/config.toml
 sudo systemctl reload caddy
 ```
 
-### 5. Set up sudoers for deploy user
-```bash
-# Replace 'deployuser' with your actual SSH user
-echo "deployuser ALL=(ALL) NOPASSWD: /bin/systemctl restart coterie, /bin/systemctl daemon-reload, /bin/cp /opt/coterie/deploy/coterie.service /etc/systemd/system/, /bin/chown -R coterie\:coterie /opt/coterie" | sudo tee /etc/sudoers.d/coterie
-sudo chmod 440 /etc/sudoers.d/coterie
-```
-
 ### 6. DNS
 Add an A record pointing your staging domain to the droplet IP.
 
 ## GitHub Secrets
 
-Add these in your repo: Settings → Secrets and variables → Actions
+Add these in your repo: Settings -> Secrets and variables -> Actions
 
 | Secret | Description |
 |--------|-------------|
@@ -57,19 +50,42 @@ Add these in your repo: Settings → Secrets and variables → Actions
 
 ## First Deploy
 
-After pushing to `main`, the GitHub Action will:
+After pushing to `staging`, the GitHub Action will:
 1. Build the release binary
 2. Rsync files to `/opt/coterie/`
 3. Install the systemd service
 4. Restart coterie
+
+## Post-Deploy Configuration (one-time)
+
+After the first successful deploy:
+
+```bash
+# 1. Copy and configure environment
+sudo cp /opt/coterie/deploy/.env.staging /opt/coterie/.env
+
+# 2. Generate a session secret
+openssl rand -hex 32
+
+# 3. Edit .env with your values
+sudo nano /opt/coterie/.env
+# - Replace CHANGE_ME_GENERATE_A_RANDOM_STRING with the generated secret
+# - Update COTERIE_SERVER_BASE_URL to your domain (e.g., https://coterie.stage.grc.red)
+
+# 4. Fix ownership
+sudo chown -R coterie:coterie /opt/coterie
+
+# 5. Enable and start the service
+sudo systemctl enable coterie
+sudo systemctl start coterie
+```
 
 ## Seed Data (optional)
 
 To populate with test data:
 ```bash
 cd /opt/coterie
-sudo -u coterie ./coterie seed  # if you have a seed command
-# OR copy a pre-seeded database
+sudo -u coterie ./coterie seed
 ```
 
 ## Useful Commands

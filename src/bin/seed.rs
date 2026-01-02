@@ -161,13 +161,16 @@ fn generate_member_config(rng: &mut impl Rng) -> MemberConfig {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load .env file if present
+    dotenvy::dotenv().ok();
+
     println!("🌱 Starting database seeding...");
     println!("   Generating {} members with {} months of history", MEMBER_COUNT, MONTHS_OF_HISTORY);
 
     let mut rng = rand::thread_rng();
 
     // Initialize database connection
-    let database_url = std::env::var("DATABASE_URL")
+    let database_url = std::env::var("COTERIE_DATABASE_URL")
         .unwrap_or_else(|_| "sqlite:coterie.db".to_string());
 
     let db_pool = SqlitePoolOptions::new()

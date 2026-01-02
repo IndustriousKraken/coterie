@@ -21,6 +21,9 @@ use crate::{
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load .env file if present (before anything else)
+    dotenvy::dotenv().ok();
+
     // Initialize tracing
     tracing_subscriber::registry()
         .with(
