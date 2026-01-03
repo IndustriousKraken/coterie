@@ -16,3 +16,9 @@ coterie.yourdomain.com {
         output file /var/log/caddy/coterie-access.log
     }
 }
+
+# Public front end site - using sample site for this example
+yourdomain.com {
+    root * /opt/coterie/examples/public-site
+    file_server
+}
