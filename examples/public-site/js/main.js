@@ -2,7 +2,16 @@
  * Main page JavaScript for HEHC public site
  */
 
+// Store for full content to show in modals
+const contentStore = {
+    events: {},
+    announcements: {}
+};
+
 document.addEventListener('DOMContentLoaded', () => {
+    // Create modal element
+    createModal();
+
     // Load upcoming events on homepage
     if (document.getElementById('events-list')) {
         loadUpcomingEvents();
@@ -34,6 +43,103 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 /**
+ * Create the modal element
+ */
+function createModal() {
+    const modal = document.createElement('div');
+    modal.id = 'detail-modal';
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="modal-title"></h3>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="modal-meta" class="modal-meta"></div>
+                <div id="modal-content" class="modal-content"></div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+
+    // Close on overlay click
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeModal();
+    });
+
+    // Close on escape key
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeModal();
+    });
+}
+
+/**
+ * Show the modal with event details
+ */
+function showEventModal(eventId) {
+    const event = contentStore.events[eventId];
+    if (!event) return;
+
+    const date = new Date(event.start_time);
+    const dateStr = date.toLocaleDateString('en-US', {
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric'
+    });
+    const timeStr = date.toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit'
+    });
+
+    document.getElementById('modal-title').textContent = event.title;
+    document.getElementById('modal-meta').innerHTML = `
+        <p><span class="label">Type:</span> <span class="value">${escapeHtml(event.event_type || 'Event')}</span></p>
+        <p><span class="label">Date:</span> <span class="value">${dateStr}</span></p>
+        <p><span class="label">Time:</span> <span class="value">${timeStr}</span></p>
+        ${event.location ? `<p><span class="label">Location:</span> <span class="value">${escapeHtml(event.location)}</span></p>` : ''}
+    `;
+    document.getElementById('modal-content').textContent = event.description || 'No description available.';
+
+    document.getElementById('detail-modal').classList.add('active');
+    document.body.style.overflow = 'hidden';
+}
+
+/**
+ * Show the modal with announcement details
+ */
+function showAnnouncementModal(announcementId) {
+    const announcement = contentStore.announcements[announcementId];
+    if (!announcement) return;
+
+    const date = new Date(announcement.published_at || announcement.created_at);
+    const dateStr = date.toLocaleDateString('en-US', {
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric'
+    });
+
+    document.getElementById('modal-title').textContent = announcement.title;
+    document.getElementById('modal-meta').innerHTML = `
+        <p><span class="label">Published:</span> <span class="value">${dateStr}</span></p>
+    `;
+    document.getElementById('modal-content').textContent = announcement.content || 'No content available.';
+
+    document.getElementById('detail-modal').classList.add('active');
+    document.body.style.overflow = 'hidden';
+}
+
+/**
+ * Close the modal
+ */
+function closeModal() {
+    document.getElementById('detail-modal').classList.remove('active');
+    document.body.style.overflow = '';
+}
+
+/**
  * Load and display upcoming events
  */
 async function loadUpcomingEvents() {
@@ -46,6 +152,9 @@ async function loadUpcomingEvents() {
             container.innerHTML = '<p class="no-data">No upcoming events scheduled. Check back soon!</p>';
             return;
         }
+
+        // Store events for modal access
+        events.forEach(e => contentStore.events[e.id] = e);
 
         container.innerHTML = events.map(event => createEventCard(event)).join('');
     } catch (error) {
@@ -72,7 +181,10 @@ async function loadAllEvents() {
             return;
         }
 
-        container.innerHTML = events.map(event => createEventCard(event, true)).join('');
+        // Store events for modal access
+        events.forEach(e => contentStore.events[e.id] = e);
+
+        container.innerHTML = events.map(event => createEventCard(event)).join('');
     } catch (error) {
         container.innerHTML = `
             <div class="error">
@@ -86,7 +198,7 @@ async function loadAllEvents() {
 /**
  * Create HTML for an event card
  */
-function createEventCard(event, showFull = false) {
+function createEventCard(event) {
     const date = new Date(event.start_time);
     const dateStr = date.toLocaleDateString('en-US', {
         weekday: 'short',
@@ -98,9 +210,16 @@ function createEventCard(event, showFull = false) {
         minute: '2-digit'
     });
 
-    const description = showFull
-        ? event.description || ''
-        : truncate(event.description || '', 100);
+    const maxLength = 150;
+    const fullDescription = event.description || '';
+    const needsTruncation = fullDescription.length > maxLength;
+    const displayDescription = needsTruncation
+        ? truncate(fullDescription, maxLength)
+        : fullDescription;
+
+    const readMoreLink = needsTruncation
+        ? `<span class="read-more" onclick="showEventModal('${escapeHtml(event.id)}')">[more...]</span>`
+        : '';
 
     return `
         <div class="event-card">
@@ -108,7 +227,7 @@ function createEventCard(event, showFull = false) {
             <h3>${escapeHtml(event.title)}</h3>
             <p class="event-date">${dateStr} @ ${timeStr}</p>
             ${event.location ? `<p class="event-location">Location: ${escapeHtml(event.location)}</p>` : ''}
-            ${description ? `<p class="event-description">${escapeHtml(description)}</p>` : ''}
+            ${displayDescription ? `<p class="event-description">${escapeHtml(displayDescription)}${readMoreLink}</p>` : ''}
         </div>
     `;
 }
@@ -126,6 +245,9 @@ async function loadAnnouncements() {
             container.innerHTML = '<p class="no-data">No recent announcements.</p>';
             return;
         }
+
+        // Store announcements for modal access
+        announcements.forEach(a => contentStore.announcements[a.id] = a);
 
         container.innerHTML = announcements.map(ann => createAnnouncementCard(ann)).join('');
     } catch (error) {
@@ -149,11 +271,22 @@ function createAnnouncementCard(announcement) {
         year: 'numeric'
     });
 
+    const maxLength = 200;
+    const fullContent = announcement.content || '';
+    const needsTruncation = fullContent.length > maxLength;
+    const displayContent = needsTruncation
+        ? truncate(fullContent, maxLength)
+        : fullContent;
+
+    const readMoreLink = needsTruncation
+        ? `<span class="read-more" onclick="showAnnouncementModal('${escapeHtml(announcement.id)}')">[more...]</span>`
+        : '';
+
     return `
         <div class="announcement">
             <h3>${escapeHtml(announcement.title)}</h3>
             <p class="announcement-date">${dateStr}</p>
-            <p class="announcement-content">${escapeHtml(truncate(announcement.content || '', 200))}</p>
+            <p class="announcement-content">${escapeHtml(displayContent)}${readMoreLink}</p>
         </div>
     `;
 }
