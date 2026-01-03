@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Join - Hipster Electronics Hacking Club</title>
+    <link rel="stylesheet" href="css/style.css">
+    <style>
+        .signup-container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .membership-tiers {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .tier-card {
+            background: var(--bg-medium);
+            border: 1px solid var(--border);
+            padding: 1.5rem;
+            text-align: center;
+        }
+
+        .tier-card h3 {
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+        }
+
+        .tier-card .price {
+            font-size: 2rem;
+            color: var(--text-amber);
+            margin-bottom: 1rem;
+        }
+
+        .tier-card .price small {
+            font-size: 0.8rem;
+            color: var(--text-dim);
+        }
+
+        .tier-card ul {
+            list-style: none;
+            text-align: left;
+            margin-bottom: 1rem;
+        }
+
+        .tier-card li {
+            padding: 0.3rem 0;
+            color: var(--text-white);
+        }
+
+        .tier-card li::before {
+            content: "> ";
+            color: var(--text-primary);
+        }
+
+        .message {
+            padding: 1rem;
+            margin-bottom: 1rem;
+            border: 1px solid;
+        }
+
+        .message-success {
+            border-color: var(--text-primary);
+            background: rgba(51, 255, 51, 0.1);
+        }
+
+        .message-error {
+            border-color: var(--error);
+            background: rgba(255, 51, 51, 0.1);
+            color: var(--error);
+        }
+
+        .form-container {
+            background: var(--bg-medium);
+            border: 1px solid var(--border);
+            padding: 2rem;
+        }
+
+        .password-requirements {
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            margin-top: 0.5rem;
+        }
+
+        .password-requirements li {
+            margin-left: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <nav>
+            <div class="logo">
+                <span class="prompt">&gt;</span> HEHC_
+            </div>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="events.html">Events</a></li>
+                <li><a href="join.html">Join</a></li>
+                <li><a href="https://your-coterie-instance/login" class="btn-portal">Member Portal</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main>
+        <section class="page-header">
+            <h1><span class="prompt">&gt;</span> ./join.sh --interactive</h1>
+            <p>Join our community of vintage computing enthusiasts.</p>
+        </section>
+
+        <section class="membership-info">
+            <h2><span class="prompt">&gt;</span> cat membership-tiers.txt</h2>
+            <div class="membership-tiers">
+                <div class="tier-card">
+                    <h3>Standard</h3>
+                    <p class="price">$50<small>/year</small></p>
+                    <ul>
+                        <li>Access to all meetings</li>
+                        <li>Workshop participation</li>
+                        <li>Discord access</li>
+                        <li>Lab access during events</li>
+                        <li>Voting rights</li>
+                    </ul>
+                </div>
+                <div class="tier-card">
+                    <h3>Student</h3>
+                    <p class="price">$25<small>/year</small></p>
+                    <ul>
+                        <li>All Standard benefits</li>
+                        <li>Valid student ID required</li>
+                        <li>Perfect for learners</li>
+                    </ul>
+                </div>
+                <div class="tier-card">
+                    <h3>Lifetime</h3>
+                    <p class="price">$500<small>one-time</small></p>
+                    <ul>
+                        <li>All Standard benefits</li>
+                        <li>24/7 lab access</li>
+                        <li>Name on the wall</li>
+                        <li>Eternal gratitude</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <section class="signup-section">
+            <h2><span class="prompt">&gt;</span> adduser --membership</h2>
+
+            <div class="signup-container">
+                <div id="signup-message"></div>
+
+                <div class="form-container">
+                    <form id="signup-form">
+                        <div class="form-group">
+                            <label for="full_name">Full Name *</label>
+                            <input type="text" id="full_name" name="full_name" required
+                                   placeholder="Ada Lovelace">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="email">Email Address *</label>
+                            <input type="email" id="email" name="email" required
+                                   placeholder="ada@example.com">
+                            <small>We'll send a verification link to this address.</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="username">Username *</label>
+                            <input type="text" id="username" name="username" required
+                                   pattern="[a-zA-Z0-9_-]+"
+                                   placeholder="ada_lovelace">
+                            <small>Letters, numbers, underscores, and hyphens only.</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="password">Password *</label>
+                            <input type="password" id="password" name="password" required
+                                   minlength="8">
+                            <ul class="password-requirements">
+                                <li>At least 8 characters</li>
+                                <li>Mix of letters and numbers recommended</li>
+                            </ul>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="password_confirm">Confirm Password *</label>
+                            <input type="password" id="password_confirm" name="password_confirm" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="membership_type">Membership Type *</label>
+                            <select id="membership_type" name="membership_type" required>
+                                <option value="">-- Select a tier --</option>
+                                <option value="standard">Standard ($50/year)</option>
+                                <option value="student">Student ($25/year)</option>
+                                <option value="lifetime">Lifetime ($500 one-time)</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label>
+                                <input type="checkbox" required>
+                                I agree to the <a href="#" style="color: var(--accent);">terms of membership</a>
+                            </label>
+                        </div>
+
+                        <button type="submit" class="btn btn-large" style="width: 100%;">
+                            Submit Application
+                        </button>
+                    </form>
+
+                    <p style="margin-top: 1.5rem; color: var(--text-dim); font-size: 0.9rem;">
+                        After submitting, you'll receive an email to verify your address.
+                        Once verified, you can complete payment through the member portal.
+                        Your membership becomes active after payment is confirmed.
+                    </p>
+                </div>
+            </div>
+        </section>
+
+        <section class="faq">
+            <h2><span class="prompt">&gt;</span> man membership-faq</h2>
+            <div class="content-block">
+                <h3>What do I get as a member?</h3>
+                <p>Access to weekly meetings, workshops, our Discord server, and use of club equipment during events. Standard and Lifetime members can vote on club decisions.</p>
+
+                <h3>How does payment work?</h3>
+                <p>After signing up, you'll be able to pay through our secure member portal. We accept credit/debit cards via Stripe. Cash and check payments can be arranged at meetings.</p>
+
+                <h3>Can I try before I join?</h3>
+                <p>Absolutely! Visitors are welcome at regular meetings. Come check us out before committing.</p>
+
+                <h3>Is there a refund policy?</h3>
+                <p>Memberships are non-refundable, but we're confident you'll love being part of HEHC.</p>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="footer-content">
+            <p>&copy; 2024 Hipster Electronics Hacking Club</p>
+            <p class="tagline">640K ought to be enough for anybody.</p>
+            <p class="powered-by">Powered by <a href="https://github.com/IndustriousKraken/coterie">Coterie</a></p>
+        </div>
+    </footer>
+
+    <script src="js/api.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>

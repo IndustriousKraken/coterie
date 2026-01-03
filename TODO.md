@@ -95,6 +95,10 @@
     - [ ] Repeat forever option
     - [ ] Edit single vs. all future occurrences
     - [ ] Cancel single occurrence without deleting series
+  - [ ] User-definable event types
+    - [ ] Admin interface to create/edit event types
+    - [ ] Custom colors/icons for event types
+    - [ ] Replace hardcoded EventType enum with database table
 - [x] Announcement editor
   - [x] List/search with filtering (type, status)
   - [x] Create/edit/delete announcements

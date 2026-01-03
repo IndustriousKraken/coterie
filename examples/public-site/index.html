@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hipster Electronics Hacking Club</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="alternate" type="application/rss+xml" title="HEHC Announcements" href="/public/feed/rss">
+</head>
+<body>
+    <header>
+        <nav>
+            <div class="logo">
+                <span class="prompt">&gt;</span> HEHC_
+            </div>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="events.html">Events</a></li>
+                <li><a href="join.html">Join</a></li>
+                <li><a href="https://your-coterie-instance/login" class="btn-portal">Member Portal</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main>
+        <section class="hero">
+            <div class="terminal-window">
+                <div class="terminal-header">
+                    <span class="dot red"></span>
+                    <span class="dot yellow"></span>
+                    <span class="dot green"></span>
+                    <span class="terminal-title">welcome.sh</span>
+                </div>
+                <div class="terminal-body">
+                    <pre>
+ _    _ ______ _    _  _____
+| |  | |  ____| |  | |/ ____|
+| |__| | |__  | |__| | |
+|  __  |  __| |  __  | |
+| |  | | |____| |  | | |____
+|_|  |_|______|_|  |_|\_____|
+
+Hipster Electronics Hacking Club
+"We were soldering before it was cool"
+                    </pre>
+                    <p class="typing">Loading vintage vibes...</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="about">
+            <h2><span class="prompt">&gt;</span> cat about.txt</h2>
+            <div class="content-block">
+                <p>Welcome to the <strong>Hipster Electronics Hacking Club</strong>, where we celebrate
+                the golden age of personal computing. We're a community of enthusiasts who appreciate
+                the elegance of 8-bit processors, the satisfying click of mechanical keyboards, and
+                the warm glow of phosphor displays.</p>
+
+                <p>Whether you're restoring a TRS-80, programming a Commodore 64, or building
+                something new with a vintage aesthetic, you'll find your people here.</p>
+
+                <div class="specs">
+                    <div class="spec">
+                        <span class="label">Founded:</span>
+                        <span class="value">2019</span>
+                    </div>
+                    <div class="spec">
+                        <span class="label">Members:</span>
+                        <span class="value" id="member-count">--</span>
+                    </div>
+                    <div class="spec">
+                        <span class="label">Meetings:</span>
+                        <span class="value">Every Thursday</span>
+                    </div>
+                    <div class="spec">
+                        <span class="label">Location:</span>
+                        <span class="value">The Vintage Vault</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="upcoming-events">
+            <h2><span class="prompt">&gt;</span> ls ./events --upcoming</h2>
+            <div id="events-list" class="events-grid">
+                <p class="loading">Scanning magnetic tape...</p>
+            </div>
+            <a href="events.html" class="btn">View All Events</a>
+        </section>
+
+        <section class="announcements">
+            <h2><span class="prompt">&gt;</span> tail -n 3 announcements.log</h2>
+            <div id="announcements-list">
+                <p class="loading">Reading from serial port...</p>
+            </div>
+            <p class="feed-link">
+                <a href="/public/feed/rss">Subscribe via RSS</a> |
+                <a href="/public/feed/calendar">Add to Calendar (iCal)</a>
+            </p>
+        </section>
+
+        <section class="cta">
+            <h2><span class="prompt">&gt;</span> ./join.sh</h2>
+            <p>Ready to join a community that appreciates computing history?</p>
+            <a href="join.html" class="btn btn-large">Become a Member</a>
+        </section>
+    </main>
+
+    <footer>
+        <div class="footer-content">
+            <p>&copy; 2024 Hipster Electronics Hacking Club</p>
+            <p class="tagline">640K ought to be enough for anybody.</p>
+            <p class="powered-by">Powered by <a href="https://github.com/IndustriousKraken/coterie">Coterie</a></p>
+        </div>
+    </footer>
+
+    <script src="js/api.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>

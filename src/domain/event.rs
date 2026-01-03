@@ -27,6 +27,7 @@ pub enum EventType {
     CTF,
     Social,
     Training,
+    Hackathon,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]

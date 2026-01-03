@@ -60,6 +60,7 @@ impl SqliteEventRepository {
             "CTF" => Ok(EventType::CTF),
             "Social" => Ok(EventType::Social),
             "Training" => Ok(EventType::Training),
+            "Hackathon" => Ok(EventType::Hackathon),
             _ => Err(AppError::Database(format!("Invalid event type: {}", s))),
         }
     }
@@ -71,6 +72,7 @@ impl SqliteEventRepository {
             EventType::CTF => "CTF",
             EventType::Social => "Social",
             EventType::Training => "Training",
+            EventType::Hackathon => "Hackathon",
         }
     }
 

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Events - Hipster Electronics Hacking Club</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="alternate" type="application/rss+xml" title="HEHC Announcements" href="/public/feed/rss">
+</head>
+<body>
+    <header>
+        <nav>
+            <div class="logo">
+                <span class="prompt">&gt;</span> HEHC_
+            </div>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="events.html">Events</a></li>
+                <li><a href="join.html">Join</a></li>
+                <li><a href="https://your-coterie-instance/login" class="btn-portal">Member Portal</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main>
+        <section class="page-header">
+            <h1><span class="prompt">&gt;</span> cat ./events/README</h1>
+            <p>Upcoming meetings, workshops, and social events for vintage computing enthusiasts.</p>
+        </section>
+
+        <section class="calendar-tools">
+            <h2><span class="prompt">&gt;</span> sync --calendar</h2>
+            <div class="content-block">
+                <p>Subscribe to our calendar to never miss an event:</p>
+                <div class="calendar-links">
+                    <a href="/public/feed/calendar" class="btn">
+                        Download iCal (.ics)
+                    </a>
+                    <button class="btn" onclick="copyCalendarUrl()">
+                        Copy Calendar URL
+                    </button>
+                </div>
+                <p class="calendar-instructions">
+                    <small>Add the iCal feed to Google Calendar, Apple Calendar, Outlook, or any calendar app that supports iCal subscriptions.</small>
+                </p>
+            </div>
+        </section>
+
+        <section class="events-section">
+            <h2><span class="prompt">&gt;</span> ls ./events --all --sort=date</h2>
+
+            <div class="events-filter">
+                <button class="filter-btn active" data-filter="all">All Events</button>
+                <button class="filter-btn" data-filter="meeting">Meetings</button>
+                <button class="filter-btn" data-filter="workshop">Workshops</button>
+                <button class="filter-btn" data-filter="social">Social</button>
+                <button class="filter-btn" data-filter="hackathon">Hackathons</button>
+            </div>
+
+            <div id="all-events-list" class="events-grid">
+                <p class="loading">Querying event database...</p>
+            </div>
+        </section>
+
+        <section class="event-types">
+            <h2><span class="prompt">&gt;</span> man event-types</h2>
+            <div class="content-block">
+                <div class="type-list">
+                    <div class="type-item">
+                        <h3>Weekly Meetings</h3>
+                        <p>Every Thursday at 7 PM. Show and tell, project updates, and general hacking.</p>
+                    </div>
+                    <div class="type-item">
+                        <h3>Workshops</h3>
+                        <p>Hands-on sessions covering specific topics: soldering, BASIC programming, hardware repair, etc.</p>
+                    </div>
+                    <div class="type-item">
+                        <h3>Social Events</h3>
+                        <p>Game nights, retro computing movie screenings, and vintage hardware swap meets.</p>
+                    </div>
+                    <div class="type-item">
+                        <h3>Hackathons</h3>
+                        <p>24-48 hour events building projects on vintage hardware or emulators.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="footer-content">
+            <p>&copy; 2024 Hipster Electronics Hacking Club</p>
+            <p class="tagline">640K ought to be enough for anybody.</p>
+            <p class="powered-by">Powered by <a href="https://github.com/your-org/coterie">Coterie</a></p>
+        </div>
+    </footer>
+
+    <script src="js/api.js"></script>
+    <script src="js/main.js"></script>
+    <script>
+        // Filter functionality
+        document.querySelectorAll('.filter-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                // Update active state
+                document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+
+                // Filter events
+                const filter = btn.dataset.filter;
+                const events = document.querySelectorAll('.event-card');
+
+                events.forEach(event => {
+                    const type = event.querySelector('.event-type').textContent.toLowerCase();
+                    if (filter === 'all' || type === filter) {
+                        event.style.display = '';
+                    } else {
+                        event.style.display = 'none';
+                    }
+                });
+            });
+        });
+
+        // Copy calendar URL to clipboard
+        function copyCalendarUrl() {
+            const url = CoterieAPI.getCalendarFeedUrl();
+            navigator.clipboard.writeText(url).then(() => {
+                alert('Calendar URL copied to clipboard!');
+            }).catch(err => {
+                prompt('Copy this URL:', url);
+            });
+        }
+    </script>
+</body>
+</html>
