@@ -1,45 +1,49 @@
 /**
  * Site Configuration
  *
- * Edit these values to match your Coterie instance.
+ * This file auto-detects the Coterie API URL based on the current hostname.
+ * Override the defaults below if you need custom URLs.
+ *
  * This file should be loaded BEFORE api.js and main.js.
  */
 
-// =============================================================================
-// REQUIRED CONFIGURATION
-// =============================================================================
+(function() {
+    const hostname = window.location.hostname;
+    const protocol = window.location.protocol;
 
-/**
- * URL of your Coterie API server
- * - For local development: 'http://localhost:8080'
- * - For production: 'https://api.yourclub.org' or 'https://yourclub.org'
- *
- * This is used for:
- * - Fetching events and announcements
- * - Member signup form submission
- * - Calendar and RSS feed URLs
- */
-window.COTERIE_API_URL = 'http://localhost:8080';
+    // =============================================================================
+    // AUTO-DETECTION (default behavior)
+    // =============================================================================
+    //
+    // Local development (localhost):
+    //   → API: http://localhost:8080
+    //
+    // Deployed sites:
+    //   → API: coterie.{current-hostname}
+    //   → Example: stage.grc.red → coterie.stage.grc.red
+    //   → Example: demo.example.com → coterie.demo.example.com
+    //   → Example: myclub.org → coterie.myclub.org
+    //
+    // This convention means you just need to point coterie.yourdomain at your
+    // Coterie instance, and the sample site will find it automatically.
 
-/**
- * URL of the member portal (login page)
- * - Often the same as COTERIE_API_URL
- * - Set to null to hide the "Member Portal" link in navigation
- *
- * Examples:
- * - 'http://localhost:8080' (local dev)
- * - 'https://members.yourclub.org'
- * - 'https://yourclub.org/portal'
- */
-window.COTERIE_PORTAL_URL = 'http://localhost:8080';
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+        window.COTERIE_API_URL = 'http://localhost:8080';
+        window.COTERIE_PORTAL_URL = 'http://localhost:8080';
+    } else {
+        const coterieUrl = `${protocol}//coterie.${hostname}`;
+        window.COTERIE_API_URL = coterieUrl;
+        window.COTERIE_PORTAL_URL = coterieUrl;
+    }
 
+    // =============================================================================
+    // MANUAL OVERRIDES (uncomment and edit to customize)
+    // =============================================================================
 
-// =============================================================================
-// OPTIONAL CONFIGURATION
-// =============================================================================
+    // window.COTERIE_API_URL = 'https://api.yourclub.org';
+    // window.COTERIE_PORTAL_URL = 'https://members.yourclub.org';
 
-/**
- * Club name (used in page titles, etc.)
- * Leave null to use the default from HTML
- */
-window.SITE_NAME = null;
+    // Set to null to hide the "Member Portal" link in navigation:
+    // window.COTERIE_PORTAL_URL = null;
+
+})();

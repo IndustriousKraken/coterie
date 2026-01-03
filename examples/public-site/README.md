@@ -28,24 +28,29 @@ public-site/
 
 ## Configuration
 
-Edit `js/config.js` to point to your Coterie instance:
+The site **auto-detects** the Coterie API URL based on where it's hosted:
+
+| Site Hosted At | Coterie API Expected At |
+|----------------|-------------------------|
+| `localhost` | `http://localhost:8080` |
+| `stage.example.com` | `https://coterie.stage.example.com` |
+| `demo.myclub.org` | `https://coterie.demo.myclub.org` |
+| `myclub.org` | `https://coterie.myclub.org` |
+
+**Convention**: Point `coterie.yourdomain` at your Coterie instance, and the sample site finds it automatically.
+
+### Manual Override
+
+If you need custom URLs, edit `js/config.js` and uncomment the override section:
 
 ```javascript
-// URL of your Coterie API server
+// Manual overrides (uncomment and edit)
 window.COTERIE_API_URL = 'https://api.yourclub.org';
-
-// URL of the member portal (login page)
-// Set to null to hide the "Member Portal" link
 window.COTERIE_PORTAL_URL = 'https://members.yourclub.org';
+
+// Set to null to hide the "Member Portal" link:
+window.COTERIE_PORTAL_URL = null;
 ```
-
-### Configuration Options
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `COTERIE_API_URL` | Yes | Base URL for API calls, calendar feeds, and RSS |
-| `COTERIE_PORTAL_URL` | No | URL for the "Member Portal" nav link. Set to `null` to hide |
-| `SITE_NAME` | No | Club name (currently unused, for future features) |
 
 ## Running Locally
 
