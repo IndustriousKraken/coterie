@@ -9,6 +9,9 @@ const contentStore = {
 };
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Apply configuration to dynamic elements
+    applyConfig();
+
     // Create modal element
     createModal();
 
@@ -41,6 +44,28 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }, 2000);
 });
+
+/**
+ * Apply configuration values to page elements
+ */
+function applyConfig() {
+    // Set Member Portal link
+    const portalLink = document.getElementById('portal-link');
+    if (portalLink) {
+        if (window.COTERIE_PORTAL_URL) {
+            portalLink.href = window.COTERIE_PORTAL_URL;
+        } else {
+            // Hide the link if no portal URL configured
+            portalLink.parentElement.style.display = 'none';
+        }
+    }
+
+    // Set iCal download link
+    const icalDownload = document.getElementById('ical-download');
+    if (icalDownload) {
+        icalDownload.href = CoterieAPI.getCalendarFeedUrl();
+    }
+}
 
 /**
  * Create the modal element

@@ -20,6 +20,7 @@ public-site/
 ├── css/
 │   └── style.css       # Retro terminal theme styling
 ├── js/
+│   ├── config.js       # Site configuration (edit this!)
 │   ├── api.js          # Coterie API client wrapper
 │   └── main.js         # Page-specific JavaScript
 └── README.md           # This file
@@ -27,20 +28,24 @@ public-site/
 
 ## Configuration
 
-Edit `js/api.js` to point to your Coterie instance:
+Edit `js/config.js` to point to your Coterie instance:
 
 ```javascript
-const COTERIE_API_URL = 'https://your-coterie-instance.com';
+// URL of your Coterie API server
+window.COTERIE_API_URL = 'https://api.yourclub.org';
+
+// URL of the member portal (login page)
+// Set to null to hide the "Member Portal" link
+window.COTERIE_PORTAL_URL = 'https://members.yourclub.org';
 ```
 
-Or set it globally before loading the scripts:
+### Configuration Options
 
-```html
-<script>
-    window.COTERIE_API_URL = 'https://your-coterie-instance.com';
-</script>
-<script src="js/api.js"></script>
-```
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `COTERIE_API_URL` | Yes | Base URL for API calls, calendar feeds, and RSS |
+| `COTERIE_PORTAL_URL` | No | URL for the "Member Portal" nav link. Set to `null` to hide |
+| `SITE_NAME` | No | Club name (currently unused, for future features) |
 
 ## Running Locally
 
