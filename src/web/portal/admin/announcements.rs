@@ -15,6 +15,15 @@ use crate::{
 };
 use crate::web::portal::is_admin;
 
+/// Simple struct for type options in dropdowns
+#[derive(Clone)]
+pub struct TypeOption {
+    pub id: String,
+    pub name: String,
+    pub slug: String,
+    pub color: Option<String>,
+}
+
 #[derive(Template)]
 #[template(path = "admin/announcements.html")]
 pub struct AdminAnnouncementsTemplate {
@@ -260,6 +269,7 @@ pub struct AdminAnnouncementDetailTemplate {
     pub is_admin: bool,
     pub csrf_token: String,
     pub announcement: AdminAnnouncementDetail,
+    pub announcement_types: Vec<TypeOption>,
 }
 
 pub struct AdminAnnouncementDetail {
@@ -320,11 +330,26 @@ pub async fn admin_announcement_detail_page(
         updated_at: announcement.updated_at.format("%b %d, %Y %H:%M").to_string(),
     };
 
+    // Fetch active announcement types for the dropdown
+    let announcement_types = state.service_context.announcement_type_service
+        .list(false)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| TypeOption {
+            id: t.id.to_string(),
+            name: t.name,
+            slug: t.slug,
+            color: t.color,
+        })
+        .collect();
+
     HtmlTemplate(AdminAnnouncementDetailTemplate {
         current_user: Some(user_info),
         is_admin: true,
         csrf_token,
         announcement: detail,
+        announcement_types,
     }).into_response()
 }
 
@@ -334,6 +359,7 @@ pub struct AdminNewAnnouncementTemplate {
     pub current_user: Option<UserInfo>,
     pub is_admin: bool,
     pub csrf_token: String,
+    pub announcement_types: Vec<TypeOption>,
 }
 
 pub async fn admin_new_announcement_page(
@@ -356,10 +382,25 @@ pub async fn admin_new_announcement_page(
         .await
         .unwrap_or_else(|_| "error".to_string());
 
+    // Fetch active announcement types for the dropdown
+    let announcement_types = state.service_context.announcement_type_service
+        .list(false)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| TypeOption {
+            id: t.id.to_string(),
+            name: t.name,
+            slug: t.slug,
+            color: t.color,
+        })
+        .collect();
+
     HtmlTemplate(AdminNewAnnouncementTemplate {
         current_user: Some(user_info),
         is_admin: true,
         csrf_token,
+        announcement_types,
     }).into_response()
 }
 
@@ -405,6 +446,7 @@ pub async fn admin_create_announcement(
         title: form.title,
         content: form.content,
         announcement_type,
+        announcement_type_id: None,
         is_public: form.is_public.is_some(),
         featured: form.featured.is_some(),
         published_at,
@@ -466,6 +508,7 @@ pub async fn admin_update_announcement(
         title: form.title,
         content: form.content,
         announcement_type,
+        announcement_type_id: existing.announcement_type_id,
         is_public: form.is_public.is_some(),
         featured: form.featured.is_some(),
         published_at: existing.published_at,

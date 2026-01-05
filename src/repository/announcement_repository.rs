@@ -15,6 +15,7 @@ struct AnnouncementRow {
     title: String,
     content: String,
     announcement_type: String,
+    announcement_type_id: Option<String>,
     is_public: i32,
     featured: i32,
     published_at: Option<NaiveDateTime>,
@@ -33,11 +34,18 @@ impl SqliteAnnouncementRepository {
     }
 
     fn row_to_announcement(row: AnnouncementRow) -> Result<Announcement> {
+        let announcement_type_id = row.announcement_type_id
+            .as_ref()
+            .map(|id| Uuid::parse_str(id))
+            .transpose()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
         Ok(Announcement {
             id: Uuid::parse_str(&row.id).map_err(|e| AppError::Database(e.to_string()))?,
             title: row.title,
             content: row.content,
             announcement_type: Self::parse_announcement_type(&row.announcement_type)?,
+            announcement_type_id,
             is_public: row.is_public != 0,
             featured: row.featured != 0,
             published_at: row.published_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
@@ -74,6 +82,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
     async fn create(&self, announcement: Announcement) -> Result<Announcement> {
         let id_str = announcement.id.to_string();
         let announcement_type_str = Self::announcement_type_to_str(&announcement.announcement_type);
+        let announcement_type_id_str = announcement.announcement_type_id.map(|id| id.to_string());
         let is_public_int = if announcement.is_public { 1i32 } else { 0i32 };
         let featured_int = if announcement.featured { 1i32 } else { 0i32 };
         let published_at_naive = announcement.published_at.map(|dt| dt.naive_utc());
@@ -83,15 +92,16 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         sqlx::query(
             r#"
             INSERT INTO announcements (
-                id, title, content, announcement_type, is_public, featured,
+                id, title, content, announcement_type, announcement_type_id, is_public, featured,
                 published_at, created_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#
         )
         .bind(&id_str)
         .bind(&announcement.title)
         .bind(&announcement.content)
         .bind(announcement_type_str)
+        .bind(&announcement_type_id_str)
         .bind(is_public_int)
         .bind(featured_int)
         .bind(published_at_naive)
@@ -111,7 +121,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         let id_str = id.to_string();
         let row = sqlx::query_as::<_, AnnouncementRow>(
             r#"
-            SELECT id, title, content, announcement_type, is_public, featured,
+            SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
                    published_at, created_by, created_at, updated_at
             FROM announcements
             WHERE id = ?
@@ -131,7 +141,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
     async fn list(&self, limit: i64, offset: i64) -> Result<Vec<Announcement>> {
         let rows = sqlx::query_as::<_, AnnouncementRow>(
             r#"
-            SELECT id, title, content, announcement_type, is_public, featured,
+            SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
                    published_at, created_by, created_at, updated_at
             FROM announcements
             ORDER BY created_at DESC
@@ -152,7 +162,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
     async fn list_recent(&self, limit: i64) -> Result<Vec<Announcement>> {
         let rows = sqlx::query_as::<_, AnnouncementRow>(
             r#"
-            SELECT id, title, content, announcement_type, is_public, featured,
+            SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
                    published_at, created_by, created_at, updated_at
             FROM announcements
             WHERE published_at IS NOT NULL
@@ -173,7 +183,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
     async fn list_public(&self) -> Result<Vec<Announcement>> {
         let rows = sqlx::query_as::<_, AnnouncementRow>(
             r#"
-            SELECT id, title, content, announcement_type, is_public, featured,
+            SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
                    published_at, created_by, created_at, updated_at
             FROM announcements
             WHERE is_public = 1 AND published_at IS NOT NULL
@@ -192,7 +202,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
     async fn list_featured(&self) -> Result<Vec<Announcement>> {
         let rows = sqlx::query_as::<_, AnnouncementRow>(
             r#"
-            SELECT id, title, content, announcement_type, is_public, featured,
+            SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
                    published_at, created_by, created_at, updated_at
             FROM announcements
             WHERE featured = 1 AND published_at IS NOT NULL
@@ -211,6 +221,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
     async fn update(&self, id: Uuid, announcement: Announcement) -> Result<Announcement> {
         let id_str = id.to_string();
         let announcement_type_str = Self::announcement_type_to_str(&announcement.announcement_type);
+        let announcement_type_id_str = announcement.announcement_type_id.map(|id| id.to_string());
         let is_public_int = if announcement.is_public { 1i32 } else { 0i32 };
         let featured_int = if announcement.featured { 1i32 } else { 0i32 };
         let published_at_naive = announcement.published_at.map(|dt| dt.naive_utc());
@@ -219,7 +230,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         sqlx::query(
             r#"
             UPDATE announcements
-            SET title = ?, content = ?, announcement_type = ?, 
+            SET title = ?, content = ?, announcement_type = ?, announcement_type_id = ?,
                 is_public = ?, featured = ?, published_at = ?,
                 updated_at = ?
             WHERE id = ?
@@ -228,6 +239,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         .bind(&announcement.title)
         .bind(&announcement.content)
         .bind(announcement_type_str)
+        .bind(&announcement_type_id_str)
         .bind(is_public_int)
         .bind(featured_int)
         .bind(published_at_naive)

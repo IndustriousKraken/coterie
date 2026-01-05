@@ -15,6 +15,15 @@ use crate::{
 };
 use crate::web::portal::is_admin;
 
+/// Simple struct for type options in dropdowns
+#[derive(Clone)]
+pub struct TypeOption {
+    pub id: String,
+    pub name: String,
+    pub slug: String,
+    pub color: Option<String>,
+}
+
 #[derive(Template)]
 #[template(path = "admin/events.html")]
 pub struct AdminEventsTemplate {
@@ -240,6 +249,7 @@ pub struct AdminEventDetailTemplate {
     pub is_admin: bool,
     pub csrf_token: String,
     pub event: AdminEventDetail,
+    pub event_types: Vec<TypeOption>,
 }
 
 pub struct AdminEventDetail {
@@ -319,11 +329,26 @@ pub async fn admin_event_detail_page(
         updated_at: event.updated_at.format("%b %d, %Y %H:%M").to_string(),
     };
 
+    // Fetch active event types for the dropdown
+    let event_types = state.service_context.event_type_service
+        .list(false)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| TypeOption {
+            id: t.id.to_string(),
+            name: t.name,
+            slug: t.slug,
+            color: t.color,
+        })
+        .collect();
+
     HtmlTemplate(AdminEventDetailTemplate {
         current_user: Some(user_info),
         is_admin: true,
         csrf_token,
         event: detail,
+        event_types,
     }).into_response()
 }
 
@@ -333,6 +358,7 @@ pub struct AdminNewEventTemplate {
     pub current_user: Option<UserInfo>,
     pub is_admin: bool,
     pub csrf_token: String,
+    pub event_types: Vec<TypeOption>,
 }
 
 pub async fn admin_new_event_page(
@@ -355,10 +381,25 @@ pub async fn admin_new_event_page(
         .await
         .unwrap_or_else(|_| "error".to_string());
 
+    // Fetch active event types for the dropdown
+    let event_types = state.service_context.event_type_service
+        .list(false)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| TypeOption {
+            id: t.id.to_string(),
+            name: t.name,
+            slug: t.slug,
+            color: t.color,
+        })
+        .collect();
+
     HtmlTemplate(AdminNewEventTemplate {
         current_user: Some(user_info),
         is_admin: true,
         csrf_token,
+        event_types,
     }).into_response()
 }
 
@@ -419,6 +460,7 @@ pub async fn admin_create_event(
         title: form.title,
         description: form.description,
         event_type,
+        event_type_id: None,
         visibility,
         start_time,
         end_time,
@@ -505,6 +547,7 @@ pub async fn admin_update_event(
         title: form.title,
         description: form.description,
         event_type,
+        event_type_id: existing.event_type_id,
         visibility,
         start_time,
         end_time,

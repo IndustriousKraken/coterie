@@ -8,6 +8,7 @@ pub struct Event {
     pub title: String,
     pub description: String,
     pub event_type: EventType,
+    pub event_type_id: Option<Uuid>,
     pub visibility: EventVisibility,
     pub start_time: DateTime<Utc>,
     pub end_time: Option<DateTime<Utc>>,
@@ -19,6 +20,17 @@ pub struct Event {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Legacy event type enum - DEPRECATED
+///
+/// This enum is being phased out in favor of database-driven event types.
+/// Use `event_type_id` field to reference `EventTypeConfig` from the
+/// `event_types` table instead.
+///
+/// To get the event type name, look up the type by ID:
+/// ```ignore
+/// let type_config = event_type_service.get(event.event_type_id).await?;
+/// let type_name = type_config.name;
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "TEXT")]
 pub enum EventType {

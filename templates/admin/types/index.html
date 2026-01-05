@@ -1,0 +1,243 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Type Management - Coterie Admin{% endblock %}
+
+{% block head %}
+<meta name="csrf-token" content="{{ csrf_token }}">
+{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <!-- Header -->
+    <div class="mb-6">
+        <div class="flex items-center gap-2 text-sm text-gray-500 mb-2">
+            <a href="/portal/admin" class="hover:text-gray-700">Admin</a>
+            <span>/</span>
+            <span>Type Management</span>
+        </div>
+        <h1 class="text-2xl font-bold text-gray-900">Type Management</h1>
+        <p class="text-gray-500 mt-1">Configure event types, announcement types, and membership types</p>
+    </div>
+
+    <div class="space-y-8">
+        <!-- Event Types Section -->
+        <div class="bg-white rounded-lg shadow-sm">
+            <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                <div>
+                    <h2 class="text-lg font-semibold text-gray-900">Event Types</h2>
+                    <p class="text-sm text-gray-500">Categories for classifying events</p>
+                </div>
+                <a href="/portal/admin/types/event/new"
+                   class="px-3 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
+                    Add Event Type
+                </a>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Slug</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Color</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                            <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-200">
+                        {% for t in event_types %}
+                        <tr class="{% if !t.is_active %}bg-gray-50{% endif %}">
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                <div class="flex items-center gap-2">
+                                    {% if let Some(color) = t.color.as_ref() %}
+                                    <span class="w-3 h-3 rounded-full" style="background-color: {{ color }};"></span>
+                                    {% endif %}
+                                    <span class="text-sm font-medium text-gray-900">{{ t.name }}</span>
+                                    {% if t.is_system %}
+                                    <span class="px-2 py-0.5 text-xs rounded bg-gray-100 text-gray-600">System</span>
+                                    {% endif %}
+                                </div>
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ t.slug }}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                {% if let Some(color) = t.color.as_ref() %}{{ color }}{% else %}-{% endif %}
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                {% if t.is_active %}
+                                <span class="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">Active</span>
+                                {% else %}
+                                <span class="px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-600">Inactive</span>
+                                {% endif %}
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap text-right text-sm">
+                                <a href="/portal/admin/types/event/{{ t.id }}" class="text-blue-600 hover:text-blue-800">Edit</a>
+                                {% if !t.is_system %}
+                                <form class="inline ml-3"
+                                      hx-post="/portal/admin/types/event/{{ t.id }}/delete"
+                                      hx-confirm="Are you sure you want to delete this event type?">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                    <button type="submit" class="text-red-600 hover:text-red-800">Delete</button>
+                                </form>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                        {% if event_types.is_empty() %}
+                        <tr>
+                            <td colspan="5" class="px-6 py-8 text-center text-gray-500">
+                                No event types defined. <a href="/portal/admin/types/event/new" class="text-blue-600 hover:underline">Create one</a>
+                            </td>
+                        </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Announcement Types Section -->
+        <div class="bg-white rounded-lg shadow-sm">
+            <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                <div>
+                    <h2 class="text-lg font-semibold text-gray-900">Announcement Types</h2>
+                    <p class="text-sm text-gray-500">Categories for classifying announcements</p>
+                </div>
+                <a href="/portal/admin/types/announcement/new"
+                   class="px-3 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
+                    Add Announcement Type
+                </a>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Slug</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Color</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                            <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-200">
+                        {% for t in announcement_types %}
+                        <tr class="{% if !t.is_active %}bg-gray-50{% endif %}">
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                <div class="flex items-center gap-2">
+                                    {% if let Some(color) = t.color.as_ref() %}
+                                    <span class="w-3 h-3 rounded-full" style="background-color: {{ color }};"></span>
+                                    {% endif %}
+                                    <span class="text-sm font-medium text-gray-900">{{ t.name }}</span>
+                                    {% if t.is_system %}
+                                    <span class="px-2 py-0.5 text-xs rounded bg-gray-100 text-gray-600">System</span>
+                                    {% endif %}
+                                </div>
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ t.slug }}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                {% if let Some(color) = t.color.as_ref() %}{{ color }}{% else %}-{% endif %}
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                {% if t.is_active %}
+                                <span class="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">Active</span>
+                                {% else %}
+                                <span class="px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-600">Inactive</span>
+                                {% endif %}
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap text-right text-sm">
+                                <a href="/portal/admin/types/announcement/{{ t.id }}" class="text-blue-600 hover:text-blue-800">Edit</a>
+                                {% if !t.is_system %}
+                                <form class="inline ml-3"
+                                      hx-post="/portal/admin/types/announcement/{{ t.id }}/delete"
+                                      hx-confirm="Are you sure you want to delete this announcement type?">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                    <button type="submit" class="text-red-600 hover:text-red-800">Delete</button>
+                                </form>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                        {% if announcement_types.is_empty() %}
+                        <tr>
+                            <td colspan="5" class="px-6 py-8 text-center text-gray-500">
+                                No announcement types defined. <a href="/portal/admin/types/announcement/new" class="text-blue-600 hover:underline">Create one</a>
+                            </td>
+                        </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Membership Types Section -->
+        <div class="bg-white rounded-lg shadow-sm">
+            <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                <div>
+                    <h2 class="text-lg font-semibold text-gray-900">Membership Types</h2>
+                    <p class="text-sm text-gray-500">Membership tiers with pricing</p>
+                </div>
+                <a href="/portal/admin/types/membership/new"
+                   class="px-3 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
+                    Add Membership Type
+                </a>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Slug</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fee</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Period</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                            <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-200">
+                        {% for t in membership_types %}
+                        <tr class="{% if !t.is_active %}bg-gray-50{% endif %}">
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                <div class="flex items-center gap-2">
+                                    {% if let Some(color) = t.color.as_ref() %}
+                                    <span class="w-3 h-3 rounded-full" style="background-color: {{ color }};"></span>
+                                    {% endif %}
+                                    <span class="text-sm font-medium text-gray-900">{{ t.name }}</span>
+                                    {% if t.is_system %}
+                                    <span class="px-2 py-0.5 text-xs rounded bg-gray-100 text-gray-600">System</span>
+                                    {% endif %}
+                                </div>
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ t.slug }}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${{ t.fee_dollars }}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ t.billing_period }}</td>
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                {% if t.is_active %}
+                                <span class="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">Active</span>
+                                {% else %}
+                                <span class="px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-600">Inactive</span>
+                                {% endif %}
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap text-right text-sm">
+                                <a href="/portal/admin/types/membership/{{ t.id }}" class="text-blue-600 hover:text-blue-800">Edit</a>
+                                {% if !t.is_system %}
+                                <form class="inline ml-3"
+                                      hx-post="/portal/admin/types/membership/{{ t.id }}/delete"
+                                      hx-confirm="Are you sure you want to delete this membership type?">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                    <button type="submit" class="text-red-600 hover:text-red-800">Delete</button>
+                                </form>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                        {% if membership_types.is_empty() %}
+                        <tr>
+                            <td colspan="6" class="px-6 py-8 text-center text-gray-500">
+                                No membership types defined. <a href="/portal/admin/types/membership/new" class="text-blue-600 hover:underline">Create one</a>
+                            </td>
+                        </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

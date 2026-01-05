@@ -154,9 +154,52 @@ fn admin_routes(state: AppState) -> Router<AppState> {
         .route("/settings/membership-config", get(handlers::settings::get_membership_config))
         .route("/settings/:key", get(handlers::settings::get_setting))
         .route("/settings/:key", put(handlers::settings::update_setting))
+        // Configurable types management routes
+        .route("/types", get(handlers::types::get_all_types))
+        .nest("/types/events", event_type_routes())
+        .nest("/types/announcements", announcement_type_routes())
+        .nest("/types/memberships", membership_type_routes())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::auth::require_admin,
         ))
         .with_state(state)
+}
+
+fn event_type_routes() -> Router<AppState> {
+    Router::new()
+        .route("/", get(handlers::types::list_event_types))
+        .route("/", post(handlers::types::create_event_type))
+        .route("/reorder", post(handlers::types::reorder_event_types))
+        .route("/seed", post(handlers::types::seed_event_types))
+        .route("/slug/:slug", get(handlers::types::get_event_type_by_slug))
+        .route("/:id", get(handlers::types::get_event_type))
+        .route("/:id", put(handlers::types::update_event_type))
+        .route("/:id", delete(handlers::types::delete_event_type))
+}
+
+fn announcement_type_routes() -> Router<AppState> {
+    Router::new()
+        .route("/", get(handlers::types::list_announcement_types))
+        .route("/", post(handlers::types::create_announcement_type))
+        .route("/reorder", post(handlers::types::reorder_announcement_types))
+        .route("/seed", post(handlers::types::seed_announcement_types))
+        .route("/slug/:slug", get(handlers::types::get_announcement_type_by_slug))
+        .route("/:id", get(handlers::types::get_announcement_type))
+        .route("/:id", put(handlers::types::update_announcement_type))
+        .route("/:id", delete(handlers::types::delete_announcement_type))
+}
+
+fn membership_type_routes() -> Router<AppState> {
+    Router::new()
+        .route("/", get(handlers::types::list_membership_types))
+        .route("/", post(handlers::types::create_membership_type))
+        .route("/reorder", post(handlers::types::reorder_membership_types))
+        .route("/seed", post(handlers::types::seed_membership_types))
+        .route("/pricing", get(handlers::types::list_all_pricing))
+        .route("/slug/:slug", get(handlers::types::get_membership_type_by_slug))
+        .route("/:id", get(handlers::types::get_membership_type))
+        .route("/:id", put(handlers::types::update_membership_type))
+        .route("/:id", delete(handlers::types::delete_membership_type))
+        .route("/:id/pricing", get(handlers::types::get_membership_pricing))
 }

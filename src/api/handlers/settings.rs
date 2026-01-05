@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     api::{state::AppState, middleware::auth::CurrentUser},
     domain::{AppSetting, UpdateSettingRequest, SettingsCategory},
-    error::{AppError, Result},
+    error::Result,
 };
 
 #[derive(Debug, Serialize)]

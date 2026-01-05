@@ -10,14 +10,16 @@ use uuid::Uuid;
 
 use crate::{
     api::{state::AppState, middleware::auth::CurrentUser},
-    domain::{Payment, PaymentStatus, MembershipType},
+    domain::{Payment, PaymentStatus},
     error::{AppError, Result},
 };
 
 #[derive(Debug, Deserialize)]
 pub struct CreatePaymentRequest {
-    pub membership_type: MembershipType,
-    pub amount_cents: Option<i64>, // If not provided, use default for membership type
+    /// The slug of the membership type (e.g., "regular", "student", "corporate")
+    pub membership_type_slug: String,
+    /// Optional override amount in cents. If not provided, uses the fee from membership_types table
+    pub amount_cents: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,47 +58,41 @@ pub async fn create(
     }
 
     let stripe_client = state.stripe_client.as_ref().unwrap();
-    
-    // Get payment configuration from settings
-    let payment_config = state.service_context.settings_service
-        .get_payment_config()
-        .await
-        .unwrap_or_else(|_| {
-            // Fallback to defaults if settings unavailable
-            crate::domain::PaymentConfig {
-                regular_membership_fee: 5000,
-                student_membership_fee: 2500,
-                corporate_membership_fee: 50000,
-                lifetime_membership_fee: 100000,
-                grace_period_days: 30,
-                reminder_days_before: 7,
-            }
-        });
-    
-    // Determine amount based on membership type
-    let amount_cents = request.amount_cents.unwrap_or_else(|| {
-        match request.membership_type {
-            MembershipType::Regular => payment_config.regular_membership_fee,
-            MembershipType::Student => payment_config.student_membership_fee,
-            MembershipType::Corporate => payment_config.corporate_membership_fee,
-            MembershipType::Lifetime => payment_config.lifetime_membership_fee,
-        }
-    });
-    
+
+    // Look up membership type from database to get pricing
+    let membership_type = state.service_context.membership_type_service
+        .get_by_slug(&request.membership_type_slug)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!(
+            "Membership type '{}' not found",
+            request.membership_type_slug
+        )))?;
+
+    // Check if the membership type is active
+    if !membership_type.is_active {
+        return Err(AppError::BadRequest(format!(
+            "Membership type '{}' is not currently available",
+            membership_type.name
+        )));
+    }
+
+    // Use the fee from the database, or allow override if provided
+    let amount_cents = request.amount_cents.unwrap_or(membership_type.fee_cents as i64);
+
     // Create checkout session
     let checkout_url = stripe_client.create_membership_checkout_session(
         user.member.id,
-        &format!("{:?}", request.membership_type),
+        &membership_type.name,
         amount_cents,
         format!("{}/payment/success", state.settings.server.base_url),
         format!("{}/payment/cancel", state.settings.server.base_url),
     ).await?;
-    
+
     let response = CreatePaymentResponse {
         payment_id: Uuid::new_v4(), // This will be replaced with actual payment ID
         checkout_url,
     };
-    
+
     Ok((StatusCode::CREATED, Json(response)))
 }
 

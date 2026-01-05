@@ -10,6 +10,7 @@ pub struct Member {
     pub full_name: String,
     pub status: MemberStatus,
     pub membership_type: MembershipType,
+    pub membership_type_id: Option<Uuid>,
     pub joined_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
     pub dues_paid_until: Option<DateTime<Utc>>,
@@ -29,6 +30,17 @@ pub enum MemberStatus {
     Honorary,
 }
 
+/// Legacy membership type enum - DEPRECATED
+///
+/// This enum is being phased out in favor of database-driven membership types.
+/// Use `membership_type_id` field to reference `MembershipTypeConfig` from the
+/// `membership_types` table instead.
+///
+/// To get the membership type name, look up the type by ID:
+/// ```ignore
+/// let type_config = membership_type_service.get(member.membership_type_id).await?;
+/// let type_name = type_config.name;
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "TEXT")]
 pub enum MembershipType {

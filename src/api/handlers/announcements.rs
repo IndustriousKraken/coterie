@@ -98,6 +98,7 @@ pub async fn create(
         title: request.title,
         content: request.content,
         announcement_type: request.announcement_type,
+        announcement_type_id: None,
         is_public: request.is_public,
         featured: request.featured,
         published_at: if request.publish_now {

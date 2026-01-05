@@ -109,6 +109,7 @@ pub async fn create(
         title: request.title,
         description: request.description,
         event_type: request.event_type,
+        event_type_id: None,
         visibility: request.visibility,
         start_time: request.start_time,
         end_time: request.end_time,

@@ -15,6 +15,7 @@ struct EventRow {
     title: String,
     description: String,
     event_type: String,
+    event_type_id: Option<String>,
     visibility: String,
     start_time: NaiveDateTime,
     end_time: Option<NaiveDateTime>,
@@ -36,11 +37,18 @@ impl SqliteEventRepository {
     }
 
     fn row_to_event(row: EventRow) -> Result<Event> {
+        let event_type_id = row.event_type_id
+            .as_ref()
+            .map(|id| Uuid::parse_str(id))
+            .transpose()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
         Ok(Event {
             id: Uuid::parse_str(&row.id).map_err(|e| AppError::Database(e.to_string()))?,
             title: row.title,
             description: row.description,
             event_type: Self::parse_event_type(&row.event_type)?,
+            event_type_id,
             visibility: Self::parse_visibility(&row.visibility)?,
             start_time: DateTime::from_naive_utc_and_offset(row.start_time, Utc),
             end_time: row.end_time.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
@@ -99,6 +107,7 @@ impl EventRepository for SqliteEventRepository {
     async fn create(&self, event: Event) -> Result<Event> {
         let id_str = event.id.to_string();
         let event_type_str = Self::event_type_to_str(&event.event_type);
+        let event_type_id_str = event.event_type_id.map(|id| id.to_string());
         let visibility_str = Self::visibility_to_str(&event.visibility);
         let start_time_naive = event.start_time.naive_utc();
         let end_time_naive = event.end_time.map(|dt| dt.naive_utc());
@@ -110,16 +119,17 @@ impl EventRepository for SqliteEventRepository {
         sqlx::query(
             r#"
             INSERT INTO events (
-                id, title, description, event_type, visibility,
+                id, title, description, event_type, event_type_id, visibility,
                 start_time, end_time, location, max_attendees, rsvp_required,
                 created_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#
         )
         .bind(&id_str)
         .bind(&event.title)
         .bind(&event.description)
         .bind(event_type_str)
+        .bind(&event_type_id_str)
         .bind(visibility_str)
         .bind(start_time_naive)
         .bind(end_time_naive)
@@ -142,7 +152,7 @@ impl EventRepository for SqliteEventRepository {
         let id_str = id.to_string();
         let row = sqlx::query_as::<_, EventRow>(
             r#"
-            SELECT id, title, description, event_type, visibility,
+            SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, location, max_attendees, rsvp_required,
                    created_by, created_at, updated_at
             FROM events
@@ -163,7 +173,7 @@ impl EventRepository for SqliteEventRepository {
     async fn list(&self, limit: i64, offset: i64) -> Result<Vec<Event>> {
         let rows = sqlx::query_as::<_, EventRow>(
             r#"
-            SELECT id, title, description, event_type, visibility,
+            SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, location, max_attendees, rsvp_required,
                    created_by, created_at, updated_at
             FROM events
@@ -184,10 +194,10 @@ impl EventRepository for SqliteEventRepository {
 
     async fn list_upcoming(&self, limit: i64) -> Result<Vec<Event>> {
         let now = Utc::now().naive_utc();
-        
+
         let rows = sqlx::query_as::<_, EventRow>(
             r#"
-            SELECT id, title, description, event_type, visibility,
+            SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, location, max_attendees, rsvp_required,
                    created_by, created_at, updated_at
             FROM events
@@ -209,10 +219,10 @@ impl EventRepository for SqliteEventRepository {
 
     async fn list_public(&self) -> Result<Vec<Event>> {
         let visibility_str = Self::visibility_to_str(&EventVisibility::Public);
-        
+
         let rows = sqlx::query_as::<_, EventRow>(
             r#"
-            SELECT id, title, description, event_type, visibility,
+            SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, location, max_attendees, rsvp_required,
                    created_by, created_at, updated_at
             FROM events
@@ -233,6 +243,7 @@ impl EventRepository for SqliteEventRepository {
     async fn update(&self, id: Uuid, event: Event) -> Result<Event> {
         let id_str = id.to_string();
         let event_type_str = Self::event_type_to_str(&event.event_type);
+        let event_type_id_str = event.event_type_id.map(|id| id.to_string());
         let visibility_str = Self::visibility_to_str(&event.visibility);
         let start_time_naive = event.start_time.naive_utc();
         let end_time_naive = event.end_time.map(|dt| dt.naive_utc());
@@ -243,7 +254,7 @@ impl EventRepository for SqliteEventRepository {
         sqlx::query(
             r#"
             UPDATE events
-            SET title = ?, description = ?, event_type = ?, visibility = ?,
+            SET title = ?, description = ?, event_type = ?, event_type_id = ?, visibility = ?,
                 start_time = ?, end_time = ?, location = ?, max_attendees = ?,
                 rsvp_required = ?, updated_at = ?
             WHERE id = ?
@@ -252,6 +263,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(&event.title)
         .bind(&event.description)
         .bind(event_type_str)
+        .bind(&event_type_id_str)
         .bind(visibility_str)
         .bind(start_time_naive)
         .bind(end_time_naive)

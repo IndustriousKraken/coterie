@@ -18,6 +18,7 @@ struct MemberRow {
     full_name: String,
     status: String,
     membership_type: String,
+    membership_type_id: Option<String>,
     joined_at: NaiveDateTime,
     expires_at: Option<NaiveDateTime>,
     dues_paid_until: Option<NaiveDateTime>,
@@ -37,6 +38,12 @@ impl SqliteMemberRepository {
     }
 
     fn row_to_member(row: MemberRow) -> Result<Member> {
+        let membership_type_id = row.membership_type_id
+            .as_ref()
+            .map(|id| Uuid::parse_str(id))
+            .transpose()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
         Ok(Member {
             id: Uuid::parse_str(&row.id).map_err(|e| AppError::Database(e.to_string()))?,
             email: row.email,
@@ -44,6 +51,7 @@ impl SqliteMemberRepository {
             full_name: row.full_name,
             status: Self::parse_member_status(&row.status)?,
             membership_type: Self::parse_membership_type(&row.membership_type)?,
+            membership_type_id,
             joined_at: DateTime::from_naive_utc_and_offset(row.joined_at, Utc),
             expires_at: row.expires_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
             dues_paid_until: row.dues_paid_until.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
@@ -152,7 +160,7 @@ impl MemberRepository for SqliteMemberRepository {
         let id_str = id.to_string();
         let row = sqlx::query_as::<_, MemberRow>(
             r#"
-            SELECT id, email, username, full_name, status, membership_type,
+            SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, notes,
                    created_at, updated_at
             FROM members
@@ -173,7 +181,7 @@ impl MemberRepository for SqliteMemberRepository {
     async fn find_by_email(&self, email: &str) -> Result<Option<Member>> {
         let row = sqlx::query_as::<_, MemberRow>(
             r#"
-            SELECT id, email, username, full_name, status, membership_type,
+            SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, notes,
                    created_at, updated_at
             FROM members
@@ -194,7 +202,7 @@ impl MemberRepository for SqliteMemberRepository {
     async fn find_by_username(&self, username: &str) -> Result<Option<Member>> {
         let row = sqlx::query_as::<_, MemberRow>(
             r#"
-            SELECT id, email, username, full_name, status, membership_type,
+            SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, notes,
                    created_at, updated_at
             FROM members
@@ -215,7 +223,7 @@ impl MemberRepository for SqliteMemberRepository {
     async fn list(&self, limit: i64, offset: i64) -> Result<Vec<Member>> {
         let rows = sqlx::query_as::<_, MemberRow>(
             r#"
-            SELECT id, email, username, full_name, status, membership_type,
+            SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, notes,
                    created_at, updated_at
             FROM members
@@ -236,10 +244,10 @@ impl MemberRepository for SqliteMemberRepository {
 
     async fn list_active(&self) -> Result<Vec<Member>> {
         let active_status = Self::member_status_to_str(&MemberStatus::Active);
-        
+
         let rows = sqlx::query_as::<_, MemberRow>(
             r#"
-            SELECT id, email, username, full_name, status, membership_type,
+            SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, notes,
                    created_at, updated_at
             FROM members
@@ -259,10 +267,10 @@ impl MemberRepository for SqliteMemberRepository {
 
     async fn list_expired(&self) -> Result<Vec<Member>> {
         let expired_status = Self::member_status_to_str(&MemberStatus::Expired);
-        
+
         let rows = sqlx::query_as::<_, MemberRow>(
             r#"
-            SELECT id, email, username, full_name, status, membership_type,
+            SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, notes,
                    created_at, updated_at
             FROM members

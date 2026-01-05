@@ -7,11 +7,17 @@ pub mod member_repository;
 pub mod event_repository;
 pub mod announcement_repository;
 pub mod payment_repository;
+pub mod event_type_repository;
+pub mod announcement_type_repository;
+pub mod membership_type_repository;
 
 pub use member_repository::SqliteMemberRepository;
 pub use event_repository::SqliteEventRepository;
 pub use announcement_repository::SqliteAnnouncementRepository;
 pub use payment_repository::SqlitePaymentRepository;
+pub use event_type_repository::{EventTypeRepository, SqliteEventTypeRepository};
+pub use announcement_type_repository::{AnnouncementTypeRepository, SqliteAnnouncementTypeRepository};
+pub use membership_type_repository::{MembershipTypeRepository, SqliteMembershipTypeRepository};
 
 #[async_trait]
 pub trait MemberRepository: Send + Sync {

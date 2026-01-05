@@ -39,42 +39,28 @@ pub struct SettingsCategory {
     pub settings: Vec<AppSetting>,
 }
 
-// Helper struct for payment configuration
+/// Payment configuration for general payment settings.
+///
+/// Note: Per-membership-type fees are now stored in the `membership_types` table
+/// and managed via the admin UI at /portal/admin/types. Use `MembershipTypeConfig.fee_cents`
+/// to get the fee for a specific membership type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaymentConfig {
-    pub regular_membership_fee: i64,
-    pub student_membership_fee: i64,
-    pub corporate_membership_fee: i64,
-    pub lifetime_membership_fee: i64,
+    /// Days after dues expiry before member status changes
     pub grace_period_days: i32,
+    /// Days before dues expiry to send reminder notifications
     pub reminder_days_before: i32,
 }
 
 impl PaymentConfig {
     pub fn from_settings(settings: &[AppSetting]) -> Self {
         let mut config = PaymentConfig {
-            regular_membership_fee: 5000,
-            student_membership_fee: 2500,
-            corporate_membership_fee: 50000,
-            lifetime_membership_fee: 100000,
             grace_period_days: 30,
             reminder_days_before: 7,
         };
 
         for setting in settings {
             match setting.key.as_str() {
-                "payment.regular_membership_fee" => {
-                    config.regular_membership_fee = setting.value.parse().unwrap_or(5000);
-                }
-                "payment.student_membership_fee" => {
-                    config.student_membership_fee = setting.value.parse().unwrap_or(2500);
-                }
-                "payment.corporate_membership_fee" => {
-                    config.corporate_membership_fee = setting.value.parse().unwrap_or(50000);
-                }
-                "payment.lifetime_membership_fee" => {
-                    config.lifetime_membership_fee = setting.value.parse().unwrap_or(100000);
-                }
                 "payment.grace_period_days" => {
                     config.grace_period_days = setting.value.parse().unwrap_or(30);
                 }
