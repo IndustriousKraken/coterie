@@ -10,6 +10,8 @@ pub struct Settings {
     pub stripe: StripeConfig,
     #[serde(default)]
     pub integrations: IntegrationConfig,
+    #[serde(default)]
+    pub seed: SeedConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -64,6 +66,43 @@ pub struct UnifiConfig {
     pub site_id: String,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct SeedConfig {
+    pub admin: AdminSeedConfig,
+    pub test_users: Vec<TestUserConfig>,
+    pub membership_types: Vec<MembershipTypeSeedConfig>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct AdminSeedConfig {
+    pub email: String,
+    pub username: String,
+    pub full_name: String,
+    pub password: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct TestUserConfig {
+    pub email: String,
+    pub username: String,
+    pub full_name: String,
+    pub password: String,
+    pub membership_type: String,
+    pub status: String,
+    pub months_active: i64,
+    pub bypass_dues: bool,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct MembershipTypeSeedConfig {
+    pub name: String,
+    pub slug: String,
+    pub color: String,
+    pub fee_cents: i64,
+    pub billing_frequency: String, // "monthly" or "yearly"
+}
+
 impl Settings {
     pub fn new() -> Result<Self, ConfigError> {
         let config = Config::builder()
@@ -77,6 +116,7 @@ impl Settings {
             // Add config file if it exists
             .add_source(File::with_name("config/default").required(false))
             .add_source(File::with_name("config/local").required(false))
+            .add_source(File::with_name("config/seed").required(false))
             
             // Add environment variables (with COTERIE__ prefix, double underscore separates levels)
             .add_source(Environment::with_prefix("COTERIE").separator("__"))
@@ -84,6 +124,95 @@ impl Settings {
             .build()?;
 
         config.try_deserialize()
+    }
+}
+
+impl Default for SeedConfig {
+    fn default() -> Self {
+        Self {
+            admin: AdminSeedConfig {
+                email: "admin@coterie.local".to_string(),
+                username: "admin".to_string(),
+                full_name: "Admin User".to_string(),
+                password: "admin123".to_string(),
+            },
+            test_users: vec![
+                TestUserConfig {
+                    email: "alice@example.com".to_string(),
+                    username: "alice".to_string(),
+                    full_name: "Alice Johnson".to_string(),
+                    password: "password123".to_string(),
+                    membership_type: "regular".to_string(),
+                    status: "active".to_string(),
+                    months_active: 18,
+                    bypass_dues: false,
+                    notes: None,
+                },
+                TestUserConfig {
+                    email: "bob@example.com".to_string(),
+                    username: "bob".to_string(),
+                    full_name: "Bob Smith".to_string(),
+                    password: "password123".to_string(),
+                    membership_type: "student".to_string(),
+                    status: "active".to_string(),
+                    months_active: 12,
+                    bypass_dues: false,
+                    notes: None,
+                },
+                TestUserConfig {
+                    email: "charlie@example.com".to_string(),
+                    username: "charlie".to_string(),
+                    full_name: "Charlie Brown".to_string(),
+                    password: "password123".to_string(),
+                    membership_type: "regular".to_string(),
+                    status: "expired".to_string(),
+                    months_active: 8,
+                    bypass_dues: false,
+                    notes: None,
+                },
+                TestUserConfig {
+                    email: "dave@example.com".to_string(),
+                    username: "dave".to_string(),
+                    full_name: "Dave Wilson".to_string(),
+                    password: "password123".to_string(),
+                    membership_type: "regular".to_string(),
+                    status: "pending".to_string(),
+                    months_active: 0,
+                    bypass_dues: false,
+                    notes: None,
+                },
+            ],
+            membership_types: vec![
+                MembershipTypeSeedConfig {
+                    name: "Regular".to_string(),
+                    slug: "regular".to_string(),
+                    color: "#2196F3".to_string(),
+                    fee_cents: 5000, // $50
+                    billing_frequency: "yearly".to_string(),
+                },
+                MembershipTypeSeedConfig {
+                    name: "Student".to_string(),
+                    slug: "student".to_string(),
+                    color: "#4CAF50".to_string(),
+                    fee_cents: 2500, // $25
+                    billing_frequency: "yearly".to_string(),
+                },
+                MembershipTypeSeedConfig {
+                    name: "Corporate".to_string(),
+                    slug: "corporate".to_string(),
+                    color: "#9C27B0".to_string(),
+                    fee_cents: 50000, // $500
+                    billing_frequency: "yearly".to_string(),
+                },
+                MembershipTypeSeedConfig {
+                    name: "Lifetime".to_string(),
+                    slug: "lifetime".to_string(),
+                    color: "#FF9800".to_string(),
+                    fee_cents: 50000, // $500 one-time
+                    billing_frequency: "yearly".to_string(),
+                },
+            ],
+        }
     }
 }
 
@@ -113,6 +242,7 @@ impl Default for Settings {
                 discord: None,
                 unifi: None,
             },
+            seed: SeedConfig::default(),
         }
     }
 }

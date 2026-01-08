@@ -1,6 +1,6 @@
 # Coterie
 
-Status: Active Development, pre alpha.
+Status: Active Development, alpha.
 
 ## Quick Start
 

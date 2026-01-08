@@ -14,7 +14,7 @@ pub struct AppSetting {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, PartialEq)]
 #[sqlx(type_name = "TEXT")]
 pub enum SettingType {
     #[serde(rename = "string")]
@@ -25,6 +25,17 @@ pub enum SettingType {
     Boolean,
     #[serde(rename = "json")]
     Json,
+}
+
+impl SettingType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SettingType::String => "string",
+            SettingType::Number => "number", 
+            SettingType::Boolean => "boolean",
+            SettingType::Json => "json",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

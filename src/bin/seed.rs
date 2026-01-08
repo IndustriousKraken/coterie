@@ -1,4 +1,5 @@
 use coterie::{
+    config::Settings,
     domain::{
         CreateMemberRequest, MembershipType, MemberStatus, UpdateMemberRequest,
         Event, EventType, EventVisibility,
@@ -19,6 +20,26 @@ use fake::Fake;
 use fake::faker::name::en::{FirstName, LastName};
 use rand::Rng;
 use rand::seq::SliceRandom;
+
+// Helper functions to convert string types from config
+fn parse_membership_type(s: &str) -> MembershipType {
+    match s.to_lowercase().as_str() {
+        "regular" | "monthly_regular" => MembershipType::Regular,
+        "student" => MembershipType::Student,
+        "corporate" => MembershipType::Corporate,
+        "lifetime" => MembershipType::Lifetime,
+        _ => MembershipType::Regular,
+    }
+}
+
+fn parse_member_status(s: &str) -> MemberStatus {
+    match s.to_lowercase().as_str() {
+        "active" => MemberStatus::Active,
+        "expired" => MemberStatus::Expired,
+        "pending" => MemberStatus::Pending,
+        _ => MemberStatus::Pending,
+    }
+}
 
 // Configuration
 const MEMBER_COUNT: usize = 100;
@@ -166,6 +187,13 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
     println!("🌱 Starting database seeding...");
+    
+    // Load configuration
+    let settings = Settings::new().unwrap_or_else(|e| {
+        println!("⚠️  Failed to load config: {}. Using defaults.", e);
+        Settings::default()
+    });
+    
     println!("   Generating {} members with {} months of history", MEMBER_COUNT, MONTHS_OF_HISTORY);
 
     let mut rng = rand::thread_rng();
@@ -223,11 +251,12 @@ async fn main() -> anyhow::Result<()> {
     let mut used_emails: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Create admin user first
+    let admin_config = &settings.seed.admin;
     let admin = member_repo.create(CreateMemberRequest {
-        email: "admin@coterie.local".to_string(),
-        username: "admin".to_string(),
-        full_name: "Admin User".to_string(),
-        password: "admin123".to_string(),
+        email: admin_config.email.clone(),
+        username: admin_config.username.clone(),
+        full_name: admin_config.full_name.clone(),
+        password: admin_config.password.clone(),
         membership_type: MembershipType::Lifetime,
     }).await?;
 
@@ -238,24 +267,20 @@ async fn main() -> anyhow::Result<()> {
         ..Default::default()
     }).await?;
 
-    used_usernames.insert("admin".to_string());
-    used_emails.insert("admin@coterie.local".to_string());
-    println!("    Created admin user (admin@coterie.local / admin123)");
+    used_usernames.insert(admin_config.username.clone());
+    used_emails.insert(admin_config.email.clone());
+    println!("    Created admin user ({} / {})", admin_config.email, admin_config.password);
 
-    // Create the known test users for predictable testing
-    let test_users: [(&str, &str, &str, MembershipType, MemberStatus, i64, bool, Option<&str>); 4] = [
-        ("alice@example.com", "alice", "Alice Johnson", MembershipType::Regular, MemberStatus::Active, 18, false, None),
-        ("bob@example.com", "bob", "Bob Smith", MembershipType::Student, MemberStatus::Active, 12, false, None),
-        ("charlie@example.com", "charlie", "Charlie Brown", MembershipType::Regular, MemberStatus::Expired, 8, false, None),
-        ("dave@example.com", "dave", "Dave Wilson", MembershipType::Regular, MemberStatus::Pending, 0, false, None),
-    ];
-
-    for (email, username, full_name, mem_type, status, months, bypass, notes) in test_users {
+    // Create the test users from configuration
+    for user_config in &settings.seed.test_users {
+        let mem_type = parse_membership_type(&user_config.membership_type);
+        let status = parse_member_status(&user_config.status);
+        
         let member = member_repo.create(CreateMemberRequest {
-            email: email.to_string(),
-            username: username.to_string(),
-            full_name: full_name.to_string(),
-            password: "password123".to_string(),
+            email: user_config.email.clone(),
+            username: user_config.username.clone(),
+            full_name: user_config.full_name.clone(),
+            password: user_config.password.clone(),
             membership_type: mem_type.clone(),
         }).await?;
 
@@ -267,14 +292,14 @@ async fn main() -> anyhow::Result<()> {
             None
         };
 
-        let joined = Utc::now() - Duration::days(months * 30);
+        let joined = Utc::now() - Duration::days(user_config.months_active * 30);
 
         sqlx::query("UPDATE members SET status = ?, dues_paid_until = ?, joined_at = ?, bypass_dues = ?, notes = ? WHERE id = ?")
             .bind(format!("{:?}", status))
             .bind(dues_until)
             .bind(joined)
-            .bind(bypass)
-            .bind(notes)
+            .bind(user_config.bypass_dues)
+            .bind(&user_config.notes)
             .bind(member.id.to_string())
             .execute(&db_pool)
             .await?;
@@ -282,17 +307,18 @@ async fn main() -> anyhow::Result<()> {
         all_members.push((member.id, MemberConfig {
             status: status.clone(),
             membership_type: mem_type,
-            months_active: months,
-            bypass_dues: bypass,
-            notes: None,
+            months_active: user_config.months_active,
+            bypass_dues: user_config.bypass_dues,
+            notes: user_config.notes.clone(),
         }));
-        used_usernames.insert(username.to_string());
-        used_emails.insert(email.to_string());
+        used_usernames.insert(user_config.username.clone());
+        used_emails.insert(user_config.email.clone());
     }
-    println!("    Created 4 known test users");
+    println!("    Created {} test users", settings.seed.test_users.len());
 
     // Generate random members
-    let random_count = MEMBER_COUNT.saturating_sub(5); // 5 = admin + 4 test users
+    let test_users_count = settings.seed.test_users.len();
+    let random_count = MEMBER_COUNT.saturating_sub(1 + test_users_count); // admin + test users
     let mut generated = 0;
     let mut attempts = 0;
     const MAX_ATTEMPTS: usize = 1000;
@@ -926,14 +952,13 @@ Existing members are welcome to attend as refreshers or to help answer questions
     println!("   Payments: {}", payment_count);
     println!("   Announcements: {}", announcements.len());
 
-    println!("\n📝 Test credentials (password for all: password123):");
-    println!("   Admin: admin@coterie.local / admin123");
+    println!("\n📝 Test credentials:");
+    println!("   Admin: {} / {}", settings.seed.admin.email, settings.seed.admin.password);
     println!("");
-    println!("   Known test users:");
-    println!("     alice@example.com    - Regular, Active");
-    println!("     bob@example.com      - Student, Active");
-    println!("     charlie@example.com  - Regular, Expired");
-    println!("     dave@example.com     - Regular, Pending");
+    println!("   Test users:");
+    for user_config in &settings.seed.test_users {
+        println!("     {} - {}, {}", user_config.email, user_config.membership_type, user_config.status);
+    }
     println!("");
     println!("   Plus {} randomly generated members", generated);
 
