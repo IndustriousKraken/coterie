@@ -76,7 +76,9 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/admin/types/membership/:id", get(admin::types::admin_edit_membership_type_page))
         .route("/admin/types/membership/:id", post(admin::types::admin_update_membership_type))
         .route("/admin/types/membership/:id/delete", post(admin::types::admin_delete_membership_type))
-        .route("/admin/settings", get(|| async { "Admin settings page (TODO)" }))
+        // Admin settings routes
+        .route("/admin/settings", get(admin::settings::admin_settings_page))
+        .route("/admin/settings", post(admin::settings::admin_update_setting))
 
         // CSRF protection for state-changing requests (runs after auth)
         .route_layer(middleware::from_fn_with_state(

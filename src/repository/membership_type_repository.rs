@@ -298,7 +298,7 @@ impl MembershipTypeRepository for SqliteMembershipTypeRepository {
                     id, name, slug, description, color, icon,
                     sort_order, is_active, is_system, fee_cents, billing_period,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, NULL, ?, NULL, ?, 1, 1, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, NULL, ?, NULL, ?, 1, 0, ?, ?, ?, ?)
                 "#,
             )
             .bind(&id_str)

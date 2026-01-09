@@ -281,7 +281,7 @@ impl EventTypeRepository for SqliteEventTypeRepository {
                 INSERT INTO event_types (
                     id, name, slug, description, color, icon,
                     sort_order, is_active, is_system, created_at, updated_at
-                ) VALUES (?, ?, ?, NULL, ?, ?, ?, 1, 1, ?, ?)
+                ) VALUES (?, ?, ?, NULL, ?, ?, ?, 1, 0, ?, ?)
                 "#,
             )
             .bind(&id_str)

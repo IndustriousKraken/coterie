@@ -281,7 +281,7 @@ impl AnnouncementTypeRepository for SqliteAnnouncementTypeRepository {
                 INSERT INTO announcement_types (
                     id, name, slug, description, color, icon,
                     sort_order, is_active, is_system, created_at, updated_at
-                ) VALUES (?, ?, ?, NULL, ?, NULL, ?, 1, 1, ?, ?)
+                ) VALUES (?, ?, ?, NULL, ?, NULL, ?, 1, 0, ?, ?)
                 "#,
             )
             .bind(&id_str)
