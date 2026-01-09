@@ -12,7 +12,7 @@
     const protocol = window.location.protocol;
 
     // =============================================================================
-    // AUTO-DETECTION (default behavior)
+    // AUTO-DETECTION
     // =============================================================================
     //
     // Local development (localhost):
@@ -20,12 +20,9 @@
     //
     // Deployed sites:
     //   → API: coterie.{current-hostname}
-    //   → Example: stage.grc.red → coterie.stage.grc.red
+    //   → Example: stage.foo.bar → coterie.stage.foo.bar
     //   → Example: demo.example.com → coterie.demo.example.com
     //   → Example: myclub.org → coterie.myclub.org
-    //
-    // This convention means you just need to point coterie.yourdomain at your
-    // Coterie instance, and the sample site will find it automatically.
 
     if (hostname === 'localhost' || hostname === '127.0.0.1') {
         window.COTERIE_API_URL = 'http://localhost:8080';
