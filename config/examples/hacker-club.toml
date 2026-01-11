@@ -138,3 +138,440 @@ color = "#4CAF50"
 name = "CTF Result"
 slug = "ctf-result"
 color = "#F44336"
+
+# =============================================================================
+# EVENTS
+# =============================================================================
+
+# PAST EVENTS (negative days_offset)
+
+[[events]]
+title = "Restoring a TRS-80 Model I: A Journey Through Computing History"
+event_type = "workshop"
+days_offset = -120
+duration_hours = 6
+location = "The Vintage Vault - Workshop Bay"
+visibility = "members_only"
+description = """
+Join us for an immersive, hands-on workshop where we'll bring a piece of computing history back to life. We've acquired a non-functional TRS-80 Model I from 1977, and over the course of this extended session, we'll diagnose its issues, source replacement components, and hopefully see it boot for the first time in decades.
+
+What we'll cover:
+- Visual inspection and damage assessment of vintage hardware
+- Using period-appropriate test equipment (oscilloscopes, logic probes)
+- Troubleshooting the Z80 CPU and associated support chips
+- Capacitor replacement and power supply restoration
+- Keyboard matrix debugging and contact cleaning
+- Video output calibration for composite monitors
+
+Participants should bring:
+- Basic soldering equipment (stations available for those who need them)
+- ESD-safe work practices (wrist straps provided)
+- Patience and a willingness to learn from failure
+
+This workshop is limited to 12 participants to ensure everyone gets hands-on time with the hardware. Prior experience with vintage computing is helpful but not required—enthusiasm counts for more than expertise here.
+
+Refreshments will be provided, including period-appropriate snacks (Tang, anyone?). We'll also have documentation from the original Radio Shack technical manuals available for reference.
+
+Whether we succeed or fail, we'll learn something valuable about the engineering decisions of the late 1970s and why these machines were revolutionary for their time."""
+
+[[events]]
+title = "CTF Practice Night: Web Application Security Fundamentals"
+event_type = "ctf"
+days_offset = -90
+duration_hours = 4
+location = "Main Lab"
+visibility = "members_only"
+description = """
+Monthly CTF practice session focusing on web application security challenges. This month we're working through a custom-built challenge environment that covers the OWASP Top 10, with progressively harder flags to capture.
+
+Challenge categories include:
+- SQL injection (from basic UNION attacks to blind boolean-based extraction)
+- Cross-site scripting (reflected, stored, and DOM-based variants)
+- Authentication bypass techniques
+- Insecure direct object references
+- Server-side request forgery
+- XML external entity attacks
+
+The environment will remain available for a week after the event for those who want to continue working on challenges they didn't complete.
+
+Beginners are welcome! We'll have mentors available to provide hints and explain concepts. Bring your laptop with Burp Suite or OWASP ZAP installed. A Kali VM is recommended but not required.
+
+Pizza and drinks provided. Please RSVP so we know how much to order."""
+
+[[events]]
+title = "Z80 Assembly Language: Building a Game from Scratch"
+event_type = "workshop"
+days_offset = -60
+duration_hours = 8
+location = "The Vintage Vault - Classroom"
+visibility = "public"
+description = """
+An intensive full-day workshop where we'll write a complete game in Z80 assembly language, targeting the TRS-80 Model III. No prior assembly experience required, though familiarity with any programming language will help.
+
+By the end of the day, you'll have:
+- Written a playable game entirely in assembly
+- Understood how the Z80 addresses memory and handles I/O
+- Learned debugging techniques for bare-metal programming
+- Gained appreciation for what game developers accomplished with 4KB of RAM
+
+We'll be building a simple but complete "Snake" clone, covering:
+- Setting up the development environment (cross-assemblers on modern hardware)
+- Memory maps and the TRS-80 video display system
+- Keyboard scanning and input handling
+- Game loop architecture without an operating system
+- Sprite-like graphics using character cell manipulation
+- Sound generation through the cassette port
+- High score persistence to memory
+
+Lunch break included (bring your own or there are restaurants nearby). We'll work in pairs, so this is a great opportunity to meet other members interested in low-level programming.
+
+All materials provided, including reference cards for Z80 opcodes and TRS-80 memory maps. You'll receive a ROM image of your completed game to take home."""
+
+[[events]]
+title = "48-Hour Game Jam: 8-Bit Edition"
+event_type = "hackathon"
+days_offset = -30
+duration_hours = 48
+location = "Full Building Access"
+visibility = "public"
+description = """
+Our annual retro game jam returns! This year's theme will be announced at the start of the event. You'll have 48 hours to create an original game targeting any 8-bit platform (or a reasonable emulation thereof).
+
+Eligible platforms include:
+- Any 6502-based system (Apple II, C64, Atari 2600/8-bit, NES, etc.)
+- Any Z80-based system (TRS-80, ZX Spectrum, MSX, Game Boy, etc.)
+- Any period-appropriate fantasy console (PICO-8, TIC-80, etc.)
+
+Teams of 1-4 people. Solo developers welcome and encouraged!
+
+Judging categories:
+- Best overall game
+- Best use of theme
+- Most technically impressive
+- Best audio/visual presentation
+- "Would have shipped in 1983" award for authenticity
+
+Prizes include vintage hardware, programming books, and eternal bragging rights.
+
+The space will be open 24/7 for the duration. We'll have cots available for those who need rest, plus a steady supply of caffeine and snacks. Showers... well, maybe don't skip those before coming.
+
+Registration required—we need to plan food and coordinate teams. Entry fee of $10 covers meals for the weekend."""
+
+[[events]]
+title = "Monthly Meeting - December 2024"
+event_type = "meeting"
+days_offset = -45
+duration_hours = 2
+location = "Main Meeting Room"
+visibility = "members_only"
+description = """
+Regular monthly meeting covering club business, project updates, and community discussions.
+
+Agenda:
+1. Treasury report and membership numbers
+2. Upcoming event planning for Q1 2025
+3. Equipment acquisition proposals (vote on oscilloscope purchase)
+4. Member project showcase (3 slots available—sign up at the door)
+5. Open floor for announcements and discussion
+
+As always, we'll adjourn to the local pub afterward for those interested in continuing the conversation."""
+
+# UPCOMING EVENTS (positive days_offset)
+
+[[events]]
+title = "Introduction to Hardware Hacking: Your First Circuit Bend"
+event_type = "workshop"
+days_offset = 14
+duration_hours = 4
+location = "Workshop Bay"
+visibility = "public"
+description = """
+A beginner-friendly introduction to the art of circuit bending—the creative short-circuiting of electronic devices to create new musical instruments or sound generators.
+
+We'll provide cheap electronic toys (dollar store keyboards, speak-and-spells, etc.) and guide you through the process of:
+- Safely opening and exploring electronic devices
+- Identifying interesting points to probe
+- Understanding what happens when you connect things that "shouldn't" be connected
+- Adding switches, potentiometers, and body contacts
+- Basic audio output modifications
+
+No electronics experience necessary! This workshop is designed for complete beginners who want to get their hands dirty and make some noise.
+
+Materials fee: $15 (covers your victim device, components, and a small enclosure for your creation)
+
+All tools provided. Wear clothes you don't mind getting slightly dirty—we'll be working with solder and old electronics.
+
+By the end of the session, you'll have a unique noise-making device and the knowledge to continue experimenting at home. Past creations have ranged from unsettling ambient drone machines to genuinely playable (if unconventional) instruments."""
+
+[[events]]
+title = "DEF CON CTF Qualifier Watch Party & Practice"
+event_type = "ctf"
+days_offset = 21
+duration_hours = 12
+location = "Main Lab"
+visibility = "members_only"
+description = """
+Join us as we follow along with the DEF CON CTF qualifiers and work on released challenges together. Even if we're not competitive at that level (yet!), it's a great learning experience to see how the world's best hackers approach these problems.
+
+We'll have multiple screens set up:
+- Live scoreboard tracking
+- Stream of any available commentary
+- Our own challenge attempts on released problems
+
+Throughout the day, experienced members will provide explanations of techniques being used and help newer members understand the approaches.
+
+Bring your laptop, your curiosity, and your willingness to feel humbled by how much there is to learn. That's the spirit of the event!
+
+Food and drinks provided—it's going to be a long day, so we'll keep the caffeine and calories flowing. Energy drinks for those who want them, though we also have healthier options."""
+
+[[events]]
+title = "Commodore 64 BASIC Programming for Beginners"
+event_type = "training"
+days_offset = 28
+duration_hours = 3
+location = "The Vintage Vault - Classroom"
+visibility = "public"
+description = """
+Step back to 1982 and learn programming the way millions of kids did—on a Commodore 64 with nothing but BASIC and your imagination.
+
+This session covers:
+- The C64 BASIC environment (that blinking cursor awaits!)
+- PRINT statements and making text appear
+- Variables and simple arithmetic
+- INPUT for user interaction
+- FOR-NEXT loops
+- GOTO (yes, really—it was a different time)
+- PEEK and POKE for hardware access
+- Simple graphics using character sets
+- Playing sounds with the SID chip
+
+We have enough C64s for everyone to have their own machine, connected to period-appropriate CRT monitors for the authentic experience. You'll feel the satisfying clunk of those breadbox keys and hear the distinctive whir of the 1541 disk drive.
+
+No programming experience required. By the end of the session, you'll have written several programs and saved them to actual 5.25" floppy disks (which you can take home as souvenirs).
+
+Perfect for: anyone curious about computing history, parents who want to show their kids what programming used to be like, or experienced programmers who want to appreciate how far we've come."""
+
+[[events]]
+title = "Spring Social: Retrocomputing Museum Night"
+event_type = "social"
+days_offset = 45
+duration_hours = 4
+location = "Full Building"
+visibility = "public"
+description = """
+Our semi-annual open house! All of the vintage hardware comes out of storage, gets powered up, and is available for everyone to experience.
+
+Confirmed exhibits include:
+- Working PDP-11/70 running UNIX V6
+- Apple II with original software library
+- Complete Commodore setup (VIC-20, C64, C128, Amiga 500)
+- TRS-80 collection (Model I, III, 4, CoCo)
+- IBM PC XT with original 5150 keyboard
+- Altair 8800 (front panel programming demo on the hour)
+- SGI Indy running IRIX
+- NeXTstation (the computer the web was invented on!)
+- And many more...
+
+Family friendly! Kids are welcome and encouraged. We'll have simple games and activities appropriate for younger visitors.
+
+Food and drinks provided. Suggested donation of $5 helps cover electricity costs (these old machines are not exactly energy efficient).
+
+Free parking in the lot behind the building. Accessible entrance on the east side."""
+
+[[events]]
+title = "Monthly Meeting - January 2025"
+event_type = "meeting"
+days_offset = 7
+duration_hours = 2
+location = "Main Meeting Room"
+visibility = "members_only"
+description = """
+First meeting of the new year! We'll be reviewing 2024 accomplishments and setting goals for 2025.
+
+Agenda:
+1. Year in review: events held, membership growth, equipment acquired
+2. Financial summary and 2025 budget discussion
+3. Election of new board members (nominations open now)
+4. Planning for DEF CON group trip
+5. Proposed new workshop series: "From Transistor to CPU"
+6. Member project showcase
+
+Special item: vote on whether to acquire a DEC PDP-8 that's become available locally. Comes with original documentation and several working peripherals. Price is right but we need to discuss space and restoration commitment."""
+
+[[events]]
+title = "Advanced Binary Exploitation Workshop"
+event_type = "training"
+days_offset = 60
+duration_hours = 6
+location = "Main Lab"
+visibility = "members_only"
+description = """
+A deep dive into modern binary exploitation techniques. This is an intermediate-to-advanced workshop—you should be comfortable with C programming, basic x86 assembly, and have some familiarity with concepts like buffer overflows.
+
+Topics covered:
+- Return-oriented programming (ROP) chain construction
+- Defeating ASLR through information leaks
+- Stack canary bypass techniques
+- Format string exploitation for arbitrary read/write
+- Heap exploitation basics (use-after-free, double-free)
+- Introduction to kernel exploitation concepts
+
+We'll work through a series of progressively harder challenges, each building on techniques learned in previous ones. By the end, you should be comfortable approaching CTF pwn challenges at the intermediate level.
+
+Prerequisites:
+- Laptop with Linux VM (Ubuntu 22.04 recommended)
+- pwntools installed and working
+- GDB with pwndbg or GEF
+- Familiarity with at least one disassembler (Ghidra, IDA, etc.)
+
+Materials will be distributed via our internal CTF platform a week before the event so you can set up your environment in advance."""
+
+# =============================================================================
+# ANNOUNCEMENTS
+# =============================================================================
+
+[[announcements]]
+title = "Welcome to the Hipster Electronics Hacking Club Portal!"
+announcement_type = "news"
+days_ago = 1
+is_public = true
+featured = true
+content = """
+We're thrilled to announce the launch of our new member portal! After months of development (and more than a few late-night debugging sessions), we finally have a modern way to manage club activities.
+
+What you can do with the new portal:
+- View and RSVP to upcoming events
+- Update your membership information
+- See announcements without checking your email
+- Track your membership status and payment history
+
+For those who remember the old system (a spreadsheet, a mailing list, and prayer), this is a significant upgrade. We've tried to keep things simple while adding the features members have been requesting.
+
+If you encounter any bugs or have feature requests, please let an admin know. This system is itself a club project, and contributions are welcome! The code is open source and available on our GitHub.
+
+Your existing login credentials should work. If you have trouble accessing your account, use the password reset function or grab any board member at the next meeting.
+
+Here's to more efficient club management and more time for what we actually care about: making cool stuff with old computers!"""
+
+[[announcements]]
+title = "CTF Team Finishes Top 100 in International Competition"
+announcement_type = "achievement"
+days_ago = 15
+is_public = true
+featured = true
+content = """
+Huge congratulations to our CTF team for their performance in last weekend's HackTheBox University CTF! Out of over 1,200 teams worldwide, HEHC finished in 87th place—our best showing ever in an international competition.
+
+Special recognition goes to:
+- Alice for solving three of the four pwn challenges, including the brutal "kernel_nightmare" that only 45 teams completed
+- Bob and Charlie for their relentless work on the web challenges, including a creative unintended solution that the organizers have since patched
+- The forensics crew for their 4am breakthrough on the memory dump analysis challenge
+- Everyone who stayed up way too late, ate too much pizza, and had way too much fun
+
+For those curious about the challenges, we'll be doing a writeup presentation at next month's meeting where team members will walk through their solutions. It's a great learning opportunity even if you're new to CTFs.
+
+This result qualifies us for direct entry into two upcoming invite-only events. More details to come as we confirm participation.
+
+If you're interested in joining the CTF team, no experience necessary! We practice every other Thursday and always welcome new members. The best way to learn is to struggle alongside people who are also learning."""
+
+[[announcements]]
+title = "Equipment Donation: HP Logic Analyzer and Tektronix Oscilloscopes"
+announcement_type = "news"
+days_ago = 30
+is_public = false
+featured = false
+content = """
+We've received a generous equipment donation from a member's former employer who was clearing out their test lab. The haul includes:
+
+- HP 16500B Logic Analyzer with multiple cards
+- Two Tektronix TDS 2024 4-channel oscilloscopes
+- HP 8657A Signal Generator (1 GHz)
+- Various probes, cables, and accessories
+- Three boxes of manuals and documentation
+
+All equipment has been tested and is functional, though the logic analyzer needs some TLC on its floppy drive (of course it has a floppy drive).
+
+These additions significantly upgrade our electronics workbench capabilities. The signal generator in particular opens up possibilities for RF projects that weren't practical before.
+
+Equipment is available for member use during open hours. Please sign out anything you're using in the logbook, and return things to their proper places when done. If you're not familiar with any of this equipment, ask before using—some of it is quite expensive and delicate.
+
+Thanks to Dave for coordinating the donation and transport, and to the workshop committee for finding homes for everything in our already-crowded space."""
+
+[[announcements]]
+title = "Reminder: Membership Renewals Due"
+announcement_type = "general"
+days_ago = 5
+is_public = false
+featured = false
+content = """
+Just a friendly reminder that membership renewals are due at the end of the month. You can renew through the portal (finally!), or pay at any meeting with cash, check, or card.
+
+Current rates:
+- Regular: $100/month
+- Student (with valid ID): $50/month
+- Corporate: $250/month
+- Lifetime: $13,337 (yes, really)
+
+Membership includes:
+- 24/7 building access
+- Use of all equipment and facilities
+- Voting rights on club decisions
+- Discounts on workshop materials
+- Access to the member-only Discord channels
+- Warm fuzzy feelings from supporting your local hackerspace
+
+If you're having financial difficulties, please reach out to any board member privately. We have a hardship fund and never want cost to be a barrier to participation.
+
+For those who've let their membership lapse: we miss you! Come back and see what's new. No judgment, just hackers being hackers."""
+
+[[announcements]]
+title = "Building Access: New Key Fob System Active"
+announcement_type = "general"
+days_ago = 45
+is_public = false
+featured = false
+content = """
+The new access control system is now live! If you haven't picked up your new key fob yet, please see a board member at the next meeting or during open hours.
+
+Important changes:
+- Old keys/codes no longer work as of Monday
+- New fobs work on all doors (main entrance, workshop, server room for those with access)
+- The system logs entry/exit for safety purposes
+- Lost fobs can be deactivated immediately—report losses ASAP
+
+The new system was a significant investment but addresses several long-standing issues:
+- No more hunting down former members to get keys back
+- Easy to grant/revoke access for specific areas
+- Better security for expensive equipment
+- Audit trail in case of incidents
+
+Your fob is encoded with your membership info. Please don't share it or let others use it—this undermines the whole point of the system. Guests should always be accompanied by a member.
+
+Technical details for the curious: the system uses 13.56 MHz MIFARE DESFire cards with proper encryption. No, we didn't cheap out with the trivially cloneable kind. Yes, we'd love for someone to try to break it (responsibly, please)."""
+
+[[announcements]]
+title = "Workshop Series: Building a 6502 Computer from Scratch"
+announcement_type = "news"
+days_ago = 60
+is_public = true
+featured = false
+content = """
+We're excited to announce a new six-part workshop series starting next month: building a complete 6502-based computer from individual chips on a breadboard!
+
+Over six sessions, you'll construct:
+- Session 1: The clock circuit and reset logic
+- Session 2: ROM and the first program (blinking an LED)
+- Session 3: RAM and memory mapping
+- Session 4: The 6522 VIA for I/O
+- Session 5: Video output (composite or VGA, your choice)
+- Session 6: Keyboard input and tying it all together
+
+By the end, you'll have a working computer that can run BASIC, play simple games, and serve as a platform for further experimentation. More importantly, you'll understand exactly how a computer works at the hardware level—no magic, no abstraction, just electrons doing what they're told.
+
+Materials cost: approximately $50-75 depending on options. We've negotiated a group buy for the more expensive components.
+
+Prerequisites: basic soldering ability and patience. No prior electronics experience required—we'll explain everything as we go.
+
+Space is limited to 15 participants due to equipment and mentorship constraints. Registration opens next week. Past workshop attendees get priority for the first 48 hours.
+
+This series was inspired by Ben Eater's excellent YouTube series, but we'll be adding our own twists and building something slightly different."""

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Events - Metro Baduk Club</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="alternate" type="application/rss+xml" title="Metro Baduk Club Announcements" href="/public/feed/rss">
+</head>
+<body>
+    <header>
+        <nav>
+            <div class="logo">
+                <img src="images/white-stone.svg" alt="" class="stone">
+                Metro Baduk Club
+                <img src="images/black-stone.svg" alt="" class="stone">
+            </div>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="events.html">Events</a></li>
+                <li><a href="join.html">Join</a></li>
+                <li><a href="#" id="portal-link" class="btn-portal">Member Portal</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main>
+        <section>
+            <h1>Upcoming Events</h1>
+            <p>From casual club nights to competitive tournaments, there's always a game waiting for you.
+               Check out what's coming up and mark your calendar.</p>
+            <p class="feed-links" style="margin-bottom: var(--space-lg);">
+                <a href="/public/feed/calendar" id="ical-download">Subscribe to Calendar (iCal)</a>
+            </p>
+            <div id="all-events-list" class="events-grid">
+                <p class="loading">Loading events...</p>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="footer-content">
+            <p>&copy; 2024 Metro Baduk Club</p>
+            <p class="tagline">The board is small. The possibilities are infinite.</p>
+            <p class="powered-by">Powered by <a href="https://github.com/IndustriousKraken/coterie">Coterie</a></p>
+        </div>
+    </footer>
+
+    <script src="js/config.js"></script>
+    <script src="js/api.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>

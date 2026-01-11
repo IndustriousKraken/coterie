@@ -149,3 +149,394 @@ color = "#FFC107"
 name = "Memorial"
 slug = "memorial"
 color = "#455A64"
+
+# ============================================================================
+# Events
+# ============================================================================
+
+[[events]]
+title = "Annual Community Service Day"
+event_type = "outreach"
+days_offset = 14
+duration_hours = 6
+location = "Various Community Locations"
+visibility = "public"
+description = """
+Join us for our annual day of service to the wider community! This year we're partnering with local organizations to make a meaningful impact in several areas around our neighborhood.
+
+Morning teams will be working with Habitat for Humanity on a home renovation project for a family in need. We'll be painting, doing light landscaping, and helping with interior finishing work. No construction experience is necessary—experienced volunteers will guide all tasks. Please wear clothes you don't mind getting dirty.
+
+Our food pantry team will be sorting and organizing donations at the Regional Food Bank, followed by preparing meal boxes for homebound seniors through the Meals on Wheels program. This is a great opportunity for families with children to participate together.
+
+The environmental crew will be cleaning up Miller Creek Park and planting native species along the waterway. The Parks Department is providing all tools and materials, and their naturalist will give a brief talk about local ecology during our lunch break.
+
+We'll gather for a simple lunch at noon (provided by the hospitality committee), share stories of the morning's work, and then continue with afternoon projects. Childcare is available at the fellowship hall for children under 5.
+
+Sign up in the narthex or through the member portal to indicate which project interests you. Carpooling will be arranged for off-site locations. All ages and abilities welcome—there are meaningful tasks for everyone!"""
+
+[[events]]
+title = "Interfaith Dialogue: Building Bridges in Our Community"
+event_type = "fellowship"
+days_offset = 21
+duration_hours = 3
+location = "Fellowship Hall"
+visibility = "public"
+description = """
+We are honored to host an evening of interfaith conversation and connection with leaders and members from neighboring faith communities. This gathering reflects our commitment to understanding, respect, and cooperation across religious traditions.
+
+Our panel will include Rabbi Sarah Goldstein from Temple Beth Shalom, Imam Ahmed Hassan from the Islamic Center, Rev. Dr. Patricia Williams from Grace AME Church, and Dharma Teacher Michael Lee from the Zen Center. Each will offer brief reflections on how their tradition approaches themes of community, compassion, and service.
+
+Following the panel, we'll break into small mixed groups for facilitated conversations around shared tables. Prompts will explore common ground: How do our traditions teach us to care for neighbors? What spiritual practices sustain us in difficult times? How can we work together on issues affecting our city?
+
+A light reception with refreshments from various culinary traditions will follow. Several of our members have volunteered to prepare dishes representing their cultural heritage, and our guests are bringing contributions as well.
+
+This event grows out of relationships built over years of cooperation—joint Thanksgiving services, shared disaster relief efforts, and ongoing social justice partnerships. We hope it deepens those bonds and welcomes newcomers into the circle of mutual respect.
+
+RSVP requested for planning purposes. Free and open to the public."""
+
+[[events]]
+title = "Youth Group Lock-In: Night of Games and Growth"
+event_type = "youth"
+days_offset = 7
+duration_hours = 14
+location = "Youth Center"
+visibility = "members_only"
+max_attendees = 30
+description = """
+Middle and high school youth are invited to an overnight adventure at the church! Drop-off is at 7 PM Friday, pickup at 9 AM Saturday morning. Get ready for a night of fun, faith, and maybe a little bit of not-sleeping.
+
+The evening kicks off with a pizza party and our famous "chaos games" in the fellowship hall—capture the flag, sardines, and the legendary gaga ball tournament. Wear comfortable clothes and shoes you can run in (no flip-flops, please).
+
+Around 10 PM we'll transition to our theme for the night: "Who Am I? Identity in Faith." Through interactive activities, small group discussions, and creative expression, we'll explore questions of identity, belonging, and purpose. How do faith and values shape who we're becoming? How do we stay true to ourselves while navigating peer pressure and social expectations?
+
+Midnight snacks and a movie follow (we'll vote on options—keep it PG-13 or below). For those who actually want to sleep, quiet spaces will be available starting around 1 AM. Early birds can expect sunrise yoga on the lawn, weather permitting.
+
+We'll close with a simple breakfast prepared by parent volunteers and a morning devotion in the chapel.
+
+What to bring: sleeping bag, pillow, toiletries, change of clothes, any medications, and a signed permission form (available on the youth page or from the office). Cost is $15 to cover food and supplies; scholarships available—just ask.
+
+Adult chaperones (background checked) will be present throughout. Contact Youth Director Jamie for questions."""
+
+[[events]]
+title = "Wednesday Evening Study: The Wisdom Literature"
+event_type = "study-group"
+days_offset = 3
+duration_hours = 2
+location = "Library"
+visibility = "members_only"
+description = """
+Our ongoing Wednesday evening study continues with a deep dive into Ecclesiastes, often considered the most philosophical and challenging book in the wisdom tradition. This week we're exploring chapters 3-4, including the famous "a time for everything" passage.
+
+Pastor Rebecca will provide historical context—who might have written this text and why, the Persian-period influences visible in its language and themes, and how ancient readers would have understood its seemingly contradictory messages about meaning and futility.
+
+We'll then break into discussion groups to wrestle with the text ourselves. What does the author mean by "meaningless" (or "vanity" in older translations)? Is this pessimism, realism, or something else entirely? How do these ancient reflections on mortality, injustice, and life's absurdities speak to our contemporary struggles?
+
+Bring your preferred translation; having multiple versions enriches our discussions considerably. Study guides are available from the office for those who want to read ahead.
+
+This group meets weekly and newcomers are always welcome—no prior biblical scholarship required, just curiosity and willingness to engage with challenging ideas. Childcare provided upon request (please let us know by Tuesday).
+
+Light refreshments served. Study runs 7-9 PM."""
+
+[[events]]
+title = "New Member Welcome and Orientation"
+event_type = "fellowship"
+days_offset = 10
+duration_hours = 3
+location = "Fireside Room"
+visibility = "public"
+description = """
+Are you considering making this congregation your spiritual home? Have you been attending for a while and wondering what the next step might look like? This orientation is for you.
+
+We'll share the story of our community—our history going back to the founding families in 1952, the values that have shaped us, the challenges we've faced, and our vision for the future. You'll hear from longtime members about what draws them here and what keeps them engaged.
+
+Staff members will explain the many ways to connect: small groups for every interest and life stage, service opportunities, educational programs, and spiritual practices. We'll tour the building (it's bigger than it looks!) and answer all your questions about how things work.
+
+Most importantly, we want to hear your story. What brings you here? What are you looking for in a faith community? What gifts and passions do you carry? Getting to know each other is what this is really about.
+
+A catered lunch follows the formal program, giving you time to mingle with current members who are eager to meet you. Childcare and children's programming run parallel to the adult orientation.
+
+Attending this orientation carries no obligation—you're welcome to continue discerning whether this is the right community for you. If you do decide to join, we'll celebrate your commitment in an upcoming service.
+
+Please register so we can plan for food and childcare. Contact the church office with questions."""
+
+[[events]]
+title = "Blessing of the Animals"
+event_type = "celebration"
+days_offset = 17
+duration_hours = 2
+location = "Courtyard Garden"
+visibility = "public"
+description = """
+In the tradition of St. Francis of Assisi, we gather to celebrate and give thanks for the animals in our lives. Bring your pets—of all species and sizes—for a special outdoor blessing service.
+
+Pastor David will offer reflections on the sacred bond between humans and animals, our responsibility as caretakers of creation, and the comfort and joy our animal companions bring to our lives. Each animal will receive an individual blessing and a small commemorative medal for their collar or cage.
+
+We've had everything from dogs and cats to hamsters, parakeets, horses (yes, someone brought a horse), and even a pot-bellied pig named Hamilton. Fish and other aquatic pets can come in their travel tanks. Photos of deceased pets are also welcome for a blessing of remembrance.
+
+For safety, all dogs must be leashed and cats or small animals must be in carriers or on harnesses. If your pet doesn't do well with crowds or other animals, we can arrange a private blessing—just contact the office.
+
+We'll have treats for both pets and humans, a blessing station for photos, and information from the local animal shelter about volunteer opportunities and animals seeking homes. Donations of pet food and supplies will be collected for the community pet food bank.
+
+Stuffed animal friends are also welcome, especially for our youngest attendees! This is a family-friendly event and all are welcome—members, visitors, and community neighbors alike.
+
+Rain location: covered pavilion."""
+
+[[events]]
+title = "Finance Committee Meeting"
+event_type = "committee"
+days_offset = 5
+duration_hours = 2
+location = "Conference Room A"
+visibility = "members_only"
+description = """
+The Finance Committee will meet to review third-quarter financial statements and begin preliminary work on next year's budget proposal. Committee members should plan to attend; interested congregation members are welcome to observe.
+
+Agenda items include: review of current year-to-date income and expenses versus budget, update on the capital campaign for roof replacement, investment portfolio performance report from our advisor, and discussion of stewardship campaign strategies for the pledge drive.
+
+Treasurer Thompson will present the quarterly report and year-end projections. We're currently running slightly under budget on pledges (typical for this time of year) but ahead on facility rental income due to several new regular renters.
+
+The roof project bids came in higher than our initial estimates, and we'll need to discuss options: adjusting scope, extending timeline, or additional fundraising. Building Committee Chair Martinez will join us to explain the proposals.
+
+As we look toward budget planning, we're seeking input on ministry priorities. What programs deserve additional resources? Where might we find efficiencies? Committee members are asked to gather feedback from their circles before the meeting.
+
+Meeting materials will be distributed electronically three days in advance. If you have agenda items to propose, please submit them to the committee chair by Monday.
+
+Light refreshments provided. We typically adjourn by 9 PM."""
+
+[[events]]
+title = "Community Thanksgiving Service"
+event_type = "service"
+days_offset = -10
+duration_hours = 2
+location = "Main Sanctuary"
+visibility = "public"
+description = """
+Our annual ecumenical Thanksgiving service brought together members from seven different faith communities for an evening of gratitude, music, and reflection. This cherished tradition goes back over forty years to when three neighborhood churches decided to celebrate together.
+
+This year's service was hosted by our congregation, with Rev. Thomas Morrison from First Presbyterian delivering the homily on "Gratitude in Difficult Times." The combined choir, featuring singers from all participating congregations, performed three pieces including a stunning arrangement of "Now Thank We All Our God" and a contemporary piece by Alice Parker.
+
+Representatives from each tradition offered prayers of thanksgiving in the styles of their communities—from formal liturgy to spontaneous praise, from silent meditation to call-and-response. The diversity of expression reminded us how many paths lead to gratitude.
+
+Following the service, attendees gathered in the fellowship hall for a dessert reception. Many families have made this an annual tradition—we saw grandparents who remember the first services bringing their grandchildren to continue the legacy.
+
+A special collection raised over $3,500 for the community food bank, which reports unprecedented demand this year. Many attendees also brought canned goods and non-perishables.
+
+Planning is already beginning for next year's service, which will be hosted by Temple Beth Shalom. If you'd like to participate in the planning committee, contact the church office."""
+
+[[events]]
+title = "Memorial Service: Helen Morrison"
+event_type = "service"
+days_offset = -5
+duration_hours = 2
+location = "Main Sanctuary"
+visibility = "members_only"
+description = """
+We gathered to celebrate the life of Helen Marie Morrison (1938-2024), a beloved member of our congregation for over fifty years. Helen passed peacefully at home on October 28th, surrounded by family and the prayers of her church community.
+
+Helen served this congregation in countless ways: as Sunday School teacher for thirty years, choir member, women's guild president, and tireless volunteer wherever needed. Many adults in our congregation can trace their early faith formation to "Miss Helen's" third-grade class, where she combined biblical storytelling with craft projects and seemingly endless patience.
+
+The service included reflections from Pastor David, who shared memories from his weekly visits during Helen's final months, and from Helen's daughter Margaret, who spoke about growing up with a mother whose faith was lived daily, not just proclaimed. The choir sang "Amazing Grace" and "In the Garden"—two of Helen's favorites.
+
+Following the service, the family received visitors in the fellowship hall, where photo boards displayed Helen's life from her rural Iowa childhood through her decades in our community. Stories were shared, tears were shed and wiped away, and her famous lemon bars (made from her recipe by the hospitality committee) were enjoyed one more time.
+
+Memorial gifts may be directed to the Sunday School program that Helen loved, or to Hospice of the Valley in appreciation for their compassionate care. Cards for the family may be left at the church office."""
+
+[[events]]
+title = "Choir Rehearsal: Christmas Cantata Preparation"
+event_type = "fellowship"
+days_offset = 2
+duration_hours = 2
+location = "Choir Room"
+visibility = "members_only"
+description = """
+Regular weekly choir rehearsal continues with intensive preparation for our December 22nd Christmas Cantata. This year we're performing Dan Forrest's "Luminous Mysteries of Light," a stunning contemporary work that traces the Christmas story from prophecy through incarnation.
+
+Music Director Patricia has distributed learning recordings and encourages all choir members to practice their parts independently between rehearsals. We're on a tight timeline and need everyone as prepared as possible. Sectional rehearsals are available by arrangement.
+
+This week's focus: movements 3-5, including the challenging "Gloria" with its shifting time signatures and divisi passages. Sopranos, be ready for that high A. Tenors, we'll work on the fugal entrance in movement 4.
+
+Instrumentalists: strings and brass rehearsal schedule is now posted in the music office. Piano and organ run-through with the choir is scheduled for December 15th.
+
+We still need additional singers! If you've been thinking about joining choir but haven't taken the leap, this is a wonderful (if intense) time to start. No audition required—just a love of singing and willingness to commit to rehearsals through the performance. Contact Patricia or just show up Thursday at 7:30.
+
+Reminder: the cantata will be presented in both Sunday services on the 22nd. All choir members should plan to arrive by 8:15 for warm-up before the first service."""
+
+[[events]]
+title = "Advent Wreath Workshop"
+event_type = "fellowship"
+days_offset = 28
+duration_hours = 2
+location = "Fellowship Hall"
+visibility = "members_only"
+max_attendees = 40
+description = """
+Create a beautiful Advent wreath to use in your home devotions throughout the season. This hands-on workshop provides all materials and instruction for making a traditional wreath with fresh greenery and candles.
+
+The Christian Education Committee has ordered fresh fraser fir, pine, and cedar boughs, wreath forms, candles (three purple, one pink, one white), and ribbon. We'll have several design examples to inspire you, but creativity is encouraged—make your wreath uniquely yours.
+
+While we work, we'll discuss the history and symbolism of the Advent wreath: why four candles? What do the colors represent? How can lighting the wreath become a meaningful family practice rather than just decoration? Take-home devotional guides will be provided.
+
+This event works well for all ages—children love working with the fragrant greens (supervised, of course, away from the candle flame!), and the finished wreaths make wonderful family centerpieces.
+
+Cost is $20 per wreath to cover materials; scholarships available as always. Please register in advance so we can order sufficient supplies. If you're joining us, bring pruning shears if you have them (we'll have some to share).
+
+Coffee, cider, and homemade cookies will be served. Festive music will be playing. Ugly Christmas sweaters optional but appreciated.
+
+Registration deadline: November 25th. Walk-ins accepted if materials remain."""
+
+# ============================================================================
+# Announcements
+# ============================================================================
+
+[[announcements]]
+title = "Welcome to Our New Member Portal"
+announcement_type = "general"
+days_ago = 1
+is_public = true
+featured = true
+content = """
+We are delighted to announce the launch of our new member portal—a modern, secure way to stay connected with our congregation family!
+
+This portal was developed to help us communicate more effectively, reduce paper usage, and make it easier for busy members to stay engaged with our community. You can now view upcoming events, read announcements, update your contact information, and access member resources all in one place.
+
+Features available to all members:
+- View and RSVP to events
+- Read and search announcements
+- Update your contact information and communication preferences
+- View your giving history and pledge status
+- Access the member directory (with privacy controls—you choose what to share)
+- Download forms, newsletters, and other resources
+
+Your initial login credentials were emailed to the address we have on file. If you haven't received the email or have trouble logging in, please contact the church office during business hours or email webmaster@congregation.local.
+
+We believe this tool will help strengthen our connections and make our community more accessible to all members, whether you're always in the building or joining us from afar. We welcome your feedback as we continue to improve!
+
+Training sessions will be offered after services this Sunday for anyone who would like hands-on help getting started."""
+
+[[announcements]]
+title = "Annual Stewardship Campaign: Grateful Hearts, Generous Hands"
+announcement_type = "general"
+days_ago = 5
+is_public = true
+featured = true
+content = """
+As we approach the season of Thanksgiving, we invite you to prayerfully consider your commitment to our congregation for the coming year. Your pledges make possible everything we do together—from worship and education to fellowship and outreach.
+
+This year's theme, "Grateful Hearts, Generous Hands," reflects our belief that giving flows naturally from gratitude. When we pause to recognize the blessings in our lives—family, community, purpose, hope—generosity becomes not an obligation but a joy.
+
+Our proposed budget for the coming year is $485,000, representing a modest 3% increase to account for cost-of-living adjustments for staff, utilities increases, and one new part-time position in youth ministry. This budget maintains all current programming while investing in our future.
+
+Pledge Sunday is November 17th. You'll receive pledge materials in the mail this week, or you can complete your pledge online through the member portal. We ask that everyone prayerfully consider their commitment—whatever amount represents your grateful response. Every pledge matters, regardless of size.
+
+Questions about pledging, giving options (including securities and IRA distributions), or planned giving? Contact our stewardship chair or the church office. All conversations are confidential.
+
+Thank you for your faithfulness. Together, we are building something beautiful."""
+
+[[announcements]]
+title = "Celebrating 50 Years: Pastor Emeritus James Wilson"
+announcement_type = "celebration"
+days_ago = 3
+is_public = true
+featured = false
+content = """
+This Sunday, we honor the Reverend Dr. James Wilson on the 50th anniversary of his ordination to ministry. Pastor Jim served our congregation as senior pastor from 1985 to 2010, and his influence continues to shape our community today.
+
+During his twenty-five years of leadership, Pastor Jim guided us through significant transitions: the building campaign that gave us our current sanctuary, the development of our contemporary service, the establishment of our preschool program, and the deepening of our social justice commitments. Under his ministry, our congregation grew from 150 to over 400 active members.
+
+Beyond the statistics, those who knew Pastor Jim remember his personal touch: the hospital visits that brought comfort, the sermons that challenged and inspired, the laughter that lightened heavy moments, and the steady presence through community crises and celebrations alike.
+
+Since his retirement, Pastor Jim and his wife Dorothy have remained active in worship and occasionally assist with pastoral care. His wisdom and gentle humor continue to bless us.
+
+A reception will follow Sunday's 10:30 service in the fellowship hall. If you have memories, photos, or words of appreciation to share, please bring them—we're compiling a memory book for Pastor Jim and Dorothy.
+
+All are invited to help us say: "Thank you, Pastor Jim, for fifty years of faithful service."
+
+(Note: Pastor Jim has requested no gifts, but contributions in his honor may be made to the seminary scholarship fund he established.)"""
+
+[[announcements]]
+title = "Prayer Concerns and Thanksgivings"
+announcement_type = "prayer"
+days_ago = 2
+is_public = false
+featured = false
+content = """
+Please hold these members and friends in your prayers:
+
+For Healing: Margaret Thompson (recovering from hip surgery at home—visits welcome, please call first); Robert Chen (beginning chemotherapy treatments this week); the Morrison family as they grieve the loss of Helen; little Sophia Martinez (hospitalized with RSV, improving slowly); and all those battling illness known only to God.
+
+For Comfort: The Johnson family following the sudden passing of Emily's father; those struggling with seasonal depression as days grow shorter; anyone feeling isolated or lonely.
+
+For Guidance: Our high school seniors navigating college applications and life decisions; the search committee as they discern candidates for our associate pastor position; world leaders facing difficult choices that affect millions.
+
+For Thanksgiving: The birth of Samuel Thomas Richardson, welcomed by proud parents Amy and Jake and big sister Grace; the Peterson's 60th wedding anniversary; the successful completion of our fall mission trip to Appalachia; and the many small blessings of ordinary days.
+
+To add names to the prayer list or request a visit from the pastoral care team, contact the church office or speak with any pastor. Names remain on the active list for four weeks unless updated. The prayer chain can be activated for urgent needs by calling the office.
+
+"Bear one another's burdens, and so fulfill the law of Christ." —Galatians 6:2"""
+
+[[announcements]]
+title = "Capital Campaign Update: Roof Project Progress"
+announcement_type = "general"
+days_ago = 8
+is_public = true
+featured = false
+content = """
+Thank you for your tremendous response to our "Raise the Roof" capital campaign! We're excited to report that we've reached 78% of our $180,000 goal, with $140,400 in pledges and gifts received.
+
+After reviewing three contractor proposals, the Building Committee has selected Paramount Roofing for the project. They offered the best combination of experience, references, materials quality, and value. Work is tentatively scheduled to begin in late spring, weather permitting.
+
+The project scope includes complete replacement of the sanctuary and education wing roofs, new gutters and downspouts, and improved attic ventilation. We're also taking this opportunity to add solar-ready infrastructure, positioning us for a potential future solar installation grant application.
+
+What you'll notice during construction: Some parking disruption, possible noise during worship (we're scheduling around our service times as much as possible), and temporary protective walkways. The sanctuary will remain accessible throughout.
+
+We're still $39,600 short of our goal. If you haven't yet made a pledge, please consider contributing. Payment plans are available, and gifts of any size help. Many members have asked about naming opportunities; contact the church office if interested.
+
+Thank you for investing in the physical infrastructure that houses our spiritual community. This building has served us faithfully for over fifty years; with this work, it will serve future generations just as well.
+
+Questions? Contact Building Committee Chair George Martinez or join us at the town hall meeting following worship on November 24th."""
+
+[[announcements]]
+title = "Advent Devotional Booklets Available"
+announcement_type = "service"
+days_ago = 0
+is_public = true
+featured = true
+content = """
+Our annual Advent devotional booklet is now available! This year's theme is "Light in the Darkness," featuring daily reflections, Scripture readings, prayers, and activities for the four weeks of Advent leading to Christmas Day.
+
+The booklet was created by members of our own congregation—over twenty people contributed reflections, poetry, artwork, and recipes. It's a beautiful representation of our community's creativity and faith.
+
+Inside you'll find:
+- Daily Scripture readings following the Revised Common Lectionary
+- Brief reflections written by members of all ages (including several from our youth!)
+- A weekly candle-lighting liturgy for use with your Advent wreath
+- Suggested hymns and songs for each week
+- Prayers for morning and evening
+- Family activities and discussion questions
+- Simple recipes for seasonal treats
+- An "Advent action" each day—small ways to spread light and love
+
+Print copies are available in the narthex, free of charge. We encourage you to take copies for friends and neighbors as well—they make meaningful gifts and conversation starters.
+
+A digital version is also available through the member portal for those who prefer reading on devices or who live far away.
+
+Many thanks to our Advent Devotional Committee and all contributors for their work. May this resource deepen your journey through the sacred season of waiting and hope."""
+
+[[announcements]]
+title = "Memorial: Helen Marie Morrison (1938-2024)"
+announcement_type = "memorial"
+days_ago = 7
+is_public = true
+featured = false
+content = """
+It is with heavy hearts and deep gratitude for a life well-lived that we announce the passing of Helen Marie Morrison on October 28th. Helen was 86 years old and had been a faithful member of our congregation for over fifty years.
+
+Helen was born in rural Iowa to farming parents who instilled in her a deep faith and a fierce work ethic. She met her beloved husband Charles at a church picnic in 1958; they were married for 54 years until his passing in 2012. Together they raised three children: Margaret (David) Chen, Robert (deceased), and Thomas (Jennifer) Morrison. She was grandmother to seven and great-grandmother to three, with one more on the way.
+
+Helen's decades of service to our congregation are legendary. She taught third-grade Sunday School for thirty years, shaping the faith of hundreds of children. She sang in the choir, organized countless potlucks and funeral dinners, served on the women's guild board, and was always among the first to volunteer when help was needed.
+
+But Helen will be most remembered for her warmth, her ever-present smile, and her gift for making everyone feel valued. She remembered names and stories, asked thoughtful questions, and listened with genuine interest. At her request, her memorial service was a celebration of the community she loved, filled with music, laughter, and lemon bars made from her secret recipe.
+
+A memorial fund has been established in Helen's name to support the Sunday School program. Cards for the family may be sent to the church office.
+
+"Well done, good and faithful servant." —Matthew 25:21"""

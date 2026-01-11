@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Join - Metro Baduk Club</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <header>
+        <nav>
+            <div class="logo">
+                <img src="images/white-stone.svg" alt="" class="stone">
+                Metro Baduk Club
+                <img src="images/black-stone.svg" alt="" class="stone">
+            </div>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="events.html">Events</a></li>
+                <li><a href="join.html">Join</a></li>
+                <li><a href="#" id="portal-link" class="btn-portal">Member Portal</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main>
+        <section>
+            <h1>Join Metro Baduk Club</h1>
+            <p>Ready to join our community of Go enthusiasts? Fill out the form below to apply for membership.
+               We welcome players of all skill levels, from complete beginners to experienced dan players.</p>
+        </section>
+
+        <section>
+            <div class="form-container">
+                <div class="about-text">
+                    <h2>Membership Benefits</h2>
+                    <ul style="margin-bottom: var(--space-lg);">
+                        <li>Access to all club nights and casual play sessions</li>
+                        <li>Discounted entry to tournaments</li>
+                        <li>Free teaching games with stronger players</li>
+                        <li>Access to club equipment (boards, stones, clocks)</li>
+                        <li>Invitations to special events and pro visits</li>
+                        <li>Access to the member portal and online rankings</li>
+                    </ul>
+
+                    <form id="signup-form">
+                        <div id="signup-message"></div>
+
+                        <div class="form-group">
+                            <label for="email">Email Address</label>
+                            <input type="email" id="email" name="email" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="username">Username</label>
+                            <input type="text" id="username" name="username" required
+                                   pattern="[a-zA-Z0-9_-]+" title="Letters, numbers, underscores and hyphens only">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="full_name">Full Name</label>
+                            <input type="text" id="full_name" name="full_name" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="membership_type">Membership Type</label>
+                            <select id="membership_type" name="membership_type" required>
+                                <option value="regular">Regular Member ($5/month)</option>
+                                <option value="student">Student ($3/month)</option>
+                                <option value="family">Family ($8/month)</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="password">Password</label>
+                            <input type="password" id="password" name="password" required minlength="8">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="password_confirm">Confirm Password</label>
+                            <input type="password" id="password_confirm" name="password_confirm" required minlength="8">
+                        </div>
+
+                        <button type="submit" class="btn btn-primary btn-large" style="width: 100%;">
+                            Submit Application
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="footer-content">
+            <p>&copy; 2024 Metro Baduk Club</p>
+            <p class="tagline">The board is small. The possibilities are infinite.</p>
+            <p class="powered-by">Powered by <a href="https://github.com/IndustriousKraken/coterie">Coterie</a></p>
+        </div>
+    </footer>
+
+    <script src="js/config.js"></script>
+    <script src="js/api.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Events - Unity Community Church</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="alternate" type="application/rss+xml" title="Unity Community Church Announcements" href="/public/feed/rss">
+</head>
+<body>
+    <header>
+        <nav>
+            <div class="logo">Unity Community Church</div>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="events.html">Events</a></li>
+                <li><a href="join.html">Connect</a></li>
+                <li><a href="#" id="portal-link" class="btn-portal">Member Portal</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main>
+        <section>
+            <h1>Upcoming Events</h1>
+            <p>From worship services to fellowship gatherings, study groups to service projects,
+               there's always something happening at Unity Community Church. We invite you to
+               join us!</p>
+            <p class="feed-links" style="margin-bottom: var(--space-lg);">
+                <a href="/public/feed/calendar" id="ical-download">Subscribe to Calendar</a>
+            </p>
+            <div id="all-events-list" class="events-grid">
+                <p class="loading">Loading events...</p>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="footer-content">
+            <p>&copy; 2024 Unity Community Church</p>
+            <p class="tagline">Love God. Love People. Serve the World.</p>
+            <p class="powered-by">Powered by <a href="https://github.com/IndustriousKraken/coterie">Coterie</a></p>
+        </div>
+    </footer>
+
+    <script src="js/config.js"></script>
+    <script src="js/api.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>

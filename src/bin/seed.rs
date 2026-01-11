@@ -56,6 +56,10 @@ struct ExampleConfig {
     event_types: Vec<EventTypeConfig>,
     #[serde(default)]
     announcement_types: Vec<AnnouncementTypeConfig>,
+    #[serde(default)]
+    events: Vec<EventConfig>,
+    #[serde(default)]
+    announcements: Vec<AnnouncementConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,6 +106,39 @@ struct AnnouncementTypeConfig {
     name: String,
     slug: String,
     color: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EventConfig {
+    title: String,
+    description: String,
+    event_type: String,  // slug of the event type
+    #[serde(default)]
+    days_offset: i64,    // positive = future, negative = past
+    #[serde(default = "default_duration")]
+    duration_hours: i64,
+    #[serde(default)]
+    location: Option<String>,
+    #[serde(default = "default_visibility")]
+    visibility: String,  // "public" or "members_only"
+    #[serde(default)]
+    max_attendees: Option<i32>,
+}
+
+fn default_duration() -> i64 { 2 }
+fn default_visibility() -> String { "members_only".to_string() }
+
+#[derive(Debug, Deserialize)]
+struct AnnouncementConfig {
+    title: String,
+    content: String,
+    announcement_type: String,  // slug of the announcement type
+    #[serde(default)]
+    days_ago: i64,
+    #[serde(default)]
+    is_public: bool,
+    #[serde(default)]
+    featured: bool,
 }
 
 // ============================================================================
@@ -525,73 +562,71 @@ async fn main() -> anyhow::Result<()> {
     println!("    Generated {} random members", generated);
 
     // =========================================================================
-    // EVENTS (simplified - generic events that work for any org type)
+    // EVENTS
     // =========================================================================
     println!("Creating events...");
     let mut event_count = 0;
 
-    // Generate monthly meetings for the past 12 months
-    for month in 1..=12 {
-        let days_ago = month * 30;
+    // Create events from config
+    for event_config in &config.events {
+        let visibility = match event_config.visibility.as_str() {
+            "public" => EventVisibility::Public,
+            _ => EventVisibility::MembersOnly,
+        };
+
+        // Map event_type slug to EventType enum (fallback to Meeting)
+        let event_type = match event_config.event_type.as_str() {
+            "workshop" => EventType::Workshop,
+            "social" => EventType::Social,
+            "training" => EventType::Training,
+            "ctf" => EventType::CTF,
+            "hackathon" => EventType::Hackathon,
+            _ => EventType::Meeting,
+        };
+
         let event = make_event(
-            &format!("Monthly Meeting - {}", (Utc::now() - Duration::days(days_ago)).format("%B %Y")),
-            "Monthly gathering to discuss club business, updates, and member projects.",
-            EventType::Meeting,
-            EventVisibility::MembersOnly,
-            -days_ago,
-            2,
-            Some("Main Meeting Room"),
+            &event_config.title,
+            &event_config.description,
+            event_type,
+            visibility,
+            event_config.days_offset,
+            event_config.duration_hours,
+            event_config.location.as_deref(),
             admin.id,
         );
+
         let created_event = event_repo.create(event).await?;
         event_count += 1;
 
-        // Add random attendees
-        let attendee_count = rng.gen_range(8..25);
-        let mut shuffled: Vec<_> = all_members.iter().collect();
-        shuffled.shuffle(&mut rng);
-        for (member_id, _) in shuffled.iter().take(attendee_count) {
-            let _ = event_repo.register_attendance(created_event.id, *member_id).await;
+        // Add random attendees to past events
+        if event_config.days_offset < 0 {
+            let attendee_count = rng.gen_range(8..25);
+            let mut shuffled: Vec<_> = all_members.iter().collect();
+            shuffled.shuffle(&mut rng);
+            for (member_id, _) in shuffled.iter().take(attendee_count) {
+                let _ = event_repo.register_attendance(created_event.id, *member_id).await;
+            }
         }
     }
 
-    // Generate upcoming events
-    for month in 0..4 {
-        let days_ahead = month * 30 + 7;
-        let event = make_event(
-            &format!("Monthly Meeting - {}", (Utc::now() + Duration::days(days_ahead)).format("%B %Y")),
-            "Monthly gathering to discuss club business, updates, and member projects.",
-            EventType::Meeting,
-            EventVisibility::MembersOnly,
-            days_ahead,
-            2,
-            Some("Main Meeting Room"),
-            admin.id,
-        );
-        event_repo.create(event).await?;
-        event_count += 1;
-    }
-
-    // Add a few special events
-    let special_events = [
-        ("New Member Orientation", "Introduction session for new members.", EventType::Training, 10),
-        ("Annual Celebration", "Year-end celebration and awards.", EventType::Social, 45),
-        ("Workshop: Getting Started", "Hands-on introduction to our activities.", EventType::Workshop, 21),
-    ];
-
-    for (title, desc, event_type, days) in special_events {
-        let event = make_event(
-            title,
-            desc,
-            event_type,
-            EventVisibility::Public,
-            days,
-            3,
-            Some("Main Meeting Room"),
-            admin.id,
-        );
-        event_repo.create(event).await?;
-        event_count += 1;
+    // If no events in config, generate some generic ones
+    if config.events.is_empty() {
+        // Generate a few monthly meetings
+        for month in 0..3 {
+            let days_ahead = month * 30 + 7;
+            let event = make_event(
+                &format!("Monthly Meeting - {}", (Utc::now() + Duration::days(days_ahead)).format("%B %Y")),
+                "Monthly gathering to discuss club business and updates.",
+                EventType::Meeting,
+                EventVisibility::MembersOnly,
+                days_ahead,
+                2,
+                Some("Main Meeting Room"),
+                admin.id,
+            );
+            event_repo.create(event).await?;
+            event_count += 1;
+        }
     }
 
     println!("    Created {} events", event_count);
@@ -600,31 +635,54 @@ async fn main() -> anyhow::Result<()> {
     // ANNOUNCEMENTS
     // =========================================================================
     println!("Creating announcements...");
+    let mut announcement_count = 0;
 
-    let announcements = [
-        ("Welcome to Our New Portal!", "We're excited to launch our new member portal. Log in to manage your membership, RSVP to events, and stay connected.", AnnouncementType::News, true, true, 1),
-        ("Membership Renewal Reminder", "Don't forget to renew your membership before it expires. You can pay through the portal or at any meeting.", AnnouncementType::News, false, false, 10),
-        ("New Member Welcome", "Please welcome our newest members who joined this month!", AnnouncementType::News, true, false, 5),
-        ("Schedule Update", "Please note the updated schedule for next month's events. Check the calendar for details.", AnnouncementType::News, false, false, 15),
-    ];
+    // Create announcements from config
+    for ann_config in &config.announcements {
+        // Map announcement_type slug to AnnouncementType enum (fallback to News)
+        let ann_type = match ann_config.announcement_type.as_str() {
+            "general" => AnnouncementType::General,
+            "achievement" => AnnouncementType::Achievement,
+            _ => AnnouncementType::News,
+        };
 
-    for (title, content, ann_type, is_public, featured, days_ago) in &announcements {
         let announcement = Announcement {
             id: Uuid::new_v4(),
-            title: title.to_string(),
-            content: content.to_string(),
-            announcement_type: ann_type.clone(),
+            title: ann_config.title.clone(),
+            content: ann_config.content.clone(),
+            announcement_type: ann_type,
             announcement_type_id: None,
-            is_public: *is_public,
-            featured: *featured,
-            published_at: Some(Utc::now() - Duration::days(*days_ago)),
+            is_public: ann_config.is_public,
+            featured: ann_config.featured,
+            published_at: Some(Utc::now() - Duration::days(ann_config.days_ago)),
             created_by: admin.id,
-            created_at: Utc::now() - Duration::days(*days_ago),
-            updated_at: Utc::now() - Duration::days(*days_ago),
+            created_at: Utc::now() - Duration::days(ann_config.days_ago),
+            updated_at: Utc::now() - Duration::days(ann_config.days_ago),
         };
         announcement_repo.create(announcement).await?;
+        announcement_count += 1;
     }
-    println!("    Created {} announcements", announcements.len());
+
+    // If no announcements in config, create a welcome announcement
+    if config.announcements.is_empty() {
+        let announcement = Announcement {
+            id: Uuid::new_v4(),
+            title: "Welcome to Our New Portal!".to_string(),
+            content: "We're excited to launch our new member portal. Log in to manage your membership, RSVP to events, and stay connected.".to_string(),
+            announcement_type: AnnouncementType::News,
+            announcement_type_id: None,
+            is_public: true,
+            featured: true,
+            published_at: Some(Utc::now() - Duration::days(1)),
+            created_by: admin.id,
+            created_at: Utc::now() - Duration::days(1),
+            updated_at: Utc::now() - Duration::days(1),
+        };
+        announcement_repo.create(announcement).await?;
+        announcement_count += 1;
+    }
+
+    println!("    Created {} announcements", announcement_count);
 
     // =========================================================================
     // PAYMENTS
@@ -700,7 +758,7 @@ async fn main() -> anyhow::Result<()> {
     println!("   Members: {} (including admin)", all_members.len() + 1);
     println!("   Events: {}", event_count);
     println!("   Payments: {}", payment_count);
-    println!("   Announcements: {}", announcements.len());
+    println!("   Announcements: {}", announcement_count);
     println!("   Event types: {}", config.event_types.len());
     println!("   Announcement types: {}", config.announcement_types.len());
     println!("   Membership types: {}", config.membership_types.len());

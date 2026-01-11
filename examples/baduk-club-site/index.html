@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Metro Baduk Club</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="alternate" type="application/rss+xml" title="Metro Baduk Club Announcements" href="/public/feed/rss">
+</head>
+<body>
+    <header>
+        <nav>
+            <div class="logo">
+                <img src="images/white-stone.svg" alt="" class="stone">
+                Metro Baduk Club
+                <img src="images/black-stone.svg" alt="" class="stone">
+            </div>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="events.html">Events</a></li>
+                <li><a href="join.html">Join</a></li>
+                <li><a href="#" id="portal-link" class="btn-portal">Member Portal</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main>
+        <section class="hero">
+            <div class="hero-content">
+                <div class="board-pattern"></div>
+                <img src="images/black-stone.svg" alt="" class="stone-decoration top-left">
+                <img src="images/white-stone.svg" alt="" class="stone-decoration top-right">
+                <img src="images/white-stone.svg" alt="" class="stone-decoration bottom-left">
+                <img src="images/black-stone.svg" alt="" class="stone-decoration bottom-right">
+                <h1>Metro Baduk Club</h1>
+                <p class="subtitle">Where strategy meets tradition</p>
+                <p>Join our community of Go enthusiasts, from curious beginners to seasoned dan players.
+                   We meet weekly for casual games, monthly tournaments, and study sessions exploring
+                   the endless depth of this ancient game.</p>
+                <a href="join.html" class="btn btn-primary btn-large">Become a Member</a>
+            </div>
+        </section>
+
+        <section class="about">
+            <div class="about-text">
+                <h2>About Our Club</h2>
+                <p>The Metro Baduk Club has been bringing Go players together since 2018.
+                   Whether you call it Go, Baduk, or Weiqi, you'll find a welcoming community
+                   here dedicated to this beautiful game of strategy.</p>
+                <p>We welcome players of all levels. Our teaching program pairs beginners
+                   with experienced players for even games using handicap stones, while our
+                   advanced study groups analyze professional games and explore deep theory.</p>
+                <div class="stats">
+                    <div class="stat">
+                        <span class="stat-value">100+</span>
+                        <span class="stat-label">Members</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-value">Weekly</span>
+                        <span class="stat-label">Club Nights</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-value">Monthly</span>
+                        <span class="stat-label">Tournaments</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-value">30k-6d</span>
+                        <span class="stat-label">Skill Range</span>
+                    </div>
+                </div>
+            </div>
+            <div class="about-image">
+                <img src="images/black-stone.svg" alt="Black stone" class="stone">
+                <img src="images/white-stone.svg" alt="White stone" class="stone">
+            </div>
+        </section>
+
+        <section class="upcoming-events">
+            <h2>Upcoming Events</h2>
+            <div id="events-list" class="events-grid">
+                <p class="loading">Loading events...</p>
+            </div>
+            <a href="events.html" class="btn">View All Events</a>
+        </section>
+
+        <section class="announcements">
+            <h2>Latest News</h2>
+            <div id="announcements-list" class="announcements-list">
+                <p class="loading">Loading announcements...</p>
+            </div>
+            <p class="feed-links">
+                <a href="/public/feed/rss">Subscribe via RSS</a> |
+                <a href="/public/feed/calendar" id="ical-download">Add to Calendar (iCal)</a>
+            </p>
+        </section>
+
+        <section class="cta">
+            <h2>Ready to Play?</h2>
+            <p>Whether you're a complete beginner or a seasoned player looking for worthy opponents,
+               the Metro Baduk Club welcomes you. Join us for your first game today.</p>
+            <a href="join.html" class="btn btn-outline btn-large">Join the Club</a>
+        </section>
+    </main>
+
+    <footer>
+        <div class="footer-content">
+            <p>&copy; 2024 Metro Baduk Club</p>
+            <p class="tagline">The board is small. The possibilities are infinite.</p>
+            <p class="powered-by">Powered by <a href="https://github.com/IndustriousKraken/coterie">Coterie</a></p>
+        </div>
+    </footer>
+
+    <script src="js/config.js"></script>
+    <script src="js/api.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>

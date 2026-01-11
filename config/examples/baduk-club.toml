@@ -138,3 +138,448 @@ color = "#2196F3"
 name = "Welcome"
 slug = "welcome"
 color = "#4CAF50"
+
+# =============================================================================
+# EVENTS
+# =============================================================================
+
+# PAST EVENTS
+
+[[events]]
+title = "Winter Championship Tournament - Final Round"
+event_type = "tournament"
+days_offset = -90
+duration_hours = 8
+location = "Main Playing Hall"
+visibility = "public"
+description = """
+The culmination of our three-month winter championship series! Sixteen players have battled through the qualifying rounds, and now the final eight will compete for the club championship title.
+
+Tournament Format:
+- Single elimination bracket
+- Main time: 45 minutes per player
+- Byoyomi: 3 periods of 30 seconds each
+- Komi: 6.5 points (Chinese rules)
+
+Schedule:
+- 9:00 AM: Registration and board assignments
+- 9:30 AM: Quarterfinal games begin
+- 12:30 PM: Lunch break (provided for players)
+- 1:30 PM: Semifinal games begin
+- 4:30 PM: Championship game begins
+- 7:00 PM: Awards ceremony and analysis session
+
+The championship game will be displayed on our large demonstration board with live commentary from our 5-dan members. This is an excellent learning opportunity for all skill levels—come watch even if you're not playing!
+
+Prizes:
+- 1st Place: Trophy + $200 club credit + title of Club Champion for 2024
+- 2nd Place: $100 club credit
+- 3rd/4th Place: $50 club credit each
+
+All participants receive a commemorative tournament stone set.
+
+Spectators welcome! We'll have tea and snacks available throughout the day. Please keep conversation quiet during active games."""
+
+[[events]]
+title = "Monthly Teaching Game Night"
+event_type = "teaching-game"
+days_offset = -60
+duration_hours = 3
+location = "Main Playing Hall"
+visibility = "members_only"
+description = """
+Our popular monthly teaching game session where stronger players provide instruction through actual gameplay. This is one of the best ways to improve—there's no substitute for having a stronger player explain their thinking during a real game.
+
+How it works:
+- Players 10-kyu and below are paired with players 3-dan and above
+- Games are played at an appropriate handicap
+- The stronger player thinks aloud, explaining key moves and concepts
+- Games may be paused for discussion of important positions
+- Each game is followed by a 10-15 minute review
+
+This month's focus: Middle game fighting and direction of play. Our teachers will emphasize recognizing when to fight, when to take territory, and how to evaluate whole-board position.
+
+Registration is required and limited to 12 students per session to ensure quality instruction. Please indicate your current rank when signing up so we can arrange appropriate pairings.
+
+Teachers this month:
+- Tanaka Hiroshi (5-dan)
+- Chen Wei (4-dan)
+- Park Min-jun (4-dan)
+- Lisa Anderson (3-dan)
+
+Tea and light refreshments provided. Please arrive a few minutes early so we can start promptly."""
+
+[[events]]
+title = "Professional Game Study: Lee Sedol vs AlphaGo Series"
+event_type = "study-group"
+days_offset = -45
+duration_hours = 2
+location = "Study Room A"
+visibility = "members_only"
+description = """
+Continuing our study of historically significant games, this month we examine the groundbreaking 2016 match between Lee Sedol and DeepMind's AlphaGo. Even years later, these games continue to offer profound insights into the nature of Go.
+
+This session focuses on Game 4—the famous game where Lee Sedol found the "divine move" at move 78, the wedge that even AlphaGo's creators said the AI gave only a 1-in-10,000 chance of being played. Understanding why this move worked reveals deep truths about shape, potential, and the limits of pattern recognition.
+
+We'll examine:
+- The early game patterns that were revolutionary at the time but are now standard
+- White's approach to the center moyo and the critical timing of invasions
+- The famous move 78 and why it's considered one of the greatest moves ever played
+- AlphaGo's response and why the machine struggled to recover
+- How this game influenced professional play worldwide
+
+Materials provided: SGF files for self-study, game commentary from multiple professional sources.
+
+This is an intermediate-to-advanced study session. Players should be comfortable with basic tesujis and life-and-death problems. Even if some discussions go over your head, exposure to high-level analysis is valuable at any rank.
+
+Bring your own goban and stones if possible—we'll recreate positions together."""
+
+[[events]]
+title = "Club Night - Regular Weekly Gathering"
+event_type = "club-night"
+days_offset = -14
+duration_hours = 4
+location = "Main Playing Hall"
+visibility = "members_only"
+description = """
+Our regular Thursday evening club night! Drop in anytime between 6 PM and 10 PM for casual games, conversation, and community.
+
+What happens at club night:
+- Open play: find an opponent and enjoy a game at whatever time control you prefer
+- Teaching games available on request (just ask a stronger player)
+- Ongoing ladders: challenge anyone within 3 ranks on our club ladder
+- New member orientation: first-timers will receive an introduction to the club
+- Equipment library: browse our collection of Go books (we have over 200 titles!)
+
+All skill levels welcome, from complete beginners to seasoned dan players. If you're new to the game, our welcoming committee will help you find appropriate opponents and get you started on your Go journey.
+
+We have 30 boards available, including several floor boards for those who prefer the traditional experience. The club provides stones, but you're welcome to bring your own favorites.
+
+Light refreshments available. We suggest a $2-3 contribution to the snack fund if you partake."""
+
+[[events]]
+title = "Simultaneous Exhibition: Guest Professional Visit"
+event_type = "simul"
+days_offset = -7
+duration_hours = 5
+location = "Main Playing Hall"
+visibility = "public"
+description = """
+A rare opportunity! We're honored to host visiting professional player Yuki Satoshi (3-dan professional, Japan Go Association) for a simultaneous exhibition. Yuki-sensei is in town for the regional championship and has graciously agreed to visit our club.
+
+Simultaneous exhibition format:
+- Yuki-sensei will play 15 games simultaneously
+- Each amateur player receives appropriate handicap based on rank
+- Games use 15x15 boards (faster games allow more instruction)
+- Yuki-sensei will provide brief commentary on each game afterward
+
+Participation is by signup only and limited to 15 players. Priority given to members, but we may have spots for non-members if interest allows. Minimum rank requirement: 20-kyu (must be able to complete a game without major rule violations).
+
+Observation is free and open to all! This is a wonderful opportunity to see a professional at work. We'll have additional seating set up for spectators.
+
+Following the simul, Yuki-sensei will give a 30-minute lecture on "Reading Deeply vs. Reading Widely: When to Calculate and When to Feel." This lecture is open to all attendees.
+
+Suggested donation: $10 for participants, $5 for observers. All proceeds go to our junior program fund."""
+
+# UPCOMING EVENTS
+
+[[events]]
+title = "Spring Tournament: Handicap Division"
+event_type = "tournament"
+days_offset = 14
+duration_hours = 6
+location = "Main Playing Hall"
+visibility = "public"
+description = """
+Our spring handicap tournament is open to players of all ranks! Unlike our championship events, this tournament uses handicaps to level the playing field, giving everyone a realistic chance at victory.
+
+Tournament Details:
+- 4-round Swiss system tournament
+- Handicaps based on registered ranks (please be honest!)
+- Time control: 30 minutes main time + 5x30s byoyomi
+- Komi: adjusted per handicap (we use AGA handicap tables)
+
+Registration:
+- Entry fee: $15 (members), $25 (non-members)
+- Fee includes lunch and light refreshments
+- Registration closes 3 days before the event
+- Late registration may be possible but cannot be guaranteed pairing in round 1
+
+Prizes awarded by division:
+- Dan division (1-dan and above)
+- SDK division (1-kyu to 9-kyu)
+- DDK division (10-kyu to 20-kyu)
+- Beginner division (21-kyu and below)
+
+Special awards:
+- Best fighting spirit
+- Longest game of the tournament
+- Most improved since last tournament
+
+This tournament counts toward our annual Club Champion points race and the regional rating system.
+
+Bring your own clock if you have one—we have limited tournament clocks available."""
+
+[[events]]
+title = "Beginner Workshop: First Steps in Go"
+event_type = "teaching-game"
+days_offset = 21
+duration_hours = 3
+location = "Study Room B"
+visibility = "public"
+description = """
+Never played Go before? Curious about this ancient game? This workshop is designed for complete beginners—no experience necessary!
+
+In three hours, you'll learn:
+- The basic rules of Go (there are only four!)
+- How to capture stones and create territory
+- Why this simple game has captivated millions for over 4,000 years
+- How to find opponents and continue learning
+
+The workshop is highly interactive. After a brief introduction, you'll play several "capture Go" games on small boards to build intuition. By the end, you'll play your first full game on a 9x9 board with instructor guidance.
+
+Why learn Go?
+- It's the oldest board game still played in its original form
+- Simple rules create infinite complexity
+- Unlike chess, computers only recently became competitive with humans
+- It's a lifetime pursuit—there's always more to learn
+- The global Go community is welcoming and supportive
+
+Materials provided: boards, stones, and a beginner's guide booklet to take home.
+
+This workshop is free for anyone curious about the game. Donations to the club are welcome but not expected.
+
+Please RSVP so we know how many instructors to schedule. Walk-ins accepted if space allows."""
+
+[[events]]
+title = "Monthly Study Group: Fundamental Tesujis"
+event_type = "study-group"
+days_offset = 28
+duration_hours = 2
+location = "Study Room A"
+visibility = "members_only"
+description = """
+This month's study group focuses on fundamental tesujis that every player should know. We'll work through classic problems that illustrate key tactical concepts, building pattern recognition that will serve you for a lifetime.
+
+Topics covered:
+- The snap-back and its variations
+- Ladders and ladder breakers
+- Nets and loose nets
+- The connect-and-die
+- Shortage of liberties (damezumari)
+- Common ko threats
+
+Each tesuji will be introduced with a historical example from professional games, followed by practice problems of increasing difficulty. We'll work through positions together, discussing the thought process for finding these moves.
+
+This session is appropriate for players around 15-kyu to 5-kyu. Stronger players are welcome to attend as helpers/instructors.
+
+Materials to bring:
+- Your own goban and stones
+- Something to take notes with
+- Optionally: "Tesuji" by James Davies or "Get Strong at Tesuji" from the Kiseido series
+
+Hot tea will be served, as is tradition."""
+
+[[events]]
+title = "Spring Social: Cherry Blossom Viewing Go Party"
+event_type = "social"
+days_offset = 35
+duration_hours = 4
+location = "Riverside Park Pavilion"
+visibility = "members_only"
+description = """
+Hanami meets baduk! Join us for our annual cherry blossom viewing party where we combine the Japanese tradition of appreciating spring flowers with casual games of Go.
+
+What to expect:
+- Outdoor Go on blankets under the cherry trees
+- Bring a picnic lunch to share (we'll provide drinks)
+- Casual games only—no clocks, no pressure
+- Photography opportunities (the blossoms are typically peak this week)
+- Family and friends welcome
+
+This is a social event first, Go event second. Come for the company and the scenery; playing is optional! We'll have several boards available, plus some adapted waterproof boards for lawn play.
+
+Meeting point: The Riverside Park pavilion near the main parking lot. Look for our club banner.
+
+Please bring:
+- A blanket or folding chairs
+- Picnic food to share (we'll coordinate dishes)
+- Sunscreen and water
+- Your own Go equipment if you'd like to play
+
+RSVP requested so we can coordinate the potluck and ensure we have enough equipment. In case of rain, we'll relocate to the club space and have an indoor potluck instead.
+
+This event is members-only due to park permit restrictions, but you're welcome to bring one guest."""
+
+[[events]]
+title = "Club Night - Regular Weekly Gathering"
+event_type = "club-night"
+days_offset = 7
+duration_hours = 4
+location = "Main Playing Hall"
+visibility = "members_only"
+description = """
+Our regular Thursday evening club night! Drop in anytime between 6 PM and 10 PM for casual games, conversation, and community.
+
+This week's special: Our library has received a donation of over 30 new books from a retiring member's collection. Come browse the new additions, including several rare tournament collections from the 1970s and complete sets of Korean Baduk periodicals.
+
+All skill levels welcome. See you Thursday!"""
+
+# =============================================================================
+# ANNOUNCEMENTS
+# =============================================================================
+
+[[announcements]]
+title = "Welcome to the Riverdale Baduk Club's New Member Portal"
+announcement_type = "welcome"
+days_ago = 1
+is_public = true
+featured = true
+content = """
+Greetings, Go players!
+
+We're pleased to announce the launch of our new online member portal. After years of managing club activities through spreadsheets and email chains, we finally have a modern system to keep everyone connected.
+
+With the new portal you can:
+- View the full calendar of upcoming events
+- RSVP to tournaments and teaching sessions
+- Track your club ladder ranking
+- Read announcements without digging through emails
+- Update your contact information and playing preferences
+
+For existing members: your account has been created using your email address on file. Please use the password reset function to set your password and verify your information is correct.
+
+For new members: welcome! You can create an account through the portal. Membership applications will be reviewed by the welcoming committee within 48 hours.
+
+We hope this makes participating in club activities easier for everyone. If you encounter any issues or have suggestions, please speak with any board member.
+
+See you at the goban!"""
+
+[[announcements]]
+title = "Winter Championship Results: Congratulations to Our New Champion!"
+announcement_type = "results"
+days_ago = 88
+is_public = true
+featured = true
+content = """
+After an exciting day of competition, we're thrilled to announce the results of our Winter Championship Tournament!
+
+Final Standings:
+1st Place (Club Champion 2024): Kim Soo-young (4-dan)
+2nd Place: Tanaka Hiroshi (5-dan)
+3rd Place: Park Min-jun (4-dan)
+4th Place: Chen Wei (4-dan)
+
+The championship game between Kim and Tanaka was a masterpiece of positional judgment. Despite giving away a small corner early, Kim's superior reading in the middle game created a decisive territorial advantage that Tanaka couldn't overcome. The game was eventually decided by only 3.5 points—a testament to the level of play.
+
+Special recognition:
+- Best Game Award: Semifinal between Tanaka and Park, an epic 4-hour battle with multiple ko fights
+- Fighting Spirit Award: Maria Santos (3-kyu), who defeated two dan-level opponents before falling in the quarterfinals
+- Most Improved: David Chen, who advanced two stones stronger than his seeding predicted
+
+Thank you to everyone who participated, spectated, and helped organize. The game records will be available on our website for those who wish to study the championship games.
+
+Our next tournament will be the Spring Handicap Tournament. See the events calendar for details!"""
+
+[[announcements]]
+title = "Guest Professional Visit Confirmed: Yuki Satoshi 3p"
+announcement_type = "general"
+days_ago = 14
+is_public = true
+featured = false
+content = """
+We're excited to confirm that professional player Yuki Satoshi (3-dan professional, Japan Go Association) will visit our club next week for a simultaneous exhibition and lecture!
+
+Yuki-sensei has been competing on the professional circuit since 2015 and is known for his aggressive fighting style and creative fuseki. He reached the quarterfinals of the 2022 Kisei tournament and has been active in Go promotion, particularly teaching and commentary.
+
+Simultaneous Exhibition:
+- 15 boards, handicap games
+- Priority signup for club members
+- Non-members may participate if spots remain
+
+Lecture Topic: "Reading Deeply vs. Reading Widely"
+- Open to all attendees
+- 30-minute lecture with Q&A
+
+This is a rare opportunity to play and learn from a professional. Simul spots are limited—sign up early! Observation is free and open to all.
+
+Suggested donations benefit our junior program, which introduces Go to local schools."""
+
+[[announcements]]
+title = "Club Library: Major Donation Received"
+announcement_type = "general"
+days_ago = 30
+is_public = false
+featured = false
+content = """
+Our library has just received a significant donation from long-time member and former club president Robert Chen, who is relocating overseas.
+
+The donation includes:
+- Complete set of Go World magazine (1977-2010)
+- Original editions of several classic English-language Go books
+- Korean Baduk monthly magazines (2000-2015)
+- Japanese Go Weekly compilations (2005-2012)
+- Personal collection of professional game commentaries
+
+This brings our library to over 300 titles, making it one of the most comprehensive Go libraries in the region.
+
+New additions are being catalogued and will be available for checkout at the next club night. Please handle these materials with care—some volumes are irreplaceable.
+
+A huge thank you to Robert for his generosity! His contributions to the club over the past 20 years have been invaluable, and while we're sad to see him go, we're grateful that his library will continue to benefit members for years to come.
+
+Fair winds and following seas, Robert. There will always be a seat at our goban for you."""
+
+[[announcements]]
+title = "Junior Program Expansion: Volunteers Needed"
+announcement_type = "general"
+days_ago = 45
+is_public = false
+featured = false
+content = """
+Great news! Two additional schools have requested Go instruction through our junior program, bringing our total to five partner schools. We need more volunteer instructors to meet this demand.
+
+Current volunteer commitment:
+- One 1-hour session per week during school hours (typically 3-4 PM)
+- Basic curriculum and materials provided
+- No professional teaching experience required
+- Minimum rank requirement: 10-kyu
+
+We're specifically looking for help at:
+- Lincoln Elementary: Mondays, 3:00-4:00 PM
+- Riverside Middle School: Wednesdays, 3:30-4:30 PM
+
+Teaching Go to children is one of the most rewarding experiences in the game. You don't need to be a strong player—you just need patience and enthusiasm! The curriculum focuses on basic rules, capture games, and 9x9 play. Stronger students can be referred to our Saturday youth sessions.
+
+If you're interested or want to know more, please contact the junior program coordinator. Training sessions for new volunteers are held monthly.
+
+Remember: every professional player started somewhere. You might be teaching the next world champion!"""
+
+[[announcements]]
+title = "Reminder: Annual General Meeting and Board Elections"
+announcement_type = "schedule"
+days_ago = 5
+is_public = false
+featured = false
+content = """
+Our Annual General Meeting is scheduled for the last Thursday of this month immediately following club night. All members in good standing are eligible to vote.
+
+Agenda:
+1. President's report on club activities
+2. Treasurer's financial report
+3. Committee reports (Tournament, Teaching, Junior Program, Equipment)
+4. Board elections for open positions
+5. Discussion of proposed bylaw amendments
+6. Open floor for member concerns
+
+Open Board Positions:
+- Vice President (2-year term)
+- Tournament Director (2-year term)
+- Member-at-Large, Position 3 (2-year term)
+
+If you're interested in running for any position, please submit your name to the current board before the meeting. Self-nominations are welcome and encouraged!
+
+Proposed bylaw amendments will be posted on the bulletin board and sent via email one week before the meeting. Members should review these proposals before voting.
+
+Please make every effort to attend. We need a quorum of 20 members to conduct business. If you cannot attend, please submit a proxy vote form to any current board member.
+
+Refreshments will be provided after the meeting. This is also traditionally when we present the Annual Service Award to an outstanding club volunteer."""

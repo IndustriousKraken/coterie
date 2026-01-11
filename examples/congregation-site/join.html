@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connect - Unity Community Church</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <header>
+        <nav>
+            <div class="logo">Unity Community Church</div>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="events.html">Events</a></li>
+                <li><a href="join.html">Connect</a></li>
+                <li><a href="#" id="portal-link" class="btn-portal">Member Portal</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main>
+        <section>
+            <h1>Get Connected</h1>
+            <p>We're so glad you're interested in connecting with Unity Community Church!
+               Whether you're looking to visit for the first time, become a member, or find
+               ways to get involved, we're here to help.</p>
+        </section>
+
+        <section>
+            <div class="form-container">
+                <div class="form-card">
+                    <h2>Join Our Community</h2>
+                    <p>Create an account to stay connected with our church family. Members can
+                       access the directory, sign up for events, and stay informed about what's
+                       happening in our community.</p>
+
+                    <form id="signup-form">
+                        <div id="signup-message"></div>
+
+                        <div class="form-group">
+                            <label for="email">Email Address</label>
+                            <input type="email" id="email" name="email" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="username">Username</label>
+                            <input type="text" id="username" name="username" required
+                                   pattern="[a-zA-Z0-9_-]+" title="Letters, numbers, underscores and hyphens only">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="full_name">Full Name</label>
+                            <input type="text" id="full_name" name="full_name" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="membership_type">I am...</label>
+                            <select id="membership_type" name="membership_type" required>
+                                <option value="individual">An individual</option>
+                                <option value="family">Registering my family</option>
+                                <option value="student">A student</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="password">Password</label>
+                            <input type="password" id="password" name="password" required minlength="8">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="password_confirm">Confirm Password</label>
+                            <input type="password" id="password_confirm" name="password_confirm" required minlength="8">
+                        </div>
+
+                        <button type="submit" class="btn btn-primary btn-large" style="width: 100%;">
+                            Create Account
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </section>
+
+        <section class="welcome" style="margin-top: var(--space-xl);">
+            <div class="welcome-text">
+                <h2>Other Ways to Connect</h2>
+                <p><strong>Visit Us:</strong> The best way to get to know us is to join us for worship.
+                   Our services are Sunday at 9:00 AM and 10:30 AM. Look for our Welcome Center in
+                   the lobby where our hospitality team would love to meet you.</p>
+                <p><strong>New Member Classes:</strong> Interested in learning more about our church?
+                   We offer monthly orientation sessions where you can learn about our history,
+                   beliefs, and the many ways to get involved.</p>
+                <p><strong>Small Groups:</strong> We believe life is better in community. Our small
+                   groups meet throughout the week for Bible study, fellowship, and support.</p>
+                <p><strong>Serve:</strong> From children's ministry to community outreach, there are
+                   countless ways to use your gifts to serve others. Talk to us about finding your fit.</p>
+            </div>
+            <div class="info-box">
+                <h3>Contact Us</h3>
+                <div class="info-item">
+                    <span class="info-label">Church Office</span>
+                    <span class="info-value">office@unity.church</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Phone</span>
+                    <span class="info-value">(555) 123-4567</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Address</span>
+                    <span class="info-value">1234 Main Street<br>Downtown</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Office Hours</span>
+                    <span class="info-value">Mon-Fri, 9 AM - 4 PM</span>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="footer-content">
+            <p>&copy; 2024 Unity Community Church</p>
+            <p class="tagline">Love God. Love People. Serve the World.</p>
+            <p class="powered-by">Powered by <a href="https://github.com/IndustriousKraken/coterie">Coterie</a></p>
+        </div>
+    </footer>
+
+    <script src="js/config.js"></script>
+    <script src="js/api.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
