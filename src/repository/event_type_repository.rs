@@ -21,7 +21,6 @@ struct EventTypeRow {
     icon: Option<String>,
     sort_order: i32,
     is_active: i32,
-    is_system: i32,
     created_at: NaiveDateTime,
     updated_at: NaiveDateTime,
 }
@@ -59,7 +58,6 @@ impl SqliteEventTypeRepository {
             icon: row.icon,
             sort_order: row.sort_order,
             is_active: row.is_active != 0,
-            is_system: row.is_system != 0,
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
             updated_at: DateTime::from_naive_utc_and_offset(row.updated_at, Utc),
         })
@@ -79,8 +77,8 @@ impl EventTypeRepository for SqliteEventTypeRepository {
             r#"
             INSERT INTO event_types (
                 id, name, slug, description, color, icon,
-                sort_order, is_active, is_system, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
+                sort_order, is_active, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
             "#,
         )
         .bind(&id_str)
@@ -106,7 +104,7 @@ impl EventTypeRepository for SqliteEventTypeRepository {
         let row = sqlx::query_as::<_, EventTypeRow>(
             r#"
             SELECT id, name, slug, description, color, icon,
-                   sort_order, is_active, is_system, created_at, updated_at
+                   sort_order, is_active, created_at, updated_at
             FROM event_types
             WHERE id = ?
             "#,
@@ -126,7 +124,7 @@ impl EventTypeRepository for SqliteEventTypeRepository {
         let row = sqlx::query_as::<_, EventTypeRow>(
             r#"
             SELECT id, name, slug, description, color, icon,
-                   sort_order, is_active, is_system, created_at, updated_at
+                   sort_order, is_active, created_at, updated_at
             FROM event_types
             WHERE slug = ?
             "#,
@@ -146,14 +144,14 @@ impl EventTypeRepository for SqliteEventTypeRepository {
         let query = if include_inactive {
             r#"
             SELECT id, name, slug, description, color, icon,
-                   sort_order, is_active, is_system, created_at, updated_at
+                   sort_order, is_active, created_at, updated_at
             FROM event_types
             ORDER BY sort_order ASC, name ASC
             "#
         } else {
             r#"
             SELECT id, name, slug, description, color, icon,
-                   sort_order, is_active, is_system, created_at, updated_at
+                   sort_order, is_active, created_at, updated_at
             FROM event_types
             WHERE is_active = 1
             ORDER BY sort_order ASC, name ASC
@@ -280,8 +278,8 @@ impl EventTypeRepository for SqliteEventTypeRepository {
                 r#"
                 INSERT INTO event_types (
                     id, name, slug, description, color, icon,
-                    sort_order, is_active, is_system, created_at, updated_at
-                ) VALUES (?, ?, ?, NULL, ?, ?, ?, 1, 0, ?, ?)
+                    sort_order, is_active, created_at, updated_at
+                ) VALUES (?, ?, ?, NULL, ?, ?, ?, 1, ?, ?)
                 "#,
             )
             .bind(&id_str)

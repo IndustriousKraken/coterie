@@ -95,10 +95,11 @@
     - [ ] Repeat forever option
     - [ ] Edit single vs. all future occurrences
     - [ ] Cancel single occurrence without deleting series
-  - [ ] User-definable event types
-    - [ ] Admin interface to create/edit event types
-    - [ ] Custom colors/icons for event types
-    - [ ] Replace hardcoded EventType enum with database table
+  - [x] User-definable event types
+    - [x] Admin interface to create/edit event types
+    - [x] Custom colors/icons for event types
+    - [x] Replace hardcoded EventType enum with database table
+    - [x] Make all types deletable (removed is_system restriction)
 - [x] Announcement editor
   - [x] List/search with filtering (type, status)
   - [x] Create/edit/delete announcements
@@ -208,6 +209,21 @@
 - [ ] CI/CD pipeline (GitHub Actions)
 - [ ] Database migration tooling
 
+### First-Run Setup & Seed Restructuring
+- [x] First-run setup flow
+  - [x] Middleware to detect fresh database (no admin users)
+  - [x] Redirect to /setup when no admin exists
+  - [x] Setup page: org name, admin email/username/password
+  - [x] Create admin user and redirect to login
+- [ ] Restructure seed configs
+  - [ ] Move config/seed.toml to config/examples/hacker-club.toml
+  - [ ] Create config/examples/baduk-club.toml
+  - [ ] Create config/examples/congregation.toml
+- [ ] Update seed binary
+  - [ ] Require --example flag (no default seed)
+  - [ ] Load example config from config/examples/<name>.toml
+  - [ ] Parse event_types and announcement_types from config (currently only membership_types supported)
+
 ### Seed Data Improvements
 - [x] Basic seed script with test accounts
 - [x] Realistic payment history (monthly dues over 1+ years per member)
@@ -215,11 +231,17 @@
 
 ## Notes
 
-- **Current Status**: Core functionality complete. Admin portal fully functional with member, event, and announcement management.
-- **Next Step**: RSVP functionality, public pages, announcement distribution
+- **Current Status**: Core functionality complete. Admin portal fully functional with member, event, and announcement management. Configurable types (event, announcement, membership) fully implemented with admin UI.
+- **Next Step**: Seed config restructuring, seed binary updates
 - **Blocking Issues**: None currently
 - **Dependencies**: Need to evaluate specific Discord and Unifi API libraries
 - **Recently Completed**:
+  - ✅ First-run setup flow (middleware redirects to /setup, creates admin user)
+  - ✅ Configurable types system (event types, announcement types, membership types)
+  - ✅ Admin type management UI with create/edit/delete/reorder
+  - ✅ Removed is_system restriction - all types are now deletable
+  - ✅ Squashed migrations into single initial schema
+  - ✅ Generic default types in migrations (Member Meeting, Social, News, Awards, Member/Associate/Life Member)
   - ✅ Admin announcement editor with full CRUD
   - ✅ Announcement filtering by type and status (published/draft/featured/public)
   - ✅ Publish/unpublish workflow for announcements

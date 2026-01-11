@@ -51,33 +51,89 @@ bypass_dues = false
 name = "Regular"
 slug = "regular"
 color = "#2196F3"
-fee_cents = 5000  # $50
-billing_frequency = "yearly"
+fee_cents = 10000  # $100/month
+billing_frequency = "monthly"
 
 [[seed.membership_types]]
 name = "Student"
 slug = "student"
 color = "#4CAF50"
-fee_cents = 2500  # $25
-billing_frequency = "yearly"
-
-[[seed.membership_types]]
-name = "Monthly Regular"
-slug = "monthly_regular"
-color = "#03A9F4"
-fee_cents = 500   # $5/month
+fee_cents = 5000  # $50/month
 billing_frequency = "monthly"
 
 [[seed.membership_types]]
 name = "Corporate"
 slug = "corporate"
 color = "#9C27B0"
-fee_cents = 50000  # $500
-billing_frequency = "yearly"
+fee_cents = 25000  # $250/month
+billing_frequency = "monthly"
 
 [[seed.membership_types]]
 name = "Lifetime"
 slug = "lifetime"
 color = "#FF9800"
-fee_cents = 50000  # $500 one-time
-billing_frequency = "yearly"
+fee_cents = 1333700  # $13,337 one-time
+billing_frequency = "lifetime"
+
+# Example site event types (hacker club themed)
+[[seed.event_types]]
+name = "Meeting"
+slug = "meeting"
+color = "#2196F3"
+icon = "users"
+
+[[seed.event_types]]
+name = "Workshop"
+slug = "workshop"
+color = "#9C27B0"
+icon = "wrench"
+
+[[seed.event_types]]
+name = "CTF"
+slug = "ctf"
+color = "#F44336"
+icon = "flag"
+
+[[seed.event_types]]
+name = "Social"
+slug = "social"
+color = "#4CAF50"
+icon = "glass-cheers"
+
+[[seed.event_types]]
+name = "Training"
+slug = "training"
+color = "#FF9800"
+icon = "graduation-cap"
+
+[[seed.event_types]]
+name = "Hackathon"
+slug = "hackathon"
+color = "#E91E63"
+icon = "code"
+
+# Example site announcement types
+[[seed.announcement_types]]
+name = "General"
+slug = "general"
+color = "#607D8B"
+
+[[seed.announcement_types]]
+name = "News"
+slug = "news"
+color = "#2196F3"
+
+[[seed.announcement_types]]
+name = "Achievement"
+slug = "achievement"
+color = "#FFC107"
+
+[[seed.announcement_types]]
+name = "Meeting"
+slug = "meeting"
+color = "#4CAF50"
+
+[[seed.announcement_types]]
+name = "CTF Result"
+slug = "ctf-result"
+color = "#F44336"

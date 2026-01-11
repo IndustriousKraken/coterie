@@ -33,7 +33,6 @@ pub struct TypeInfo {
     pub icon: Option<String>,
     pub sort_order: i32,
     pub is_active: bool,
-    pub is_system: bool,
     pub usage_count: i64,
 }
 
@@ -47,7 +46,6 @@ pub struct MembershipTypeInfo {
     pub icon: Option<String>,
     pub sort_order: i32,
     pub is_active: bool,
-    pub is_system: bool,
     pub fee_cents: i32,
     pub fee_dollars: String,
     pub billing_period: String,
@@ -188,7 +186,6 @@ pub async fn admin_edit_event_type_page(
         icon: event_type.icon,
         sort_order: event_type.sort_order,
         is_active: event_type.is_active,
-        is_system: event_type.is_system,
         usage_count: 0,
     };
 
@@ -369,7 +366,6 @@ pub async fn admin_edit_announcement_type_page(
         icon: announcement_type.icon,
         sort_order: announcement_type.sort_order,
         is_active: announcement_type.is_active,
-        is_system: announcement_type.is_system,
         usage_count: 0,
     };
 
@@ -551,7 +547,6 @@ pub async fn admin_edit_membership_type_page(
         icon: membership_type.icon,
         sort_order: membership_type.sort_order,
         is_active: membership_type.is_active,
-        is_system: membership_type.is_system,
         fee_cents: membership_type.fee_cents,
         fee_dollars: format!("{:.2}", fee_dollars),
         billing_period: membership_type.billing_period,
@@ -688,7 +683,6 @@ async fn fetch_event_types(state: &AppState, include_inactive: bool) -> Vec<Type
             icon: t.icon,
             sort_order: t.sort_order,
             is_active: t.is_active,
-            is_system: t.is_system,
             usage_count: 0,
         })
         .collect()
@@ -709,7 +703,6 @@ async fn fetch_announcement_types(state: &AppState, include_inactive: bool) -> V
             icon: t.icon,
             sort_order: t.sort_order,
             is_active: t.is_active,
-            is_system: t.is_system,
             usage_count: 0,
         })
         .collect()
@@ -732,7 +725,6 @@ async fn fetch_membership_types(state: &AppState, include_inactive: bool) -> Vec
                 icon: t.icon,
                 sort_order: t.sort_order,
                 is_active: t.is_active,
-                is_system: t.is_system,
                 fee_cents: t.fee_cents,
                 fee_dollars: format!("{:.2}", fee_dollars),
                 billing_period: t.billing_period,

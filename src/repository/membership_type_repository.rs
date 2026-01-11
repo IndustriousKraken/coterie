@@ -21,7 +21,6 @@ struct MembershipTypeRow {
     icon: Option<String>,
     sort_order: i32,
     is_active: i32,
-    is_system: i32,
     fee_cents: i32,
     billing_period: String,
     created_at: NaiveDateTime,
@@ -61,7 +60,6 @@ impl SqliteMembershipTypeRepository {
             icon: row.icon,
             sort_order: row.sort_order,
             is_active: row.is_active != 0,
-            is_system: row.is_system != 0,
             fee_cents: row.fee_cents,
             billing_period: row.billing_period,
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
@@ -83,9 +81,9 @@ impl MembershipTypeRepository for SqliteMembershipTypeRepository {
             r#"
             INSERT INTO membership_types (
                 id, name, slug, description, color, icon,
-                sort_order, is_active, is_system, fee_cents, billing_period,
+                sort_order, is_active, fee_cents, billing_period,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
             "#,
         )
         .bind(&id_str)
@@ -113,7 +111,7 @@ impl MembershipTypeRepository for SqliteMembershipTypeRepository {
         let row = sqlx::query_as::<_, MembershipTypeRow>(
             r#"
             SELECT id, name, slug, description, color, icon,
-                   sort_order, is_active, is_system, fee_cents, billing_period,
+                   sort_order, is_active, fee_cents, billing_period,
                    created_at, updated_at
             FROM membership_types
             WHERE id = ?
@@ -134,7 +132,7 @@ impl MembershipTypeRepository for SqliteMembershipTypeRepository {
         let row = sqlx::query_as::<_, MembershipTypeRow>(
             r#"
             SELECT id, name, slug, description, color, icon,
-                   sort_order, is_active, is_system, fee_cents, billing_period,
+                   sort_order, is_active, fee_cents, billing_period,
                    created_at, updated_at
             FROM membership_types
             WHERE slug = ?
@@ -155,7 +153,7 @@ impl MembershipTypeRepository for SqliteMembershipTypeRepository {
         let query = if include_inactive {
             r#"
             SELECT id, name, slug, description, color, icon,
-                   sort_order, is_active, is_system, fee_cents, billing_period,
+                   sort_order, is_active, fee_cents, billing_period,
                    created_at, updated_at
             FROM membership_types
             ORDER BY sort_order ASC, name ASC
@@ -163,7 +161,7 @@ impl MembershipTypeRepository for SqliteMembershipTypeRepository {
         } else {
             r#"
             SELECT id, name, slug, description, color, icon,
-                   sort_order, is_active, is_system, fee_cents, billing_period,
+                   sort_order, is_active, fee_cents, billing_period,
                    created_at, updated_at
             FROM membership_types
             WHERE is_active = 1
@@ -296,9 +294,9 @@ impl MembershipTypeRepository for SqliteMembershipTypeRepository {
                 r#"
                 INSERT INTO membership_types (
                     id, name, slug, description, color, icon,
-                    sort_order, is_active, is_system, fee_cents, billing_period,
+                    sort_order, is_active, fee_cents, billing_period,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, NULL, ?, NULL, ?, 1, 0, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, NULL, ?, NULL, ?, 1, ?, ?, ?, ?)
                 "#,
             )
             .bind(&id_str)

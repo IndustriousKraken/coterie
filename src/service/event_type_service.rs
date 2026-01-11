@@ -73,16 +73,9 @@ impl EventTypeService {
 
     /// Delete an event type
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let event_type = self.repo.find_by_id(id).await?.ok_or_else(|| {
+        let _event_type = self.repo.find_by_id(id).await?.ok_or_else(|| {
             AppError::NotFound("Event type not found".to_string())
         })?;
-
-        // Cannot delete system types
-        if event_type.is_system {
-            return Err(AppError::BadRequest(
-                "Cannot delete system event types. Deactivate instead.".to_string()
-            ));
-        }
 
         // Cannot delete if in use
         let usage_count = self.repo.count_usage(id).await?;

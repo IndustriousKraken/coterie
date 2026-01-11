@@ -117,17 +117,22 @@ async fn main() -> anyhow::Result<()> {
 
     // Create API app
     let api_app = api::create_app(service_context.clone(), stripe_client.clone(), Arc::new(settings.clone()));
-    
+
     // Create web app state separately
     let web_app_state = api::state::AppState::new(
         service_context,
         stripe_client,
         Arc::new(settings.clone()),
     );
-    let web_app = web::create_web_routes(web_app_state);
-    
-    // Combine API and web routes
-    let app = api_app.merge(web_app);
+    let web_app = web::create_web_routes(web_app_state.clone());
+
+    // Combine API and web routes, apply setup check middleware
+    let app = api_app
+        .merge(web_app)
+        .layer(axum::middleware::from_fn_with_state(
+            web_app_state,
+            api::middleware::setup::require_setup,
+        ));
 
     let listener = tokio::net::TcpListener::bind(
         format!("{}:{}", settings.server.host, settings.server.port)

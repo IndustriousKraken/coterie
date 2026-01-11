@@ -16,7 +16,6 @@ pub struct EventTypeConfig {
     pub icon: Option<String>,
     pub sort_order: i32,
     pub is_active: bool,
-    pub is_system: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -54,7 +53,6 @@ pub struct AnnouncementTypeConfig {
     pub icon: Option<String>,
     pub sort_order: i32,
     pub is_active: bool,
-    pub is_system: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -119,7 +117,6 @@ pub struct MembershipTypeConfig {
     pub icon: Option<String>,
     pub sort_order: i32,
     pub is_active: bool,
-    pub is_system: bool,
     pub fee_cents: i32,
     pub billing_period: String, // Stored as text, parsed via BillingPeriod
     pub created_at: DateTime<Utc>,
@@ -191,33 +188,25 @@ pub fn validate_hex_color(color: &str) -> bool {
 /// Default event types to seed
 pub fn default_event_types() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
     vec![
-        ("Meeting", "meeting", "#2196F3", "users"),
-        ("Workshop", "workshop", "#9C27B0", "wrench"),
-        ("CTF", "ctf", "#F44336", "flag"),
+        ("Member Meeting", "member-meeting", "#2196F3", "users"),
         ("Social", "social", "#4CAF50", "glass-cheers"),
-        ("Training", "training", "#FF9800", "graduation-cap"),
-        ("Hackathon", "hackathon", "#E91E63", "code"),
     ]
 }
 
 /// Default announcement types to seed
 pub fn default_announcement_types() -> Vec<(&'static str, &'static str, &'static str)> {
     vec![
-        ("General", "general", "#607D8B"),
         ("News", "news", "#2196F3"),
-        ("Achievement", "achievement", "#FFC107"),
-        ("Meeting", "meeting", "#4CAF50"),
-        ("CTF Result", "ctf-result", "#F44336"),
+        ("Awards", "awards", "#FFC107"),
     ]
 }
 
 /// Default membership types to seed (name, slug, color, fee_cents, billing_period)
 pub fn default_membership_types() -> Vec<(&'static str, &'static str, &'static str, i32, &'static str)> {
     vec![
-        ("Regular", "regular", "#2196F3", 5000, "yearly"),
-        ("Student", "student", "#4CAF50", 2500, "yearly"),
-        ("Corporate", "corporate", "#9C27B0", 50000, "yearly"),
-        ("Lifetime", "lifetime", "#FF9800", 100000, "lifetime"),
+        ("Member", "member", "#2196F3", 500, "monthly"),
+        ("Associate", "associate", "#9C27B0", 10000, "monthly"),
+        ("Life Member", "life-member", "#FF9800", 1000000, "lifetime"),
     ]
 }
 

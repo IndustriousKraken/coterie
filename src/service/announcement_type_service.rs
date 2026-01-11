@@ -73,16 +73,9 @@ impl AnnouncementTypeService {
 
     /// Delete an announcement type
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let announcement_type = self.repo.find_by_id(id).await?.ok_or_else(|| {
+        let _announcement_type = self.repo.find_by_id(id).await?.ok_or_else(|| {
             AppError::NotFound("Announcement type not found".to_string())
         })?;
-
-        // Cannot delete system types
-        if announcement_type.is_system {
-            return Err(AppError::BadRequest(
-                "Cannot delete system announcement types. Deactivate instead.".to_string()
-            ));
-        }
 
         // Cannot delete if in use
         let usage_count = self.repo.count_usage(id).await?;
