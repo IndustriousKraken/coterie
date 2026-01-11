@@ -8,6 +8,10 @@ const contentStore = {
     announcements: {}
 };
 
+// Calendar state
+let calendarDate = new Date();
+let calendarEvents = [];
+
 document.addEventListener('DOMContentLoaded', () => {
     // Apply configuration to dynamic elements
     applyConfig();
@@ -34,6 +38,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // Load all events on events page
     if (document.getElementById('all-events-list')) {
         loadAllEvents();
+    }
+
+    // Initialize calendar on calendar page
+    if (document.getElementById('calendar-grid')) {
+        initCalendar();
     }
 });
 
@@ -373,4 +382,172 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// =============================================================================
+// Calendar Functions
+// =============================================================================
+
+/**
+ * Initialize the calendar
+ */
+async function initCalendar() {
+    try {
+        // Load events for a wide range
+        const events = await CoterieAPI.getEvents({ limit: 200 });
+        calendarEvents = events;
+
+        // Store events for modal access
+        events.forEach(e => contentStore.events[e.id] = e);
+
+        renderCalendar();
+    } catch (error) {
+        document.getElementById('calendar-grid').innerHTML = `
+            <div class="error" style="grid-column: 1 / -1; padding: 2rem;">
+                <p>Unable to load calendar data.</p>
+                <p>${error.message}</p>
+            </div>
+        `;
+    }
+}
+
+/**
+ * Render the calendar grid
+ */
+function renderCalendar() {
+    const grid = document.getElementById('calendar-grid');
+    const title = document.getElementById('calendar-title');
+
+    const year = calendarDate.getFullYear();
+    const month = calendarDate.getMonth();
+
+    // Update title
+    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                        'July', 'August', 'September', 'October', 'November', 'December'];
+    title.textContent = `${monthNames[month]} ${year}`;
+
+    // Build grid HTML
+    let html = '';
+
+    // Day headers
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    dayNames.forEach(day => {
+        html += `<div class="calendar-day-header">${day}</div>`;
+    });
+
+    // Get first day of month and total days
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const startDayOfWeek = firstDay.getDay();
+    const totalDays = lastDay.getDate();
+
+    // Get today for highlighting
+    const today = new Date();
+    const isCurrentMonth = today.getFullYear() === year && today.getMonth() === month;
+
+    // Previous month days
+    const prevMonthLastDay = new Date(year, month, 0).getDate();
+    for (let i = startDayOfWeek - 1; i >= 0; i--) {
+        const dayNum = prevMonthLastDay - i;
+        html += `<div class="calendar-day other-month">
+            <div class="calendar-day-number">${dayNum}</div>
+        </div>`;
+    }
+
+    // Current month days
+    for (let day = 1; day <= totalDays; day++) {
+        const isToday = isCurrentMonth && today.getDate() === day;
+        const dayEvents = getEventsForDay(year, month, day);
+
+        html += `<div class="calendar-day${isToday ? ' today' : ''}">
+            <div class="calendar-day-number">${day}</div>
+            ${renderDayEvents(dayEvents)}
+        </div>`;
+    }
+
+    // Next month days (fill remaining grid)
+    const totalCells = startDayOfWeek + totalDays;
+    const remainingCells = totalCells % 7 === 0 ? 0 : 7 - (totalCells % 7);
+    for (let i = 1; i <= remainingCells; i++) {
+        html += `<div class="calendar-day other-month">
+            <div class="calendar-day-number">${i}</div>
+        </div>`;
+    }
+
+    grid.innerHTML = html;
+}
+
+/**
+ * Get events for a specific day
+ */
+function getEventsForDay(year, month, day) {
+    return calendarEvents.filter(event => {
+        const eventDate = new Date(event.start_time);
+        return eventDate.getFullYear() === year &&
+               eventDate.getMonth() === month &&
+               eventDate.getDate() === day;
+    });
+}
+
+/**
+ * Render events for a calendar day cell
+ */
+function renderDayEvents(events) {
+    if (events.length === 0) return '';
+
+    const maxVisible = 2;
+    let html = '';
+
+    events.slice(0, maxVisible).forEach(event => {
+        const time = new Date(event.start_time).toLocaleTimeString('en-US', {
+            hour: 'numeric',
+            minute: '2-digit'
+        });
+
+        html += `
+            <div class="calendar-event" onclick="showEventModal('${escapeHtml(event.id)}')" title="${escapeHtml(event.title)}">
+                <span class="calendar-event-time">${time}</span>
+                ${escapeHtml(event.title)}
+            </div>
+        `;
+    });
+
+    if (events.length > maxVisible) {
+        html += `<div class="calendar-more" onclick="showDayEvents(${events.map(e => `'${e.id}'`).join(',')})">${events.length - maxVisible} more</div>`;
+    }
+
+    return html;
+}
+
+/**
+ * Navigate to previous month
+ */
+function previousMonth() {
+    calendarDate.setMonth(calendarDate.getMonth() - 1);
+    renderCalendar();
+}
+
+/**
+ * Navigate to next month
+ */
+function nextMonth() {
+    calendarDate.setMonth(calendarDate.getMonth() + 1);
+    renderCalendar();
+}
+
+/**
+ * Navigate to today
+ */
+function goToToday() {
+    calendarDate = new Date();
+    renderCalendar();
+}
+
+/**
+ * Show multiple events for a day (when clicking "+N more")
+ */
+function showDayEvents(...eventIds) {
+    if (eventIds.length > 0) {
+        showEventModal(eventIds[0]);
+    }
 }

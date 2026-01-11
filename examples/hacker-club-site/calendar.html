@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Calendar - Hipster Electronics Hacking Club</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="alternate" type="application/rss+xml" title="HEHC Announcements" href="/public/feed/rss">
+</head>
+<body>
+    <header>
+        <nav>
+            <div class="logo">
+                <span class="prompt">&gt;</span> HEHC_
+            </div>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="events.html">Events</a></li>
+                <li><a href="calendar.html">Calendar</a></li>
+                <li><a href="join.html">Join</a></li>
+                <li><a href="#" id="portal-link" class="btn-portal">Member Portal</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main>
+        <section>
+            <h2><span class="prompt">&gt;</span> cat calendar.dat</h2>
+            <div class="calendar-container">
+                <div class="calendar-header">
+                    <div class="calendar-nav">
+                        <button onclick="previousMonth()">&lt; Prev</button>
+                        <button onclick="goToToday()">Today</button>
+                        <button onclick="nextMonth()">Next &gt;</button>
+                    </div>
+                    <h3 class="calendar-title" id="calendar-title">Loading...</h3>
+                    <a href="/public/feed/calendar" id="ical-download" class="btn">Download iCal</a>
+                </div>
+                <div id="calendar-grid" class="calendar-grid">
+                    <p class="loading" style="grid-column: 1 / -1; padding: 2rem;">Initializing calendar matrix...</p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="footer-content">
+            <p>&copy; 2024 Hipster Electronics Hacking Club</p>
+            <p class="tagline">640K ought to be enough for anybody.</p>
+            <p class="powered-by">Powered by <a href="https://github.com/IndustriousKraken/coterie">Coterie</a></p>
+        </div>
+    </footer>
+
+    <script src="js/config.js"></script>
+    <script src="js/api.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>

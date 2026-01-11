@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Events - Unity Community Church</title>
+    <title>Calendar - Unity Community Church</title>
     <link rel="stylesheet" href="css/style.css">
     <link rel="alternate" type="application/rss+xml" title="Unity Community Church Announcements" href="/public/feed/rss">
 </head>
@@ -23,15 +23,22 @@
 
     <main>
         <section>
-            <h1>Upcoming Events</h1>
-            <p>From worship services to fellowship gatherings, study groups to service projects,
-               there's always something happening at Unity Community Church. We invite you to
-               join us!</p>
-            <p class="feed-links" style="margin-bottom: var(--space-lg);">
-                <a href="/public/feed/calendar" id="ical-download">Subscribe to Calendar</a>
-            </p>
-            <div id="all-events-list" class="events-grid">
-                <p class="loading">Loading events...</p>
+            <h1>Church Calendar</h1>
+            <p>Browse our schedule of worship services, study groups, fellowship events, and
+               service opportunities. Click on any event to see more details.</p>
+            <div class="calendar-container">
+                <div class="calendar-header">
+                    <div class="calendar-nav">
+                        <button onclick="previousMonth()">&lt; Prev</button>
+                        <button onclick="goToToday()">Today</button>
+                        <button onclick="nextMonth()">Next &gt;</button>
+                    </div>
+                    <h3 class="calendar-title" id="calendar-title">Loading...</h3>
+                    <a href="/public/feed/calendar" id="ical-download" class="btn">Subscribe to Calendar</a>
+                </div>
+                <div id="calendar-grid" class="calendar-grid">
+                    <p class="loading" style="grid-column: 1 / -1; padding: 2rem;">Loading calendar...</p>
+                </div>
             </div>
         </section>
     </main>

@@ -122,9 +122,9 @@
 - [ ] Download receipts
 
 ### Public Pages
-- [ ] Signup form
-- [ ] Event calendar
-- [ ] Public announcements
+- [x] Signup form (example sites)
+- [x] Event calendar view (example sites)
+- [x] Public announcements (example sites)
 - [ ] Member directory (opt-in)
 
 ## Phase 4: Integrations (Priority: Medium)

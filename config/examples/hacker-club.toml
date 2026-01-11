@@ -278,6 +278,43 @@ As always, we'll adjourn to the local pub afterward for those interested in cont
 
 # UPCOMING EVENTS (positive days_offset)
 
+# Test events for January 21 (multiple events on same day)
+[[events]]
+title = "Morning Coffee & Code"
+event_type = "social"
+days_offset = 10
+duration_hours = 2
+location = "Main Lounge"
+visibility = "public"
+description = "Casual morning session to work on personal projects and chat with fellow members over coffee."
+
+[[events]]
+title = "Soldering 101 Workshop"
+event_type = "workshop"
+days_offset = 10
+duration_hours = 3
+location = "Workshop Bay"
+visibility = "public"
+description = "Learn the basics of through-hole soldering. Perfect for beginners who want to start building their own circuits."
+
+[[events]]
+title = "Retro Gaming Tournament"
+event_type = "social"
+days_offset = 10
+duration_hours = 4
+location = "Arcade Room"
+visibility = "public"
+description = "Compete in classic games on original hardware! This month: Pac-Man championships on an original cabinet."
+
+[[events]]
+title = "Board Meeting"
+event_type = "meeting"
+days_offset = 10
+duration_hours = 1
+location = "Conference Room"
+visibility = "public"
+description = "Monthly board meeting to discuss club finances, upcoming events, and member concerns."
+
 [[events]]
 title = "Introduction to Hardware Hacking: Your First Circuit Bend"
 event_type = "workshop"
