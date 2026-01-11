@@ -1,0 +1,151 @@
+# Congregation Example Configuration
+# A religious nonprofit organization (church, synagogue, mosque, temple, etc.)
+
+[admin]
+email = "admin@congregation.local"
+username = "admin"
+full_name = "Office Administrator"
+password = "admin123"
+
+[[test_users]]
+email = "sarah@example.com"
+username = "sarah"
+full_name = "Sarah Thompson"
+password = "password123"
+membership_type = "family"
+status = "active"
+months_active = 48
+bypass_dues = false
+
+[[test_users]]
+email = "michael@example.com"
+username = "michael"
+full_name = "Michael Chen"
+password = "password123"
+membership_type = "individual"
+status = "active"
+months_active = 24
+bypass_dues = false
+
+[[test_users]]
+email = "david@example.com"
+username = "david"
+full_name = "David Martinez"
+password = "password123"
+membership_type = "individual"
+status = "active"
+months_active = 12
+bypass_dues = false
+
+[[test_users]]
+email = "emily@example.com"
+username = "emily"
+full_name = "Emily Johnson"
+password = "password123"
+membership_type = "individual"
+status = "pending"
+months_active = 0
+bypass_dues = false
+
+# Membership tiers (suggested annual pledges, treated as monthly)
+[[membership_types]]
+name = "Individual"
+slug = "individual"
+color = "#3F51B5"
+fee_cents = 5000  # $50/month suggested pledge
+billing_frequency = "monthly"
+
+[[membership_types]]
+name = "Family"
+slug = "family"
+color = "#009688"
+fee_cents = 10000  # $100/month suggested pledge
+billing_frequency = "monthly"
+
+[[membership_types]]
+name = "Student"
+slug = "student"
+color = "#4CAF50"
+fee_cents = 0  # No suggested amount
+billing_frequency = "monthly"
+
+[[membership_types]]
+name = "Founding Member"
+slug = "founding"
+color = "#FFD700"
+fee_cents = 0  # Honorary
+billing_frequency = "lifetime"
+
+# Congregation event types
+[[event_types]]
+name = "Service"
+slug = "service"
+color = "#3F51B5"
+icon = "church"
+
+[[event_types]]
+name = "Fellowship"
+slug = "fellowship"
+color = "#009688"
+icon = "users"
+
+[[event_types]]
+name = "Study Group"
+slug = "study-group"
+color = "#FF9800"
+icon = "book"
+
+[[event_types]]
+name = "Committee"
+slug = "committee"
+color = "#9E9E9E"
+icon = "clipboard"
+
+[[event_types]]
+name = "Youth Event"
+slug = "youth"
+color = "#E91E63"
+icon = "child"
+
+[[event_types]]
+name = "Outreach"
+slug = "outreach"
+color = "#4CAF50"
+icon = "hands-helping"
+
+[[event_types]]
+name = "Celebration"
+slug = "celebration"
+color = "#FFC107"
+icon = "star"
+
+# Congregation announcement types
+[[announcement_types]]
+name = "General"
+slug = "general"
+color = "#607D8B"
+
+[[announcement_types]]
+name = "Service"
+slug = "service"
+color = "#3F51B5"
+
+[[announcement_types]]
+name = "Community"
+slug = "community"
+color = "#009688"
+
+[[announcement_types]]
+name = "Prayer Request"
+slug = "prayer"
+color = "#9C27B0"
+
+[[announcement_types]]
+name = "Celebration"
+slug = "celebration"
+color = "#FFC107"
+
+[[announcement_types]]
+name = "Memorial"
+slug = "memorial"
+color = "#455A64"

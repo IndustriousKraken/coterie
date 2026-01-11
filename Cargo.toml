@@ -69,5 +69,8 @@ stripe = { package = "async-stripe", version = "0.39", default-features = false,
 # Data generation for seeding (used by seed binary)
 fake = { version = "2.9", features = ["derive"] }
 
+# CLI argument parsing (used by seed binary)
+clap = { version = "4", features = ["derive"] }
+
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

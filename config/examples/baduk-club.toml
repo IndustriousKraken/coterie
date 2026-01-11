@@ -1,0 +1,140 @@
+# Baduk (Go) Club Example Configuration
+# A club for players of the ancient board game Go/Baduk/Weiqi
+
+[admin]
+email = "admin@badukclub.local"
+username = "admin"
+full_name = "Club Administrator"
+password = "admin123"
+
+[[test_users]]
+email = "kim@example.com"
+username = "kim"
+full_name = "Kim Soo-young"
+password = "password123"
+membership_type = "regular"
+status = "active"
+months_active = 24
+bypass_dues = false
+
+[[test_users]]
+email = "tanaka@example.com"
+username = "tanaka"
+full_name = "Tanaka Hiroshi"
+password = "password123"
+membership_type = "regular"
+status = "active"
+months_active = 36
+bypass_dues = false
+
+[[test_users]]
+email = "wang@example.com"
+username = "wang"
+full_name = "Wang Wei"
+password = "password123"
+membership_type = "student"
+status = "active"
+months_active = 6
+bypass_dues = false
+
+[[test_users]]
+email = "smith@example.com"
+username = "smith"
+full_name = "John Smith"
+password = "password123"
+membership_type = "regular"
+status = "pending"
+months_active = 0
+bypass_dues = false
+
+# Membership tiers
+[[membership_types]]
+name = "Regular"
+slug = "regular"
+color = "#795548"
+fee_cents = 3000  # $30/month
+billing_frequency = "monthly"
+
+[[membership_types]]
+name = "Student"
+slug = "student"
+color = "#4CAF50"
+fee_cents = 1500  # $15/month
+billing_frequency = "monthly"
+
+[[membership_types]]
+name = "Senior"
+slug = "senior"
+color = "#9E9E9E"
+fee_cents = 2000  # $20/month
+billing_frequency = "monthly"
+
+[[membership_types]]
+name = "Lifetime"
+slug = "lifetime"
+color = "#212121"
+fee_cents = 100000  # $1,000 one-time
+billing_frequency = "lifetime"
+
+# Baduk club event types
+[[event_types]]
+name = "Club Night"
+slug = "club-night"
+color = "#795548"
+icon = "users"
+
+[[event_types]]
+name = "Tournament"
+slug = "tournament"
+color = "#F44336"
+icon = "trophy"
+
+[[event_types]]
+name = "Teaching Game"
+slug = "teaching-game"
+color = "#4CAF50"
+icon = "graduation-cap"
+
+[[event_types]]
+name = "Study Group"
+slug = "study-group"
+color = "#2196F3"
+icon = "book"
+
+[[event_types]]
+name = "Simul"
+slug = "simul"
+color = "#9C27B0"
+icon = "star"
+
+[[event_types]]
+name = "Social"
+slug = "social"
+color = "#FF9800"
+icon = "glass-cheers"
+
+# Baduk club announcement types
+[[announcement_types]]
+name = "General"
+slug = "general"
+color = "#607D8B"
+
+[[announcement_types]]
+name = "Tournament"
+slug = "tournament"
+color = "#F44336"
+
+[[announcement_types]]
+name = "Results"
+slug = "results"
+color = "#FFC107"
+
+[[announcement_types]]
+name = "Schedule"
+slug = "schedule"
+color = "#2196F3"
+
+[[announcement_types]]
+name = "Welcome"
+slug = "welcome"
+color = "#4CAF50"

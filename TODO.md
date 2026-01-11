@@ -215,14 +215,14 @@
   - [x] Redirect to /setup when no admin exists
   - [x] Setup page: org name, admin email/username/password
   - [x] Create admin user and redirect to login
-- [ ] Restructure seed configs
-  - [ ] Move config/seed.toml to config/examples/hacker-club.toml
-  - [ ] Create config/examples/baduk-club.toml
-  - [ ] Create config/examples/congregation.toml
-- [ ] Update seed binary
-  - [ ] Require --example flag (no default seed)
-  - [ ] Load example config from config/examples/<name>.toml
-  - [ ] Parse event_types and announcement_types from config (currently only membership_types supported)
+- [x] Restructure seed configs
+  - [x] Move config/seed.toml to config/examples/hacker-club.toml
+  - [x] Create config/examples/baduk-club.toml
+  - [x] Create config/examples/congregation.toml
+- [x] Update seed binary
+  - [x] Require --example flag (no default seed)
+  - [x] Load example config from config/examples/<name>.toml
+  - [x] Parse event_types and announcement_types from config
 
 ### Seed Data Improvements
 - [x] Basic seed script with test accounts
@@ -232,10 +232,12 @@
 ## Notes
 
 - **Current Status**: Core functionality complete. Admin portal fully functional with member, event, and announcement management. Configurable types (event, announcement, membership) fully implemented with admin UI.
-- **Next Step**: Seed config restructuring, seed binary updates
+- **Next Step**: RSVP functionality, public pages, announcement distribution
 - **Blocking Issues**: None currently
 - **Dependencies**: Need to evaluate specific Discord and Unifi API libraries
 - **Recently Completed**:
+  - ✅ Seed config restructuring (config/examples/ with hacker-club, baduk-club, congregation)
+  - ✅ Seed binary now requires --example flag, parses all type configs
   - ✅ First-run setup flow (middleware redirects to /setup, creates admin user)
   - ✅ Configurable types system (event types, announcement types, membership types)
   - ✅ Admin type management UI with create/edit/delete/reorder
