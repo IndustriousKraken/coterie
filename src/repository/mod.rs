@@ -44,6 +44,8 @@ pub trait EventRepository: Send + Sync {
     async fn register_attendance(&self, event_id: Uuid, member_id: Uuid) -> Result<()>;
     async fn cancel_attendance(&self, event_id: Uuid, member_id: Uuid) -> Result<()>;
     async fn get_attendee_count(&self, event_id: Uuid) -> Result<i64>;
+    async fn get_member_attendance_status(&self, event_id: Uuid, member_id: Uuid) -> Result<Option<AttendanceStatus>>;
+    async fn get_member_registered_events(&self, member_id: Uuid) -> Result<Vec<Event>>;
 }
 
 #[async_trait]

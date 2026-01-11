@@ -15,6 +15,7 @@ use crate::{
             payments::{ListPaymentsQuery, list_by_member as list_payments},
         },
     },
+    domain::AttendanceStatus,
     web::templates::{HtmlTemplate, UserInfo},
 };
 use super::{MemberInfo, is_admin};
@@ -89,17 +90,28 @@ pub async fn upcoming_events(
         Err(_) => vec![],
     };
 
-    // Transform to our summary format
-    let event_summaries: Vec<EventSummary> = events.into_iter().map(|event| {
-        EventSummary {
+    // Transform to our summary format, checking attendance for each event
+    let member_id = current_user.member.id;
+    let mut event_summaries: Vec<EventSummary> = Vec::new();
+
+    for event in events {
+        let attending = state.service_context.event_repo
+            .get_member_attendance_status(event.id, member_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|s| matches!(s, AttendanceStatus::Registered))
+            .unwrap_or(false);
+
+        event_summaries.push(EventSummary {
             id: event.id.to_string(),
             title: event.title,
             date: event.start_time.format("%B %d, %Y").to_string(),
             time: event.start_time.format("%l:%M %p").to_string(),
             location: event.location,
-            attending: false, // TODO: Check attendance when we have a method for it
-        }
-    }).collect();
+            attending,
+        });
+    }
 
     // Return HTML fragment for HTMX
     let html = if event_summaries.is_empty() {
@@ -123,9 +135,9 @@ pub async fn upcoming_events(
                 event.time,
                 event.location.map(|l| format!(r#"<p class="text-sm text-gray-600">📍 {}</p>"#, l)).unwrap_or_default(),
                 if event.attending {
-                    r#"<span class="text-xs text-green-600">✓ Attending</span>"#.to_string()
+                    r#"<span class="text-xs text-green-600 font-medium">Attending</span>"#.to_string()
                 } else {
-                    format!(r#"<button hx-post="/portal/events/{}/rsvp" hx-swap="outerHTML" class="text-xs text-blue-600 hover:text-blue-800">RSVP</button>"#, event.id)
+                    format!(r#"<button hx-post="/portal/api/events/{}/rsvp" hx-swap="outerHTML" class="text-xs text-blue-600 hover:text-blue-800">RSVP</button>"#, event.id)
                 }
             ));
         }

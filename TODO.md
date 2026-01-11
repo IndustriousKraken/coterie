@@ -118,7 +118,7 @@
 - [x] Profile management (view/edit name, change password)
 - [x] Events listing page with filtering
 - [x] Payment history page with summary
-- [ ] Event RSVP functionality
+- [x] Event RSVP functionality
 - [ ] Download receipts
 
 ### Public Pages
@@ -231,11 +231,13 @@
 
 ## Notes
 
-- **Current Status**: Core functionality complete. Admin portal fully functional with member, event, and announcement management. Configurable types (event, announcement, membership) fully implemented with admin UI.
-- **Next Step**: RSVP functionality, public pages, announcement distribution
+- **Current Status**: Core functionality complete. Admin portal fully functional with member, event, and announcement management. Configurable types (event, announcement, membership) fully implemented with admin UI. Member portal RSVP functionality complete.
+- **Next Step**: Public pages, announcement distribution, password reset flow
 - **Blocking Issues**: None currently
 - **Dependencies**: Need to evaluate specific Discord and Unifi API libraries
 - **Recently Completed**:
+  - ✅ Member portal RSVP functionality (register/cancel attendance, status display)
+  - ✅ Example public sites for baduk-club and congregation
   - ✅ Seed config restructuring (config/examples/ with hacker-club, baduk-club, congregation)
   - ✅ Seed binary now requires --example flag, parses all type configs
   - ✅ First-run setup flow (middleware redirects to /setup, creates admin user)

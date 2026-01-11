@@ -1,16 +1,18 @@
 use askama::Template;
 use axum::{
-    extract::{State, Query},
+    extract::{Path, State, Query},
     response::IntoResponse,
     Extension,
 };
 use serde::Deserialize;
+use uuid::Uuid;
 
 use crate::{
     api::{
         middleware::auth::CurrentUser,
         state::AppState,
     },
+    domain::AttendanceStatus,
     web::templates::{HtmlTemplate, UserInfo},
 };
 use super::is_admin;
@@ -49,9 +51,11 @@ pub struct EventsListQuery {
 
 pub async fn events_list_api(
     State(state): State<AppState>,
-    Extension(_current_user): Extension<CurrentUser>,
+    Extension(current_user): Extension<CurrentUser>,
     Query(query): Query<EventsListQuery>,
 ) -> impl IntoResponse {
+    let member_id = current_user.member.id;
+
     // Get upcoming events (past events not currently supported)
     let events = state.service_context.event_repo
         .list_upcoming(50)
@@ -95,6 +99,19 @@ pub async fn events_list_api(
             _ => "bg-gray-100 text-gray-800",
         };
 
+        // Check member's RSVP status for this event
+        let rsvp_status = state.service_context.event_repo
+            .get_member_attendance_status(event.id, member_id)
+            .await
+            .ok()
+            .flatten();
+
+        let rsvp_button = if is_past {
+            String::new()
+        } else {
+            render_rsvp_button(&event.id.to_string(), rsvp_status.as_ref())
+        };
+
         html.push_str(&format!(
             r#"<div class="bg-white rounded-lg shadow-sm p-6 {}">
                 <div class="flex justify-between items-start">
@@ -124,21 +141,107 @@ pub async fn events_list_api(
             event.start_time.format("%B %d, %Y"),
             event.start_time.format("%l:%M %p"),
             event.location.map(|l| format!(r#"<p>Location: {}</p>"#, l)).unwrap_or_default(),
-            if !is_past {
-                format!(
-                    r#"<button hx-post="/portal/api/events/{}/rsvp"
-                               hx-swap="outerHTML"
-                               class="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
-                        RSVP
-                    </button>"#,
-                    event.id
-                )
-            } else {
-                String::new()
-            }
+            rsvp_button,
         ));
     }
 
     html.push_str("</div>");
     axum::response::Html(html)
+}
+
+/// Render the appropriate RSVP button based on current status
+fn render_rsvp_button(event_id: &str, status: Option<&AttendanceStatus>) -> String {
+    match status {
+        Some(AttendanceStatus::Registered) => {
+            format!(
+                r#"<div class="flex flex-col items-end gap-2">
+                    <span class="text-sm text-green-600 font-medium">You're attending</span>
+                    <button hx-post="/portal/api/events/{}/cancel"
+                            hx-swap="outerHTML"
+                            hx-target="closest div.text-right"
+                            class="px-3 py-1 text-sm text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50">
+                        Cancel RSVP
+                    </button>
+                </div>"#,
+                event_id
+            )
+        }
+        Some(AttendanceStatus::Waitlisted) => {
+            format!(
+                r#"<div class="flex flex-col items-end gap-2">
+                    <span class="text-sm text-yellow-600 font-medium">On waitlist</span>
+                    <button hx-post="/portal/api/events/{}/cancel"
+                            hx-swap="outerHTML"
+                            hx-target="closest div.text-right"
+                            class="px-3 py-1 text-sm text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50">
+                        Leave waitlist
+                    </button>
+                </div>"#,
+                event_id
+            )
+        }
+        Some(AttendanceStatus::Cancelled) | None => {
+            format!(
+                r#"<button hx-post="/portal/api/events/{}/rsvp"
+                           hx-swap="outerHTML"
+                           hx-target="closest div.text-right"
+                           class="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
+                    RSVP
+                </button>"#,
+                event_id
+            )
+        }
+    }
+}
+
+/// Handle RSVP to an event
+pub async fn rsvp_event(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+    Path(event_id): Path<Uuid>,
+) -> impl IntoResponse {
+    let member_id = current_user.member.id;
+
+    // Register attendance
+    if let Err(e) = state.service_context.event_repo
+        .register_attendance(event_id, member_id)
+        .await
+    {
+        return axum::response::Html(format!(
+            r#"<div class="text-red-600 text-sm">Error: {}</div>"#,
+            e
+        ));
+    }
+
+    // Return updated button
+    axum::response::Html(render_rsvp_button(
+        &event_id.to_string(),
+        Some(&AttendanceStatus::Registered),
+    ))
+}
+
+/// Handle cancel RSVP
+pub async fn cancel_rsvp_event(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+    Path(event_id): Path<Uuid>,
+) -> impl IntoResponse {
+    let member_id = current_user.member.id;
+
+    // Cancel attendance
+    if let Err(e) = state.service_context.event_repo
+        .cancel_attendance(event_id, member_id)
+        .await
+    {
+        return axum::response::Html(format!(
+            r#"<div class="text-red-600 text-sm">Error: {}</div>"#,
+            e
+        ));
+    }
+
+    // Return updated button (shows RSVP button again)
+    axum::response::Html(render_rsvp_button(
+        &event_id.to_string(),
+        None,
+    ))
 }

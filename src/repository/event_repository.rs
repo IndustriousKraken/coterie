@@ -4,7 +4,7 @@ use sqlx::{SqlitePool, FromRow};
 use uuid::Uuid;
 
 use crate::{
-    domain::{Event, EventType, EventVisibility},
+    domain::{AttendanceStatus, Event, EventType, EventVisibility},
     error::{AppError, Result},
     repository::EventRepository,
 };
@@ -349,5 +349,62 @@ impl EventRepository for SqliteEventRepository {
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         Ok(row.0)
+    }
+
+    async fn get_member_attendance_status(&self, event_id: Uuid, member_id: Uuid) -> Result<Option<AttendanceStatus>> {
+        let event_id_str = event_id.to_string();
+        let member_id_str = member_id.to_string();
+
+        let row: Option<(String,)> = sqlx::query_as(
+            r#"
+            SELECT status
+            FROM event_attendance
+            WHERE event_id = ? AND member_id = ?
+            "#
+        )
+        .bind(&event_id_str)
+        .bind(&member_id_str)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        match row {
+            Some((status,)) => {
+                let attendance_status = match status.as_str() {
+                    "Registered" => AttendanceStatus::Registered,
+                    "Waitlisted" => AttendanceStatus::Waitlisted,
+                    "Cancelled" => AttendanceStatus::Cancelled,
+                    _ => return Err(AppError::Database(format!("Invalid attendance status: {}", status))),
+                };
+                Ok(Some(attendance_status))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn get_member_registered_events(&self, member_id: Uuid) -> Result<Vec<Event>> {
+        let member_id_str = member_id.to_string();
+        let now = Utc::now().naive_utc();
+
+        let rows = sqlx::query_as::<_, EventRow>(
+            r#"
+            SELECT e.id, e.title, e.description, e.event_type, e.event_type_id, e.visibility,
+                   e.start_time, e.end_time, e.location, e.max_attendees, e.rsvp_required,
+                   e.created_by, e.created_at, e.updated_at
+            FROM events e
+            INNER JOIN event_attendance ea ON e.id = ea.event_id
+            WHERE ea.member_id = ? AND ea.status = 'Registered' AND e.start_time > ?
+            ORDER BY e.start_time ASC
+            "#
+        )
+        .bind(&member_id_str)
+        .bind(now)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        rows.into_iter()
+            .map(Self::row_to_event)
+            .collect()
     }
 }

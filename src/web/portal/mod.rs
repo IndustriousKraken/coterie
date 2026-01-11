@@ -24,6 +24,8 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         // API endpoints for dashboard
         .route("/api/events/upcoming", get(dashboard::upcoming_events))
         .route("/api/events/list", get(events::events_list_api))
+        .route("/api/events/:id/rsvp", post(events::rsvp_event))
+        .route("/api/events/:id/cancel", post(events::cancel_rsvp_event))
         .route("/api/payments/recent", get(dashboard::recent_payments))
         .route("/api/payments/list", get(payments::payments_list_api))
         .route("/api/payments/summary", get(payments::payments_summary_api))
