@@ -51,6 +51,9 @@ jobs:
           REMOTE_USER: ${{ secrets.REMOTE_USER }}
           SOURCE: "dist/"
           TARGET: "/opt/coterie/"
+          SCRIPT_BEFORE: |
+            # Fix ownership so rsync can write files
+            sudo chown -R ${{ secrets.REMOTE_USER }}:${{ secrets.REMOTE_USER }} /opt/coterie || true
           SCRIPT_AFTER: |
             # Install service file if changed
             sudo cp /opt/coterie/deploy/coterie.service /etc/systemd/system/
