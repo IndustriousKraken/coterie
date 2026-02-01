@@ -1,4 +1,5 @@
 mod admin;
+mod announcements;
 mod dashboard;
 mod events;
 mod payments;
@@ -16,6 +17,7 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         // Member routes
         .route("/dashboard", get(dashboard::member_dashboard))
         .route("/events", get(events::events_page))
+        .route("/announcements", get(announcements::announcements_page))
         .route("/payments", get(payments::payments_page))
         .route("/profile", get(profile::profile_page))
         .route("/profile", post(profile::update_profile))
@@ -26,6 +28,7 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/api/events/list", get(events::events_list_api))
         .route("/api/events/:id/rsvp", post(events::rsvp_event))
         .route("/api/events/:id/cancel", post(events::cancel_rsvp_event))
+        .route("/api/announcements/list", get(announcements::announcements_list_api))
         .route("/api/payments/recent", get(dashboard::recent_payments))
         .route("/api/payments/list", get(payments::payments_list_api))
         .route("/api/payments/summary", get(payments::payments_summary_api))
