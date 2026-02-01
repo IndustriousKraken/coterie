@@ -116,6 +116,7 @@ pub async fn create(
         location: request.location,
         max_attendees: request.max_attendees,
         rsvp_required: request.rsvp_required,
+        image_url: None,
         created_by: user.member.id,
         created_at: Utc::now(),
         updated_at: Utc::now(),

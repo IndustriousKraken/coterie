@@ -123,6 +123,8 @@ struct EventConfig {
     visibility: String,  // "public" or "members_only"
     #[serde(default)]
     max_attendees: Option<i32>,
+    #[serde(default)]
+    image_url: Option<String>,
 }
 
 fn default_duration() -> i64 { 2 }
@@ -139,6 +141,8 @@ struct AnnouncementConfig {
     is_public: bool,
     #[serde(default)]
     featured: bool,
+    #[serde(default)]
+    image_url: Option<String>,
 }
 
 // ============================================================================
@@ -212,6 +216,7 @@ fn make_event(
     duration_hours: i64,
     location: Option<&str>,
     created_by: Uuid,
+    image_url: Option<&str>,
 ) -> Event {
     let start = Utc::now() + Duration::days(days_offset);
     Event {
@@ -226,6 +231,7 @@ fn make_event(
         location: location.map(String::from),
         max_attendees: Some(30),
         rsvp_required: true,
+        image_url: image_url.map(String::from),
         created_by,
         created_at: Utc::now() - Duration::days(days_offset.abs() + 7),
         updated_at: Utc::now() - Duration::days(days_offset.abs() + 7),
@@ -593,6 +599,7 @@ async fn main() -> anyhow::Result<()> {
             event_config.duration_hours,
             event_config.location.as_deref(),
             admin.id,
+            event_config.image_url.as_deref(),
         );
 
         let created_event = event_repo.create(event).await?;
@@ -623,6 +630,7 @@ async fn main() -> anyhow::Result<()> {
                 2,
                 Some("Main Meeting Room"),
                 admin.id,
+                None,
             );
             event_repo.create(event).await?;
             event_count += 1;
@@ -654,6 +662,7 @@ async fn main() -> anyhow::Result<()> {
             announcement_type_id: None,
             is_public: ann_config.is_public,
             featured: ann_config.featured,
+            image_url: ann_config.image_url.clone(),
             published_at: Some(Utc::now() - Duration::days(ann_config.days_ago)),
             created_by: admin.id,
             created_at: Utc::now() - Duration::days(ann_config.days_ago),
@@ -673,6 +682,7 @@ async fn main() -> anyhow::Result<()> {
             announcement_type_id: None,
             is_public: true,
             featured: true,
+            image_url: None,
             published_at: Some(Utc::now() - Duration::days(1)),
             created_by: admin.id,
             created_at: Utc::now() - Duration::days(1),

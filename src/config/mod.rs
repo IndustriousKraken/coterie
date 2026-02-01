@@ -19,6 +19,12 @@ pub struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub base_url: String,
+    #[serde(default = "default_uploads_dir")]
+    pub uploads_dir: String,
+}
+
+fn default_uploads_dir() -> String {
+    "uploads".to_string()
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -223,6 +229,7 @@ impl Default for Settings {
                 host: "127.0.0.1".to_string(),
                 port: 8080,
                 base_url: "http://localhost:8080".to_string(),
+                uploads_dir: "uploads".to_string(),
             },
             database: DatabaseConfig {
                 url: "sqlite://coterie.db".to_string(),

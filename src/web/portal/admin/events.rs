@@ -1,6 +1,6 @@
 use askama::Template;
 use axum::{
-    extract::{State, Query, Path},
+    extract::{State, Query, Path, Multipart},
     response::IntoResponse,
     Extension,
 };
@@ -12,6 +12,7 @@ use crate::{
         state::AppState,
     },
     web::templates::{HtmlTemplate, UserInfo},
+    web::uploads::save_uploaded_file,
 };
 use crate::web::portal::is_admin;
 
@@ -265,6 +266,7 @@ pub struct AdminEventDetail {
     pub location: Option<String>,
     pub max_attendees: Option<i32>,
     pub rsvp_required: bool,
+    pub image_url: Option<String>,
     pub attendee_count: i64,
     pub is_past: bool,
     pub created_at: String,
@@ -323,6 +325,7 @@ pub async fn admin_event_detail_page(
         location: event.location,
         max_attendees: event.max_attendees,
         rsvp_required: event.rsvp_required,
+        image_url: event.image_url,
         attendee_count,
         is_past: event.start_time <= now,
         created_at: event.created_at.format("%b %d, %Y %H:%M").to_string(),
@@ -403,24 +406,10 @@ pub async fn admin_new_event_page(
     }).into_response()
 }
 
-#[derive(Debug, Deserialize)]
-pub struct CreateEventForm {
-    pub csrf_token: String,
-    pub title: String,
-    pub description: String,
-    pub event_type: String,
-    pub visibility: String,
-    pub start_time: String,
-    pub end_time: Option<String>,
-    pub location: Option<String>,
-    pub max_attendees: Option<i32>,
-    pub rsvp_required: Option<String>,
-}
-
 pub async fn admin_create_event(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
-    axum::Form(form): axum::Form<CreateEventForm>,
+    mut multipart: Multipart,
 ) -> impl IntoResponse {
     use crate::domain::{Event, EventType, EventVisibility};
 
@@ -428,7 +417,57 @@ pub async fn admin_create_event(
         return axum::response::Html("Access denied".to_string()).into_response();
     }
 
-    let event_type = match form.event_type.as_str() {
+    // Parse multipart form
+    let mut title = String::new();
+    let mut description = String::new();
+    let mut event_type_str = String::new();
+    let mut visibility_str = String::new();
+    let mut start_time_str = String::new();
+    let mut end_time_str = String::new();
+    let mut location_str = String::new();
+    let mut max_attendees: Option<i32> = None;
+    let mut rsvp_required = false;
+    let mut image_url: Option<String> = None;
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+
+        match name.as_str() {
+            "csrf_token" => { let _ = field.text().await; }
+            "title" => title = field.text().await.unwrap_or_default(),
+            "description" => description = field.text().await.unwrap_or_default(),
+            "event_type" => event_type_str = field.text().await.unwrap_or_default(),
+            "visibility" => visibility_str = field.text().await.unwrap_or_default(),
+            "start_time" => start_time_str = field.text().await.unwrap_or_default(),
+            "end_time" => end_time_str = field.text().await.unwrap_or_default(),
+            "location" => location_str = field.text().await.unwrap_or_default(),
+            "max_attendees" => {
+                if let Ok(text) = field.text().await {
+                    max_attendees = text.parse().ok();
+                }
+            }
+            "rsvp_required" => {
+                rsvp_required = true;
+                let _ = field.text().await;
+            }
+            "image" => {
+                let filename = field.file_name().unwrap_or("").to_string();
+                if !filename.is_empty() {
+                    if let Ok(data) = field.bytes().await {
+                        if !data.is_empty() {
+                            match save_uploaded_file(&state.settings.server.uploads_dir, &filename, &data).await {
+                                Ok(path) => image_url = Some(path),
+                                Err(e) => return axum::response::Html(format!("Error uploading image: {}", e)).into_response(),
+                            }
+                        }
+                    }
+                }
+            }
+            _ => { let _ = field.bytes().await; }
+        }
+    }
+
+    let event_type = match event_type_str.as_str() {
         "Meeting" => EventType::Meeting,
         "Workshop" => EventType::Workshop,
         "CTF" => EventType::CTF,
@@ -437,36 +476,39 @@ pub async fn admin_create_event(
         _ => EventType::Meeting,
     };
 
-    let visibility = match form.visibility.as_str() {
+    let visibility = match visibility_str.as_str() {
         "Public" => EventVisibility::Public,
         "MembersOnly" => EventVisibility::MembersOnly,
         "AdminOnly" => EventVisibility::AdminOnly,
         _ => EventVisibility::MembersOnly,
     };
 
-    let start_time = match chrono::NaiveDateTime::parse_from_str(&form.start_time, "%Y-%m-%dT%H:%M") {
+    let start_time = match chrono::NaiveDateTime::parse_from_str(&start_time_str, "%Y-%m-%dT%H:%M") {
         Ok(dt) => chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc),
         Err(_) => return axum::response::Html("Invalid start time".to_string()).into_response(),
     };
 
-    let end_time = form.end_time
-        .as_ref()
-        .filter(|s| !s.is_empty())
-        .and_then(|s| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").ok())
-        .map(|dt| chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc));
+    let end_time = if end_time_str.is_empty() {
+        None
+    } else {
+        chrono::NaiveDateTime::parse_from_str(&end_time_str, "%Y-%m-%dT%H:%M")
+            .ok()
+            .map(|dt| chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc))
+    };
 
     let event = Event {
         id: uuid::Uuid::new_v4(),
-        title: form.title,
-        description: form.description,
+        title,
+        description,
         event_type,
         event_type_id: None,
         visibility,
         start_time,
         end_time,
-        location: form.location.filter(|s| !s.is_empty()),
-        max_attendees: form.max_attendees,
-        rsvp_required: form.rsvp_required.is_some(),
+        location: if location_str.is_empty() { None } else { Some(location_str) },
+        max_attendees,
+        rsvp_required,
+        image_url,
         created_by: current_user.member.id,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -478,25 +520,11 @@ pub async fn admin_create_event(
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct UpdateEventForm {
-    pub csrf_token: String,
-    pub title: String,
-    pub description: String,
-    pub event_type: String,
-    pub visibility: String,
-    pub start_time: String,
-    pub end_time: Option<String>,
-    pub location: Option<String>,
-    pub max_attendees: Option<i32>,
-    pub rsvp_required: Option<String>,
-}
-
 pub async fn admin_update_event(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
     Path(event_id): Path<String>,
-    axum::Form(form): axum::Form<UpdateEventForm>,
+    mut multipart: Multipart,
 ) -> impl IntoResponse {
     use crate::domain::{Event, EventType, EventVisibility};
 
@@ -515,7 +543,62 @@ pub async fn admin_update_event(
         Err(_) => return axum::response::Html("Error loading event".to_string()).into_response(),
     };
 
-    let event_type = match form.event_type.as_str() {
+    // Parse multipart form
+    let mut title = String::new();
+    let mut description = String::new();
+    let mut event_type_str = String::new();
+    let mut visibility_str = String::new();
+    let mut start_time_str = String::new();
+    let mut end_time_str = String::new();
+    let mut location_str = String::new();
+    let mut max_attendees: Option<i32> = None;
+    let mut rsvp_required = false;
+    let mut new_image_url: Option<String> = None;
+    let mut remove_image = false;
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+
+        match name.as_str() {
+            "csrf_token" => { let _ = field.text().await; }
+            "title" => title = field.text().await.unwrap_or_default(),
+            "description" => description = field.text().await.unwrap_or_default(),
+            "event_type" => event_type_str = field.text().await.unwrap_or_default(),
+            "visibility" => visibility_str = field.text().await.unwrap_or_default(),
+            "start_time" => start_time_str = field.text().await.unwrap_or_default(),
+            "end_time" => end_time_str = field.text().await.unwrap_or_default(),
+            "location" => location_str = field.text().await.unwrap_or_default(),
+            "max_attendees" => {
+                if let Ok(text) = field.text().await {
+                    max_attendees = text.parse().ok();
+                }
+            }
+            "rsvp_required" => {
+                rsvp_required = true;
+                let _ = field.text().await;
+            }
+            "remove_image" => {
+                remove_image = true;
+                let _ = field.text().await;
+            }
+            "image" => {
+                let filename = field.file_name().unwrap_or("").to_string();
+                if !filename.is_empty() {
+                    if let Ok(data) = field.bytes().await {
+                        if !data.is_empty() {
+                            match save_uploaded_file(&state.settings.server.uploads_dir, &filename, &data).await {
+                                Ok(path) => new_image_url = Some(path),
+                                Err(e) => return axum::response::Html(format!(r#"<div class="px-4 py-3 bg-red-100 text-red-800 rounded-md text-sm">Error uploading image: {}</div>"#, e)).into_response(),
+                            }
+                        }
+                    }
+                }
+            }
+            _ => { let _ = field.bytes().await; }
+        }
+    }
+
+    let event_type = match event_type_str.as_str() {
         "Meeting" => EventType::Meeting,
         "Workshop" => EventType::Workshop,
         "CTF" => EventType::CTF,
@@ -524,36 +607,48 @@ pub async fn admin_update_event(
         _ => EventType::Meeting,
     };
 
-    let visibility = match form.visibility.as_str() {
+    let visibility = match visibility_str.as_str() {
         "Public" => EventVisibility::Public,
         "MembersOnly" => EventVisibility::MembersOnly,
         "AdminOnly" => EventVisibility::AdminOnly,
         _ => EventVisibility::MembersOnly,
     };
 
-    let start_time = match chrono::NaiveDateTime::parse_from_str(&form.start_time, "%Y-%m-%dT%H:%M") {
+    let start_time = match chrono::NaiveDateTime::parse_from_str(&start_time_str, "%Y-%m-%dT%H:%M") {
         Ok(dt) => chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc),
-        Err(_) => return axum::response::Html("Invalid start time".to_string()).into_response(),
+        Err(_) => return axum::response::Html(r#"<div class="px-4 py-3 bg-red-100 text-red-800 rounded-md text-sm">Invalid start time</div>"#.to_string()).into_response(),
     };
 
-    let end_time = form.end_time
-        .as_ref()
-        .filter(|s| !s.is_empty())
-        .and_then(|s| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").ok())
-        .map(|dt| chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc));
+    let end_time = if end_time_str.is_empty() {
+        None
+    } else {
+        chrono::NaiveDateTime::parse_from_str(&end_time_str, "%Y-%m-%dT%H:%M")
+            .ok()
+            .map(|dt| chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc))
+    };
+
+    // Determine final image_url: new upload > remove > keep existing
+    let image_url = if new_image_url.is_some() {
+        new_image_url
+    } else if remove_image {
+        None
+    } else {
+        existing.image_url.clone()
+    };
 
     let updated_event = Event {
         id,
-        title: form.title,
-        description: form.description,
+        title,
+        description,
         event_type,
         event_type_id: existing.event_type_id,
         visibility,
         start_time,
         end_time,
-        location: form.location.filter(|s| !s.is_empty()),
-        max_attendees: form.max_attendees,
-        rsvp_required: form.rsvp_required.is_some(),
+        location: if location_str.is_empty() { None } else { Some(location_str) },
+        max_attendees,
+        rsvp_required,
+        image_url,
         created_by: existing.created_by,
         created_at: existing.created_at,
         updated_at: chrono::Utc::now(),

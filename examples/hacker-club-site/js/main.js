@@ -127,8 +127,13 @@ function showEventModal(eventId) {
         minute: '2-digit'
     });
 
+    const imageHtml = event.image_url
+        ? `<img src="${getImageUrl(event.image_url)}" alt="" class="modal-image">`
+        : '';
+
     document.getElementById('modal-title').textContent = event.title;
     document.getElementById('modal-meta').innerHTML = `
+        ${imageHtml}
         <p><span class="label">Type:</span> <span class="value">${escapeHtml(event.event_type || 'Event')}</span></p>
         <p><span class="label">Date:</span> <span class="value">${dateStr}</span></p>
         <p><span class="label">Time:</span> <span class="value">${timeStr}</span></p>
@@ -155,8 +160,13 @@ function showAnnouncementModal(announcementId) {
         year: 'numeric'
     });
 
+    const imageHtml = announcement.image_url
+        ? `<img src="${getImageUrl(announcement.image_url)}" alt="" class="modal-image">`
+        : '';
+
     document.getElementById('modal-title').textContent = announcement.title;
     document.getElementById('modal-meta').innerHTML = `
+        ${imageHtml}
         <p><span class="label">Published:</span> <span class="value">${dateStr}</span></p>
     `;
     document.getElementById('modal-content').textContent = announcement.content || 'No content available.';
@@ -255,8 +265,13 @@ function createEventCard(event) {
         ? `<span class="read-more" onclick="showEventModal('${escapeHtml(event.id)}')">[more...]</span>`
         : '';
 
+    const imageHtml = event.image_url
+        ? `<div class="event-thumbnail"><img src="${getImageUrl(event.image_url)}" alt="" onclick="showEventModal('${escapeHtml(event.id)}')"></div>`
+        : '';
+
     return `
         <div class="event-card">
+            ${imageHtml}
             <span class="event-type">${escapeHtml(event.event_type || 'event')}</span>
             <h3>${escapeHtml(event.title)}</h3>
             <p class="event-date">${dateStr} @ ${timeStr}</p>
@@ -316,11 +331,18 @@ function createAnnouncementCard(announcement) {
         ? `<span class="read-more" onclick="showAnnouncementModal('${escapeHtml(announcement.id)}')">[more...]</span>`
         : '';
 
+    const imageHtml = announcement.image_url
+        ? `<img src="${getImageUrl(announcement.image_url)}" alt="" class="announcement-thumbnail" onclick="showAnnouncementModal('${escapeHtml(announcement.id)}')">`
+        : '';
+
     return `
         <div class="announcement">
-            <h3>${escapeHtml(announcement.title)}</h3>
-            <p class="announcement-date">${dateStr}</p>
-            <p class="announcement-content">${escapeHtml(displayContent)}${readMoreLink}</p>
+            ${imageHtml}
+            <div class="announcement-body">
+                <h3>${escapeHtml(announcement.title)}</h3>
+                <p class="announcement-date">${dateStr}</p>
+                <p class="announcement-content">${escapeHtml(displayContent)}${readMoreLink}</p>
+            </div>
         </div>
     `;
 }
@@ -390,6 +412,21 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+/**
+ * Get full image URL from image path
+ * Handles both relative paths (uploads/...) and absolute URLs (https://...)
+ */
+function getImageUrl(imagePath) {
+    if (!imagePath) return '';
+    // If it's already a full URL, return as-is
+    if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
+        return imagePath;
+    }
+    // Otherwise, prepend the API URL
+    const baseUrl = window.COTERIE_API_URL || '';
+    return `${baseUrl}/${imagePath}`;
 }
 
 // =============================================================================

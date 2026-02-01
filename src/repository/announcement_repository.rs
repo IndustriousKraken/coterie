@@ -18,6 +18,7 @@ struct AnnouncementRow {
     announcement_type_id: Option<String>,
     is_public: i32,
     featured: i32,
+    image_url: Option<String>,
     published_at: Option<NaiveDateTime>,
     created_by: String,
     created_at: NaiveDateTime,
@@ -48,6 +49,7 @@ impl SqliteAnnouncementRepository {
             announcement_type_id,
             is_public: row.is_public != 0,
             featured: row.featured != 0,
+            image_url: row.image_url,
             published_at: row.published_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
             created_by: Uuid::parse_str(&row.created_by).map_err(|e| AppError::Database(e.to_string()))?,
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
@@ -93,8 +95,8 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
             r#"
             INSERT INTO announcements (
                 id, title, content, announcement_type, announcement_type_id, is_public, featured,
-                published_at, created_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                image_url, published_at, created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#
         )
         .bind(&id_str)
@@ -104,6 +106,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         .bind(&announcement_type_id_str)
         .bind(is_public_int)
         .bind(featured_int)
+        .bind(&announcement.image_url)
         .bind(published_at_naive)
         .bind(&created_by_str)
         .bind(now)
@@ -122,7 +125,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         let row = sqlx::query_as::<_, AnnouncementRow>(
             r#"
             SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
-                   published_at, created_by, created_at, updated_at
+                   image_url, published_at, created_by, created_at, updated_at
             FROM announcements
             WHERE id = ?
             "#
@@ -142,7 +145,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         let rows = sqlx::query_as::<_, AnnouncementRow>(
             r#"
             SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
-                   published_at, created_by, created_at, updated_at
+                   image_url, published_at, created_by, created_at, updated_at
             FROM announcements
             ORDER BY created_at DESC
             LIMIT ? OFFSET ?
@@ -163,7 +166,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         let rows = sqlx::query_as::<_, AnnouncementRow>(
             r#"
             SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
-                   published_at, created_by, created_at, updated_at
+                   image_url, published_at, created_by, created_at, updated_at
             FROM announcements
             WHERE published_at IS NOT NULL
             ORDER BY published_at DESC
@@ -184,7 +187,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         let rows = sqlx::query_as::<_, AnnouncementRow>(
             r#"
             SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
-                   published_at, created_by, created_at, updated_at
+                   image_url, published_at, created_by, created_at, updated_at
             FROM announcements
             WHERE is_public = 1 AND published_at IS NOT NULL
             ORDER BY published_at DESC
@@ -203,7 +206,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         let rows = sqlx::query_as::<_, AnnouncementRow>(
             r#"
             SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
-                   published_at, created_by, created_at, updated_at
+                   image_url, published_at, created_by, created_at, updated_at
             FROM announcements
             WHERE featured = 1 AND published_at IS NOT NULL
             ORDER BY published_at DESC
@@ -231,7 +234,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
             r#"
             UPDATE announcements
             SET title = ?, content = ?, announcement_type = ?, announcement_type_id = ?,
-                is_public = ?, featured = ?, published_at = ?,
+                is_public = ?, featured = ?, image_url = ?, published_at = ?,
                 updated_at = ?
             WHERE id = ?
             "#
@@ -242,6 +245,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         .bind(&announcement_type_id_str)
         .bind(is_public_int)
         .bind(featured_int)
+        .bind(&announcement.image_url)
         .bind(published_at_naive)
         .bind(now)
         .bind(&id_str)

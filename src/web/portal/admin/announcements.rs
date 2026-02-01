@@ -1,6 +1,6 @@
 use askama::Template;
 use axum::{
-    extract::{State, Query, Path},
+    extract::{State, Query, Path, Multipart},
     response::IntoResponse,
     Extension,
 };
@@ -12,6 +12,7 @@ use crate::{
         state::AppState,
     },
     web::templates::{HtmlTemplate, UserInfo},
+    web::uploads::save_uploaded_file,
 };
 use crate::web::portal::is_admin;
 
@@ -279,6 +280,7 @@ pub struct AdminAnnouncementDetail {
     pub announcement_type: String,
     pub is_public: bool,
     pub featured: bool,
+    pub image_url: Option<String>,
     pub published_at: Option<String>,
     pub is_published: bool,
     pub created_at: String,
@@ -324,6 +326,7 @@ pub async fn admin_announcement_detail_page(
         announcement_type: format!("{:?}", announcement.announcement_type),
         is_public: announcement.is_public,
         featured: announcement.featured,
+        image_url: announcement.image_url,
         published_at: announcement.published_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
         is_published: announcement.published_at.is_some(),
         created_at: announcement.created_at.format("%b %d, %Y %H:%M").to_string(),
@@ -404,21 +407,10 @@ pub async fn admin_new_announcement_page(
     }).into_response()
 }
 
-#[derive(Debug, Deserialize)]
-pub struct CreateAnnouncementForm {
-    pub csrf_token: String,
-    pub title: String,
-    pub content: String,
-    pub announcement_type: String,
-    pub is_public: Option<String>,
-    pub featured: Option<String>,
-    pub publish_now: Option<String>,
-}
-
 pub async fn admin_create_announcement(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
-    axum::Form(form): axum::Form<CreateAnnouncementForm>,
+    mut multipart: Multipart,
 ) -> impl IntoResponse {
     use crate::domain::{Announcement, AnnouncementType};
 
@@ -426,7 +418,53 @@ pub async fn admin_create_announcement(
         return axum::response::Html("Access denied".to_string()).into_response();
     }
 
-    let announcement_type = match form.announcement_type.as_str() {
+    // Parse multipart form
+    let mut title = String::new();
+    let mut content = String::new();
+    let mut announcement_type_str = String::new();
+    let mut is_public = false;
+    let mut featured = false;
+    let mut publish_now = false;
+    let mut image_url: Option<String> = None;
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+
+        match name.as_str() {
+            "csrf_token" => { let _ = field.text().await; }
+            "title" => title = field.text().await.unwrap_or_default(),
+            "content" => content = field.text().await.unwrap_or_default(),
+            "announcement_type" => announcement_type_str = field.text().await.unwrap_or_default(),
+            "is_public" => {
+                is_public = true;
+                let _ = field.text().await;
+            }
+            "featured" => {
+                featured = true;
+                let _ = field.text().await;
+            }
+            "publish_now" => {
+                publish_now = true;
+                let _ = field.text().await;
+            }
+            "image" => {
+                let filename = field.file_name().unwrap_or("").to_string();
+                if !filename.is_empty() {
+                    if let Ok(data) = field.bytes().await {
+                        if !data.is_empty() {
+                            match save_uploaded_file(&state.settings.server.uploads_dir, &filename, &data).await {
+                                Ok(path) => image_url = Some(path),
+                                Err(e) => return axum::response::Html(format!("Error uploading image: {}", e)).into_response(),
+                            }
+                        }
+                    }
+                }
+            }
+            _ => { let _ = field.bytes().await; }
+        }
+    }
+
+    let announcement_type = match announcement_type_str.as_str() {
         "News" => AnnouncementType::News,
         "Achievement" => AnnouncementType::Achievement,
         "Meeting" => AnnouncementType::Meeting,
@@ -435,7 +473,7 @@ pub async fn admin_create_announcement(
         _ => AnnouncementType::General,
     };
 
-    let published_at = if form.publish_now.is_some() {
+    let published_at = if publish_now {
         Some(chrono::Utc::now())
     } else {
         None
@@ -443,12 +481,13 @@ pub async fn admin_create_announcement(
 
     let announcement = Announcement {
         id: uuid::Uuid::new_v4(),
-        title: form.title,
-        content: form.content,
+        title,
+        content,
         announcement_type,
         announcement_type_id: None,
-        is_public: form.is_public.is_some(),
-        featured: form.featured.is_some(),
+        is_public,
+        featured,
+        image_url,
         published_at,
         created_by: current_user.member.id,
         created_at: chrono::Utc::now(),
@@ -461,21 +500,11 @@ pub async fn admin_create_announcement(
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct UpdateAnnouncementForm {
-    pub csrf_token: String,
-    pub title: String,
-    pub content: String,
-    pub announcement_type: String,
-    pub is_public: Option<String>,
-    pub featured: Option<String>,
-}
-
 pub async fn admin_update_announcement(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
     Path(announcement_id): Path<String>,
-    axum::Form(form): axum::Form<UpdateAnnouncementForm>,
+    mut multipart: Multipart,
 ) -> impl IntoResponse {
     use crate::domain::{Announcement, AnnouncementType};
 
@@ -494,7 +523,53 @@ pub async fn admin_update_announcement(
         Err(_) => return axum::response::Html("Error loading announcement".to_string()).into_response(),
     };
 
-    let announcement_type = match form.announcement_type.as_str() {
+    // Parse multipart form
+    let mut title = String::new();
+    let mut content = String::new();
+    let mut announcement_type_str = String::new();
+    let mut is_public = false;
+    let mut featured = false;
+    let mut new_image_url: Option<String> = None;
+    let mut remove_image = false;
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+
+        match name.as_str() {
+            "csrf_token" => { let _ = field.text().await; }
+            "title" => title = field.text().await.unwrap_or_default(),
+            "content" => content = field.text().await.unwrap_or_default(),
+            "announcement_type" => announcement_type_str = field.text().await.unwrap_or_default(),
+            "is_public" => {
+                is_public = true;
+                let _ = field.text().await;
+            }
+            "featured" => {
+                featured = true;
+                let _ = field.text().await;
+            }
+            "remove_image" => {
+                remove_image = true;
+                let _ = field.text().await;
+            }
+            "image" => {
+                let filename = field.file_name().unwrap_or("").to_string();
+                if !filename.is_empty() {
+                    if let Ok(data) = field.bytes().await {
+                        if !data.is_empty() {
+                            match save_uploaded_file(&state.settings.server.uploads_dir, &filename, &data).await {
+                                Ok(path) => new_image_url = Some(path),
+                                Err(e) => return axum::response::Html(format!(r#"<div class="px-4 py-3 bg-red-100 text-red-800 rounded-md text-sm">Error uploading image: {}</div>"#, e)).into_response(),
+                            }
+                        }
+                    }
+                }
+            }
+            _ => { let _ = field.bytes().await; }
+        }
+    }
+
+    let announcement_type = match announcement_type_str.as_str() {
         "News" => AnnouncementType::News,
         "Achievement" => AnnouncementType::Achievement,
         "Meeting" => AnnouncementType::Meeting,
@@ -503,14 +578,24 @@ pub async fn admin_update_announcement(
         _ => AnnouncementType::General,
     };
 
+    // Determine final image_url: new upload > remove > keep existing
+    let image_url = if new_image_url.is_some() {
+        new_image_url
+    } else if remove_image {
+        None
+    } else {
+        existing.image_url.clone()
+    };
+
     let updated_announcement = Announcement {
         id,
-        title: form.title,
-        content: form.content,
+        title,
+        content,
         announcement_type,
         announcement_type_id: existing.announcement_type_id,
-        is_public: form.is_public.is_some(),
-        featured: form.featured.is_some(),
+        is_public,
+        featured,
+        image_url,
         published_at: existing.published_at,
         created_by: existing.created_by,
         created_at: existing.created_at,

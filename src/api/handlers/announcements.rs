@@ -101,6 +101,7 @@ pub async fn create(
         announcement_type_id: None,
         is_public: request.is_public,
         featured: request.featured,
+        image_url: None,
         published_at: if request.publish_now {
             Some(Utc::now())
         } else {
