@@ -68,6 +68,7 @@ pub struct AdminAnnouncementInfo {
     pub is_published: bool,
     pub created_at: String,
     pub content_preview: String,
+    pub image_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -223,6 +224,7 @@ pub async fn admin_announcements_page(
                 is_published: a.published_at.is_some(),
                 created_at: a.created_at.format("%b %d, %Y").to_string(),
                 content_preview,
+                image_url: a.image_url,
             }
         })
         .collect();

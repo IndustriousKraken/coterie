@@ -112,8 +112,13 @@ pub async fn events_list_api(
             render_rsvp_button(&event.id.to_string(), rsvp_status.as_ref())
         };
 
+        let image_html = event.image_url.as_ref().map(|url| {
+            format!(r#"<div class="bg-gray-100 rounded-t-lg -mt-6 -mx-6 mb-4 overflow-hidden" style="width: calc(100% + 3rem);"><img src="/{}" alt="" class="w-full h-40 object-contain"></div>"#, url)
+        }).unwrap_or_default();
+
         html.push_str(&format!(
             r#"<div class="bg-white rounded-lg shadow-sm p-6 {}">
+                {}
                 <div class="flex justify-between items-start">
                     <div>
                         <div class="flex items-center gap-2 mb-2">
@@ -133,6 +138,7 @@ pub async fn events_list_api(
                 </div>
             </div>"#,
             if is_past { "opacity-60" } else { "" },
+            image_html,
             type_badge_color,
             event.event_type,
             if is_past { r#"<span class="text-xs text-gray-500">Past event</span>"# } else { "" },
