@@ -77,6 +77,31 @@ const CoterieAPI = {
     },
 
     /**
+     * Get count of members-only announcements
+     * @returns {Promise<Object>} Object with count property
+     */
+    async getPrivateAnnouncementCount() {
+        const url = `${COTERIE_API_URL}/public/announcements/private-count`;
+
+        try {
+            const response = await fetch(url, {
+                headers: {
+                    'Accept': 'application/json'
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            return await response.json();
+        } catch (error) {
+            console.error('Failed to fetch private announcement count:', error);
+            throw error;
+        }
+    },
+
+    /**
      * Submit a membership signup request
      * @param {Object} data - Signup form data
      * @param {string} data.email - Email address

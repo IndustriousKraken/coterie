@@ -18,14 +18,15 @@ pub use csrf::CsrfService;
 
 pub struct AuthService {
     session_store: SessionStore,
-    secret: String,
 }
 
 impl AuthService {
-    pub fn new(pool: SqlitePool, secret: String) -> Self {
+    pub fn new(pool: SqlitePool, _secret: String) -> Self {
+        // Note: secret parameter kept for API compatibility but not used.
+        // Session security relies on cryptographically random tokens stored server-side,
+        // not on signed tokens, so a signing secret isn't needed.
         Self {
             session_store: SessionStore::new(pool),
-            secret,
         }
     }
 
@@ -38,6 +39,8 @@ impl AuthService {
         Ok(argon2.verify_password(password.as_bytes(), &parsed_hash).is_ok())
     }
 
+    /// Hash a password using Argon2. Used in tests and member creation.
+    #[allow(dead_code)]
     pub async fn hash_password(password: &str) -> Result<String> {
         let salt = SaltString::generate(&mut OsRng);
         let argon2 = Argon2::default();

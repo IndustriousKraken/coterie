@@ -221,6 +221,21 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
             .collect()
     }
 
+    async fn count_private_published(&self) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*) as count
+            FROM announcements
+            WHERE is_public = 0 AND published_at IS NOT NULL
+            "#
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Ok(count.0)
+    }
+
     async fn update(&self, id: Uuid, announcement: Announcement) -> Result<Announcement> {
         let id_str = id.to_string();
         let announcement_type_str = Self::announcement_type_to_str(&announcement.announcement_type);

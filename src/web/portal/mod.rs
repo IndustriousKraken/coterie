@@ -91,9 +91,10 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
             crate::api::middleware::auth::require_csrf,
         ))
         // Require authentication for all portal routes (runs first)
+        // Uses redirect version to send users to login page instead of showing error
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
-            crate::api::middleware::auth::require_auth,
+            crate::api::middleware::auth::require_auth_redirect,
         ))
 }
 

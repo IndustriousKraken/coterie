@@ -5,7 +5,7 @@ use axum::{
     Extension,
 };
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
@@ -180,6 +180,23 @@ pub async fn delete(
     }
     
     state.service_context.announcement_repo.delete(id).await?;
-    
+
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Serialize)]
+pub struct PrivateAnnouncementCount {
+    pub count: i64,
+}
+
+/// Returns the count of members-only published announcements.
+/// This is a public endpoint to let visitors know there's exclusive content.
+pub async fn private_count(
+    State(state): State<AppState>,
+) -> Result<Json<PrivateAnnouncementCount>> {
+    let count = state.service_context.announcement_repo
+        .count_private_published()
+        .await?;
+
+    Ok(Json(PrivateAnnouncementCount { count }))
 }

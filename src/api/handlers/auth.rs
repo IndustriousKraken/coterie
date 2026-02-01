@@ -66,14 +66,24 @@ pub async fn logout(
 ) -> Result<(CookieJar, StatusCode)> {
     // Get session from cookie
     if let Some(session_cookie) = jar.get("session") {
+        // Get session to find its ID for CSRF token deletion
+        if let Ok(Some(session)) = state.service_context.auth_service
+            .validate_session(session_cookie.value())
+            .await
+        {
+            // Delete CSRF token for this session
+            let _ = state.service_context.csrf_service
+                .delete_token(&session.id)
+                .await;
+        }
         // Invalidate session in database
         let _ = state.service_context.auth_service
             .invalidate_session(session_cookie.value())
             .await;
     }
-    
+
     // Remove cookie
     let jar = jar.add(auth::AuthService::create_logout_cookie());
-    
+
     Ok((jar, StatusCode::NO_CONTENT))
 }

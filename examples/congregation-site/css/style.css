@@ -415,6 +415,34 @@ section {
     min-width: 0;
 }
 
+.members-only-teaser {
+    background: var(--cream-dark);
+    border: 1px dashed var(--burgundy);
+    padding: 0.75rem 1rem;
+    margin-bottom: 1rem;
+    border-radius: var(--border-radius);
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+.members-only-teaser .lock-icon {
+    font-size: 1.1rem;
+}
+
+.members-only-teaser a {
+    margin-left: auto;
+    color: var(--burgundy);
+    text-decoration: none;
+    font-weight: 500;
+}
+
+.members-only-teaser a:hover {
+    text-decoration: underline;
+}
+
 /* ==========================================================================
    CTA Section
    ========================================================================== */

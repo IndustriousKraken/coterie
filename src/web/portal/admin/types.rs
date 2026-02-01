@@ -198,9 +198,10 @@ pub async fn admin_edit_event_type_page(
     }).into_response()
 }
 
+// Note: csrf_token is validated via X-CSRF-Token header in middleware,
+// not from form body, so it's not included here.
 #[derive(Debug, Deserialize)]
 pub struct EventTypeForm {
-    pub csrf_token: String,
     pub name: String,
     pub slug: Option<String>,
     pub description: Option<String>,
@@ -380,7 +381,6 @@ pub async fn admin_edit_announcement_type_page(
 
 #[derive(Debug, Deserialize)]
 pub struct AnnouncementTypeForm {
-    pub csrf_token: String,
     pub name: String,
     pub slug: Option<String>,
     pub description: Option<String>,
@@ -564,7 +564,6 @@ pub async fn admin_edit_membership_type_page(
 
 #[derive(Debug, Deserialize)]
 pub struct MembershipTypeForm {
-    pub csrf_token: String,
     pub name: String,
     pub slug: Option<String>,
     pub description: Option<String>,
