@@ -41,5 +41,8 @@ target/
 tmp/
 temp/
 
+# Uploaded files (local testing)
+uploads/
+
 # AI
 .claude/

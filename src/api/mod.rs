@@ -102,6 +102,7 @@ fn announcement_routes_with_auth(state: AppState) -> Router<AppState> {
         // Public routes (no auth required for viewing public announcements)
         .route("/", get(handlers::announcements::list))
         .route("/:id", get(handlers::announcements::get))
+        .route("/private-count", get(handlers::announcements::private_count))
         // Protected routes - require auth
         .nest("/", Router::new()
             .route("/", post(handlers::announcements::create))
@@ -137,6 +138,7 @@ fn public_routes(_state: AppState) -> Router<AppState> {
         .route("/signup", post(handlers::public::signup))
         .route("/events", get(handlers::public::list_events))
         .route("/announcements", get(handlers::public::list_announcements))
+        .route("/announcements/private-count", get(handlers::announcements::private_count))
         .route("/feed/rss", get(handlers::public::rss_feed))
         .route("/feed/calendar", get(handlers::public::calendar_feed))
 }

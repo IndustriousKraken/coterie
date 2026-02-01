@@ -37,11 +37,16 @@
         {% for event in events %}
         <tr class="hover:bg-gray-50 {% if event.is_past %}opacity-60{% endif %}">
             <td class="px-6 py-4 whitespace-nowrap">
-                <div>
-                    <div class="text-sm font-medium text-gray-900">{{ event.title }}</div>
-                    {% if let Some(loc) = event.location.as_ref() %}
-                    <div class="text-xs text-gray-500">{{ loc }}</div>
+                <div class="flex items-center gap-3">
+                    {% if let Some(url) = event.image_url.as_ref() %}
+                    <img src="/{{ url }}" alt="" class="w-10 h-10 object-cover rounded flex-shrink-0">
                     {% endif %}
+                    <div>
+                        <div class="text-sm font-medium text-gray-900">{{ event.title }}</div>
+                        {% if let Some(loc) = event.location.as_ref() %}
+                        <div class="text-xs text-gray-500">{{ loc }}</div>
+                        {% endif %}
+                    </div>
                 </div>
             </td>
             <td class="px-6 py-4 whitespace-nowrap">

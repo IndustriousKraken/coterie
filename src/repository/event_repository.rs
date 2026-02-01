@@ -22,6 +22,7 @@ struct EventRow {
     location: Option<String>,
     max_attendees: Option<i32>,
     rsvp_required: i32,
+    image_url: Option<String>,
     created_by: String,
     created_at: NaiveDateTime,
     updated_at: NaiveDateTime,
@@ -55,6 +56,7 @@ impl SqliteEventRepository {
             location: row.location,
             max_attendees: row.max_attendees,
             rsvp_required: row.rsvp_required != 0,
+            image_url: row.image_url,
             created_by: Uuid::parse_str(&row.created_by).map_err(|e| AppError::Database(e.to_string()))?,
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
             updated_at: DateTime::from_naive_utc_and_offset(row.updated_at, Utc),
@@ -121,8 +123,8 @@ impl EventRepository for SqliteEventRepository {
             INSERT INTO events (
                 id, title, description, event_type, event_type_id, visibility,
                 start_time, end_time, location, max_attendees, rsvp_required,
-                created_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                image_url, created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#
         )
         .bind(&id_str)
@@ -136,6 +138,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(&event.location)
         .bind(max_attendees_int)
         .bind(rsvp_required_int)
+        .bind(&event.image_url)
         .bind(&created_by_str)
         .bind(now)
         .bind(now)
@@ -154,7 +157,7 @@ impl EventRepository for SqliteEventRepository {
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, location, max_attendees, rsvp_required,
-                   created_by, created_at, updated_at
+                   image_url, created_by, created_at, updated_at
             FROM events
             WHERE id = ?
             "#
@@ -175,7 +178,7 @@ impl EventRepository for SqliteEventRepository {
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, location, max_attendees, rsvp_required,
-                   created_by, created_at, updated_at
+                   image_url, created_by, created_at, updated_at
             FROM events
             ORDER BY start_time DESC
             LIMIT ? OFFSET ?
@@ -199,7 +202,7 @@ impl EventRepository for SqliteEventRepository {
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, location, max_attendees, rsvp_required,
-                   created_by, created_at, updated_at
+                   image_url, created_by, created_at, updated_at
             FROM events
             WHERE start_time > ?
             ORDER BY start_time ASC
@@ -224,7 +227,7 @@ impl EventRepository for SqliteEventRepository {
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, location, max_attendees, rsvp_required,
-                   created_by, created_at, updated_at
+                   image_url, created_by, created_at, updated_at
             FROM events
             WHERE visibility = ?
             ORDER BY start_time DESC
@@ -256,7 +259,7 @@ impl EventRepository for SqliteEventRepository {
             UPDATE events
             SET title = ?, description = ?, event_type = ?, event_type_id = ?, visibility = ?,
                 start_time = ?, end_time = ?, location = ?, max_attendees = ?,
-                rsvp_required = ?, updated_at = ?
+                rsvp_required = ?, image_url = ?, updated_at = ?
             WHERE id = ?
             "#
         )
@@ -270,6 +273,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(&event.location)
         .bind(max_attendees_int)
         .bind(rsvp_required_int)
+        .bind(&event.image_url)
         .bind(now)
         .bind(&id_str)
         .execute(&self.pool)

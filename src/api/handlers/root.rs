@@ -1,10 +1,13 @@
 use axum::{
+    extract::State,
     http::{header, StatusCode, HeaderMap},
     Json,
     response::{IntoResponse, Response, Redirect},
 };
+use axum_extra::extract::CookieJar;
 use serde::Serialize;
 use serde_json::json;
+use crate::api::state::AppState;
 
 #[derive(Serialize)]
 pub struct ApiInfo {
@@ -15,9 +18,13 @@ pub struct ApiInfo {
 }
 
 /// Root endpoint with content negotiation:
-/// - Browsers (Accept: text/html) get redirected to /login
+/// - Browsers (Accept: text/html): redirect to dashboard if logged in, else to login
 /// - API clients (Accept: application/json) get API info JSON
-pub async fn root(headers: HeaderMap) -> Response {
+pub async fn root(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> Response {
     // Check if the client prefers HTML (browser)
     let accepts_html = headers
         .get(header::ACCEPT)
@@ -26,6 +33,15 @@ pub async fn root(headers: HeaderMap) -> Response {
         .unwrap_or(false);
 
     if accepts_html {
+        // Check if user has a valid session
+        if let Some(session_cookie) = jar.get("session") {
+            if let Ok(Some(_session)) = state.service_context.auth_service
+                .validate_session(session_cookie.value())
+                .await
+            {
+                return Redirect::to("/portal/dashboard").into_response();
+            }
+        }
         Redirect::to("/login").into_response()
     } else {
         Json(json!({

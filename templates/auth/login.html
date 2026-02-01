@@ -17,11 +17,14 @@
             </p>
         </div>
         
-        <form class="mt-8 space-y-6" 
+        <form class="mt-8 space-y-6"
               hx-post="/login"
               hx-ext="json-enc"
               hx-target="#error-message"
               hx-target-error="#error-message">
+            {% if let Some(url) = redirect_url.as_ref() %}
+            <input type="hidden" name="redirect_url" value="{{ url }}">
+            {% endif %}
             <div class="rounded-md shadow-sm -space-y-px">
                 <div>
                     <label for="username" class="sr-only">Username or Email</label>

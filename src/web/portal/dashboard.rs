@@ -66,6 +66,7 @@ struct EventSummary {
     date: String,
     time: String,
     location: Option<String>,
+    image_url: Option<String>,
     attending: bool,
 }
 
@@ -109,6 +110,7 @@ pub async fn upcoming_events(
             date: event.start_time.format("%B %d, %Y").to_string(),
             time: event.start_time.format("%l:%M %p").to_string(),
             location: event.location,
+            image_url: event.image_url,
             attending,
         });
     }
@@ -119,17 +121,25 @@ pub async fn upcoming_events(
     } else {
         let mut html = String::from(r#"<div class="space-y-3">"#);
         for event in event_summaries {
+            let image_html = event.image_url.as_ref().map(|url| {
+                format!(r#"<img src="/{}" alt="" class="w-16 h-16 object-cover rounded flex-shrink-0">"#, url)
+            }).unwrap_or_default();
+
             html.push_str(&format!(
                 r#"
-                <div class="border-l-4 border-blue-500 pl-3">
-                    <h3 class="font-medium">{}</h3>
-                    <p class="text-sm text-gray-600">{} at {}</p>
+                <div class="border-l-4 border-blue-500 pl-3 flex gap-3">
                     {}
-                    <div class="mt-1">
+                    <div class="flex-1 min-w-0">
+                        <h3 class="font-medium">{}</h3>
+                        <p class="text-sm text-gray-600">{} at {}</p>
                         {}
+                        <div class="mt-1">
+                            {}
+                        </div>
                     </div>
                 </div>
                 "#,
+                image_html,
                 event.title,
                 event.date,
                 event.time,

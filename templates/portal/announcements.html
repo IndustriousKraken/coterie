@@ -1,0 +1,71 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Announcements - Coterie{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="mb-8 flex justify-between items-center">
+        <div>
+            <h1 class="text-3xl font-bold text-gray-900">Announcements</h1>
+            <p class="mt-2 text-sm text-gray-600">Stay up to date with club news and updates</p>
+        </div>
+        {% if is_admin %}
+        <a href="/portal/admin/announcements/new"
+           class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+            Create Announcement
+        </a>
+        {% endif %}
+    </div>
+
+    <!-- Filters -->
+    <div class="bg-white rounded-lg shadow-sm p-4 mb-6">
+        <div class="flex flex-wrap gap-4 items-center">
+            <div>
+                <label class="text-sm font-medium text-gray-700">Filter by type:</label>
+                <select id="announcement-type-filter"
+                        hx-get="/portal/api/announcements/list"
+                        hx-target="#announcements-list"
+                        hx-trigger="change"
+                        hx-include="#show-all-filter"
+                        name="announcement_type"
+                        class="ml-2 border-gray-300 rounded-md text-sm">
+                    <option value="">All Types</option>
+                    <option value="News">News</option>
+                    <option value="Achievement">Achievement</option>
+                    <option value="Meeting">Meeting</option>
+                    <option value="CTFResult">CTF Result</option>
+                    <option value="General">General</option>
+                </select>
+            </div>
+            <div class="flex items-center">
+                <input type="checkbox"
+                       id="show-all-filter"
+                       name="show_all"
+                       hx-get="/portal/api/announcements/list"
+                       hx-target="#announcements-list"
+                       hx-trigger="change"
+                       hx-include="#announcement-type-filter"
+                       class="h-4 w-4 text-blue-600 rounded border-gray-300">
+                <label for="show-all-filter" class="ml-2 text-sm text-gray-700">Show all (up to 100)</label>
+            </div>
+        </div>
+    </div>
+
+    <!-- Announcements List -->
+    <div id="announcements-list"
+         hx-get="/portal/api/announcements/list"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+        <div class="animate-pulse space-y-4">
+            <div class="bg-white rounded-lg shadow-sm p-6">
+                <div class="h-6 bg-gray-200 rounded w-1/3 mb-2"></div>
+                <div class="h-4 bg-gray-200 rounded w-2/3"></div>
+            </div>
+            <div class="bg-white rounded-lg shadow-sm p-6">
+                <div class="h-6 bg-gray-200 rounded w-1/3 mb-2"></div>
+                <div class="h-4 bg-gray-200 rounded w-2/3"></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

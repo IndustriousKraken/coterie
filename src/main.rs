@@ -96,6 +96,40 @@ async fn main() -> anyhow::Result<()> {
         db_pool.clone(),
     ));
 
+    // Spawn background cleanup task for expired sessions and orphaned CSRF tokens
+    {
+        let auth_service = service_context.auth_service.clone();
+        let csrf_service = service_context.csrf_service.clone();
+        tokio::spawn(async move {
+            let cleanup_interval = tokio::time::Duration::from_secs(60 * 60); // 1 hour
+            loop {
+                tokio::time::sleep(cleanup_interval).await;
+
+                // Cleanup expired sessions
+                match auth_service.cleanup_expired_sessions().await {
+                    Ok(count) if count > 0 => {
+                        tracing::info!("Cleaned up {} expired sessions", count);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to cleanup expired sessions: {:?}", e);
+                    }
+                    _ => {}
+                }
+
+                // Cleanup orphaned CSRF tokens
+                match csrf_service.cleanup_orphaned().await {
+                    Ok(count) if count > 0 => {
+                        tracing::info!("Cleaned up {} orphaned CSRF tokens", count);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to cleanup orphaned CSRF tokens: {:?}", e);
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+
     // Initialize Stripe client if configured
     let stripe_client = if settings.stripe.enabled {
         if let (Some(api_key), Some(webhook_secret)) = 

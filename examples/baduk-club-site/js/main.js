@@ -61,10 +61,35 @@ function applyConfig() {
         }
     }
 
-    // Set iCal download link
+    // Set iCal download link (calendar page)
     const icalDownload = document.getElementById('ical-download');
     if (icalDownload) {
         icalDownload.href = CoterieAPI.getCalendarFeedUrl();
+    }
+
+    // Set feed links (homepage)
+    const calendarFeedLink = document.getElementById('calendar-feed-link');
+    if (calendarFeedLink) {
+        calendarFeedLink.href = CoterieAPI.getCalendarFeedUrl();
+    }
+
+    const rssFeedLink = document.getElementById('rss-feed-link');
+    if (rssFeedLink) {
+        const rssUrl = CoterieAPI.getRssFeedUrl();
+        rssFeedLink.href = rssUrl;
+        rssFeedLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            navigator.clipboard.writeText(rssUrl).then(() => {
+                const originalText = rssFeedLink.textContent;
+                rssFeedLink.textContent = 'URL copied!';
+                setTimeout(() => {
+                    rssFeedLink.textContent = originalText;
+                }, 2000);
+            }).catch(() => {
+                // Fallback: open in new tab if clipboard fails
+                window.open(rssUrl, '_blank');
+            });
+        });
     }
 }
 
@@ -119,8 +144,13 @@ function showEventModal(eventId) {
         minute: '2-digit'
     });
 
+    const imageHtml = event.image_url
+        ? `<img src="${getImageUrl(event.image_url)}" alt="" class="modal-image">`
+        : '';
+
     document.getElementById('modal-title').textContent = event.title;
     document.getElementById('modal-meta').innerHTML = `
+        ${imageHtml}
         <p><span class="label">Type:</span> <span class="value">${escapeHtml(event.event_type || 'Event')}</span></p>
         <p><span class="label">Date:</span> <span class="value">${dateStr}</span></p>
         <p><span class="label">Time:</span> <span class="value">${timeStr}</span></p>
@@ -147,8 +177,13 @@ function showAnnouncementModal(announcementId) {
         year: 'numeric'
     });
 
+    const imageHtml = announcement.image_url
+        ? `<img src="${getImageUrl(announcement.image_url)}" alt="" class="modal-image">`
+        : '';
+
     document.getElementById('modal-title').textContent = announcement.title;
     document.getElementById('modal-meta').innerHTML = `
+        ${imageHtml}
         <p><span class="label">Published:</span> <span class="value">${dateStr}</span></p>
     `;
     document.getElementById('modal-content').textContent = announcement.content || 'No content available.';
@@ -247,8 +282,13 @@ function createEventCard(event) {
         ? `<span class="read-more" onclick="showEventModal('${escapeHtml(event.id)}')">[more...]</span>`
         : '';
 
+    const imageHtml = event.image_url
+        ? `<div class="event-thumbnail"><img src="${getImageUrl(event.image_url)}" alt="" onclick="showEventModal('${escapeHtml(event.id)}')"></div>`
+        : '';
+
     return `
         <div class="event-card">
+            ${imageHtml}
             <span class="event-type">${escapeHtml(event.event_type || 'event')}</span>
             <h3>${escapeHtml(event.title)}</h3>
             <p class="event-date">${dateStr} @ ${timeStr}</p>
@@ -265,9 +305,32 @@ async function loadAnnouncements() {
     const container = document.getElementById('announcements-list');
 
     try {
-        const announcements = await CoterieAPI.getAnnouncements({ limit: 3 });
+        // Fetch public announcements and private count in parallel
+        const privateCountPromise = typeof CoterieAPI.getPrivateAnnouncementCount === 'function'
+            ? CoterieAPI.getPrivateAnnouncementCount().catch(() => ({ count: 0 }))
+            : Promise.resolve({ count: 0 });
 
-        if (announcements.length === 0) {
+        const [announcements, privateCountResult] = await Promise.all([
+            CoterieAPI.getAnnouncements({ limit: 3 }),
+            privateCountPromise
+        ]);
+
+        let html = '';
+
+        // Show members-only teaser if there are private announcements
+        if (privateCountResult.count > 0) {
+            const baseUrl = window.COTERIE_PORTAL_URL || window.COTERIE_API_URL || '';
+            const plural = privateCountResult.count === 1 ? '' : 's';
+            html += `
+                <div class="members-only-teaser">
+                    <span class="lock-icon">&#128274;</span>
+                    <span>${privateCountResult.count} members-only announcement${plural}</span>
+                    <a href="${baseUrl}/portal/announcements">Log in to view</a>
+                </div>
+            `;
+        }
+
+        if (announcements.length === 0 && privateCountResult.count === 0) {
             container.innerHTML = '<p class="no-data">No recent announcements.</p>';
             return;
         }
@@ -275,7 +338,8 @@ async function loadAnnouncements() {
         // Store announcements for modal access
         announcements.forEach(a => contentStore.announcements[a.id] = a);
 
-        container.innerHTML = announcements.map(ann => createAnnouncementCard(ann)).join('');
+        html += announcements.map(ann => createAnnouncementCard(ann)).join('');
+        container.innerHTML = html;
     } catch (error) {
         container.innerHTML = `
             <div class="error">
@@ -308,11 +372,18 @@ function createAnnouncementCard(announcement) {
         ? `<span class="read-more" onclick="showAnnouncementModal('${escapeHtml(announcement.id)}')">[more...]</span>`
         : '';
 
+    const imageHtml = announcement.image_url
+        ? `<img src="${getImageUrl(announcement.image_url)}" alt="" class="announcement-thumbnail" onclick="showAnnouncementModal('${escapeHtml(announcement.id)}')">`
+        : '';
+
     return `
         <div class="announcement">
-            <h3>${escapeHtml(announcement.title)}</h3>
-            <p class="announcement-date">${dateStr}</p>
-            <p class="announcement-content">${escapeHtml(displayContent)}${readMoreLink}</p>
+            ${imageHtml}
+            <div class="announcement-body">
+                <h3>${escapeHtml(announcement.title)}</h3>
+                <p class="announcement-date">${dateStr}</p>
+                <p class="announcement-content">${escapeHtml(displayContent)}${readMoreLink}</p>
+            </div>
         </div>
     `;
 }
@@ -382,6 +453,21 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+/**
+ * Get full image URL from image path
+ * Handles both relative paths (uploads/...) and absolute URLs (https://...)
+ */
+function getImageUrl(imagePath) {
+    if (!imagePath) return '';
+    // If it's already a full URL, return as-is
+    if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
+        return imagePath;
+    }
+    // Otherwise, prepend the API URL
+    const baseUrl = window.COTERIE_API_URL || '';
+    return `${baseUrl}/${imagePath}`;
 }
 
 // =============================================================================

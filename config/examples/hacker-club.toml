@@ -152,6 +152,7 @@ days_offset = -120
 duration_hours = 6
 location = "The Vintage Vault - Workshop Bay"
 visibility = "members_only"
+image_url = "https://images.unsplash.com/photo-1518770660439-4636190af475?w=800"
 description = """
 Join us for an immersive, hands-on workshop where we'll bring a piece of computing history back to life. We've acquired a non-functional TRS-80 Model I from 1977, and over the course of this extended session, we'll diagnose its issues, source replacement components, and hopefully see it boot for the first time in decades.
 
@@ -234,6 +235,7 @@ days_offset = -30
 duration_hours = 48
 location = "Full Building Access"
 visibility = "public"
+image_url = "https://images.unsplash.com/photo-1511512578047-dfb367046420?w=800"
 description = """
 Our annual retro game jam returns! This year's theme will be announced at the start of the event. You'll have 48 hours to create an original game targeting any 8-bit platform (or a reasonable emulation thereof).
 
@@ -322,6 +324,7 @@ days_offset = 14
 duration_hours = 4
 location = "Workshop Bay"
 visibility = "public"
+image_url = "https://images.unsplash.com/photo-1563770660941-20978e870e26?w=800"
 description = """
 A beginner-friendly introduction to the art of circuit bending—the creative short-circuiting of electronic devices to create new musical instruments or sound generators.
 
@@ -395,6 +398,7 @@ days_offset = 45
 duration_hours = 4
 location = "Full Building"
 visibility = "public"
+image_url = "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=800"
 description = """
 Our semi-annual open house! All of the vintage hardware comes out of storage, gets powered up, and is available for everyone to experience.
 
@@ -496,6 +500,7 @@ announcement_type = "achievement"
 days_ago = 15
 is_public = true
 featured = true
+image_url = "https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=800"
 content = """
 Huge congratulations to our CTF team for their performance in last weekend's HackTheBox University CTF! Out of over 1,200 teams worldwide, HEHC finished in 87th place—our best showing ever in an international competition.
 
@@ -517,6 +522,7 @@ announcement_type = "news"
 days_ago = 30
 is_public = false
 featured = false
+image_url = "https://images.unsplash.com/photo-1581092918056-0c4c3acd3789?w=800"
 content = """
 We've received a generous equipment donation from a member's former employer who was clearing out their test lab. The haul includes:
 

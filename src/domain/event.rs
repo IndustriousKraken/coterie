@@ -15,6 +15,7 @@ pub struct Event {
     pub location: Option<String>,
     pub max_attendees: Option<i32>,
     pub rsvp_required: bool,
+    pub image_url: Option<String>,
     pub created_by: Uuid,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

@@ -41,6 +41,7 @@
                 <form hx-post="/portal/admin/announcements/{{ announcement.id }}/update"
                       hx-target="#update-result"
                       hx-swap="innerHTML"
+                      hx-encoding="multipart/form-data"
                       class="p-6 space-y-4">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
@@ -91,6 +92,27 @@
                                 <span class="text-sm text-gray-700">Featured</span>
                             </label>
                         </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Image</label>
+                        {% if let Some(url) = announcement.image_url.as_ref() %}
+                        <div class="mb-2">
+                            <img src="/{{ url }}" alt="Announcement image" class="max-h-40 rounded-md border border-gray-200">
+                            <label class="flex items-center gap-2 mt-2">
+                                <input type="checkbox"
+                                       name="remove_image"
+                                       value="true"
+                                       class="h-4 w-4 text-red-600 rounded border-gray-300 focus:ring-red-500">
+                                <span class="text-sm text-gray-700">Remove current image</span>
+                            </label>
+                        </div>
+                        {% endif %}
+                        <input type="file"
+                               name="image"
+                               accept="image/jpeg,image/png,image/gif,image/webp"
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <p class="text-xs text-gray-400 mt-1">{% if announcement.image_url.is_some() %}Upload a new image to replace the current one.{% else %}Optional.{% endif %} Max 10 MB.</p>
                     </div>
 
                     <div class="pt-4 border-t">
