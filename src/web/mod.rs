@@ -11,7 +11,7 @@ use crate::api::state::AppState;
 
 pub fn create_web_routes(state: AppState) -> Router {
     // Get uploads directory from settings
-    let uploads_dir = state.settings.server.uploads_dir.clone();
+    let uploads_dir = state.settings.server.uploads_path();
 
     Router::new()
         // Setup page (first-run)

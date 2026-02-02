@@ -41,10 +41,19 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Starting Coterie server on {}:{}", settings.server.host, settings.server.port);
 
-    // Initialize database
+    // Initialize database (resolves path relative to data_dir if needed)
+    let database_url = settings.database_url();
+    tracing::info!("Using database: {}", database_url);
+
+    // Ensure data directory exists
+    let data_dir = std::path::Path::new(&settings.server.data_dir);
+    if !data_dir.exists() {
+        std::fs::create_dir_all(data_dir)?;
+    }
+
     let db_pool = SqlitePoolOptions::new()
         .max_connections(settings.database.max_connections)
-        .connect(&settings.database.url)
+        .connect(&database_url)
         .await?;
 
     // Run migrations
