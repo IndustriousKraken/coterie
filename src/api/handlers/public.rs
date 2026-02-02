@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::{
     api::state::AppState,
-    domain::{CreateMemberRequest, Event, Announcement, MemberStatus, MembershipType},
+    domain::{CreateMemberRequest, Event, Announcement, EventVisibility, MemberStatus, MembershipType},
     error::{AppError, Result},
 };
 
@@ -87,16 +87,33 @@ pub async fn list_events(
     State(state): State<AppState>,
     Query(params): Query<PublicEventsQuery>,
 ) -> Result<Response> {
-    // Get public events only
-    let events = state.service_context.event_repo.list_public().await?;
-    
-    // Filter to upcoming events only
-    let upcoming_events: Vec<Event> = events
+    // Get public events (full details)
+    let public_events = state.service_context.event_repo.list_public().await?;
+
+    // Get members-only events (will be sanitized)
+    let private_events = state.service_context.event_repo.list_members_only().await?;
+
+    // Combine and filter to upcoming events only
+    let now = Utc::now();
+    let mut upcoming_events: Vec<Event> = public_events
         .into_iter()
-        .filter(|e| e.start_time > Utc::now())
-        .take(params.limit.unwrap_or(50) as usize)
+        .chain(private_events.into_iter().map(|mut e| {
+            // Sanitize private events
+            e.title = "Members-Only Event".to_string();
+            e.description = "This event is for members only. Log in to the portal to see details.".to_string();
+            e.location = None;
+            e.image_url = None;
+            e
+        }))
+        .filter(|e| e.start_time > now)
         .collect();
-    
+
+    // Sort by start time
+    upcoming_events.sort_by(|a, b| a.start_time.cmp(&b.start_time));
+
+    // Apply limit
+    upcoming_events.truncate(params.limit.unwrap_or(50) as usize);
+
     // Check if iCal format is requested
     if params.format.as_deref() == Some("ical") {
         let ical = generate_ical_feed(&upcoming_events);
@@ -144,17 +161,37 @@ pub async fn rss_feed(
 pub async fn calendar_feed(
     State(state): State<AppState>,
 ) -> Result<Response> {
-    // Get public events
-    let events = state.service_context.event_repo.list_public().await?;
-    
-    // Generate iCal format
-    let ical = generate_ical_feed(&events);
-    
+    // Get public events (full details)
+    let public_events = state.service_context.event_repo.list_public().await?;
+
+    // Get members-only events (will be sanitized in feed)
+    let private_events = state.service_context.event_repo.list_members_only().await?;
+
+    // Combine all events for the calendar
+    let all_events: Vec<_> = public_events.into_iter()
+        .chain(private_events.into_iter())
+        .collect();
+
+    // Generate iCal format (private events will be sanitized)
+    let ical = generate_ical_feed(&all_events);
+
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, "text/calendar; charset=utf-8")],
         ical,
     ).into_response())
+}
+
+#[derive(Debug, Serialize)]
+pub struct PrivateEventCount {
+    pub count: i64,
+}
+
+pub async fn private_event_count(
+    State(state): State<AppState>,
+) -> Result<Json<PrivateEventCount>> {
+    let count = state.service_context.event_repo.count_members_only_upcoming().await?;
+    Ok(Json(PrivateEventCount { count }))
 }
 
 // Helper function to generate RSS feed
@@ -187,6 +224,7 @@ fn generate_rss_feed(announcements: &[Announcement]) -> String {
 }
 
 // Helper function to generate iCal feed
+// Private (MembersOnly) events are sanitized to show only time slot
 fn generate_ical_feed(events: &[Event]) -> String {
     let mut ical = String::from("BEGIN:VCALENDAR\r\n");
     ical.push_str("VERSION:2.0\r\n");
@@ -194,29 +232,38 @@ fn generate_ical_feed(events: &[Event]) -> String {
     ical.push_str("CALSCALE:GREGORIAN\r\n");
     ical.push_str("METHOD:PUBLISH\r\n");
     ical.push_str("X-WR-CALNAME:Coterie Events\r\n");
-    
+
     for event in events {
+        let is_private = event.visibility != EventVisibility::Public;
+
         ical.push_str("BEGIN:VEVENT\r\n");
         ical.push_str(&format!("UID:{}\r\n", event.id));
         ical.push_str(&format!("DTSTART:{}\r\n", event.start_time.format("%Y%m%dT%H%M%SZ")));
-        
+
         if let Some(end_time) = event.end_time {
             ical.push_str(&format!("DTEND:{}\r\n", end_time.format("%Y%m%dT%H%M%SZ")));
         }
-        
-        ical.push_str(&format!("SUMMARY:{}\r\n", event.title));
-        ical.push_str(&format!("DESCRIPTION:{}\r\n", event.description.replace('\n', "\\n")));
-        
-        if let Some(location) = &event.location {
-            ical.push_str(&format!("LOCATION:{}\r\n", location));
+
+        if is_private {
+            // Sanitize private events - show only that something is happening
+            ical.push_str("SUMMARY:Members-Only Event\r\n");
+            ical.push_str("DESCRIPTION:This event is for members only. Log in to the portal to see details.\r\n");
+            // No location for private events
+        } else {
+            ical.push_str(&format!("SUMMARY:{}\r\n", event.title));
+            ical.push_str(&format!("DESCRIPTION:{}\r\n", event.description.replace('\n', "\\n")));
+
+            if let Some(location) = &event.location {
+                ical.push_str(&format!("LOCATION:{}\r\n", location));
+            }
         }
-        
+
         ical.push_str(&format!("CREATED:{}\r\n", event.created_at.format("%Y%m%dT%H%M%SZ")));
         ical.push_str(&format!("LAST-MODIFIED:{}\r\n", event.updated_at.format("%Y%m%dT%H%M%SZ")));
         ical.push_str("STATUS:CONFIRMED\r\n");
         ical.push_str("END:VEVENT\r\n");
     }
-    
+
     ical.push_str("END:VCALENDAR\r\n");
     ical
 }

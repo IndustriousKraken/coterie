@@ -39,6 +39,8 @@ pub trait EventRepository: Send + Sync {
     async fn list(&self, limit: i64, offset: i64) -> Result<Vec<Event>>;
     async fn list_upcoming(&self, limit: i64) -> Result<Vec<Event>>;
     async fn list_public(&self) -> Result<Vec<Event>>;
+    async fn list_members_only(&self) -> Result<Vec<Event>>;
+    async fn count_members_only_upcoming(&self) -> Result<i64>;
     async fn update(&self, id: Uuid, event: Event) -> Result<Event>;
     async fn delete(&self, id: Uuid) -> Result<()>;
     async fn register_attendance(&self, event_id: Uuid, member_id: Uuid) -> Result<()>;

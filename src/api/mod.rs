@@ -137,6 +137,7 @@ fn public_routes(_state: AppState) -> Router<AppState> {
     Router::new()
         .route("/signup", post(handlers::public::signup))
         .route("/events", get(handlers::public::list_events))
+        .route("/events/private-count", get(handlers::public::private_event_count))
         .route("/announcements", get(handlers::public::list_announcements))
         .route("/announcements/private-count", get(handlers::announcements::private_count))
         .route("/feed/rss", get(handlers::public::rss_feed))
