@@ -164,12 +164,12 @@ impl Settings {
     pub fn database_url(&self) -> String {
         let url = &self.database.url;
         // If it's a simple sqlite filename (not a full path), put it in data_dir
-        if url.starts_with("sqlite://") && !url.contains('/') {
-            let filename = url.strip_prefix("sqlite://").unwrap_or("coterie.db");
-            format!("sqlite://{}/{}", self.server.data_dir, filename)
-        } else {
-            url.clone()
+        if let Some(filename) = url.strip_prefix("sqlite://") {
+            if !filename.contains('/') {
+                return format!("sqlite://{}/{}", self.server.data_dir, filename);
+            }
         }
+        url.clone()
     }
 }
 

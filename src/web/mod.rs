@@ -6,13 +6,9 @@ use axum::{
     Router,
     routing::{get, post},
 };
-use tower_http::services::ServeDir;
 use crate::api::state::AppState;
 
 pub fn create_web_routes(state: AppState) -> Router {
-    // Get uploads directory from settings
-    let uploads_dir = state.settings.server.uploads_path();
-
     Router::new()
         // Setup page (first-run)
         .route("/setup", get(templates::setup::setup_page))
@@ -26,8 +22,8 @@ pub fn create_web_routes(state: AppState) -> Router {
         // Portal routes
         .nest("/portal", portal::create_portal_routes(state.clone()))
 
-        // Serve uploaded files
-        .nest_service("/uploads", ServeDir::new(&uploads_dir))
+        // Serve uploaded files (with auth check for private content)
+        .route("/uploads/:filename", get(uploads::serve_upload))
 
         .with_state(state)
 }
