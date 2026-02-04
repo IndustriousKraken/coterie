@@ -21,6 +21,20 @@ pub struct PaymentsTemplate {
     pub is_admin: bool,
 }
 
+#[derive(Template)]
+#[template(path = "portal/payment_success.html")]
+pub struct PaymentSuccessTemplate {
+    pub current_user: Option<UserInfo>,
+    pub is_admin: bool,
+}
+
+#[derive(Template)]
+#[template(path = "portal/payment_cancel.html")]
+pub struct PaymentCancelTemplate {
+    pub current_user: Option<UserInfo>,
+    pub is_admin: bool,
+}
+
 pub async fn payments_page(
     State(_state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
@@ -144,4 +158,40 @@ pub async fn next_due_api(
     };
 
     axum::response::Html(next_due)
+}
+
+pub async fn payment_success_page(
+    State(_state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+) -> impl IntoResponse {
+    let user_info = UserInfo {
+        id: current_user.member.id.to_string(),
+        username: current_user.member.username.clone(),
+        email: current_user.member.email.clone(),
+    };
+
+    let template = PaymentSuccessTemplate {
+        current_user: Some(user_info),
+        is_admin: is_admin(&current_user.member),
+    };
+
+    HtmlTemplate(template)
+}
+
+pub async fn payment_cancel_page(
+    State(_state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+) -> impl IntoResponse {
+    let user_info = UserInfo {
+        id: current_user.member.id.to_string(),
+        username: current_user.member.username.clone(),
+        email: current_user.member.email.clone(),
+    };
+
+    let template = PaymentCancelTemplate {
+        current_user: Some(user_info),
+        is_admin: is_admin(&current_user.member),
+    };
+
+    HtmlTemplate(template)
 }

@@ -141,13 +141,15 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize Stripe client if configured
     let stripe_client = if settings.stripe.enabled {
-        if let (Some(api_key), Some(webhook_secret)) = 
+        if let (Some(api_key), Some(webhook_secret)) =
             (settings.stripe.secret_key.clone(), settings.stripe.webhook_secret.clone()) {
             tracing::info!("Stripe payment processing enabled");
             Some(Arc::new(payments::StripeClient::new(
                 api_key,
                 webhook_secret,
                 payment_repo,
+                service_context.membership_type_service.clone(),
+                db_pool.clone(),
             )))
         } else {
             tracing::warn!("Stripe enabled but missing configuration");

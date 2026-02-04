@@ -124,8 +124,6 @@ fn payment_routes(state: AppState) -> Router<AppState> {
             .route("/", post(handlers::payments::create))
             .route("/:id", get(handlers::payments::get))
             .route("/member/:member_id", get(handlers::payments::list_by_member))
-            .route("/manual", post(handlers::payments::create_manual))
-            .route("/waive", post(handlers::payments::waive))
             .route_layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 middleware::auth::require_auth,
@@ -149,6 +147,9 @@ fn admin_routes(state: AppState) -> Router<AppState> {
         .route("/stats", get(handlers::admin::stats))
         .route("/audit-log", get(handlers::admin::audit_log))
         .route("/expired-check", post(handlers::admin::check_expired))
+        // Admin-only payment operations
+        .route("/payments/manual", post(handlers::payments::create_manual))
+        .route("/payments/waive", post(handlers::payments::waive))
         // Settings management routes
         .route("/settings", get(handlers::settings::list_settings))
         .route("/settings/batch", put(handlers::settings::batch_update))

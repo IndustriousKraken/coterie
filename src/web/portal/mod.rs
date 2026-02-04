@@ -19,6 +19,8 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/events", get(events::events_page))
         .route("/announcements", get(announcements::announcements_page))
         .route("/payments", get(payments::payments_page))
+        .route("/payments/success", get(payments::payment_success_page))
+        .route("/payments/cancel", get(payments::payment_cancel_page))
         .route("/profile", get(profile::profile_page))
         .route("/profile", post(profile::update_profile))
         .route("/profile/password", post(profile::update_password))

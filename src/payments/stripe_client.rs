@@ -1,22 +1,26 @@
 use stripe::{
     Client, CheckoutSession, CheckoutSessionMode, CreateCheckoutSession,
-    CreateCheckoutSessionLineItems, Currency, EventObject, EventType, 
+    CreateCheckoutSessionLineItems, Currency, EventObject, EventType,
     Webhook, WebhookError,
 };
-use chrono::Utc;
+use chrono::{Months, Utc};
 use uuid::Uuid;
 use std::sync::Arc;
+use sqlx::SqlitePool;
 
 use crate::{
-    domain::{Payment, PaymentMethod, PaymentStatus},
+    domain::{Payment, PaymentMethod, PaymentStatus, configurable_types::BillingPeriod},
     error::{AppError, Result},
     repository::PaymentRepository,
+    service::membership_type_service::MembershipTypeService,
 };
 
 pub struct StripeClient {
     client: Client,
     webhook_secret: String,
     payment_repo: Arc<dyn PaymentRepository>,
+    membership_type_service: Arc<MembershipTypeService>,
+    db_pool: SqlitePool,
 }
 
 impl StripeClient {
@@ -24,37 +28,42 @@ impl StripeClient {
         api_key: String,
         webhook_secret: String,
         payment_repo: Arc<dyn PaymentRepository>,
+        membership_type_service: Arc<MembershipTypeService>,
+        db_pool: SqlitePool,
     ) -> Self {
         let client = Client::new(api_key);
         Self {
             client,
             webhook_secret,
             payment_repo,
+            membership_type_service,
+            db_pool,
         }
     }
 
     pub async fn create_membership_checkout_session(
         &self,
         member_id: Uuid,
-        membership_type: &str,
+        membership_type_name: &str,
+        membership_type_slug: &str,
         amount_cents: i64,
         success_url: String,
         cancel_url: String,
-    ) -> Result<String> {
+    ) -> Result<(String, Uuid)> {
         // Create checkout session with inline price data
         let mut params = CreateCheckoutSession::new();
         params.mode = Some(CheckoutSessionMode::Payment);
         params.success_url = Some(&success_url);
         params.cancel_url = Some(&cancel_url);
-        
+
         // Create line items with inline price data
         params.line_items = Some(vec![CreateCheckoutSessionLineItems {
             price_data: Some(stripe::CreateCheckoutSessionLineItemsPriceData {
                 currency: Currency::USD,
                 unit_amount: Some(amount_cents),
                 product_data: Some(stripe::CreateCheckoutSessionLineItemsPriceDataProductData {
-                    name: format!("{} Membership", membership_type),
-                    description: Some(format!("Annual {} membership dues", membership_type)),
+                    name: format!("{} Membership", membership_type_name),
+                    description: Some(format!("{} membership dues", membership_type_name)),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -62,11 +71,12 @@ impl StripeClient {
             quantity: Some(1),
             ..Default::default()
         }]);
-        
-        // Add metadata for tracking
+
+        // Add metadata for tracking (store slug for dues extension lookup)
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("member_id".to_string(), member_id.to_string());
-        metadata.insert("membership_type".to_string(), membership_type.to_string());
+        metadata.insert("membership_type".to_string(), membership_type_name.to_string());
+        metadata.insert("membership_type_slug".to_string(), membership_type_slug.to_string());
         params.metadata = Some(metadata);
         let member_id_str = member_id.to_string();
         params.client_reference_id = Some(&member_id_str);
@@ -76,15 +86,16 @@ impl StripeClient {
             .map_err(|e| AppError::External(format!("Stripe error: {}", e)))?;
 
         // Create pending payment record
+        let payment_id = Uuid::new_v4();
         let payment = Payment {
-            id: Uuid::new_v4(),
+            id: payment_id,
             member_id,
             amount_cents,
             currency: "USD".to_string(),
             status: PaymentStatus::Pending,
             payment_method: PaymentMethod::Stripe,
             stripe_payment_id: Some(session.id.to_string()),
-            description: format!("{} Membership Payment", membership_type),
+            description: format!("{} Membership Payment", membership_type_name),
             paid_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -92,9 +103,10 @@ impl StripeClient {
 
         self.payment_repo.create(payment).await?;
 
-        // Return the checkout URL
-        session.url
-            .ok_or_else(|| AppError::External("No checkout URL returned".to_string()))
+        // Return the checkout URL and payment ID
+        let url = session.url
+            .ok_or_else(|| AppError::External("No checkout URL returned".to_string()))?;
+        Ok((url, payment_id))
     }
 
     pub async fn handle_webhook(
@@ -143,25 +155,84 @@ impl StripeClient {
         session: CheckoutSession,
     ) -> Result<()> {
         let session_id = session.id.to_string();
-        
+
         // Find the payment by Stripe ID
         if let Some(mut payment) = self.payment_repo.find_by_stripe_id(&session_id).await? {
             // Update payment status
             payment.status = PaymentStatus::Completed;
             payment.paid_at = Some(Utc::now());
             payment.updated_at = Utc::now();
-            
+
             self.payment_repo.update(payment.id, payment.clone()).await?;
-            
-            // Get member ID from metadata or payment record
+
+            // Extend member's dues_paid_until based on membership type billing period
+            let membership_type_slug = session.metadata
+                .as_ref()
+                .and_then(|m| m.get("membership_type_slug"))
+                .cloned();
+
+            if let Some(slug) = membership_type_slug {
+                self.extend_member_dues(payment.member_id, &slug).await?;
+            } else {
+                tracing::warn!("No membership_type_slug in session metadata for session: {}", session_id);
+            }
+
             tracing::info!("Payment completed for member: {}", payment.member_id);
-            
-            // Here you would typically update the member's dues_paid_until date
-            // This would be done through a member service
         } else {
             tracing::warn!("Payment not found for Stripe session: {}", session_id);
         }
-        
+
+        Ok(())
+    }
+
+    async fn extend_member_dues(
+        &self,
+        member_id: Uuid,
+        membership_type_slug: &str,
+    ) -> Result<()> {
+        let membership_type = self.membership_type_service
+            .get_by_slug(membership_type_slug)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!(
+                "Membership type '{}' not found", membership_type_slug
+            )))?;
+
+        let billing_period = membership_type.billing_period_enum()
+            .unwrap_or(BillingPeriod::Yearly);
+
+        // Get the member's current dues_paid_until
+        let row = sqlx::query_scalar::<_, Option<chrono::DateTime<Utc>>>(
+            "SELECT dues_paid_until FROM members WHERE id = ?"
+        )
+            .bind(member_id.to_string())
+            .fetch_optional(&self.db_pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+
+        let current_dues = row.flatten();
+        let now = Utc::now();
+        let base_date = current_dues
+            .filter(|d| *d > now)
+            .unwrap_or(now);
+
+        let new_dues_date = match billing_period {
+            BillingPeriod::Monthly => base_date.checked_add_months(Months::new(1)).unwrap_or(base_date),
+            BillingPeriod::Yearly => base_date.checked_add_months(Months::new(12)).unwrap_or(base_date),
+            BillingPeriod::Lifetime => chrono::DateTime::<Utc>::MAX_UTC,
+        };
+
+        sqlx::query("UPDATE members SET dues_paid_until = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+            .bind(new_dues_date)
+            .bind(member_id.to_string())
+            .execute(&self.db_pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to update dues: {}", e)))?;
+
+        tracing::info!(
+            "Extended dues for member {} to {} (billing period: {:?})",
+            member_id, new_dues_date, billing_period
+        );
+
         Ok(())
     }
 
@@ -196,48 +267,4 @@ impl StripeClient {
         Ok(())
     }
 
-    pub async fn create_manual_payment(
-        &self,
-        member_id: Uuid,
-        amount_cents: i64,
-        description: String,
-    ) -> Result<Payment> {
-        let payment = Payment {
-            id: Uuid::new_v4(),
-            member_id,
-            amount_cents,
-            currency: "USD".to_string(),
-            status: PaymentStatus::Completed,
-            payment_method: PaymentMethod::Manual,
-            stripe_payment_id: None,
-            description,
-            paid_at: Some(Utc::now()),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        };
-
-        self.payment_repo.create(payment).await
-    }
-
-    pub async fn waive_payment(
-        &self,
-        member_id: Uuid,
-        description: String,
-    ) -> Result<Payment> {
-        let payment = Payment {
-            id: Uuid::new_v4(),
-            member_id,
-            amount_cents: 0,
-            currency: "USD".to_string(),
-            status: PaymentStatus::Completed,
-            payment_method: PaymentMethod::Waived,
-            stripe_payment_id: None,
-            description,
-            paid_at: Some(Utc::now()),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        };
-
-        self.payment_repo.create(payment).await
-    }
 }
