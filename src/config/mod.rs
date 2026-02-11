@@ -139,13 +139,6 @@ pub struct MembershipTypeSeedConfig {
 impl Settings {
     pub fn new() -> Result<Self, ConfigError> {
         let config = Config::builder()
-            // Start with default values
-            .set_default("server.host", "127.0.0.1")?
-            .set_default("server.port", 8080)?
-            .set_default("database.max_connections", 10)?
-            .set_default("auth.session_duration_hours", 24)?
-            .set_default("stripe.enabled", false)?
-
             // Add config files if they exist (in order of precedence, later overrides earlier)
             .add_source(File::with_name("/etc/coterie/config").required(false))  // System-wide
             .add_source(File::with_name("config/default").required(false))        // App default
@@ -164,7 +157,10 @@ impl Settings {
     pub fn database_url(&self) -> String {
         let url = &self.database.url;
         // If it's a simple sqlite filename (not a full path), put it in data_dir
-        if let Some(filename) = url.strip_prefix("sqlite://") {
+        // Handle both "sqlite://filename" and "sqlite:filename" forms
+        let filename = url.strip_prefix("sqlite://")
+            .or_else(|| url.strip_prefix("sqlite:"));
+        if let Some(filename) = filename {
             if !filename.contains('/') {
                 return format!("sqlite://{}/{}", self.server.data_dir, filename);
             }
@@ -258,39 +254,6 @@ impl Default for SeedConfig {
                     billing_frequency: "yearly".to_string(),
                 },
             ],
-        }
-    }
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig {
-                host: "127.0.0.1".to_string(),
-                port: 8080,
-                base_url: "http://localhost:8080".to_string(),
-                data_dir: "./data".to_string(),
-                uploads_dir: None,
-            },
-            database: DatabaseConfig {
-                url: "sqlite://coterie.db".to_string(),
-                max_connections: 10,
-            },
-            auth: AuthConfig {
-                session_secret: "change-me-in-production".to_string(),
-                session_duration_hours: 24,
-                totp_issuer: "Coterie".to_string(),
-            },
-            stripe: StripeConfig {
-                secret_key: None,
-                webhook_secret: None,
-                enabled: false,
-            },
-            integrations: IntegrationConfig {
-                discord: None,
-                unifi: None,
-            },
-            seed: SeedConfig::default(),
         }
     }
 }

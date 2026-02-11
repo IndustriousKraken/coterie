@@ -1,15 +1,19 @@
 use askama::Template;
 use axum::{
     extract::State,
+    http::StatusCode,
     response::IntoResponse,
     Extension,
+    Json,
 };
+use serde::Deserialize;
 
 use crate::{
     api::{
-        middleware::auth::CurrentUser,
+        middleware::auth::{CurrentUser, SessionInfo},
         state::AppState,
     },
+    error::AppError,
     web::templates::{HtmlTemplate, UserInfo},
 };
 use super::is_admin;
@@ -19,6 +23,25 @@ use super::is_admin;
 pub struct PaymentsTemplate {
     pub current_user: Option<UserInfo>,
     pub is_admin: bool,
+}
+
+#[derive(Template)]
+#[template(path = "portal/payment_new.html")]
+pub struct PaymentNewTemplate {
+    pub current_user: Option<UserInfo>,
+    pub is_admin: bool,
+    pub stripe_enabled: bool,
+    pub membership_types: Vec<MembershipTypeDisplay>,
+    pub csrf_token: String,
+}
+
+pub struct MembershipTypeDisplay {
+    pub name: String,
+    pub slug: String,
+    pub description: Option<String>,
+    pub color: Option<String>,
+    pub fee_display: String,
+    pub billing_period: String,
 }
 
 #[derive(Template)]
@@ -33,6 +56,11 @@ pub struct PaymentSuccessTemplate {
 pub struct PaymentCancelTemplate {
     pub current_user: Option<UserInfo>,
     pub is_admin: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CheckoutRequest {
+    pub membership_type_slug: String,
 }
 
 pub async fn payments_page(
@@ -194,4 +222,86 @@ pub async fn payment_cancel_page(
     };
 
     HtmlTemplate(template)
+}
+
+pub async fn payment_new_page(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+    Extension(session_info): Extension<SessionInfo>,
+) -> impl IntoResponse {
+    let user_info = UserInfo {
+        id: current_user.member.id.to_string(),
+        username: current_user.member.username.clone(),
+        email: current_user.member.email.clone(),
+    };
+
+    let csrf_token = state.service_context.csrf_service
+        .generate_token(&session_info.session_id)
+        .await
+        .unwrap_or_default();
+
+    let stripe_enabled = state.stripe_client.is_some();
+
+    let membership_types = state.service_context.membership_type_service
+        .list(false)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mt| MembershipTypeDisplay {
+            name: mt.name,
+            slug: mt.slug,
+            description: mt.description,
+            color: mt.color,
+            fee_display: format!("{:.2}", mt.fee_cents as f64 / 100.0),
+            billing_period: mt.billing_period,
+        })
+        .collect();
+
+    let template = PaymentNewTemplate {
+        current_user: Some(user_info),
+        is_admin: is_admin(&current_user.member),
+        stripe_enabled,
+        membership_types,
+        csrf_token,
+    };
+
+    HtmlTemplate(template)
+}
+
+pub async fn checkout_api(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+    Json(request): Json<CheckoutRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
+    let stripe_client = state.stripe_client.as_ref()
+        .ok_or_else(|| AppError::ServiceUnavailable("Payment processing is not configured".to_string()))?;
+
+    let membership_type = state.service_context.membership_type_service
+        .get_by_slug(&request.membership_type_slug)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!(
+            "Membership type '{}' not found", request.membership_type_slug
+        )))?;
+
+    if !membership_type.is_active {
+        return Err(AppError::BadRequest(format!(
+            "Membership type '{}' is not currently available", membership_type.name
+        )));
+    }
+
+    let amount_cents = membership_type.fee_cents as i64;
+
+    let (checkout_url, payment_id) = stripe_client.create_membership_checkout_session(
+        current_user.member.id,
+        &membership_type.name,
+        &membership_type.slug,
+        amount_cents,
+        format!("{}/portal/payments/success", state.settings.server.base_url),
+        format!("{}/portal/payments/cancel", state.settings.server.base_url),
+    ).await?;
+
+    Ok((StatusCode::OK, Json(serde_json::json!({
+        "payment_id": payment_id,
+        "checkout_url": checkout_url,
+    }))))
 }

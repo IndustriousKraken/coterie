@@ -33,11 +33,11 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Load configuration
-    let settings = Settings::new().unwrap_or_else(|e| {
-        tracing::warn!("Failed to load config: {}. Using defaults.", e);
-        Settings::default()
-    });
+    // Load configuration — crash on missing/invalid config rather than silently using defaults
+    let settings = Settings::new().expect(
+        "Failed to load configuration. \
+         Ensure .env exists with all required fields (see .env.example)."
+    );
 
     tracing::info!("Starting Coterie server on {}:{}", settings.server.host, settings.server.port);
 
