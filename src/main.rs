@@ -4,6 +4,7 @@ mod config;
 mod domain;
 mod error;
 mod integrations;
+mod jobs;
 mod payments;
 mod repository;
 mod service;
@@ -33,18 +34,27 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Load configuration
-    let settings = Settings::new().unwrap_or_else(|e| {
-        tracing::warn!("Failed to load config: {}. Using defaults.", e);
-        Settings::default()
-    });
+    // Load configuration — crash on missing/invalid config rather than silently using defaults
+    let settings = Settings::new().expect(
+        "Failed to load configuration. \
+         Ensure .env exists with all required fields (see .env.example)."
+    );
 
     tracing::info!("Starting Coterie server on {}:{}", settings.server.host, settings.server.port);
 
-    // Initialize database
+    // Initialize database (resolves path relative to data_dir if needed)
+    let database_url = settings.database_url();
+    tracing::info!("Using database: {}", database_url);
+
+    // Ensure data directory exists
+    let data_dir = std::path::Path::new(&settings.server.data_dir);
+    if !data_dir.exists() {
+        std::fs::create_dir_all(data_dir)?;
+    }
+
     let db_pool = SqlitePoolOptions::new()
         .max_connections(settings.database.max_connections)
-        .connect(&settings.database.url)
+        .connect(&database_url)
         .await?;
 
     // Run migrations
@@ -132,13 +142,15 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize Stripe client if configured
     let stripe_client = if settings.stripe.enabled {
-        if let (Some(api_key), Some(webhook_secret)) = 
+        if let (Some(api_key), Some(webhook_secret)) =
             (settings.stripe.secret_key.clone(), settings.stripe.webhook_secret.clone()) {
             tracing::info!("Stripe payment processing enabled");
             Some(Arc::new(payments::StripeClient::new(
                 api_key,
                 webhook_secret,
                 payment_repo,
+                service_context.membership_type_service.clone(),
+                db_pool.clone(),
             )))
         } else {
             tracing::warn!("Stripe enabled but missing configuration");
@@ -148,6 +160,14 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Stripe payment processing disabled");
         None
     };
+
+    // Spawn billing runner (runs every hour)
+    {
+        let billing_service = Arc::new(service_context.billing_service(stripe_client.clone()));
+        let runner = jobs::BillingRunner::new(billing_service, 60 * 60);
+        runner.spawn();
+        tracing::info!("Billing runner spawned");
+    }
 
     // Create API app
     let api_app = api::create_app(service_context.clone(), stripe_client.clone(), Arc::new(settings.clone()));

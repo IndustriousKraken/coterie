@@ -243,6 +243,49 @@ impl EventRepository for SqliteEventRepository {
             .collect()
     }
 
+    async fn list_members_only(&self) -> Result<Vec<Event>> {
+        let visibility_str = Self::visibility_to_str(&EventVisibility::MembersOnly);
+
+        let rows = sqlx::query_as::<_, EventRow>(
+            r#"
+            SELECT id, title, description, event_type, event_type_id, visibility,
+                   start_time, end_time, location, max_attendees, rsvp_required,
+                   image_url, created_by, created_at, updated_at
+            FROM events
+            WHERE visibility = ?
+            ORDER BY start_time DESC
+            "#
+        )
+        .bind(visibility_str)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        rows.into_iter()
+            .map(Self::row_to_event)
+            .collect()
+    }
+
+    async fn count_members_only_upcoming(&self) -> Result<i64> {
+        let visibility_str = Self::visibility_to_str(&EventVisibility::MembersOnly);
+        let now = Utc::now().naive_utc();
+
+        let count: (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*) as count
+            FROM events
+            WHERE visibility = ? AND start_time > ?
+            "#
+        )
+        .bind(visibility_str)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Ok(count.0)
+    }
+
     async fn update(&self, id: Uuid, event: Event) -> Result<Event> {
         let id_str = id.to_string();
         let event_type_str = Self::event_type_to_str(&event.event_type);

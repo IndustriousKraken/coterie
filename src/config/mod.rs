@@ -19,12 +19,39 @@ pub struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub base_url: String,
-    #[serde(default = "default_uploads_dir")]
-    pub uploads_dir: String,
+    /// Base directory for all persistent data (database, uploads, etc.)
+    /// Defaults to "./data". In containers, mount a volume here.
+    #[serde(default = "default_data_dir")]
+    pub data_dir: String,
+    /// Directory for uploaded files. Defaults to "{data_dir}/uploads"
+    pub uploads_dir: Option<String>,
 }
 
-fn default_uploads_dir() -> String {
-    "uploads".to_string()
+impl ServerConfig {
+    /// Get the uploads directory, defaulting to {data_dir}/uploads
+    pub fn uploads_path(&self) -> String {
+        self.uploads_dir.clone().unwrap_or_else(|| {
+            format!("{}/uploads", self.data_dir)
+        })
+    }
+}
+
+fn default_data_dir() -> String {
+    // Check locations in order of preference:
+    // 1. /var/lib/coterie - standard Linux service location (if it exists)
+    // 2. /data - container convention (if in container)
+    // 3. ./data - local development fallback
+
+    let var_lib = std::path::Path::new("/var/lib/coterie");
+    if var_lib.exists() {
+        return "/var/lib/coterie".to_string();
+    }
+
+    if std::path::Path::new("/.dockerenv").exists() || std::env::var("CONTAINER").is_ok() {
+        return "/data".to_string();
+    }
+
+    "./data".to_string()
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -42,6 +69,7 @@ pub struct AuthConfig {
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct StripeConfig {
+    pub publishable_key: Option<String>,
     pub secret_key: Option<String>,
     pub webhook_secret: Option<String>,
     #[serde(default)]
@@ -112,24 +140,33 @@ pub struct MembershipTypeSeedConfig {
 impl Settings {
     pub fn new() -> Result<Self, ConfigError> {
         let config = Config::builder()
-            // Start with default values
-            .set_default("server.host", "127.0.0.1")?
-            .set_default("server.port", 8080)?
-            .set_default("database.max_connections", 10)?
-            .set_default("auth.session_duration_hours", 24)?
-            .set_default("stripe.enabled", false)?
-            
-            // Add config file if it exists
-            .add_source(File::with_name("config/default").required(false))
-            .add_source(File::with_name("config/local").required(false))
-            .add_source(File::with_name("config/seed").required(false))
-            
+            // Add config files if they exist (in order of precedence, later overrides earlier)
+            .add_source(File::with_name("/etc/coterie/config").required(false))  // System-wide
+            .add_source(File::with_name("config/default").required(false))        // App default
+            .add_source(File::with_name("config/local").required(false))          // Local overrides
+            .add_source(File::with_name("config/seed").required(false))           // Seed data
+
             // Add environment variables (with COTERIE__ prefix, double underscore separates levels)
             .add_source(Environment::with_prefix("COTERIE").separator("__"))
-            
+
             .build()?;
 
         config.try_deserialize()
+    }
+
+    /// Get the database URL, resolving relative paths against data_dir
+    pub fn database_url(&self) -> String {
+        let url = &self.database.url;
+        // If it's a simple sqlite filename (not a full path), put it in data_dir
+        // Handle both "sqlite://filename" and "sqlite:filename" forms
+        let filename = url.strip_prefix("sqlite://")
+            .or_else(|| url.strip_prefix("sqlite:"));
+        if let Some(filename) = filename {
+            if !filename.contains('/') {
+                return format!("sqlite://{}/{}", self.server.data_dir, filename);
+            }
+        }
+        url.clone()
     }
 }
 
@@ -218,38 +255,6 @@ impl Default for SeedConfig {
                     billing_frequency: "yearly".to_string(),
                 },
             ],
-        }
-    }
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig {
-                host: "127.0.0.1".to_string(),
-                port: 8080,
-                base_url: "http://localhost:8080".to_string(),
-                uploads_dir: "uploads".to_string(),
-            },
-            database: DatabaseConfig {
-                url: "sqlite://coterie.db".to_string(),
-                max_connections: 10,
-            },
-            auth: AuthConfig {
-                session_secret: "change-me-in-production".to_string(),
-                session_duration_hours: 24,
-                totp_issuer: "Coterie".to_string(),
-            },
-            stripe: StripeConfig {
-                secret_key: None,
-                webhook_secret: None,
-                enabled: false,
-            },
-            integrations: IntegrationConfig {
-                discord: None,
-                unifi: None,
-            },
-            seed: SeedConfig::default(),
         }
     }
 }

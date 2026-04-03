@@ -124,8 +124,12 @@ fn payment_routes(state: AppState) -> Router<AppState> {
             .route("/", post(handlers::payments::create))
             .route("/:id", get(handlers::payments::get))
             .route("/member/:member_id", get(handlers::payments::list_by_member))
-            .route("/manual", post(handlers::payments::create_manual))
-            .route("/waive", post(handlers::payments::waive))
+            // Saved card (payment method) routes
+            .route("/cards", get(handlers::payments::list_saved_cards))
+            .route("/cards", post(handlers::payments::save_card))
+            .route("/cards/setup-intent", post(handlers::payments::create_setup_intent))
+            .route("/cards/:card_id", delete(handlers::payments::delete_saved_card))
+            .route("/cards/:card_id/default", put(handlers::payments::set_default_card))
             .route_layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 middleware::auth::require_auth,
@@ -137,6 +141,7 @@ fn public_routes(_state: AppState) -> Router<AppState> {
     Router::new()
         .route("/signup", post(handlers::public::signup))
         .route("/events", get(handlers::public::list_events))
+        .route("/events/private-count", get(handlers::public::private_event_count))
         .route("/announcements", get(handlers::public::list_announcements))
         .route("/announcements/private-count", get(handlers::announcements::private_count))
         .route("/feed/rss", get(handlers::public::rss_feed))
@@ -148,6 +153,9 @@ fn admin_routes(state: AppState) -> Router<AppState> {
         .route("/stats", get(handlers::admin::stats))
         .route("/audit-log", get(handlers::admin::audit_log))
         .route("/expired-check", post(handlers::admin::check_expired))
+        // Admin-only payment operations
+        .route("/payments/manual", post(handlers::payments::create_manual))
+        .route("/payments/waive", post(handlers::payments::waive))
         // Settings management routes
         .route("/settings", get(handlers::settings::list_settings))
         .route("/settings/batch", put(handlers::settings::batch_update))

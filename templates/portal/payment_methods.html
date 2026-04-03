@@ -1,0 +1,161 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Payment Methods - Coterie{% endblock %}
+
+{% block head %}
+<meta name="csrf-token" content="{{ csrf_token }}">
+<script src="https://js.stripe.com/v3/"></script>
+{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="mb-8">
+        <a href="/portal/payments" class="text-sm text-blue-600 hover:text-blue-800">&larr; Back to Payments</a>
+        <h1 class="text-3xl font-bold text-gray-900 mt-2">Payment Methods</h1>
+        <p class="mt-2 text-sm text-gray-600">Manage your saved payment methods for dues and donations</p>
+    </div>
+
+    {% if !stripe_enabled %}
+    <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
+        <p class="text-yellow-800 text-sm">
+            Online payment processing is not currently configured.
+        </p>
+    </div>
+    {% else %}
+    <!-- Saved Cards -->
+    <div class="bg-white rounded-lg shadow-sm border mb-6">
+        <div class="px-6 py-4 border-b">
+            <h2 class="text-lg font-semibold text-gray-900">Saved Cards</h2>
+        </div>
+        <div id="saved-cards" hx-get="/portal/api/payments/cards" hx-trigger="load" hx-swap="innerHTML">
+            <div class="p-6 text-center text-gray-500">Loading...</div>
+        </div>
+    </div>
+
+    <!-- Add New Card -->
+    <div class="bg-white rounded-lg shadow-sm border">
+        <div class="px-6 py-4 border-b">
+            <h2 class="text-lg font-semibold text-gray-900">Add New Card</h2>
+        </div>
+        <div class="p-6">
+            <div id="card-form">
+                <div id="card-element" class="border rounded-md p-3 bg-gray-50"></div>
+                <div id="card-errors" class="text-red-600 text-sm mt-2" role="alert"></div>
+                <div class="mt-4 flex items-center">
+                    <input type="checkbox" id="set-default" class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded">
+                    <label for="set-default" class="ml-2 text-sm text-gray-700">Set as default payment method</label>
+                </div>
+                <button id="save-card-btn" type="button" class="mt-4 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">
+                    Save Card
+                </button>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+{% if stripe_enabled %}
+<script>
+(function() {
+    const stripe = Stripe('{{ stripe_publishable_key }}');
+    const elements = stripe.elements();
+
+    const style = {
+        base: {
+            fontSize: '16px',
+            color: '#374151',
+            '::placeholder': { color: '#9CA3AF' },
+        },
+        invalid: {
+            color: '#EF4444',
+        }
+    };
+
+    const cardElement = elements.create('card', { style: style });
+    cardElement.mount('#card-element');
+
+    const cardErrors = document.getElementById('card-errors');
+    cardElement.on('change', function(event) {
+        if (event.error) {
+            cardErrors.textContent = event.error.message;
+        } else {
+            cardErrors.textContent = '';
+        }
+    });
+
+    const saveBtn = document.getElementById('save-card-btn');
+    saveBtn.addEventListener('click', async function() {
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving...';
+
+        try {
+            // Get a SetupIntent client_secret
+            const setupResponse = await fetch('/api/payments/cards/setup-intent', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content,
+                },
+            });
+
+            if (!setupResponse.ok) {
+                throw new Error('Failed to create setup intent');
+            }
+
+            const { client_secret } = await setupResponse.json();
+
+            // Confirm the setup with Stripe.js
+            const { setupIntent, error } = await stripe.confirmCardSetup(client_secret, {
+                payment_method: {
+                    card: cardElement,
+                }
+            });
+
+            if (error) {
+                throw new Error(error.message);
+            }
+
+            // Save the payment method in our database
+            const setDefault = document.getElementById('set-default').checked;
+            const saveResponse = await fetch('/api/payments/cards', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content,
+                },
+                body: JSON.stringify({
+                    stripe_payment_method_id: setupIntent.payment_method,
+                    set_as_default: setDefault,
+                }),
+            });
+
+            if (!saveResponse.ok) {
+                throw new Error('Failed to save card');
+            }
+
+            // Refresh the saved cards list
+            htmx.trigger('#saved-cards', 'refresh');
+
+            // Clear the form
+            cardElement.clear();
+            document.getElementById('set-default').checked = false;
+            cardErrors.textContent = '';
+
+        } catch (err) {
+            cardErrors.textContent = err.message;
+        } finally {
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Save Card';
+        }
+    });
+
+    // Listen for refresh event
+    document.body.addEventListener('htmx:trigger', function(evt) {
+        if (evt.detail.name === 'refresh' && evt.target.id === 'saved-cards') {
+            htmx.ajax('GET', '/portal/api/payments/cards', '#saved-cards');
+        }
+    });
+})();
+</script>
+{% endif %}
+{% endblock %}

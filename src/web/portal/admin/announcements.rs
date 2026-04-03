@@ -454,7 +454,7 @@ pub async fn admin_create_announcement(
                 if !filename.is_empty() {
                     if let Ok(data) = field.bytes().await {
                         if !data.is_empty() {
-                            match save_uploaded_file(&state.settings.server.uploads_dir, &filename, &data).await {
+                            match save_uploaded_file(&state.settings.server.uploads_path(), &filename, &data).await {
                                 Ok(path) => image_url = Some(path),
                                 Err(e) => return axum::response::Html(format!("Error uploading image: {}", e)).into_response(),
                             }
@@ -559,7 +559,7 @@ pub async fn admin_update_announcement(
                 if !filename.is_empty() {
                     if let Ok(data) = field.bytes().await {
                         if !data.is_empty() {
-                            match save_uploaded_file(&state.settings.server.uploads_dir, &filename, &data).await {
+                            match save_uploaded_file(&state.settings.server.uploads_path(), &filename, &data).await {
                                 Ok(path) => new_image_url = Some(path),
                                 Err(e) => return axum::response::Html(format!(r#"<div class="px-4 py-3 bg-red-100 text-red-800 rounded-md text-sm">Error uploading image: {}</div>"#, e)).into_response(),
                             }

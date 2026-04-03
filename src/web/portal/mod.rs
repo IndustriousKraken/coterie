@@ -1,13 +1,14 @@
 mod admin;
 mod announcements;
 mod dashboard;
+mod donations;
 mod events;
 mod payments;
 mod profile;
 
 use axum::{
     Router,
-    routing::{get, post},
+    routing::{get, post, put, delete},
     middleware,
 };
 use crate::api::state::AppState;
@@ -19,6 +20,11 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/events", get(events::events_page))
         .route("/announcements", get(announcements::announcements_page))
         .route("/payments", get(payments::payments_page))
+        .route("/payments/new", get(payments::payment_new_page))
+        .route("/payments/methods", get(payments::payment_methods_page))
+        .route("/payments/success", get(payments::payment_success_page))
+        .route("/payments/cancel", get(payments::payment_cancel_page))
+        .route("/donate", get(donations::donate_page))
         .route("/profile", get(profile::profile_page))
         .route("/profile", post(profile::update_profile))
         .route("/profile/password", post(profile::update_password))
@@ -30,10 +36,16 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/api/events/:id/cancel", post(events::cancel_rsvp_event))
         .route("/api/announcements/list", get(announcements::announcements_list_api))
         .route("/api/payments/recent", get(dashboard::recent_payments))
+        .route("/api/payments/checkout", post(payments::checkout_api))
+        .route("/api/payments/charge-saved", post(payments::charge_saved_card_api))
+        .route("/api/donate", post(donations::donate_api))
         .route("/api/payments/list", get(payments::payments_list_api))
         .route("/api/payments/summary", get(payments::payments_summary_api))
         .route("/api/payments/dues-status", get(payments::dues_status_api))
         .route("/api/payments/next-due", get(payments::next_due_api))
+        .route("/api/payments/cards", get(payments::saved_cards_html_api))
+        .route("/api/payments/cards/:card_id", delete(payments::delete_card_api))
+        .route("/api/payments/cards/:card_id/default", put(payments::set_default_card_api))
 
         // Admin routes
         .route("/admin", get(|| async { "Admin dashboard (TODO)" }))

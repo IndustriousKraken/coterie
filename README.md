@@ -60,6 +60,28 @@ Coterie serves both a **web portal** (for browsers) and a **JSON API** (for inte
 | Charlie | charlie@example.com | password123 | Expired |
 | Dave | dave@example.com | password123 | Pending |
 
+### Stripe Payments (Local Testing)
+
+To test Stripe payments locally, add your test keys to `.env` (gitignored):
+
+```
+COTERIE__STRIPE__ENABLED=true
+COTERIE__STRIPE__SECRET_KEY=sk_test_...
+COTERIE__STRIPE__WEBHOOK_SECRET=whsec_...
+```
+
+Stripe sends payment confirmations via webhooks, which can't reach `localhost` directly. The [Stripe CLI](https://docs.stripe.com/stripe-cli) bridges this gap by tunneling webhook events to your local server. In a separate terminal:
+
+```bash
+stripe listen --forward-to localhost:8080/api/payments/webhook/stripe
+```
+
+This prints a webhook signing secret (`whsec_...`) — use that as your `WEBHOOK_SECRET` above. Leave it running while you test the checkout flow.
+
+On a deployed server with a public URL, webhooks are registered in the Stripe dashboard instead and the CLI isn't needed.
+
+---
+
 Coterie is a secure, lightweight member management system designed for small to medium-sized groups, clubs, and organizations. Built with security and maintainability in mind, it provides a simple yet powerful platform for managing memberships without the complexity of enterprise solutions.
 
 ## Overview
