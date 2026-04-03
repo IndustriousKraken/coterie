@@ -1,6 +1,7 @@
 mod admin;
 mod announcements;
 mod dashboard;
+mod donations;
 mod events;
 mod payments;
 mod profile;
@@ -23,6 +24,7 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/payments/methods", get(payments::payment_methods_page))
         .route("/payments/success", get(payments::payment_success_page))
         .route("/payments/cancel", get(payments::payment_cancel_page))
+        .route("/donate", get(donations::donate_page))
         .route("/profile", get(profile::profile_page))
         .route("/profile", post(profile::update_profile))
         .route("/profile/password", post(profile::update_password))
@@ -36,6 +38,7 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/api/payments/recent", get(dashboard::recent_payments))
         .route("/api/payments/checkout", post(payments::checkout_api))
         .route("/api/payments/charge-saved", post(payments::charge_saved_card_api))
+        .route("/api/donate", post(donations::donate_api))
         .route("/api/payments/list", get(payments::payments_list_api))
         .route("/api/payments/summary", get(payments::payments_summary_api))
         .route("/api/payments/dues-status", get(payments::dues_status_api))

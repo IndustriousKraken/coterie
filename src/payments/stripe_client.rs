@@ -128,6 +128,7 @@ impl StripeClient {
 
         // Handle different event types
         match event.type_ {
+            // One-time checkout payments
             EventType::CheckoutSessionCompleted => {
                 if let EventObject::CheckoutSession(session) = event.data.object {
                     self.handle_successful_payment(session).await?;
@@ -143,6 +144,29 @@ impl StripeClient {
                     self.handle_failed_payment(intent.id.to_string()).await?;
                 }
             }
+
+            // Legacy Stripe subscription events
+            EventType::InvoicePaid => {
+                if let EventObject::Invoice(invoice) = event.data.object {
+                    self.handle_invoice_paid(invoice).await?;
+                }
+            }
+            EventType::InvoicePaymentFailed => {
+                if let EventObject::Invoice(invoice) = event.data.object {
+                    self.handle_invoice_payment_failed(invoice).await?;
+                }
+            }
+            EventType::CustomerSubscriptionDeleted => {
+                if let EventObject::Subscription(subscription) = event.data.object {
+                    self.handle_subscription_deleted(subscription).await?;
+                }
+            }
+            EventType::CustomerSubscriptionUpdated => {
+                if let EventObject::Subscription(subscription) = event.data.object {
+                    self.handle_subscription_updated(subscription).await?;
+                }
+            }
+
             _ => {
                 tracing::debug!("Unhandled webhook event type: {:?}", event.type_);
             }
@@ -264,6 +288,185 @@ impl StripeClient {
 
             tracing::warn!("Payment failed: {}", stripe_payment_id);
         }
+
+        Ok(())
+    }
+
+    // ================================================================
+    // Legacy Stripe Subscription Handlers
+    // ================================================================
+
+    /// Handle invoice.paid - extend member dues for subscription payments
+    async fn handle_invoice_paid(&self, invoice: stripe::Invoice) -> Result<()> {
+        // Only care about subscription invoices
+        let subscription_id = match &invoice.subscription {
+            Some(sub) => sub.id().to_string(),
+            None => return Ok(()),
+        };
+
+        let customer_id = match &invoice.customer {
+            Some(customer) => customer.id().to_string(),
+            None => {
+                tracing::warn!("Invoice {} has no customer", invoice.id);
+                return Ok(());
+            }
+        };
+
+        // Find member by stripe_customer_id
+        let member_id: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM members WHERE stripe_customer_id = ?"
+        )
+        .bind(&customer_id)
+        .fetch_optional(&self.db_pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+
+        let member_id = match member_id {
+            Some(id) => id,
+            None => {
+                tracing::debug!("No member found for Stripe customer {}", customer_id);
+                return Ok(());
+            }
+        };
+
+        let member_uuid = Uuid::parse_str(&member_id)
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+
+        let amount_cents = invoice.amount_paid.unwrap_or(0);
+
+        // Create payment record
+        let payment = Payment {
+            id: Uuid::new_v4(),
+            member_id: member_uuid,
+            amount_cents,
+            currency: invoice.currency.map(|c| c.to_string()).unwrap_or_else(|| "usd".to_string()),
+            status: PaymentStatus::Completed,
+            payment_method: PaymentMethod::Stripe,
+            stripe_payment_id: Some(invoice.id.to_string()),
+            description: format!("Subscription payment ({})", subscription_id),
+            paid_at: Some(Utc::now()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        self.payment_repo.create(payment).await?;
+
+        // Extend dues - look up membership type from member's current type
+        let membership_type_slug: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT mt.slug FROM members m
+            JOIN membership_types mt ON mt.id = m.membership_type_id
+            WHERE m.id = ?
+            "#
+        )
+        .bind(&member_id)
+        .fetch_optional(&self.db_pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+
+        if let Some(slug) = membership_type_slug {
+            self.extend_member_dues(member_uuid, &slug).await?;
+        } else {
+            // Fallback: extend by 1 month (conservative default for subscriptions)
+            let now = Utc::now();
+            let new_date = now.checked_add_months(chrono::Months::new(1)).unwrap_or(now);
+            sqlx::query(
+                "UPDATE members SET dues_paid_until = ?, status = 'Active', updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+            )
+            .bind(new_date)
+            .bind(&member_id)
+            .execute(&self.db_pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+        }
+
+        tracing::info!(
+            "Subscription invoice paid for member {} (subscription: {})",
+            member_id, subscription_id
+        );
+
+        Ok(())
+    }
+
+    /// Handle invoice.payment_failed - log warning (Stripe handles subscription retries)
+    async fn handle_invoice_payment_failed(&self, invoice: stripe::Invoice) -> Result<()> {
+        let customer_id = invoice.customer
+            .as_ref()
+            .map(|c| c.id().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let subscription_id = invoice.subscription
+            .as_ref()
+            .map(|s| s.id().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        tracing::warn!(
+            "Subscription invoice payment failed for customer {} (subscription: {})",
+            customer_id, subscription_id
+        );
+
+        Ok(())
+    }
+
+    /// Handle customer.subscription.deleted - transition member to manual billing
+    async fn handle_subscription_deleted(&self, subscription: stripe::Subscription) -> Result<()> {
+        let customer_id = subscription.customer.id().to_string();
+
+        // Find and update member
+        let result = sqlx::query(
+            r#"
+            UPDATE members
+            SET stripe_subscription_id = NULL,
+                billing_mode = 'manual',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE stripe_customer_id = ?
+            "#
+        )
+        .bind(&customer_id)
+        .execute(&self.db_pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+
+        if result.rows_affected() > 0 {
+            tracing::info!(
+                "Subscription deleted for customer {}. Member transitioned to manual billing.",
+                customer_id
+            );
+        } else {
+            tracing::debug!(
+                "Subscription deleted for customer {} but no matching member found",
+                customer_id
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Handle customer.subscription.updated - update cached subscription info
+    async fn handle_subscription_updated(&self, subscription: stripe::Subscription) -> Result<()> {
+        let customer_id = subscription.customer.id().to_string();
+        let subscription_id = subscription.id.to_string();
+        let status = format!("{:?}", subscription.status);
+
+        // Update the subscription ID in case it changed
+        sqlx::query(
+            r#"
+            UPDATE members
+            SET stripe_subscription_id = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE stripe_customer_id = ?
+            "#
+        )
+        .bind(&subscription_id)
+        .bind(&customer_id)
+        .execute(&self.db_pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+
+        tracing::debug!(
+            "Subscription {} updated for customer {} (status: {})",
+            subscription_id, customer_id, status
+        );
 
         Ok(())
     }

@@ -9,6 +9,7 @@ pub mod announcement_repository;
 pub mod payment_repository;
 pub mod saved_card_repository;
 pub mod scheduled_payment_repository;
+pub mod donation_repository;
 pub mod event_type_repository;
 pub mod announcement_type_repository;
 pub mod membership_type_repository;
@@ -19,6 +20,7 @@ pub use announcement_repository::SqliteAnnouncementRepository;
 pub use payment_repository::SqlitePaymentRepository;
 pub use saved_card_repository::SqliteSavedCardRepository;
 pub use scheduled_payment_repository::SqliteScheduledPaymentRepository;
+pub use donation_repository::SqliteDonationCampaignRepository;
 pub use event_type_repository::{EventTypeRepository, SqliteEventTypeRepository};
 pub use announcement_type_repository::{AnnouncementTypeRepository, SqliteAnnouncementTypeRepository};
 pub use membership_type_repository::{MembershipTypeRepository, SqliteMembershipTypeRepository};
@@ -96,4 +98,13 @@ pub trait ScheduledPaymentRepository: Send + Sync {
     async fn update_status(&self, id: Uuid, status: ScheduledPaymentStatus, failure_reason: Option<String>) -> Result<ScheduledPayment>;
     async fn increment_retry(&self, id: Uuid) -> Result<ScheduledPayment>;
     async fn link_payment(&self, id: Uuid, payment_id: Uuid) -> Result<ScheduledPayment>;
+}
+
+#[async_trait]
+pub trait DonationCampaignRepository: Send + Sync {
+    async fn create(&self, campaign: DonationCampaign) -> Result<DonationCampaign>;
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<DonationCampaign>>;
+    async fn find_by_slug(&self, slug: &str) -> Result<Option<DonationCampaign>>;
+    async fn list_active(&self) -> Result<Vec<DonationCampaign>>;
+    async fn get_total_donated(&self, campaign_id: Uuid) -> Result<i64>;
 }

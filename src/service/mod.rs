@@ -24,6 +24,7 @@ pub struct ServiceContext {
     pub payment_repo: Arc<dyn PaymentRepository>,
     pub saved_card_repo: Arc<dyn SavedCardRepository>,
     pub scheduled_payment_repo: Arc<dyn ScheduledPaymentRepository>,
+    pub donation_campaign_repo: Arc<dyn DonationCampaignRepository>,
     pub integration_manager: Arc<IntegrationManager>,
     pub auth_service: Arc<AuthService>,
     pub csrf_service: Arc<CsrfService>,
@@ -55,6 +56,7 @@ impl ServiceContext {
         // Create saved card and scheduled payment repositories
         let saved_card_repo: Arc<dyn SavedCardRepository> = Arc::new(SqliteSavedCardRepository::new(db_pool.clone()));
         let scheduled_payment_repo: Arc<dyn ScheduledPaymentRepository> = Arc::new(SqliteScheduledPaymentRepository::new(db_pool.clone()));
+        let donation_campaign_repo: Arc<dyn DonationCampaignRepository> = Arc::new(SqliteDonationCampaignRepository::new(db_pool.clone()));
 
         // Create type services
         let event_type_service = Arc::new(EventTypeService::new(event_type_repo));
@@ -68,6 +70,7 @@ impl ServiceContext {
             payment_repo,
             saved_card_repo,
             scheduled_payment_repo,
+            donation_campaign_repo,
             integration_manager,
             auth_service,
             csrf_service,

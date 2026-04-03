@@ -1,0 +1,281 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Donate - Coterie{% endblock %}
+
+{% block head %}
+<meta name="csrf-token" content="{{ csrf_token }}">
+{% if stripe_enabled %}
+<script src="https://js.stripe.com/v3/"></script>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="mb-8">
+        <a href="/portal/dashboard" class="text-sm text-blue-600 hover:text-blue-800">&larr; Back to Dashboard</a>
+        <h1 class="text-3xl font-bold text-gray-900 mt-2">Make a Donation</h1>
+        <p class="mt-2 text-sm text-gray-600">Support the organization with a one-time donation</p>
+    </div>
+
+    {% if !stripe_enabled %}
+    <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
+        <p class="text-yellow-800 text-sm">
+            Online payment processing is not currently configured.
+        </p>
+    </div>
+    {% else %}
+    <div class="max-w-lg mx-auto">
+        <!-- Campaign Selection (if any) -->
+        {% if !campaigns.is_empty() %}
+        <div class="bg-white rounded-lg shadow-sm border mb-6">
+            <div class="px-6 py-4 border-b">
+                <h2 class="text-lg font-semibold text-gray-900">Select a Fund</h2>
+            </div>
+            <div class="p-6 space-y-3">
+                <label class="cursor-pointer">
+                    <input type="radio" name="campaign" value="" class="sr-only peer" checked>
+                    <div class="border-2 rounded-lg p-3 peer-checked:border-blue-600 peer-checked:bg-blue-50 hover:border-gray-400 transition-colors">
+                        <span class="font-medium text-gray-900">General Fund</span>
+                    </div>
+                </label>
+                {% for c in campaigns %}
+                <label class="cursor-pointer">
+                    <input type="radio" name="campaign" value="{{ c.slug }}" class="sr-only peer">
+                    <div class="border-2 rounded-lg p-3 peer-checked:border-blue-600 peer-checked:bg-blue-50 hover:border-gray-400 transition-colors">
+                        <div class="font-medium text-gray-900">{{ c.name }}</div>
+                        {% if let Some(desc) = c.description %}
+                        <p class="text-sm text-gray-600 mt-1">{{ desc }}</p>
+                        {% endif %}
+                        {% if let Some(goal) = c.goal_display %}
+                        <div class="mt-2">
+                            <div class="flex justify-between text-xs text-gray-500 mb-1">
+                                <span>${{ c.raised_display }} raised</span>
+                                <span>Goal: ${{ goal }}</span>
+                            </div>
+                            <div class="w-full bg-gray-200 rounded-full h-2">
+                                <div class="bg-blue-600 h-2 rounded-full" style="width: {{ c.progress_pct }}%"></div>
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                </label>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Amount Selection -->
+        <div class="bg-white rounded-lg shadow-sm border mb-6">
+            <div class="px-6 py-4 border-b">
+                <h2 class="text-lg font-semibold text-gray-900">Donation Amount</h2>
+            </div>
+            <div class="p-6">
+                <div class="grid grid-cols-3 gap-3 mb-4">
+                    <button type="button" class="amount-btn px-4 py-3 border-2 rounded-lg font-semibold text-gray-900 hover:border-blue-600 hover:bg-blue-50 transition-colors" data-amount="1000">$10</button>
+                    <button type="button" class="amount-btn px-4 py-3 border-2 rounded-lg font-semibold text-gray-900 hover:border-blue-600 hover:bg-blue-50 transition-colors" data-amount="2500">$25</button>
+                    <button type="button" class="amount-btn px-4 py-3 border-2 rounded-lg font-semibold text-gray-900 hover:border-blue-600 hover:bg-blue-50 transition-colors" data-amount="5000">$50</button>
+                    <button type="button" class="amount-btn px-4 py-3 border-2 rounded-lg font-semibold text-gray-900 hover:border-blue-600 hover:bg-blue-50 transition-colors" data-amount="10000">$100</button>
+                    <button type="button" class="amount-btn px-4 py-3 border-2 rounded-lg font-semibold text-gray-900 hover:border-blue-600 hover:bg-blue-50 transition-colors" data-amount="25000">$250</button>
+                    <button type="button" class="amount-btn px-4 py-3 border-2 rounded-lg font-semibold text-gray-900 hover:border-blue-600 hover:bg-blue-50 transition-colors" data-amount="custom">Custom</button>
+                </div>
+                <div id="custom-amount-section" class="hidden">
+                    <label for="custom-amount" class="block text-sm font-medium text-gray-700 mb-1">Custom Amount ($)</label>
+                    <input type="number" id="custom-amount" min="1" step="1" placeholder="Enter amount"
+                           class="w-full border rounded-md px-3 py-2 text-gray-900 focus:ring-blue-500 focus:border-blue-500">
+                </div>
+            </div>
+        </div>
+
+        <!-- Payment Method -->
+        <div class="bg-white rounded-lg shadow-sm border mb-6">
+            <div class="px-6 py-4 border-b">
+                <h2 class="text-lg font-semibold text-gray-900">Payment Method</h2>
+            </div>
+            <div class="p-6">
+                {% if !saved_cards.is_empty() %}
+                <div class="space-y-3 mb-4">
+                    {% for card in saved_cards %}
+                    <label class="cursor-pointer">
+                        <input type="radio" name="payment_method" value="saved:{{ card.id }}"
+                               class="sr-only peer" {% if card.is_default %}checked{% endif %}>
+                        <div class="flex items-center border-2 rounded-lg p-3 peer-checked:border-blue-600 peer-checked:bg-blue-50 hover:border-gray-400 transition-colors">
+                            <span class="font-medium text-gray-900">{{ card.display_name }}</span>
+                            <span class="ml-3 text-sm text-gray-500">Exp: {{ card.exp_display }}</span>
+                        </div>
+                    </label>
+                    {% endfor %}
+                    <label class="cursor-pointer">
+                        <input type="radio" name="payment_method" value="new" class="sr-only peer">
+                        <div class="border-2 rounded-lg p-3 peer-checked:border-blue-600 peer-checked:bg-blue-50 hover:border-gray-400 transition-colors">
+                            <span class="font-medium text-gray-900">+ Use a new card</span>
+                        </div>
+                    </label>
+                </div>
+                <div id="new-card-section" class="hidden mt-4">
+                    <div id="card-element" class="border rounded-md p-3 bg-gray-50"></div>
+                    <div id="card-errors" class="text-red-600 text-sm mt-2" role="alert"></div>
+                </div>
+                {% else %}
+                <div id="new-card-section">
+                    <div id="card-element" class="border rounded-md p-3 bg-gray-50"></div>
+                    <div id="card-errors" class="text-red-600 text-sm mt-2" role="alert"></div>
+                </div>
+                <input type="hidden" name="payment_method" value="new">
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Donate Button -->
+        <button id="donate-btn" type="button" disabled
+                class="w-full px-6 py-3 bg-green-600 text-white rounded-md hover:bg-green-700 text-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed">
+            Select an amount to donate
+        </button>
+
+        <div id="donation-status" class="mt-4 hidden">
+            <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <p class="text-blue-800 text-sm" id="donation-status-text">Processing...</p>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+{% if stripe_enabled %}
+<script>
+(function() {
+    const stripe = Stripe('{{ stripe_publishable_key }}');
+    const elements = stripe.elements();
+    const hasSavedCards = document.querySelectorAll('input[name="payment_method"][value^="saved:"]').length > 0;
+
+    const style = {
+        base: { fontSize: '16px', color: '#374151', '::placeholder': { color: '#9CA3AF' } },
+        invalid: { color: '#EF4444' }
+    };
+
+    let cardElement = null;
+    const newCardSection = document.getElementById('new-card-section');
+
+    function initCardElement() {
+        if (!cardElement && newCardSection) {
+            cardElement = elements.create('card', { style });
+            cardElement.mount('#card-element');
+        }
+    }
+
+    if (hasSavedCards) {
+        document.querySelectorAll('input[name="payment_method"]').forEach(r => {
+            r.addEventListener('change', () => {
+                if (r.value === 'new') { newCardSection.classList.remove('hidden'); initCardElement(); }
+                else { newCardSection.classList.add('hidden'); }
+            });
+        });
+    } else {
+        initCardElement();
+    }
+
+    // Amount selection
+    let selectedAmount = 0;
+    const donateBtn = document.getElementById('donate-btn');
+    const customSection = document.getElementById('custom-amount-section');
+    const customInput = document.getElementById('custom-amount');
+
+    document.querySelectorAll('.amount-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.amount-btn').forEach(b => {
+                b.classList.remove('border-blue-600', 'bg-blue-50');
+            });
+            btn.classList.add('border-blue-600', 'bg-blue-50');
+
+            if (btn.dataset.amount === 'custom') {
+                customSection.classList.remove('hidden');
+                customInput.focus();
+                selectedAmount = 0;
+                updateDonateBtn();
+            } else {
+                customSection.classList.add('hidden');
+                selectedAmount = parseInt(btn.dataset.amount);
+                updateDonateBtn();
+            }
+        });
+    });
+
+    if (customInput) {
+        customInput.addEventListener('input', () => {
+            const val = parseFloat(customInput.value);
+            selectedAmount = val > 0 ? Math.round(val * 100) : 0;
+            updateDonateBtn();
+        });
+    }
+
+    function updateDonateBtn() {
+        if (selectedAmount > 0) {
+            donateBtn.disabled = false;
+            donateBtn.textContent = 'Donate $' + (selectedAmount / 100).toFixed(2);
+        } else {
+            donateBtn.disabled = true;
+            donateBtn.textContent = 'Select an amount to donate';
+        }
+    }
+
+    // Donate
+    const statusDiv = document.getElementById('donation-status');
+    const statusText = document.getElementById('donation-status-text');
+
+    donateBtn.addEventListener('click', async () => {
+        if (selectedAmount <= 0) return;
+
+        const campaign = document.querySelector('input[name="campaign"]:checked');
+        const pmRadio = document.querySelector('input[name="payment_method"]:checked');
+        const paymentMethod = pmRadio ? pmRadio.value : 'new';
+        const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+
+        donateBtn.disabled = true;
+        donateBtn.textContent = 'Processing...';
+        statusDiv.classList.remove('hidden');
+        statusText.textContent = 'Processing donation...';
+
+        try {
+            const body = {
+                amount_cents: selectedAmount,
+                campaign_slug: campaign ? campaign.value : null,
+            };
+
+            if (paymentMethod.startsWith('saved:')) {
+                body.saved_card_id = paymentMethod.replace('saved:', '');
+            }
+
+            const response = await fetch('/portal/api/donate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+                body: JSON.stringify(body),
+            });
+
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.error || 'Donation failed');
+            }
+
+            const data = await response.json();
+
+            if (data.checkout_url) {
+                window.location.href = data.checkout_url;
+                return;
+            }
+
+            statusText.textContent = 'Thank you for your donation!';
+            statusDiv.querySelector('div').className = 'bg-green-50 border border-green-200 rounded-lg p-4';
+            statusText.className = 'text-green-800 text-sm';
+            donateBtn.textContent = 'Donated!';
+
+        } catch (err) {
+            statusText.textContent = err.message;
+            statusDiv.querySelector('div').className = 'bg-red-50 border border-red-200 rounded-lg p-4';
+            statusText.className = 'text-red-800 text-sm';
+            donateBtn.disabled = false;
+            updateDonateBtn();
+        }
+    });
+})();
+</script>
+{% endif %}
+{% endblock %}

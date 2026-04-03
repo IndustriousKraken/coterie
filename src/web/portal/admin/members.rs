@@ -400,8 +400,18 @@ pub struct AdminMemberDetailInfo {
     pub dues_expired: bool,
     pub bypass_dues: bool,
     pub notes: String,
+    pub billing_mode: String,
+    pub stripe_customer_id: Option<String>,
+    pub stripe_subscription_id: Option<String>,
+    pub saved_cards: Vec<AdminSavedCardInfo>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+pub struct AdminSavedCardInfo {
+    pub display_name: String,
+    pub exp_display: String,
+    pub is_default: bool,
 }
 
 pub async fn admin_member_detail_page(
@@ -447,9 +457,22 @@ pub async fn admin_member_detail_page(
         .map(|d| d < now)
         .unwrap_or(true);
 
+    // Fetch saved cards for this member
+    let saved_cards = state.service_context.saved_card_repo
+        .find_by_member(member.id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| AdminSavedCardInfo {
+            display_name: c.display_name(),
+            exp_display: c.exp_display(),
+            is_default: c.is_default,
+        })
+        .collect();
+
     let member_info = AdminMemberDetailInfo {
         id: member.id.to_string(),
-        email: member.email,
+        email: member.email.clone(),
         username: member.username,
         full_name: member.full_name,
         initials: if initials.is_empty() { "?".to_string() } else { initials },
@@ -460,6 +483,10 @@ pub async fn admin_member_detail_page(
         dues_expired,
         bypass_dues: member.bypass_dues,
         notes: member.notes.unwrap_or_default(),
+        billing_mode: member.billing_mode.as_str().to_string(),
+        stripe_customer_id: member.stripe_customer_id,
+        stripe_subscription_id: member.stripe_subscription_id,
+        saved_cards,
         created_at: member.created_at.format("%B %d, %Y").to_string(),
         updated_at: member.updated_at.format("%B %d, %Y at %l:%M %p").to_string(),
     };
