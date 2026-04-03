@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     api::{state::AppState, middleware::auth::CurrentUser},
-    domain::{Payment, PaymentMethod, PaymentStatus, configurable_types::BillingPeriod},
+    domain::{Payment, PaymentMethod, PaymentStatus, SavedCard, configurable_types::BillingPeriod},
     error::{AppError, Result},
 };
 
@@ -292,4 +292,143 @@ pub async fn waive(
     }
 
     Ok((StatusCode::CREATED, Json(payment)))
+}
+
+// ============================================================
+// Saved Card (Payment Method) Handlers
+// ============================================================
+
+#[derive(Debug, Serialize)]
+pub struct SetupIntentResponse {
+    pub client_secret: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SavedCardResponse {
+    pub id: Uuid,
+    pub display_name: String,
+    pub exp_display: String,
+    pub is_default: bool,
+    pub is_expired: bool,
+}
+
+impl From<SavedCard> for SavedCardResponse {
+    fn from(card: SavedCard) -> Self {
+        SavedCardResponse {
+            id: card.id,
+            display_name: card.display_name(),
+            exp_display: card.exp_display(),
+            is_default: card.is_default,
+            is_expired: card.is_expired(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaveCardRequest {
+    pub stripe_payment_method_id: String,
+    pub set_as_default: Option<bool>,
+}
+
+/// Create a SetupIntent for adding a new payment method
+pub async fn create_setup_intent(
+    State(state): State<AppState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<SetupIntentResponse>> {
+    let stripe_client = state.stripe_client.as_ref()
+        .ok_or_else(|| AppError::ServiceUnavailable("Payment processing not configured".to_string()))?;
+
+    let client_secret = stripe_client.create_setup_intent(
+        user.member.id,
+        &user.member.email,
+        &user.member.full_name,
+    ).await?;
+
+    Ok(Json(SetupIntentResponse { client_secret }))
+}
+
+/// Save a payment method after SetupIntent succeeds
+pub async fn save_card(
+    State(state): State<AppState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(request): Json<SaveCardRequest>,
+) -> Result<(StatusCode, Json<SavedCardResponse>)> {
+    let stripe_client = state.stripe_client.as_ref()
+        .ok_or_else(|| AppError::ServiceUnavailable("Payment processing not configured".to_string()))?;
+
+    // Get card details from Stripe
+    let card_details = stripe_client.get_payment_method_details(&request.stripe_payment_method_id).await?;
+
+    // Check if this is the first card (will be default)
+    let existing_cards = state.service_context.saved_card_repo.find_by_member(user.member.id).await?;
+    let is_default = existing_cards.is_empty() || request.set_as_default.unwrap_or(false);
+
+    // Create the saved card record
+    let card = SavedCard {
+        id: Uuid::new_v4(),
+        member_id: user.member.id,
+        stripe_payment_method_id: request.stripe_payment_method_id,
+        card_last_four: card_details.last_four,
+        card_brand: card_details.brand,
+        exp_month: card_details.exp_month,
+        exp_year: card_details.exp_year,
+        is_default,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+
+    let card = state.service_context.saved_card_repo.create(card).await?;
+
+    // If this card is default and there were existing cards, clear other defaults
+    if is_default && !existing_cards.is_empty() {
+        state.service_context.saved_card_repo.set_default(user.member.id, card.id).await?;
+    }
+
+    Ok((StatusCode::CREATED, Json(card.into())))
+}
+
+/// List all saved cards for the current user
+pub async fn list_saved_cards(
+    State(state): State<AppState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<Vec<SavedCardResponse>>> {
+    let cards = state.service_context.saved_card_repo.find_by_member(user.member.id).await?;
+    let responses: Vec<SavedCardResponse> = cards.into_iter().map(Into::into).collect();
+    Ok(Json(responses))
+}
+
+/// Delete a saved card
+pub async fn delete_saved_card(
+    State(state): State<AppState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(card_id): Path<Uuid>,
+) -> Result<StatusCode> {
+    // Verify the card belongs to this user
+    let card = state.service_context.saved_card_repo.find_by_id(card_id).await?
+        .ok_or(AppError::NotFound("Card not found".to_string()))?;
+
+    if card.member_id != user.member.id {
+        return Err(AppError::Forbidden);
+    }
+
+    state.service_context.saved_card_repo.delete(card_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Set a card as the default payment method
+pub async fn set_default_card(
+    State(state): State<AppState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(card_id): Path<Uuid>,
+) -> Result<StatusCode> {
+    // Verify the card belongs to this user
+    let card = state.service_context.saved_card_repo.find_by_id(card_id).await?
+        .ok_or(AppError::NotFound("Card not found".to_string()))?;
+
+    if card.member_id != user.member.id {
+        return Err(AppError::Forbidden);
+    }
+
+    state.service_context.saved_card_repo.set_default(user.member.id, card_id).await?;
+    Ok(StatusCode::OK)
 }

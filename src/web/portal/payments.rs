@@ -32,7 +32,16 @@ pub struct PaymentNewTemplate {
     pub is_admin: bool,
     pub stripe_enabled: bool,
     pub membership_types: Vec<MembershipTypeDisplay>,
+    pub saved_cards: Vec<SavedCardDisplay>,
+    pub stripe_publishable_key: String,
     pub csrf_token: String,
+}
+
+pub struct SavedCardDisplay {
+    pub id: String,
+    pub display_name: String,
+    pub exp_display: String,
+    pub is_default: bool,
 }
 
 pub struct MembershipTypeDisplay {
@@ -58,9 +67,25 @@ pub struct PaymentCancelTemplate {
     pub is_admin: bool,
 }
 
+#[derive(Template)]
+#[template(path = "portal/payment_methods.html")]
+pub struct PaymentMethodsTemplate {
+    pub current_user: Option<UserInfo>,
+    pub is_admin: bool,
+    pub stripe_enabled: bool,
+    pub stripe_publishable_key: String,
+    pub csrf_token: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CheckoutRequest {
     pub membership_type_slug: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChargeSavedCardRequest {
+    pub membership_type_slug: String,
+    pub saved_card_id: String,
 }
 
 pub async fn payments_page(
@@ -241,6 +266,9 @@ pub async fn payment_new_page(
         .unwrap_or_default();
 
     let stripe_enabled = state.stripe_client.is_some();
+    let stripe_publishable_key = state.settings.stripe.publishable_key
+        .clone()
+        .unwrap_or_default();
 
     let membership_types = state.service_context.membership_type_service
         .list(false)
@@ -257,11 +285,26 @@ pub async fn payment_new_page(
         })
         .collect();
 
+    let saved_cards = state.service_context.saved_card_repo
+        .find_by_member(current_user.member.id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| SavedCardDisplay {
+            id: c.id.to_string(),
+            display_name: c.display_name(),
+            exp_display: c.exp_display(),
+            is_default: c.is_default,
+        })
+        .collect();
+
     let template = PaymentNewTemplate {
         current_user: Some(user_info),
         is_admin: is_admin(&current_user.member),
         stripe_enabled,
         membership_types,
+        saved_cards,
+        stripe_publishable_key,
         csrf_token,
     };
 
@@ -304,4 +347,230 @@ pub async fn checkout_api(
         "payment_id": payment_id,
         "checkout_url": checkout_url,
     }))))
+}
+
+/// Charge a saved card for membership dues
+pub async fn charge_saved_card_api(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+    Json(request): Json<ChargeSavedCardRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
+    let stripe_client = state.stripe_client.as_ref()
+        .ok_or_else(|| AppError::ServiceUnavailable("Payment processing not configured".to_string()))?;
+
+    let membership_type = state.service_context.membership_type_service
+        .get_by_slug(&request.membership_type_slug)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!(
+            "Membership type '{}' not found", request.membership_type_slug
+        )))?;
+
+    if !membership_type.is_active {
+        return Err(AppError::BadRequest(format!(
+            "Membership type '{}' is not currently available", membership_type.name
+        )));
+    }
+
+    // Verify the card belongs to this user
+    let card_id = uuid::Uuid::parse_str(&request.saved_card_id)
+        .map_err(|_| AppError::BadRequest("Invalid card ID".to_string()))?;
+
+    let card = state.service_context.saved_card_repo
+        .find_by_id(card_id)
+        .await?
+        .ok_or(AppError::NotFound("Card not found".to_string()))?;
+
+    if card.member_id != current_user.member.id {
+        return Err(AppError::Forbidden);
+    }
+
+    let amount_cents = membership_type.fee_cents as i64;
+    let description = format!("{} Membership Payment", membership_type.name);
+
+    // Charge the card
+    let stripe_payment_id = stripe_client.charge_saved_card(
+        current_user.member.id,
+        &card.stripe_payment_method_id,
+        amount_cents,
+        &description,
+    ).await?;
+
+    // Create payment record
+    let payment = crate::domain::Payment {
+        id: uuid::Uuid::new_v4(),
+        member_id: current_user.member.id,
+        amount_cents,
+        currency: "USD".to_string(),
+        status: crate::domain::PaymentStatus::Completed,
+        payment_method: crate::domain::PaymentMethod::Stripe,
+        stripe_payment_id: Some(stripe_payment_id),
+        description,
+        paid_at: Some(chrono::Utc::now()),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+
+    let payment = state.service_context.payment_repo.create(payment).await?;
+
+    // Extend dues
+    let billing_service = state.service_context.billing_service(state.stripe_client.clone());
+    billing_service.schedule_renewal(current_user.member.id, &request.membership_type_slug).await.ok();
+
+    // Extend dues directly using stripe_client's method
+    stripe_client.extend_member_dues(current_user.member.id, &membership_type.slug).await?;
+
+    Ok((StatusCode::OK, Json(serde_json::json!({
+        "payment_id": payment.id,
+        "status": "completed",
+    }))))
+}
+
+pub async fn payment_methods_page(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+    Extension(session_info): Extension<SessionInfo>,
+) -> impl IntoResponse {
+    let user_info = UserInfo {
+        id: current_user.member.id.to_string(),
+        username: current_user.member.username.clone(),
+        email: current_user.member.email.clone(),
+    };
+
+    let csrf_token = state.service_context.csrf_service
+        .generate_token(&session_info.session_id)
+        .await
+        .unwrap_or_default();
+
+    let stripe_enabled = state.stripe_client.is_some();
+    let stripe_publishable_key = state.settings.stripe.publishable_key
+        .clone()
+        .unwrap_or_default();
+
+    let template = PaymentMethodsTemplate {
+        current_user: Some(user_info),
+        is_admin: is_admin(&current_user.member),
+        stripe_enabled,
+        stripe_publishable_key,
+        csrf_token,
+    };
+
+    HtmlTemplate(template)
+}
+
+/// HTMX endpoint - list saved cards as HTML
+pub async fn saved_cards_html_api(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+) -> impl IntoResponse {
+    let cards = state.service_context.saved_card_repo
+        .find_by_member(current_user.member.id)
+        .await
+        .unwrap_or_default();
+
+    if cards.is_empty() {
+        return axum::response::Html(
+            r#"<div class="p-6 text-center text-gray-500">
+                No saved payment methods. Add a card below.
+            </div>"#.to_string()
+        );
+    }
+
+    let mut html = String::from(r#"<div class="divide-y">"#);
+
+    for card in cards {
+        let default_badge = if card.is_default {
+            r#"<span class="ml-2 px-2 py-1 text-xs font-medium rounded bg-blue-100 text-blue-800">Default</span>"#
+        } else {
+            ""
+        };
+
+        let expired_badge = if card.is_expired() {
+            r#"<span class="ml-2 px-2 py-1 text-xs font-medium rounded bg-red-100 text-red-800">Expired</span>"#
+        } else {
+            ""
+        };
+
+        let set_default_btn = if !card.is_default {
+            format!(
+                r#"<button
+                    hx-put="/portal/api/payments/cards/{}/default"
+                    hx-swap="none"
+                    hx-on::after-request="htmx.trigger('#saved-cards', 'refresh')"
+                    class="text-blue-600 hover:text-blue-800 text-sm mr-3">
+                    Set Default
+                </button>"#,
+                card.id
+            )
+        } else {
+            String::new()
+        };
+
+        html.push_str(&format!(
+            r#"<div class="px-6 py-4 flex justify-between items-center">
+                <div class="flex items-center">
+                    <span class="font-medium text-gray-900">{}</span>
+                    <span class="ml-4 text-sm text-gray-500">Exp: {}</span>
+                    {}{}
+                </div>
+                <div>
+                    {}
+                    <button
+                        hx-delete="/portal/api/payments/cards/{}"
+                        hx-confirm="Are you sure you want to remove this card?"
+                        hx-swap="none"
+                        hx-on::after-request="htmx.trigger('#saved-cards', 'refresh')"
+                        class="text-red-600 hover:text-red-800 text-sm">
+                        Remove
+                    </button>
+                </div>
+            </div>"#,
+            card.display_name(),
+            card.exp_display(),
+            default_badge,
+            expired_badge,
+            set_default_btn,
+            card.id
+        ));
+    }
+
+    html.push_str("</div>");
+    axum::response::Html(html)
+}
+
+/// HTMX endpoint - delete a saved card
+pub async fn delete_card_api(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+    axum::extract::Path(card_id): axum::extract::Path<uuid::Uuid>,
+) -> Result<StatusCode, AppError> {
+    let card = state.service_context.saved_card_repo
+        .find_by_id(card_id)
+        .await?
+        .ok_or(AppError::NotFound("Card not found".to_string()))?;
+
+    if card.member_id != current_user.member.id {
+        return Err(AppError::Forbidden);
+    }
+
+    state.service_context.saved_card_repo.delete(card_id).await?;
+    Ok(StatusCode::OK)
+}
+
+/// HTMX endpoint - set a card as default
+pub async fn set_default_card_api(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+    axum::extract::Path(card_id): axum::extract::Path<uuid::Uuid>,
+) -> Result<StatusCode, AppError> {
+    let card = state.service_context.saved_card_repo
+        .find_by_id(card_id)
+        .await?
+        .ok_or(AppError::NotFound("Card not found".to_string()))?;
+
+    if card.member_id != current_user.member.id {
+        return Err(AppError::Forbidden);
+    }
+
+    state.service_context.saved_card_repo.set_default(current_user.member.id, card_id).await?;
+    Ok(StatusCode::OK)
 }

@@ -4,6 +4,7 @@ mod config;
 mod domain;
 mod error;
 mod integrations;
+mod jobs;
 mod payments;
 mod repository;
 mod service;
@@ -159,6 +160,14 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Stripe payment processing disabled");
         None
     };
+
+    // Spawn billing runner (runs every hour)
+    {
+        let billing_service = Arc::new(service_context.billing_service(stripe_client.clone()));
+        let runner = jobs::BillingRunner::new(billing_service, 60 * 60);
+        runner.spawn();
+        tracing::info!("Billing runner spawned");
+    }
 
     // Create API app
     let api_app = api::create_app(service_context.clone(), stripe_client.clone(), Arc::new(settings.clone()));

@@ -1,7 +1,8 @@
 use stripe::{
     Client, CheckoutSession, CheckoutSessionMode, CreateCheckoutSession,
     CreateCheckoutSessionLineItems, Currency, EventObject, EventType,
-    Webhook, WebhookError,
+    Webhook, WebhookError, Customer, CreateCustomer, SetupIntent, CreateSetupIntent,
+    PaymentIntent, CreatePaymentIntent, PaymentIntentConfirmationMethod,
 };
 use chrono::{Months, Utc};
 use uuid::Uuid;
@@ -185,7 +186,7 @@ impl StripeClient {
         Ok(())
     }
 
-    async fn extend_member_dues(
+    pub async fn extend_member_dues(
         &self,
         member_id: Uuid,
         membership_type_slug: &str,
@@ -258,13 +259,180 @@ impl StripeClient {
         if let Some(mut payment) = self.payment_repo.find_by_stripe_id(&stripe_payment_id).await? {
             payment.status = PaymentStatus::Failed;
             payment.updated_at = Utc::now();
-            
+
             self.payment_repo.update(payment.id, payment).await?;
-            
+
             tracing::warn!("Payment failed: {}", stripe_payment_id);
         }
-        
+
         Ok(())
     }
 
+    /// Get or create a Stripe Customer for a member
+    pub async fn get_or_create_customer(
+        &self,
+        member_id: Uuid,
+        email: &str,
+        name: &str,
+    ) -> Result<String> {
+        // Check if member already has a stripe_customer_id
+        let existing: Option<String> = sqlx::query_scalar(
+            "SELECT stripe_customer_id FROM members WHERE id = ?"
+        )
+            .bind(member_id.to_string())
+            .fetch_optional(&self.db_pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?
+            .flatten();
+
+        if let Some(customer_id) = existing {
+            return Ok(customer_id);
+        }
+
+        // Create new Stripe Customer
+        let mut params = CreateCustomer::new();
+        params.email = Some(email);
+        params.name = Some(name);
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("member_id".to_string(), member_id.to_string());
+        params.metadata = Some(metadata);
+
+        let customer = Customer::create(&self.client, params)
+            .await
+            .map_err(|e| AppError::External(format!("Stripe error: {}", e)))?;
+
+        let customer_id = customer.id.to_string();
+
+        // Store in member record
+        sqlx::query("UPDATE members SET stripe_customer_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+            .bind(&customer_id)
+            .bind(member_id.to_string())
+            .execute(&self.db_pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to store customer ID: {}", e)))?;
+
+        tracing::info!("Created Stripe customer {} for member {}", customer_id, member_id);
+        Ok(customer_id)
+    }
+
+    /// Create a SetupIntent for adding a payment method
+    /// Returns the client_secret needed by Stripe.js
+    pub async fn create_setup_intent(
+        &self,
+        member_id: Uuid,
+        email: &str,
+        name: &str,
+    ) -> Result<String> {
+        let customer_id = self.get_or_create_customer(member_id, email, name).await?;
+
+        let mut params = CreateSetupIntent::new();
+        params.customer = Some(customer_id.parse().map_err(|_| {
+            AppError::Internal("Invalid customer ID".to_string())
+        })?);
+        params.payment_method_types = Some(vec!["card".to_string()]);
+
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("member_id".to_string(), member_id.to_string());
+        params.metadata = Some(metadata);
+
+        let setup_intent = SetupIntent::create(&self.client, params)
+            .await
+            .map_err(|e| AppError::External(format!("Stripe error: {}", e)))?;
+
+        setup_intent.client_secret
+            .ok_or_else(|| AppError::External("No client_secret in SetupIntent".to_string()))
+    }
+
+    /// Charge a saved payment method (card)
+    /// Returns the PaymentIntent ID if successful
+    pub async fn charge_saved_card(
+        &self,
+        member_id: Uuid,
+        stripe_payment_method_id: &str,
+        amount_cents: i64,
+        description: &str,
+    ) -> Result<String> {
+        // Get the member's stripe_customer_id
+        let customer_id: Option<String> = sqlx::query_scalar(
+            "SELECT stripe_customer_id FROM members WHERE id = ?"
+        )
+            .bind(member_id.to_string())
+            .fetch_optional(&self.db_pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?
+            .flatten();
+
+        let customer_id = customer_id
+            .ok_or_else(|| AppError::BadRequest("Member has no Stripe customer".to_string()))?;
+
+        let mut params = CreatePaymentIntent::new(amount_cents, Currency::USD);
+        params.customer = Some(customer_id.parse().map_err(|_| {
+            AppError::Internal("Invalid customer ID".to_string())
+        })?);
+        params.payment_method = Some(stripe_payment_method_id.parse().map_err(|_| {
+            AppError::Internal("Invalid payment method ID".to_string())
+        })?);
+        params.confirm = Some(true);
+        params.confirmation_method = Some(PaymentIntentConfirmationMethod::Automatic);
+        params.description = Some(description);
+        params.off_session = Some(stripe::PaymentIntentOffSession::exists(true));
+
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("member_id".to_string(), member_id.to_string());
+        params.metadata = Some(metadata);
+
+        let payment_intent = PaymentIntent::create(&self.client, params)
+            .await
+            .map_err(|e| AppError::External(format!("Stripe charge failed: {}", e)))?;
+
+        // Check status
+        match payment_intent.status {
+            stripe::PaymentIntentStatus::Succeeded => {
+                tracing::info!("Successfully charged {} for member {}", amount_cents, member_id);
+                Ok(payment_intent.id.to_string())
+            }
+            stripe::PaymentIntentStatus::RequiresAction => {
+                Err(AppError::External("Payment requires additional authentication".to_string()))
+            }
+            status => {
+                Err(AppError::External(format!("Payment failed with status: {:?}", status)))
+            }
+        }
+    }
+
+    /// Retrieve card details from a Stripe PaymentMethod
+    pub async fn get_payment_method_details(
+        &self,
+        payment_method_id: &str,
+    ) -> Result<CardDetails> {
+        let pm_id: stripe::PaymentMethodId = payment_method_id.parse().map_err(|_| {
+            AppError::Internal("Invalid payment method ID".to_string())
+        })?;
+
+        let pm = stripe::PaymentMethod::retrieve(
+            &self.client,
+            &pm_id,
+            &[]
+        )
+            .await
+            .map_err(|e| AppError::External(format!("Stripe error: {}", e)))?;
+
+        let card = pm.card
+            .ok_or_else(|| AppError::External("PaymentMethod has no card details".to_string()))?;
+
+        Ok(CardDetails {
+            last_four: card.last4,
+            brand: card.brand.to_lowercase(),
+            exp_month: card.exp_month as i32,
+            exp_year: card.exp_year as i32,
+        })
+    }
+}
+
+/// Card details retrieved from Stripe
+pub struct CardDetails {
+    pub last_four: String,
+    pub brand: String,
+    pub exp_month: i32,
+    pub exp_year: i32,
 }

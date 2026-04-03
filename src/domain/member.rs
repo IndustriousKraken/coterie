@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::domain::payment_method::BillingMode;
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Member {
     pub id: Uuid,
@@ -16,6 +18,9 @@ pub struct Member {
     pub dues_paid_until: Option<DateTime<Utc>>,
     pub bypass_dues: bool,
     pub notes: Option<String>,
+    pub stripe_customer_id: Option<String>,
+    pub stripe_subscription_id: Option<String>,
+    pub billing_mode: BillingMode,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

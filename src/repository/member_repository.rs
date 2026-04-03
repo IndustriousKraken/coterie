@@ -4,7 +4,7 @@ use sqlx::{SqlitePool, FromRow};
 use uuid::Uuid;
 
 use crate::{
-    domain::{Member, MemberStatus, MembershipType, CreateMemberRequest, UpdateMemberRequest},
+    domain::{Member, MemberStatus, MembershipType, CreateMemberRequest, UpdateMemberRequest, BillingMode},
     error::{AppError, Result},
     repository::MemberRepository,
 };
@@ -24,6 +24,9 @@ struct MemberRow {
     dues_paid_until: Option<NaiveDateTime>,
     bypass_dues: i32,
     notes: Option<String>,
+    stripe_customer_id: Option<String>,
+    stripe_subscription_id: Option<String>,
+    billing_mode: String,
     created_at: NaiveDateTime,
     updated_at: NaiveDateTime,
 }
@@ -44,6 +47,9 @@ impl SqliteMemberRepository {
             .transpose()
             .map_err(|e| AppError::Database(e.to_string()))?;
 
+        let billing_mode = BillingMode::from_str(&row.billing_mode)
+            .unwrap_or(BillingMode::Manual);
+
         Ok(Member {
             id: Uuid::parse_str(&row.id).map_err(|e| AppError::Database(e.to_string()))?,
             email: row.email,
@@ -57,6 +63,9 @@ impl SqliteMemberRepository {
             dues_paid_until: row.dues_paid_until.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
             bypass_dues: row.bypass_dues != 0,
             notes: row.notes,
+            stripe_customer_id: row.stripe_customer_id,
+            stripe_subscription_id: row.stripe_subscription_id,
+            billing_mode,
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
             updated_at: DateTime::from_naive_utc_and_offset(row.updated_at, Utc),
         })
@@ -162,6 +171,7 @@ impl MemberRepository for SqliteMemberRepository {
             r#"
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, notes,
+                   stripe_customer_id, stripe_subscription_id, billing_mode,
                    created_at, updated_at
             FROM members
             WHERE id = ?
@@ -183,6 +193,7 @@ impl MemberRepository for SqliteMemberRepository {
             r#"
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, notes,
+                   stripe_customer_id, stripe_subscription_id, billing_mode,
                    created_at, updated_at
             FROM members
             WHERE email = ?
@@ -204,6 +215,7 @@ impl MemberRepository for SqliteMemberRepository {
             r#"
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, notes,
+                   stripe_customer_id, stripe_subscription_id, billing_mode,
                    created_at, updated_at
             FROM members
             WHERE username = ?
@@ -225,6 +237,7 @@ impl MemberRepository for SqliteMemberRepository {
             r#"
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, notes,
+                   stripe_customer_id, stripe_subscription_id, billing_mode,
                    created_at, updated_at
             FROM members
             ORDER BY created_at DESC
@@ -249,6 +262,7 @@ impl MemberRepository for SqliteMemberRepository {
             r#"
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, notes,
+                   stripe_customer_id, stripe_subscription_id, billing_mode,
                    created_at, updated_at
             FROM members
             WHERE status = ?
@@ -272,6 +286,7 @@ impl MemberRepository for SqliteMemberRepository {
             r#"
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, notes,
+                   stripe_customer_id, stripe_subscription_id, billing_mode,
                    created_at, updated_at
             FROM members
             WHERE status = ?

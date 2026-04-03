@@ -69,6 +69,7 @@ pub struct AuthConfig {
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct StripeConfig {
+    pub publishable_key: Option<String>,
     pub secret_key: Option<String>,
     pub webhook_secret: Option<String>,
     #[serde(default)]

@@ -124,6 +124,12 @@ fn payment_routes(state: AppState) -> Router<AppState> {
             .route("/", post(handlers::payments::create))
             .route("/:id", get(handlers::payments::get))
             .route("/member/:member_id", get(handlers::payments::list_by_member))
+            // Saved card (payment method) routes
+            .route("/cards", get(handlers::payments::list_saved_cards))
+            .route("/cards", post(handlers::payments::save_card))
+            .route("/cards/setup-intent", post(handlers::payments::create_setup_intent))
+            .route("/cards/:card_id", delete(handlers::payments::delete_saved_card))
+            .route("/cards/:card_id/default", put(handlers::payments::set_default_card))
             .route_layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 middleware::auth::require_auth,
