@@ -81,5 +81,9 @@ lettre = { version = "0.11", default-features = false, features = ["smtp-transpo
 chacha20poly1305 = "0.10"
 base64 = "0.22"
 
+# HMAC for stateless CSRF tokens
+hmac = "0.12"
+subtle = "2.6"
+
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

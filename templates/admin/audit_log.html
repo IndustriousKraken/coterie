@@ -1,0 +1,89 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Audit Log - Coterie{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="max-w-6xl mx-auto">
+        <div class="mb-6">
+            <h1 class="text-3xl font-bold text-gray-900">Audit log</h1>
+            <p class="mt-2 text-sm text-gray-600">
+                Record of administrative actions. Shows who did what, to whom, and when.
+                Retention is configurable via <code class="font-mono bg-gray-100 px-1 rounded">audit.retention_days</code> in settings.
+            </p>
+        </div>
+
+        <!-- Filters -->
+        <form method="GET" action="/portal/admin/audit"
+              class="mb-4 bg-white rounded-lg shadow-sm p-4 flex flex-wrap gap-3 items-end">
+            <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">Action contains</label>
+                <input type="text" name="action" value="{{ action_filter }}"
+                       placeholder="e.g. suspend, activate"
+                       class="px-3 py-1.5 border border-gray-300 rounded-md text-sm w-48 focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">Actor contains</label>
+                <input type="text" name="actor" value="{{ actor_filter }}"
+                       placeholder="admin name"
+                       class="px-3 py-1.5 border border-gray-300 rounded-md text-sm w-48 focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">Show</label>
+                <select name="limit"
+                        class="px-3 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    <option value="50"  {% if limit == 50  %}selected{% endif %}>50 entries</option>
+                    <option value="100" {% if limit == 100 %}selected{% endif %}>100 entries</option>
+                    <option value="250" {% if limit == 250 %}selected{% endif %}>250 entries</option>
+                    <option value="500" {% if limit == 500 %}selected{% endif %}>500 entries</option>
+                </select>
+            </div>
+            <button type="submit"
+                    class="px-4 py-1.5 bg-gray-700 text-white rounded-md hover:bg-gray-800 text-sm font-medium">
+                Apply
+            </button>
+            {% if !action_filter.is_empty() || !actor_filter.is_empty() %}
+            <a href="/portal/admin/audit" class="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900">
+                Clear
+            </a>
+            {% endif %}
+        </form>
+
+        <!-- Entries table -->
+        <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+            {% if entries.is_empty() %}
+            <div class="p-8 text-center text-gray-500 text-sm">
+                No audit entries match your filter.
+            </div>
+            {% else %}
+            <table class="w-full">
+                <thead class="bg-gray-50 border-b">
+                    <tr class="text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        <th class="px-6 py-3">When</th>
+                        <th class="px-6 py-3">Actor</th>
+                        <th class="px-6 py-3">Action</th>
+                        <th class="px-6 py-3">Target</th>
+                        <th class="px-6 py-3">Detail</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-200">
+                    {% for e in entries %}
+                    <tr class="hover:bg-gray-50">
+                        <td class="px-6 py-3 text-xs text-gray-500 whitespace-nowrap">{{ e.when }}</td>
+                        <td class="px-6 py-3 text-sm text-gray-900">{{ e.actor }}</td>
+                        <td class="px-6 py-3 text-sm">
+                            <span class="inline-block px-2 py-0.5 rounded bg-blue-100 text-blue-800 font-mono text-xs">
+                                {{ e.action }}
+                            </span>
+                        </td>
+                        <td class="px-6 py-3 text-xs text-gray-600 font-mono">{{ e.entity }}</td>
+                        <td class="px-6 py-3 text-sm text-gray-600 break-all">{{ e.detail }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

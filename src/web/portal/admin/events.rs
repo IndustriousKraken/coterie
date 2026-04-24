@@ -517,7 +517,18 @@ pub async fn admin_create_event(
     };
 
     match state.service_context.event_repo.create(event).await {
-        Ok(created) => axum::response::Redirect::to(&format!("/portal/admin/events/{}", created.id)).into_response(),
+        Ok(created) => {
+            state.service_context.audit_service.log(
+                Some(current_user.member.id),
+                "create_event",
+                "event",
+                &created.id.to_string(),
+                None,
+                Some(&created.title),
+                None,
+            ).await;
+            axum::response::Redirect::to(&format!("/portal/admin/events/{}", created.id)).into_response()
+        }
         Err(e) => axum::response::Html(format!("Error creating event: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }
@@ -629,14 +640,18 @@ pub async fn admin_update_event(
             .map(|dt| chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc))
     };
 
-    // Determine final image_url: new upload > remove > keep existing
+    // Determine final image_url: new upload > remove > keep existing.
+    // Also capture what (if anything) we need to delete from disk.
+    let old_image = existing.image_url.clone();
     let image_url = if new_image_url.is_some() {
         new_image_url
     } else if remove_image {
         None
     } else {
-        existing.image_url.clone()
+        old_image.clone()
     };
+    // Old file should be dropped when we either replaced it or removed it.
+    let image_to_delete = if image_url != old_image { old_image } else { None };
 
     let updated_event = Event {
         id,
@@ -657,7 +672,20 @@ pub async fn admin_update_event(
     };
 
     match state.service_context.event_repo.update(id, updated_event).await {
-        Ok(_) => {
+        Ok(updated) => {
+            crate::web::uploads::delete_if_upload(
+                &state.settings.server.uploads_path(),
+                image_to_delete.as_deref(),
+            ).await;
+            state.service_context.audit_service.log(
+                Some(current_user.member.id),
+                "update_event",
+                "event",
+                &id.to_string(),
+                None,
+                Some(&updated.title),
+                None,
+            ).await;
             axum::response::Html(r#"<div class="px-4 py-3 bg-green-100 text-green-800 rounded-md text-sm">Event updated successfully</div>"#.to_string()).into_response()
         }
         Err(e) => {
@@ -680,8 +708,28 @@ pub async fn admin_delete_event(
         Err(_) => return axum::response::Html("Invalid event ID".to_string()).into_response(),
     };
 
+    // Grab the image_url before deleting so we can clean up the file.
+    let image_to_delete = state.service_context.event_repo
+        .find_by_id(id).await.ok().flatten()
+        .and_then(|e| e.image_url);
+
     match state.service_context.event_repo.delete(id).await {
-        Ok(_) => axum::response::Redirect::to("/portal/admin/events").into_response(),
+        Ok(_) => {
+            crate::web::uploads::delete_if_upload(
+                &state.settings.server.uploads_path(),
+                image_to_delete.as_deref(),
+            ).await;
+            state.service_context.audit_service.log(
+                Some(current_user.member.id),
+                "delete_event",
+                "event",
+                &id.to_string(),
+                None,
+                None,
+                None,
+            ).await;
+            axum::response::Redirect::to("/portal/admin/events").into_response()
+        }
         Err(e) => axum::response::Html(format!("Error deleting event: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }

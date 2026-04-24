@@ -176,8 +176,13 @@ pub async fn delete(
     if announcement.created_by != user.member.id && !user.member.is_admin {
         return Err(AppError::Forbidden);
     }
-    
+
+    let image = announcement.image_url.clone();
     state.service_context.announcement_repo.delete(id).await?;
+    crate::web::uploads::delete_if_upload(
+        &state.settings.server.uploads_path(),
+        image.as_deref(),
+    ).await;
 
     Ok(StatusCode::NO_CONTENT)
 }

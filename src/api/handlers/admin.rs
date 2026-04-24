@@ -1,20 +1,32 @@
 use axum::{
-    extract::State,
+    extract::{Query, State},
     Json,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     api::state::AppState,
     error::Result,
+    service::audit_service::AuditEntry,
 };
 
 pub async fn stats(State(_state): State<AppState>) -> Result<Json<String>> {
     Ok(Json("Stats not implemented".to_string()))
 }
 
-pub async fn audit_log(State(_state): State<AppState>) -> Result<Json<Vec<String>>> {
-    Ok(Json(vec![]))
+#[derive(Debug, Deserialize)]
+pub struct AuditLogQuery {
+    pub limit: Option<i64>,
+}
+
+pub async fn audit_log(
+    State(state): State<AppState>,
+    Query(query): Query<AuditLogQuery>,
+) -> Result<Json<Vec<AuditEntry>>> {
+    let entries = state.service_context.audit_service
+        .recent(query.limit.unwrap_or(100))
+        .await?;
+    Ok(Json(entries))
 }
 
 #[derive(Serialize)]

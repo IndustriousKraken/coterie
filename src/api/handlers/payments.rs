@@ -230,7 +230,7 @@ async fn extend_member_dues(
 
 pub async fn create_manual(
     State(state): State<AppState>,
-    Extension(_user): Extension<CurrentUser>,
+    Extension(user): Extension<CurrentUser>,
     Json(request): Json<ManualPaymentRequest>,
 ) -> Result<(StatusCode, Json<Payment>)> {
     // Admin auth is enforced by the admin_routes middleware
@@ -243,7 +243,7 @@ pub async fn create_manual(
         status: PaymentStatus::Completed,
         payment_method: PaymentMethod::Manual,
         stripe_payment_id: None,
-        description: request.description,
+        description: request.description.clone(),
         paid_at: Some(Utc::now()),
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -256,12 +256,22 @@ pub async fn create_manual(
         extend_member_dues(&state, request.member_id, slug).await?;
     }
 
+    state.service_context.audit_service.log(
+        Some(user.member.id),
+        "manual_payment",
+        "member",
+        &request.member_id.to_string(),
+        None,
+        Some(&format!("${:.2} — {}", request.amount_cents as f64 / 100.0, request.description)),
+        None,
+    ).await;
+
     Ok((StatusCode::CREATED, Json(payment)))
 }
 
 pub async fn waive(
     State(state): State<AppState>,
-    Extension(_user): Extension<CurrentUser>,
+    Extension(user): Extension<CurrentUser>,
     Json(request): Json<WaivePaymentRequest>,
 ) -> Result<(StatusCode, Json<Payment>)> {
     // Admin auth is enforced by the admin_routes middleware
@@ -274,7 +284,7 @@ pub async fn waive(
         status: PaymentStatus::Completed,
         payment_method: PaymentMethod::Waived,
         stripe_payment_id: None,
-        description: request.description,
+        description: request.description.clone(),
         paid_at: Some(Utc::now()),
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -286,6 +296,16 @@ pub async fn waive(
     if let Some(slug) = &request.membership_type_slug {
         extend_member_dues(&state, request.member_id, slug).await?;
     }
+
+    state.service_context.audit_service.log(
+        Some(user.member.id),
+        "waive_dues",
+        "member",
+        &request.member_id.to_string(),
+        None,
+        Some(&request.description),
+        None,
+    ).await;
 
     Ok((StatusCode::CREATED, Json(payment)))
 }

@@ -159,6 +159,25 @@
             </div>
         </form>
 
+        <!-- Stripe receipts note -->
+        <div class="mt-8 bg-blue-50 border-l-4 border-blue-400 rounded-md p-4">
+            <h3 class="text-sm font-semibold text-blue-900">Payment receipts</h3>
+            <p class="mt-1 text-sm text-blue-800">
+                Receipts for card payments (checkout and saved-card charges) are
+                sent by <strong>Stripe</strong> directly, not by Coterie — so
+                don't expect to see them in the log above. Enable or disable them
+                in your
+                <a href="https://dashboard.stripe.com/settings/emails" target="_blank" rel="noopener"
+                   class="underline font-medium">Stripe Dashboard → Settings → Customer emails</a>.
+                That's also where you customize the receipt branding (logo, business
+                name, support address).
+            </p>
+            <p class="mt-2 text-xs text-blue-700">
+                Note: manual payments (cash / check / bank transfer recorded by an
+                admin) don't generate a Stripe receipt since Stripe isn't involved.
+            </p>
+        </div>
+
         <!-- Help section -->
         <div class="mt-8 bg-white rounded-lg shadow-sm p-6" x-data="{ open: false }">
             <button type="button" @click="open = !open"

@@ -147,6 +147,18 @@ pub async fn admin_update_setting(
     {
         Ok(_) => {
             let display_name = form.setting_key.split('.').last().unwrap_or(&form.setting_key);
+            // Log to unified audit_logs (the settings_audit table inside
+            // SettingsService keeps detailed before/after values; this
+            // row is just so admins see all changes in one place).
+            state.service_context.audit_service.log(
+                Some(current_user.member.id),
+                "update_setting",
+                "setting",
+                &form.setting_key,
+                None,
+                None,
+                None,
+            ).await;
             admin_settings_page_inner(
                 state,
                 current_user,
@@ -184,6 +196,7 @@ async fn fetch_settings_by_category(state: &AppState) -> Vec<SettingsCategoryInf
         ("payment", "Payment", "Payment amounts and timing"),
         ("features", "Features", "Enable or disable application features"),
         ("integrations", "Integrations", "Third-party service connections"),
+        ("audit", "Audit", "Audit log retention"),
     ];
 
     let mut result = Vec::new();

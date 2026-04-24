@@ -88,6 +88,11 @@ async fn main() -> anyhow::Result<()> {
     let email_sender: Arc<dyn email::EmailSender> =
         Arc::new(email::DynamicSender::new(settings_service.clone()));
 
+    // CSRF tokens are stateless HMAC; the service derives its key from
+    // session_secret so rotating that secret invalidates outstanding
+    // tokens (users get a 403 on next submit and retry).
+    let csrf_service = Arc::new(auth::CsrfService::new(&settings.auth.session_secret));
+
     // Initialize repositories
     let member_repo = Arc::new(repository::SqliteMemberRepository::new(db_pool.clone()));
     let event_repo = Arc::new(repository::SqliteEventRepository::new(db_pool.clone()));
@@ -125,19 +130,23 @@ async fn main() -> anyhow::Result<()> {
         auth_service,
         email_sender,
         settings_service,
+        csrf_service,
         db_pool.clone(),
     ));
 
-    // Spawn background cleanup task for expired sessions, CSRF tokens, and rate-limit state
+    // Spawn background cleanup task (runs hourly) for expired sessions
+    // and for pruning old audit-log entries based on the operator-set
+    // retention window.
     {
         let auth_service = service_context.auth_service.clone();
-        let csrf_service = service_context.csrf_service.clone();
+        let audit_service = service_context.audit_service.clone();
+        let settings_service = service_context.settings_service.clone();
         tokio::spawn(async move {
             let cleanup_interval = tokio::time::Duration::from_secs(60 * 60); // 1 hour
             loop {
                 tokio::time::sleep(cleanup_interval).await;
 
-                // Cleanup expired sessions
+                // Expired sessions
                 match auth_service.cleanup_expired_sessions().await {
                     Ok(count) if count > 0 => {
                         tracing::info!("Cleaned up {} expired sessions", count);
@@ -148,13 +157,18 @@ async fn main() -> anyhow::Result<()> {
                     _ => {}
                 }
 
-                // Cleanup orphaned CSRF tokens
-                match csrf_service.cleanup_orphaned().await {
+                // Audit-log retention (default 365 days, clamped in
+                // `prune_older_than` to sane bounds).
+                let retention_days = settings_service
+                    .get_number("audit.retention_days")
+                    .await
+                    .unwrap_or(365);
+                match audit_service.prune_older_than(retention_days).await {
                     Ok(count) if count > 0 => {
-                        tracing::info!("Cleaned up {} orphaned CSRF tokens", count);
+                        tracing::info!("Pruned {} audit-log entries older than {} days", count, retention_days);
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to cleanup orphaned CSRF tokens: {:?}", e);
+                        tracing::warn!("Failed to prune audit log: {:?}", e);
                     }
                     _ => {}
                 }

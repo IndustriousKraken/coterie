@@ -242,7 +242,7 @@ pub async fn admin_members_page(
 
 pub async fn admin_activate_member(
     State(state): State<AppState>,
-    Extension(_current_user): Extension<CurrentUser>,
+    Extension(current_user): Extension<CurrentUser>,
     Path(member_id): Path<String>,
 ) -> impl IntoResponse {
     use crate::domain::{UpdateMemberRequest, MemberStatus};
@@ -263,6 +263,16 @@ pub async fn admin_activate_member(
             let _ = state.service_context.auth_service
                 .invalidate_all_sessions(member.id)
                 .await;
+
+            state.service_context.audit_service.log(
+                Some(current_user.member.id),
+                "activate_member",
+                "member",
+                &id.to_string(),
+                None,
+                Some(&member.email),
+                None,
+            ).await;
 
             // Send welcome email. Soft-fail: activation already succeeded,
             // and an admin can always resend manually if it didn't arrive.
@@ -324,7 +334,7 @@ pub async fn admin_activate_member(
 
 pub async fn admin_suspend_member(
     State(state): State<AppState>,
-    Extension(_current_user): Extension<CurrentUser>,
+    Extension(current_user): Extension<CurrentUser>,
     Path(member_id): Path<String>,
 ) -> impl IntoResponse {
     use crate::domain::{UpdateMemberRequest, MemberStatus};
@@ -345,6 +355,16 @@ pub async fn admin_suspend_member(
             let _ = state.service_context.auth_service
                 .invalidate_all_sessions(member.id)
                 .await;
+
+            state.service_context.audit_service.log(
+                Some(current_user.member.id),
+                "suspend_member",
+                "member",
+                &id.to_string(),
+                None,
+                Some(&member.email),
+                None,
+            ).await;
 
             let initials: String = member.full_name
                 .split_whitespace()
@@ -536,7 +556,7 @@ pub struct AdminUpdateMemberForm {
 
 pub async fn admin_update_member(
     State(state): State<AppState>,
-    Extension(_current_user): Extension<CurrentUser>,
+    Extension(current_user): Extension<CurrentUser>,
     Path(member_id): Path<String>,
     axum::Form(form): axum::Form<AdminUpdateMemberForm>,
 ) -> impl IntoResponse {
@@ -566,9 +586,20 @@ pub async fn admin_update_member(
     };
 
     match state.service_context.member_repo.update(id, update).await {
-        Ok(_) => axum::response::Html(
-            r#"<div class="p-3 bg-green-50 text-green-800 rounded-md text-sm">Member updated successfully!</div>"#.to_string()
-        ),
+        Ok(_) => {
+            state.service_context.audit_service.log(
+                Some(current_user.member.id),
+                "update_member",
+                "member",
+                &id.to_string(),
+                None,
+                None,
+                None,
+            ).await;
+            axum::response::Html(
+                r#"<div class="p-3 bg-green-50 text-green-800 rounded-md text-sm">Member updated successfully!</div>"#.to_string()
+            )
+        }
         Err(e) => axum::response::Html(format!(
             r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Error: {}</div>"#,
             crate::web::escape_html(&e.to_string())
@@ -585,7 +616,7 @@ pub struct ExtendDuesForm {
 
 pub async fn admin_extend_dues(
     State(state): State<AppState>,
-    Extension(_current_user): Extension<CurrentUser>,
+    Extension(current_user): Extension<CurrentUser>,
     Path(member_id): Path<String>,
     axum::Form(form): axum::Form<ExtendDuesForm>,
 ) -> impl IntoResponse {
@@ -616,18 +647,29 @@ pub async fn admin_extend_dues(
 
     let result = sqlx::query("UPDATE members SET dues_paid_until = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
         .bind(new_dues_date)
-        .bind(member_id)
+        .bind(&member_id)
         .execute(&state.service_context.db_pool)
         .await;
 
     match result {
-        Ok(_) => axum::response::Html(format!(
-            r#"<div class="p-3 bg-green-50 text-green-800 rounded-md text-sm">
-                Dues extended! New expiration: {}
-                <script>setTimeout(() => location.reload(), 1500)</script>
-            </div>"#,
-            new_dues_date.format("%B %d, %Y")
-        )),
+        Ok(_) => {
+            state.service_context.audit_service.log(
+                Some(current_user.member.id),
+                "extend_dues",
+                "member",
+                &member_id,
+                None,
+                Some(&format!("+{} months → {}", form.months, new_dues_date.format("%Y-%m-%d"))),
+                None,
+            ).await;
+            axum::response::Html(format!(
+                r#"<div class="p-3 bg-green-50 text-green-800 rounded-md text-sm">
+                    Dues extended! New expiration: {}
+                    <script>setTimeout(() => location.reload(), 1500)</script>
+                </div>"#,
+                new_dues_date.format("%B %d, %Y")
+            ))
+        }
         Err(e) => axum::response::Html(format!(
             r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Error: {}</div>"#,
             crate::web::escape_html(&e.to_string())
@@ -644,7 +686,7 @@ pub struct SetDuesForm {
 
 pub async fn admin_set_dues(
     State(state): State<AppState>,
-    Extension(_current_user): Extension<CurrentUser>,
+    Extension(current_user): Extension<CurrentUser>,
     Path(member_id): Path<String>,
     axum::Form(form): axum::Form<SetDuesForm>,
 ) -> impl IntoResponse {
@@ -676,13 +718,24 @@ pub async fn admin_set_dues(
         .await;
 
     match result {
-        Ok(_) => axum::response::Html(format!(
-            r#"<div class="p-3 bg-green-50 text-green-800 rounded-md text-sm">
-                Dues date set to: {}
-                <script>setTimeout(() => location.reload(), 1500)</script>
-            </div>"#,
-            dues_date.format("%B %d, %Y")
-        )),
+        Ok(_) => {
+            state.service_context.audit_service.log(
+                Some(current_user.member.id),
+                "set_dues",
+                "member",
+                &id.to_string(),
+                None,
+                Some(&dues_date.format("%Y-%m-%d").to_string()),
+                None,
+            ).await;
+            axum::response::Html(format!(
+                r#"<div class="p-3 bg-green-50 text-green-800 rounded-md text-sm">
+                    Dues date set to: {}
+                    <script>setTimeout(() => location.reload(), 1500)</script>
+                </div>"#,
+                dues_date.format("%B %d, %Y")
+            ))
+        }
         Err(e) => axum::response::Html(format!(
             r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Error: {}</div>"#,
             crate::web::escape_html(&e.to_string())
@@ -692,7 +745,7 @@ pub async fn admin_set_dues(
 
 pub async fn admin_expire_now(
     State(state): State<AppState>,
-    Extension(_current_user): Extension<CurrentUser>,
+    Extension(current_user): Extension<CurrentUser>,
     Path(member_id): Path<String>,
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&member_id) {
@@ -704,19 +757,45 @@ pub async fn admin_expire_now(
 
     let yesterday = chrono::Utc::now() - chrono::Duration::days(1);
 
-    let result = sqlx::query("UPDATE members SET dues_paid_until = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+    // Backdate dues AND flip status to Expired so the effect is immediate
+    // (the billing runner would do this anyway on its next tick, but an
+    // admin clicking "expire now" reasonably expects the change to be
+    // live immediately).
+    let result = sqlx::query(
+        "UPDATE members \
+         SET dues_paid_until = ?, \
+             status = CASE WHEN status = 'Active' THEN 'Expired' ELSE status END, \
+             updated_at = CURRENT_TIMESTAMP \
+         WHERE id = ?"
+    )
         .bind(yesterday)
         .bind(id.to_string())
         .execute(&state.service_context.db_pool)
         .await;
 
     match result {
-        Ok(_) => axum::response::Html(
-            r#"<div class="p-3 bg-yellow-50 text-yellow-800 rounded-md text-sm">
-                Member dues have been expired.
-                <script>setTimeout(() => location.reload(), 1500)</script>
-            </div>"#.to_string()
-        ),
+        Ok(_) => {
+            // Force-logout so the member sees the expiration immediately
+            // instead of on their next page load.
+            let _ = state.service_context.auth_service
+                .invalidate_all_sessions(id)
+                .await;
+            state.service_context.audit_service.log(
+                Some(current_user.member.id),
+                "expire_member_now",
+                "member",
+                &id.to_string(),
+                None,
+                None,
+                None,
+            ).await;
+            axum::response::Html(
+                r#"<div class="p-3 bg-yellow-50 text-yellow-800 rounded-md text-sm">
+                    Member dues have been expired.
+                    <script>setTimeout(() => location.reload(), 1500)</script>
+                </div>"#.to_string()
+            )
+        }
         Err(e) => axum::response::Html(format!(
             r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Error: {}</div>"#,
             crate::web::escape_html(&e.to_string())
@@ -839,7 +918,7 @@ pub struct AdminCreateMemberForm {
 
 pub async fn admin_create_member(
     State(state): State<AppState>,
-    Extension(_current_user): Extension<CurrentUser>,
+    Extension(current_user): Extension<CurrentUser>,
     axum::Form(form): axum::Form<AdminCreateMemberForm>,
 ) -> axum::response::Response {
     use crate::domain::{CreateMemberRequest, MembershipType, MemberStatus, UpdateMemberRequest};
@@ -878,6 +957,16 @@ pub async fn admin_create_member(
                 };
                 let _ = state.service_context.member_repo.update(member.id, update).await;
             }
+
+            state.service_context.audit_service.log(
+                Some(current_user.member.id),
+                "create_member",
+                "member",
+                &member.id.to_string(),
+                None,
+                Some(&member.email),
+                None,
+            ).await;
 
             axum::response::Redirect::to(&format!("/portal/admin/members/{}", member.id)).into_response()
         }
@@ -998,7 +1087,18 @@ pub async fn admin_resend_verification(
     };
 
     match state.service_context.email_sender.send(&message).await {
-        Ok(()) => resend_result(true, &format!("Verification email resent to {}.", member.email)).into_response(),
+        Ok(()) => {
+            state.service_context.audit_service.log(
+                Some(current_user.member.id),
+                "resend_verification",
+                "member",
+                &id.to_string(),
+                None,
+                Some(&member.email),
+                None,
+            ).await;
+            resend_result(true, &format!("Verification email resent to {}.", member.email)).into_response()
+        }
         Err(e) => resend_result(false, &format!("Send failed: {}", e)).into_response(),
     }
 }

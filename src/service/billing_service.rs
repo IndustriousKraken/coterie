@@ -353,12 +353,15 @@ impl BillingService {
         Ok((succeeded, total))
     }
 
-    /// Check for members past grace period and expire them.
+    /// Check for members past grace period and expire them. Also kills
+    /// any live sessions for the affected members so they stop having
+    /// portal access on the next request rather than the one after.
     pub async fn check_expired_members(&self) -> Result<u32> {
         let grace_days = self.get_grace_period_days().await;
 
-        // Find active members whose dues_paid_until + grace period has passed
-        let expired_count = sqlx::query(
+        // UPDATE...RETURNING gives us the affected IDs in one round-trip
+        // so we can invalidate their sessions below.
+        let expired_ids: Vec<(String,)> = sqlx::query_as(
             r#"
             UPDATE members
             SET status = 'Expired', updated_at = CURRENT_TIMESTAMP
@@ -366,17 +369,36 @@ impl BillingService {
               AND dues_paid_until IS NOT NULL
               AND date(dues_paid_until, '+' || ? || ' days') < date('now')
               AND bypass_dues = 0
+            RETURNING id
             "#,
         )
         .bind(grace_days)
-        .execute(&self.db_pool)
+        .fetch_all(&self.db_pool)
         .await
-        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?
-        .rows_affected() as u32;
+        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+
+        let expired_count = expired_ids.len() as u32;
+
+        // Force-logout expired members. `require_auth_redirect` would
+        // bounce them to /portal/restore on their next request anyway,
+        // but killing the session makes the expiration immediate from
+        // the browser's perspective.
+        //
+        // Placeholder count is derived from our own DB row count, not
+        // user input — format!() is safe here.
+        if !expired_ids.is_empty() {
+            let placeholders = vec!["?"; expired_ids.len()].join(",");
+            let sql = format!("DELETE FROM sessions WHERE member_id IN ({})", placeholders);
+            let mut q = sqlx::query(&sql);
+            for (id,) in &expired_ids {
+                q = q.bind(id);
+            }
+            let _ = q.execute(&self.db_pool).await;
+        }
 
         if expired_count > 0 {
             tracing::info!(
-                "Expired {} members past grace period ({} days)",
+                "Expired {} members past grace period ({} days); sessions invalidated",
                 expired_count,
                 grace_days
             );

@@ -497,7 +497,18 @@ pub async fn admin_create_announcement(
     };
 
     match state.service_context.announcement_repo.create(announcement).await {
-        Ok(created) => axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", created.id)).into_response(),
+        Ok(created) => {
+            state.service_context.audit_service.log(
+                Some(current_user.member.id),
+                "create_announcement",
+                "announcement",
+                &created.id.to_string(),
+                None,
+                Some(&created.title),
+                None,
+            ).await;
+            axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", created.id)).into_response()
+        }
         Err(e) => axum::response::Html(format!("Error creating announcement: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }
@@ -580,14 +591,17 @@ pub async fn admin_update_announcement(
         _ => AnnouncementType::General,
     };
 
-    // Determine final image_url: new upload > remove > keep existing
+    // Determine final image_url: new upload > remove > keep existing.
+    // Capture the old URL so we can delete it from disk after save.
+    let old_image = existing.image_url.clone();
     let image_url = if new_image_url.is_some() {
         new_image_url
     } else if remove_image {
         None
     } else {
-        existing.image_url.clone()
+        old_image.clone()
     };
+    let image_to_delete = if image_url != old_image { old_image } else { None };
 
     let updated_announcement = Announcement {
         id,
@@ -605,7 +619,20 @@ pub async fn admin_update_announcement(
     };
 
     match state.service_context.announcement_repo.update(id, updated_announcement).await {
-        Ok(_) => {
+        Ok(updated) => {
+            crate::web::uploads::delete_if_upload(
+                &state.settings.server.uploads_path(),
+                image_to_delete.as_deref(),
+            ).await;
+            state.service_context.audit_service.log(
+                Some(current_user.member.id),
+                "update_announcement",
+                "announcement",
+                &id.to_string(),
+                None,
+                Some(&updated.title),
+                None,
+            ).await;
             axum::response::Html(r#"<div class="px-4 py-3 bg-green-100 text-green-800 rounded-md text-sm">Announcement updated successfully</div>"#.to_string()).into_response()
         }
         Err(e) => {
@@ -628,8 +655,27 @@ pub async fn admin_delete_announcement(
         Err(_) => return axum::response::Html("Invalid announcement ID".to_string()).into_response(),
     };
 
+    let image_to_delete = state.service_context.announcement_repo
+        .find_by_id(id).await.ok().flatten()
+        .and_then(|a| a.image_url);
+
     match state.service_context.announcement_repo.delete(id).await {
-        Ok(_) => axum::response::Redirect::to("/portal/admin/announcements").into_response(),
+        Ok(_) => {
+            crate::web::uploads::delete_if_upload(
+                &state.settings.server.uploads_path(),
+                image_to_delete.as_deref(),
+            ).await;
+            state.service_context.audit_service.log(
+                Some(current_user.member.id),
+                "delete_announcement",
+                "announcement",
+                &id.to_string(),
+                None,
+                None,
+                None,
+            ).await;
+            axum::response::Redirect::to("/portal/admin/announcements").into_response()
+        }
         Err(e) => axum::response::Html(format!("Error deleting announcement: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }

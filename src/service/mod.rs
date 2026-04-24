@@ -1,3 +1,4 @@
+pub mod audit_service;
 pub mod billing_service;
 pub mod member_service;
 pub mod settings_service;
@@ -11,6 +12,7 @@ use crate::repository::*;
 use crate::integrations::IntegrationManager;
 use crate::auth::{AuthService, CsrfService};
 use crate::email::EmailSender;
+use audit_service::AuditService;
 use settings_service::SettingsService;
 use event_type_service::EventTypeService;
 use announcement_type_service::AnnouncementTypeService;
@@ -34,6 +36,7 @@ pub struct ServiceContext {
     pub announcement_type_service: Arc<AnnouncementTypeService>,
     pub membership_type_service: Arc<MembershipTypeService>,
     pub email_sender: Arc<dyn EmailSender>,
+    pub audit_service: Arc<AuditService>,
     pub db_pool: SqlitePool,
 }
 
@@ -47,9 +50,10 @@ impl ServiceContext {
         auth_service: Arc<AuthService>,
         email_sender: Arc<dyn EmailSender>,
         settings_service: Arc<SettingsService>,
+        csrf_service: Arc<CsrfService>,
         db_pool: SqlitePool,
     ) -> Self {
-        let csrf_service = Arc::new(CsrfService::new(db_pool.clone()));
+        let audit_service = Arc::new(AuditService::new(db_pool.clone()));
 
         // Create type repositories
         let event_type_repo = Arc::new(SqliteEventTypeRepository::new(db_pool.clone()));
@@ -82,6 +86,7 @@ impl ServiceContext {
             announcement_type_service,
             membership_type_service,
             email_sender,
+            audit_service,
             db_pool,
         }
     }

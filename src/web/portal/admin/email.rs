@@ -210,11 +210,26 @@ pub async fn update_email_settings(
         .update_email_config(update, current_user.member.id)
         .await
     {
-        Ok(_) => render_page(
-            state, current_user, session_info,
-            Some("Email settings saved.".to_string()),
-            None,
-        ).await,
+        Ok(_) => {
+            // Audit: whose account made the change. Don't record the
+            // new values (they include an SMTP password in plaintext
+            // form on the way in — the audit row would defeat the
+            // encryption-at-rest we do for the settings table).
+            state.service_context.audit_service.log(
+                Some(current_user.member.id),
+                "update_email_config",
+                "settings",
+                "email",
+                None,
+                None,
+                None,
+            ).await;
+            render_page(
+                state, current_user, session_info,
+                Some("Email settings saved.".to_string()),
+                None,
+            ).await
+        }
         Err(e) => {
             tracing::error!("update_email_config failed: {}", e);
             render_page(

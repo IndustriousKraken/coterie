@@ -1,4 +1,5 @@
 pub mod announcements;
+pub mod audit;
 pub mod email;
 pub mod events;
 pub mod members;
