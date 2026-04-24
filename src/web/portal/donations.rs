@@ -124,6 +124,9 @@ pub struct DonateRequest {
     pub amount_cents: i64,
     pub campaign_slug: Option<String>,
     pub saved_card_id: Option<String>,
+    /// Idempotency key from the donate form. See ChargeSavedCardRequest.
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
 }
 
 pub async fn donate_api(
@@ -168,11 +171,15 @@ pub async fn donate_api(
             return Err(AppError::Forbidden);
         }
 
+        let idempotency_key = request.idempotency_key.clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+
         let stripe_payment_id = stripe_client.charge_saved_card(
             current_user.member.id,
             &card.stripe_payment_method_id,
             request.amount_cents,
             &description,
+            &idempotency_key,
         ).await?;
 
         let payment = Payment {

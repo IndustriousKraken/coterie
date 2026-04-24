@@ -187,6 +187,10 @@ impl BillingService {
                 .unwrap_or("Membership")
         );
 
+        // Use the scheduled-payment ID as the idempotency key — if the billing
+        // runner fires twice for the same scheduled payment, Stripe dedupes.
+        let idempotency_key = format!("sched-{}", sp.id);
+
         // Attempt the charge
         match stripe_client
             .charge_saved_card(
@@ -194,6 +198,7 @@ impl BillingService {
                 &card.stripe_payment_method_id,
                 sp.amount_cents,
                 &description,
+                &idempotency_key,
             )
             .await
         {

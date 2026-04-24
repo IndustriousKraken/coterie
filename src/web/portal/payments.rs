@@ -86,6 +86,12 @@ pub struct CheckoutRequest {
 pub struct ChargeSavedCardRequest {
     pub membership_type_slug: String,
     pub saved_card_id: String,
+    /// Idempotency key generated at form-render time (hidden input).
+    /// Stable across retries of the same logical payment attempt so
+    /// double-clicking "Pay" doesn't double-charge the card.
+    /// Optional for API callers; handler falls back to a fresh UUID.
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
 }
 
 pub async fn payments_page(
@@ -387,12 +393,19 @@ pub async fn charge_saved_card_api(
     let amount_cents = membership_type.fee_cents as i64;
     let description = format!("{} Membership Payment", membership_type.name);
 
+    // Idempotency key: use the one from the form if present (stable across
+    // double-submits), otherwise generate a fresh UUID. Callers that care
+    // about double-charge protection should always send a key.
+    let idempotency_key = request.idempotency_key.clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
     // Charge the card
     let stripe_payment_id = stripe_client.charge_saved_card(
         current_user.member.id,
         &card.stripe_payment_method_id,
         amount_cents,
         &description,
+        &idempotency_key,
     ).await?;
 
     // Create payment record

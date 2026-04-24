@@ -63,18 +63,8 @@ pub async fn setup_handler(
     State(state): State<AppState>,
     Json(request): Json<SetupRequest>,
 ) -> Response {
-    // Check if setup is already complete
-    let has_admin = check_admin_exists(&state).await;
-
-    if has_admin {
-        return (StatusCode::BAD_REQUEST, Json(SetupResponse {
-            success: false,
-            redirect: None,
-            error: Some("Setup has already been completed".to_string()),
-        })).into_response();
-    }
-
-    // Validate passwords match
+    // Validate inputs before acquiring the setup lock so failed requests
+    // don't hold the lock while the caller fixes and retries.
     if request.password != request.password_confirm {
         return (StatusCode::BAD_REQUEST, Json(SetupResponse {
             success: false,
@@ -83,7 +73,6 @@ pub async fn setup_handler(
         })).into_response();
     }
 
-    // Validate password complexity
     if let Err(msg) = crate::auth::validate_password(&request.password) {
         return (StatusCode::BAD_REQUEST, Json(SetupResponse {
             success: false,
@@ -92,12 +81,26 @@ pub async fn setup_handler(
         })).into_response();
     }
 
-    // Validate email format (basic check)
     if !request.email.contains('@') {
         return (StatusCode::BAD_REQUEST, Json(SetupResponse {
             success: false,
             redirect: None,
             error: Some("Invalid email address".to_string()),
+        })).into_response();
+    }
+
+    // Serialize first-admin creation. Without this, two concurrent setup
+    // requests can both pass the "no admin exists" check and both create
+    // admin accounts. The lock is held across check + create + promote.
+    let _setup_guard = state.setup_lock.lock().await;
+
+    // Re-check inside the lock using the authoritative is_admin column
+    // (not the legacy notes-LIKE heuristic).
+    if check_admin_exists(&state).await {
+        return (StatusCode::BAD_REQUEST, Json(SetupResponse {
+            success: false,
+            redirect: None,
+            error: Some("Setup has already been completed".to_string()),
         })).into_response();
     }
 
@@ -107,7 +110,7 @@ pub async fn setup_handler(
         username: request.username.clone(),
         full_name: request.full_name.clone(),
         password: request.password.clone(),
-        membership_type: MembershipType::Lifetime, // Admin gets lifetime membership
+        membership_type: MembershipType::Lifetime,
     };
 
     let member = match state.service_context.member_repo.create(create_request).await {
@@ -122,23 +125,30 @@ pub async fn setup_handler(
         }
     };
 
-    // Update to set as active admin with bypass_dues
+    // Promote to Active with bypass_dues
     let update_request = UpdateMemberRequest {
         status: Some(MemberStatus::Active),
-        notes: Some("ADMIN - System administrator".to_string()),
         bypass_dues: Some(true),
         ..Default::default()
     };
 
     if let Err(e) = state.service_context.member_repo.update(member.id, update_request).await {
-        tracing::error!("Failed to update admin user: {}", e);
-        // Don't fail here - the user was created, just not fully configured
+        tracing::error!("Failed to activate admin user: {}", e);
+    }
+
+    // Set is_admin = 1 (the authoritative admin flag, used by middleware)
+    if let Err(e) = state.service_context.member_repo.set_admin(member.id, true).await {
+        tracing::error!("Failed to set is_admin on admin user: {}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(SetupResponse {
+            success: false,
+            redirect: None,
+            error: Some("Failed to promote user to admin".to_string()),
+        })).into_response();
     }
 
     // TODO: Store org_name in settings table (for now we just log it)
     tracing::info!("Setup complete for organization: {}", request.org_name);
 
-    // Success - redirect to login
     let mut headers = HeaderMap::new();
     headers.insert("HX-Redirect", "/login".parse().unwrap());
 
@@ -149,15 +159,11 @@ pub async fn setup_handler(
     })).into_response()
 }
 
-/// Check if at least one admin user exists in the database
+/// Check if at least one admin user exists in the database.
+/// Uses the `is_admin` column — the authoritative source.
 async fn check_admin_exists(state: &AppState) -> bool {
     let result: Result<Option<(i64,)>, _> = sqlx::query_as(
-        r#"
-        SELECT 1 as exists_flag
-        FROM members
-        WHERE notes LIKE '%ADMIN%'
-        LIMIT 1
-        "#,
+        "SELECT 1 as exists_flag FROM members WHERE is_admin = 1 LIMIT 1",
     )
     .fetch_optional(&state.service_context.db_pool)
     .await;

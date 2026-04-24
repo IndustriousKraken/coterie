@@ -81,6 +81,14 @@ impl AuthService {
         self.session_store.delete_by_token(token).await
     }
 
+    /// Invalidate ALL sessions for a given member. Call this on login (to
+    /// prevent session-fixation), on privilege change (admin promotion /
+    /// demotion), and on account status changes (suspend / expire) to
+    /// force re-authentication with fresh permissions.
+    pub async fn invalidate_all_sessions(&self, member_id: Uuid) -> Result<()> {
+        self.session_store.delete_by_member(member_id).await
+    }
+
     pub async fn cleanup_expired_sessions(&self) -> Result<u64> {
         self.session_store.cleanup_expired().await
     }

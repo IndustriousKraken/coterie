@@ -121,6 +121,51 @@ fn redirect_to_login(original_uri: &Uri) -> Response {
     Redirect::to(&login_url).into_response()
 }
 
+/// Like require_admin but redirects non-admins to the member dashboard
+/// instead of returning a 403 JSON response. Used for portal admin routes.
+pub async fn require_admin_redirect(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let original_uri = request.uri().clone();
+
+    let session_cookie = match jar.get("session") {
+        Some(cookie) => cookie,
+        None => return redirect_to_login(&original_uri),
+    };
+
+    let auth_service = &state.service_context.auth_service;
+
+    let session = match auth_service.validate_session(session_cookie.value()).await {
+        Ok(Some(s)) => s,
+        _ => return redirect_to_login(&original_uri),
+    };
+
+    let member_repo = SqliteMemberRepository::new(state.service_context.db_pool.clone());
+    let member = match member_repo.find_by_id(session.member_id).await {
+        Ok(Some(m)) => m,
+        _ => return redirect_to_login(&original_uri),
+    };
+
+    // Require both Active/Honorary status AND admin flag
+    match member.status {
+        MemberStatus::Active | MemberStatus::Honorary => {}
+        _ => return redirect_to_login(&original_uri),
+    }
+
+    if !member.is_admin {
+        // Authenticated but not admin: bounce to member dashboard
+        return Redirect::to("/portal/dashboard").into_response();
+    }
+
+    request.extensions_mut().insert(CurrentUser { member });
+    request.extensions_mut().insert(SessionInfo { session_id: session.id.clone() });
+
+    next.run(request).await
+}
+
 pub async fn require_admin(
     State(state): State<AppState>,
     jar: CookieJar,

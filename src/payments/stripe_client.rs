@@ -126,6 +126,26 @@ impl StripeClient {
             _ => AppError::External(format!("Webhook error: {}", e)),
         })?;
 
+        // Idempotency: claim the event ID atomically. If another worker
+        // or a retry already processed this event, the INSERT affects 0
+        // rows and we bail early. Without this, Stripe's "at-least-once"
+        // delivery would let retries double-extend dues.
+        let event_id = event.id.to_string();
+        let event_type = format!("{:?}", event.type_);
+        let claim = sqlx::query(
+            "INSERT OR IGNORE INTO processed_stripe_events (event_id, event_type) VALUES (?, ?)"
+        )
+        .bind(&event_id)
+        .bind(&event_type)
+        .execute(&self.db_pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("Idempotency claim failed: {}", e)))?;
+
+        if claim.rows_affected() == 0 {
+            tracing::info!("Skipping already-processed Stripe event {}", event_id);
+            return Ok(());
+        }
+
         // Handle different event types
         match event.type_ {
             // One-time checkout payments
@@ -546,14 +566,22 @@ impl StripeClient {
             .ok_or_else(|| AppError::External("No client_secret in SetupIntent".to_string()))
     }
 
-    /// Charge a saved payment method (card)
-    /// Returns the PaymentIntent ID if successful
+    /// Charge a saved payment method (card).
+    ///
+    /// `idempotency_key` must be stable across retries of the same logical
+    /// payment attempt. If the user double-clicks "Pay", both requests should
+    /// pass the same key so Stripe returns the cached response and the card
+    /// is only charged once. Callers typically generate this at form-render
+    /// time (UUID in a hidden field) and thread it through.
+    ///
+    /// Returns the PaymentIntent ID if successful.
     pub async fn charge_saved_card(
         &self,
         member_id: Uuid,
         stripe_payment_method_id: &str,
         amount_cents: i64,
         description: &str,
+        idempotency_key: &str,
     ) -> Result<String> {
         // Get the member's stripe_customer_id
         let customer_id: Option<String> = sqlx::query_scalar(
@@ -584,7 +612,12 @@ impl StripeClient {
         metadata.insert("member_id".to_string(), member_id.to_string());
         params.metadata = Some(metadata);
 
-        let payment_intent = PaymentIntent::create(&self.client, params)
+        // Attach the idempotency key to this specific request.
+        let idempotent_client = self.client.clone().with_strategy(
+            stripe::RequestStrategy::Idempotent(idempotency_key.to_string())
+        );
+
+        let payment_intent = PaymentIntent::create(&idempotent_client, params)
             .await
             .map_err(|e| AppError::External(format!("Stripe charge failed: {}", e)))?;
 

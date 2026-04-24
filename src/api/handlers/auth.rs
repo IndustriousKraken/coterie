@@ -30,7 +30,7 @@ pub async fn login(
     Json(req): Json<LoginRequest>,
 ) -> Result<(CookieJar, Json<LoginResponse>)> {
     // Rate-limit login attempts per IP
-    let ip = state::client_ip(&headers);
+    let ip = state::client_ip(&headers, app.settings.server.trust_forwarded_for());
     if !app.login_limiter.check_and_record(ip) {
         return Err(AppError::TooManyRequests);
     }
@@ -57,6 +57,11 @@ pub async fn login(
     let member = auth::get_member_by_email(&app.service_context.db_pool, &req.email)
         .await?
         .ok_or(AppError::Unauthorized)?;
+
+    // Invalidate pre-existing sessions to prevent session fixation.
+    let _ = app.service_context.auth_service
+        .invalidate_all_sessions(member.id)
+        .await;
 
     // Create session (returns both session and token)
     let (_session, token) = app.service_context.auth_service

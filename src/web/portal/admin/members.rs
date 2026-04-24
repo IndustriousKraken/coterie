@@ -259,6 +259,11 @@ pub async fn admin_activate_member(
 
     match state.service_context.member_repo.update(id, update).await {
         Ok(member) => {
+            // Force re-auth so the member picks up their new status on next request.
+            let _ = state.service_context.auth_service
+                .invalidate_all_sessions(member.id)
+                .await;
+
             let initials: String = member.full_name
                 .split_whitespace()
                 .filter_map(|word| word.chars().next())
@@ -327,6 +332,11 @@ pub async fn admin_suspend_member(
 
     match state.service_context.member_repo.update(id, update).await {
         Ok(member) => {
+            // Kick the suspended member out of any active sessions immediately.
+            let _ = state.service_context.auth_service
+                .invalidate_all_sessions(member.id)
+                .await;
+
             let initials: String = member.full_name
                 .split_whitespace()
                 .filter_map(|word| word.chars().next())

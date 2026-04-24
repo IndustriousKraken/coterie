@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::http::HeaderMap;
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
     config::Settings,
@@ -11,23 +12,33 @@ use crate::{
     service::ServiceContext,
 };
 
-/// Extract client IP from request headers, checking reverse-proxy headers first.
-pub fn client_ip(headers: &HeaderMap) -> IpAddr {
-    // Try X-Forwarded-For (first IP in the chain is the client)
-    if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-        if let Some(first) = xff.split(',').next() {
-            if let Ok(ip) = first.trim().parse::<IpAddr>() {
+/// Extract client IP from request headers.
+///
+/// If `trust_forwarded` is false, X-Forwarded-For / X-Real-Ip are ignored
+/// entirely (they can be spoofed by any client) and the fallback is used.
+/// Set this based on whether the server sits behind a trusted reverse
+/// proxy — see `ServerConfig::trust_forwarded_for`.
+pub fn client_ip(headers: &HeaderMap, trust_forwarded: bool) -> IpAddr {
+    if trust_forwarded {
+        // Try X-Forwarded-For (first IP in the chain is the client)
+        if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+            if let Some(first) = xff.split(',').next() {
+                if let Ok(ip) = first.trim().parse::<IpAddr>() {
+                    return ip;
+                }
+            }
+        }
+        // Try X-Real-Ip
+        if let Some(xri) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+            if let Ok(ip) = xri.trim().parse::<IpAddr>() {
                 return ip;
             }
         }
     }
-    // Try X-Real-Ip
-    if let Some(xri) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
-        if let Ok(ip) = xri.trim().parse::<IpAddr>() {
-            return ip;
-        }
-    }
-    // Fallback — localhost (behind proxy, this is the best we can do without ConnectInfo)
+    // Fallback: localhost. We don't use ConnectInfo at the moment; when
+    // `trust_forwarded` is false and the peer IP is unavailable, rate
+    // limiting collapses to a single bucket. Safer than trusting a
+    // client-supplied header.
     IpAddr::from([127, 0, 0, 1])
 }
 
@@ -88,6 +99,9 @@ pub struct AppState {
     pub settings: Arc<Settings>,
     /// Rate limiter for login endpoints (5 attempts per 15 minutes per IP).
     pub login_limiter: RateLimiter,
+    /// Serializes first-admin setup to prevent concurrent requests from
+    /// both passing the "no admin exists" check and creating two admins.
+    pub setup_lock: Arc<AsyncMutex<()>>,
 }
 
 impl AppState {
@@ -101,6 +115,7 @@ impl AppState {
             stripe_client,
             settings,
             login_limiter: RateLimiter::new(5, Duration::from_secs(15 * 60)),
+            setup_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 }

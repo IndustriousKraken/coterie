@@ -221,6 +221,13 @@
     const statusDiv = document.getElementById('donation-status');
     const statusText = document.getElementById('donation-status-text');
 
+    // Stable per-page-load idempotency key. Double-clicks send the same key
+    // and Stripe dedupes server-side; a fresh page load is a new donation.
+    const idempotencyKey = (crypto.randomUUID ? crypto.randomUUID() :
+        ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+            (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c/4).toString(16)
+        ));
+
     donateBtn.addEventListener('click', async () => {
         if (selectedAmount <= 0) return;
 
@@ -238,6 +245,7 @@
             const body = {
                 amount_cents: selectedAmount,
                 campaign_slug: campaign ? campaign.value : null,
+                idempotency_key: idempotencyKey,
             };
 
             if (paymentMethod.startsWith('saved:')) {

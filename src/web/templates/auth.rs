@@ -71,7 +71,10 @@ pub async fn login_handler(
     Json(credentials): Json<LoginRequest>,
 ) -> Response {
     // Rate-limit login attempts per IP
-    let ip = crate::api::state::client_ip(&headers);
+    let ip = crate::api::state::client_ip(
+        &headers,
+        state.settings.server.trust_forwarded_for(),
+    );
     if !state.login_limiter.check_and_record(ip) {
         return (StatusCode::TOO_MANY_REQUESTS, Json(LoginResponse {
             success: false,
@@ -115,6 +118,14 @@ pub async fn login_handler(
         };
 
         if password_valid {
+            // Invalidate any pre-existing sessions for this member before
+            // creating the new one. Prevents session fixation: if an attacker
+            // planted a cookie in the victim's browser, that token is now
+            // dead.
+            let _ = state.service_context.auth_service
+                .invalidate_all_sessions(member.id)
+                .await;
+
             // Create session
             let (_session, token) = state.service_context.auth_service
                 .create_session(

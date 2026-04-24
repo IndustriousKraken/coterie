@@ -35,6 +35,13 @@ pub struct ServerConfig {
     /// If empty or omitted, only same-origin requests are allowed.
     #[serde(default)]
     pub cors_origins: Option<String>,
+    /// Whether to trust X-Forwarded-For / X-Real-Ip headers for client IP
+    /// detection. When unset, defaults to whatever cookies_are_secure()
+    /// returns — i.e. trust the headers when deployed over TLS (assumed
+    /// to be behind a reverse proxy) but not during local HTTP dev.
+    /// Set to false explicitly if this server faces untrusted clients
+    /// directly, to prevent IP spoofing.
+    pub trust_forwarded_for: Option<bool>,
 }
 
 impl ServerConfig {
@@ -48,6 +55,14 @@ impl ServerConfig {
     pub fn cookies_are_secure(&self) -> bool {
         self.secure_cookies
             .unwrap_or_else(|| self.base_url.starts_with("https://"))
+    }
+
+    /// Whether to trust X-Forwarded-For / X-Real-Ip headers for client IP
+    /// detection. Defaults to the same logic as `cookies_are_secure` —
+    /// a TLS-terminated deployment is assumed to be behind a trusted proxy.
+    pub fn trust_forwarded_for(&self) -> bool {
+        self.trust_forwarded_for
+            .unwrap_or_else(|| self.cookies_are_secure())
     }
 }
 
