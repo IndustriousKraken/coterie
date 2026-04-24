@@ -260,9 +260,17 @@ impl BillingService {
                 self.extend_member_dues(sp.member_id, sp.membership_type_id)
                     .await?;
 
-                // Schedule next renewal
+                // Schedule next renewal. Failure here doesn't roll back
+                // the successful charge, but it does mean the member
+                // falls off the auto-renew cycle silently — log so an
+                // operator can re-queue them by hand.
                 if let Some(mt) = &membership_type {
-                    let _ = self.schedule_renewal(sp.member_id, &mt.slug).await;
+                    if let Err(e) = self.schedule_renewal(sp.member_id, &mt.slug).await {
+                        tracing::error!(
+                            "Charged member {} (sp {}) but failed to schedule next renewal: {}",
+                            sp.member_id, id, e
+                        );
+                    }
                 }
 
                 tracing::info!(
@@ -393,7 +401,14 @@ impl BillingService {
             for (id,) in &expired_ids {
                 q = q.bind(id);
             }
-            let _ = q.execute(&self.db_pool).await;
+            if let Err(e) = q.execute(&self.db_pool).await {
+                tracing::warn!(
+                    "Marked {} members Expired but session cleanup failed: {}. \
+                     Middleware still rejects Expired status, so members are \
+                     bounced to /portal/restore on next request.",
+                    expired_count, e
+                );
+            }
         }
 
         if expired_count > 0 {
@@ -632,12 +647,23 @@ impl BillingService {
         };
         match self.email_sender.send(&message).await {
             Ok(()) => {
-                let _ = sqlx::query(
+                // Mark sent. If the UPDATE fails the email already
+                // went out; the next cycle would resend (annoying but
+                // not catastrophic) — log loudly so an operator can
+                // intervene before the cycle re-runs.
+                if let Err(e) = sqlx::query(
                     "UPDATE members SET dues_reminder_sent_at = CURRENT_TIMESTAMP WHERE id = ?"
                 )
                 .bind(id_str)
                 .execute(&self.db_pool)
-                .await;
+                .await
+                {
+                    tracing::error!(
+                        "Sent reminder to {} but failed to mark reminder_sent_at — \
+                         next cycle may re-send: {}",
+                        email_addr, e
+                    );
+                }
                 true
             }
             Err(e) => {

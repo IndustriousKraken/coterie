@@ -198,9 +198,32 @@ pub async fn login_handler(
                 .filter(|url| url.starts_with("/portal/") && !url.contains(".."))
                 .unwrap_or(default_destination);
 
+            // Build response headers. Both values are server-controlled
+            // (token is hex; redirect_url has been path-validated to
+            // /portal/...), but using parse().unwrap() panics on any
+            // future-proofing surprise. Treat parse failures as a 500
+            // rather than crashing the request handler.
+            let cookie_header = match cookie_value.parse() {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("Failed to construct session cookie header: {}", e);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(LoginResponse {
+                        success: false, redirect: None,
+                        error: Some("Login failed. Please try again.".to_string()),
+                    })).into_response();
+                }
+            };
+            let redirect_header = match redirect_url.parse() {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("Invalid redirect URL after login (will use dashboard): {}", e);
+                    "/portal/dashboard".parse().expect("static path always parses")
+                }
+            };
+
             let mut headers = HeaderMap::new();
-            headers.insert(header::SET_COOKIE, cookie_value.parse().unwrap());
-            headers.insert("HX-Redirect", redirect_url.parse().unwrap());
+            headers.insert(header::SET_COOKIE, cookie_header);
+            headers.insert("HX-Redirect", redirect_header);
 
             return (StatusCode::OK, headers, Json(LoginResponse {
                 success: true,

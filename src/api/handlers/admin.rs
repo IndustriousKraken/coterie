@@ -10,10 +10,6 @@ use crate::{
     service::audit_service::AuditEntry,
 };
 
-pub async fn stats(State(_state): State<AppState>) -> Result<Json<String>> {
-    Ok(Json("Stats not implemented".to_string()))
-}
-
 #[derive(Debug, Deserialize)]
 pub struct AuditLogQuery {
     pub limit: Option<i64>,

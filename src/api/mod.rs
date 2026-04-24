@@ -202,7 +202,6 @@ fn public_routes(_state: AppState) -> Router<AppState> {
 
 fn admin_routes(state: AppState) -> Router<AppState> {
     Router::new()
-        .route("/stats", get(handlers::admin::stats))
         .route("/audit-log", get(handlers::admin::audit_log))
         .route("/expired-check", post(handlers::admin::check_expired))
         // Admin-only payment operations

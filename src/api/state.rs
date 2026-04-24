@@ -65,7 +65,18 @@ impl RateLimiter {
     /// Returns `true` if the request is allowed, `false` if rate-limited.
     /// Automatically records the attempt when allowed.
     pub fn check_and_record(&self, ip: IpAddr) -> bool {
-        let mut map = self.attempts.lock().unwrap();
+        // Recover from a poisoned mutex rather than propagating the
+        // panic. A poisoned state means some prior call panicked while
+        // holding the lock — the data may be slightly stale but the
+        // rate limiter is best-effort anyway, and falling over here
+        // would deny service to every login attempt.
+        let mut map = match self.attempts.lock() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                tracing::warn!("RateLimiter mutex was poisoned; recovering");
+                poisoned.into_inner()
+            }
+        };
         let now = Instant::now();
         let cutoff = now - self.window;
 
@@ -83,7 +94,10 @@ impl RateLimiter {
     /// Prune entries for IPs that have no recent attempts. Call periodically
     /// to prevent the map from growing unboundedly.
     pub fn cleanup(&self) {
-        let mut map = self.attempts.lock().unwrap();
+        let mut map = match self.attempts.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         let cutoff = Instant::now() - self.window;
         map.retain(|_, timestamps| {
             timestamps.retain(|t| *t > cutoff);

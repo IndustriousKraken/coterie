@@ -425,12 +425,22 @@ pub async fn charge_saved_card_api(
 
     let payment = state.service_context.payment_repo.create(payment).await?;
 
-    // Extend dues
+    // Extend dues + queue the next auto-renewal. If the schedule fails,
+    // the user still gets the dues bump from this payment — but they
+    // won't be on the auto-renew loop. Log so operators can spot it.
     let billing_service = state.service_context.billing_service(
         state.stripe_client.clone(),
         state.settings.server.base_url.clone(),
     );
-    billing_service.schedule_renewal(current_user.member.id, &request.membership_type_slug).await.ok();
+    if let Err(e) = billing_service
+        .schedule_renewal(current_user.member.id, &request.membership_type_slug)
+        .await
+    {
+        tracing::error!(
+            "Charged member {} but failed to schedule next renewal: {}",
+            current_user.member.id, e
+        );
+    }
 
     // Extend dues directly using stripe_client's method
     stripe_client.extend_member_dues(current_user.member.id, &membership_type.slug).await?;

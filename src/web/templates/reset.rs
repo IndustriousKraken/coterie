@@ -243,10 +243,25 @@ pub async fn reset_password_handler(
 
     // Invalidate all existing sessions — whoever had them might be
     // the compromised party. Also invalidate any other outstanding
-    // reset tokens for this member.
-    let _ = state.service_context.auth_service
-        .invalidate_all_sessions(consumed.member_id).await;
-    let _ = service.invalidate_for_member(consumed.member_id).await;
+    // reset tokens for this member. If either fails we still report
+    // success (the password DID change), but we log loudly because a
+    // failure here means the suspected attacker's session might
+    // remain valid until natural expiry.
+    if let Err(e) = state.service_context.auth_service
+        .invalidate_all_sessions(consumed.member_id).await
+    {
+        tracing::error!(
+            "Password reset for member {} succeeded but session invalidation FAILED — \
+             stale sessions may still be valid: {}",
+            consumed.member_id, e
+        );
+    }
+    if let Err(e) = service.invalidate_for_member(consumed.member_id).await {
+        tracing::warn!(
+            "Couldn't invalidate other reset tokens for member {}: {}",
+            consumed.member_id, e
+        );
+    }
 
     HtmlTemplate(ResetPasswordResultTemplate {
         current_user: None,

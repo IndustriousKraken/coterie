@@ -311,9 +311,14 @@ pub async fn send_test_email(
     };
 
     // Record the test result so the settings page reflects it on next load.
-    let _ = state.service_context.settings_service
+    // If recording fails, the email still went (or didn't) — the visible
+    // result is correct. Only the "last test status" panel goes stale.
+    if let Err(e) = state.service_context.settings_service
         .record_email_test(ok, &error_text, current_user.member.id)
-        .await;
+        .await
+    {
+        tracing::warn!("Test email completed but result wasn't persisted: {}", e);
+    }
 
     if ok {
         test_result_html(true, &format!("Test email sent to {}.", admin_email))

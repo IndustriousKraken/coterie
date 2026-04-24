@@ -48,7 +48,12 @@ pub async fn verify_handler(
                 tracing::error!("Failed to mark email verified: {}", e);
                 (false, "We couldn't finish verifying your email. Please try again or contact support.".to_string())
             } else {
-                let _ = service.invalidate_for_member(consumed.member_id).await;
+                if let Err(e) = service.invalidate_for_member(consumed.member_id).await {
+                    tracing::warn!(
+                        "Verified email for member {} but couldn't invalidate other tokens: {}",
+                        consumed.member_id, e
+                    );
+                }
                 (true, "Your email has been verified. An administrator will review your account shortly.".to_string())
             }
         }

@@ -146,7 +146,22 @@ pub async fn setup_handler(
         })).into_response();
     }
 
-    // TODO: Store org_name in settings table (for now we just log it)
+    // Persist the org name to the org.name setting so it shows up in
+    // emails, banners, and the public site. Soft-fail: setup itself
+    // already succeeded, the admin can edit org.name later if this
+    // doesn't take.
+    let org_name = request.org_name.trim();
+    if !org_name.is_empty() {
+        let update = crate::domain::UpdateSettingRequest {
+            value: org_name.to_string(),
+            reason: Some("Set during initial setup".to_string()),
+        };
+        if let Err(e) = state.service_context.settings_service
+            .update_setting("org.name", update, member.id).await
+        {
+            tracing::warn!("Couldn't persist org.name during setup ({}); admin can edit later", e);
+        }
+    }
     tracing::info!("Setup complete for organization: {}", request.org_name);
 
     let mut headers = HeaderMap::new();

@@ -17,8 +17,11 @@ use crate::api::state::AppState;
 pub fn create_portal_routes(state: AppState) -> Router<AppState> {
     // Admin routes — gated at the middleware layer by require_admin_redirect.
     // Non-admins hitting these routes are redirected to /portal/dashboard.
+    // Note: there's no bare /portal/admin landing page. The admin nav
+    // dropdown links directly to /portal/admin/members, /events, etc.
+    // If a member ever hits /portal/admin directly, axum returns 404
+    // and the user can use the navigation.
     let admin_routes = Router::new()
-        .route("/", get(|| async { "Admin dashboard (TODO)" }))
         .route("/members", get(admin::members::admin_members_page))
         .route("/members/new", get(admin::members::admin_new_member_page))
         .route("/members/new", post(admin::members::admin_create_member))

@@ -260,9 +260,15 @@ pub async fn admin_activate_member(
     match state.service_context.member_repo.update(id, update).await {
         Ok(member) => {
             // Force re-auth so the member picks up their new status on next request.
-            let _ = state.service_context.auth_service
+            if let Err(e) = state.service_context.auth_service
                 .invalidate_all_sessions(member.id)
-                .await;
+                .await
+            {
+                tracing::error!(
+                    "Activated member {} but failed to invalidate sessions: {}",
+                    member.id, e
+                );
+            }
 
             state.service_context.audit_service.log(
                 Some(current_user.member.id),
@@ -352,9 +358,17 @@ pub async fn admin_suspend_member(
     match state.service_context.member_repo.update(id, update).await {
         Ok(member) => {
             // Kick the suspended member out of any active sessions immediately.
-            let _ = state.service_context.auth_service
+            // If invalidation fails, middleware still rejects Suspended status
+            // on the next request — but log so operators see the failure.
+            if let Err(e) = state.service_context.auth_service
                 .invalidate_all_sessions(member.id)
-                .await;
+                .await
+            {
+                tracing::error!(
+                    "Suspended member {} but failed to invalidate sessions: {}",
+                    member.id, e
+                );
+            }
 
             state.service_context.audit_service.log(
                 Some(current_user.member.id),
@@ -776,10 +790,18 @@ pub async fn admin_expire_now(
     match result {
         Ok(_) => {
             // Force-logout so the member sees the expiration immediately
-            // instead of on their next page load.
-            let _ = state.service_context.auth_service
+            // instead of on their next page load. Even if this fails,
+            // middleware re-checks status per-request and bounces them
+            // to /portal/restore — but log so operators notice.
+            if let Err(e) = state.service_context.auth_service
                 .invalidate_all_sessions(id)
-                .await;
+                .await
+            {
+                tracing::error!(
+                    "Expired dues for member {} but failed to invalidate sessions: {}",
+                    id, e
+                );
+            }
             state.service_context.audit_service.log(
                 Some(current_user.member.id),
                 "expire_member_now",
@@ -955,7 +977,17 @@ pub async fn admin_create_member(
                     notes: form.notes,
                     ..Default::default()
                 };
-                let _ = state.service_context.member_repo.update(member.id, update).await;
+                if let Err(e) = state.service_context.member_repo.update(member.id, update).await {
+                    // Member was created but the status/notes follow-up
+                    // failed. The admin will see the detail page with
+                    // the original (Pending, no notes) state — not
+                    // catastrophic but worth logging so they know why
+                    // the form values didn't take.
+                    tracing::error!(
+                        "Created member {} but follow-up status/notes update failed: {}",
+                        member.id, e
+                    );
+                }
             }
 
             state.service_context.audit_service.log(
@@ -1057,7 +1089,15 @@ pub async fn admin_resend_verification(
     let service = EmailTokenService::verification(state.service_context.db_pool.clone());
 
     // Invalidate any existing unconsumed tokens so only the newest link works.
-    let _ = service.invalidate_for_member(id).await;
+    // If invalidation fails, the new token is still valid and works — but
+    // any older tokens out in flight (e.g. in the member's spam folder
+    // from a previous send) might still work too. Worth logging.
+    if let Err(e) = service.invalidate_for_member(id).await {
+        tracing::warn!(
+            "Resending verification for {} but couldn't invalidate previous tokens: {}",
+            id, e
+        );
+    }
 
     let created = match service.create(id, chrono::Duration::hours(24)).await {
         Ok(c) => c,
