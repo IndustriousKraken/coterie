@@ -1,5 +1,7 @@
 pub mod auth;
+pub mod reset;
 pub mod setup;
+pub mod verify;
 
 use askama::Template;
 use axum::{

@@ -2,6 +2,7 @@ pub mod api;
 pub mod auth;
 pub mod config;
 pub mod domain;
+pub mod email;
 pub mod error;
 pub mod integrations;
 pub mod jobs;

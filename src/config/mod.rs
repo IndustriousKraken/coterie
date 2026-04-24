@@ -12,6 +12,8 @@ pub struct Settings {
     pub integrations: IntegrationConfig,
     #[serde(default)]
     pub seed: SeedConfig,
+    #[serde(default)]
+    pub email: EmailConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -135,6 +137,33 @@ pub struct SeedConfig {
     pub admin: AdminSeedConfig,
     pub test_users: Vec<TestUserConfig>,
     pub membership_types: Vec<MembershipTypeSeedConfig>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum EmailMode {
+    /// Emails are written to tracing logs only. Safe default for dev and
+    /// tests — no SMTP credentials required. The actual email body shows
+    /// up in the server log so you can grab links during local testing.
+    #[default]
+    Log,
+    /// Emails are sent via SMTP. Requires smtp_* and from_* fields.
+    Smtp,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct EmailConfig {
+    #[serde(default)]
+    pub mode: EmailMode,
+    /// "From" address used on outbound mail. Required for any real send.
+    pub from_address: Option<String>,
+    /// Human-readable display name paired with from_address.
+    pub from_name: Option<String>,
+    /// SMTP-only fields — ignored when mode = log.
+    pub smtp_host: Option<String>,
+    pub smtp_port: Option<u16>,
+    pub smtp_username: Option<String>,
+    pub smtp_password: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

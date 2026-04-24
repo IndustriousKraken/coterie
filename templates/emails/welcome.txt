@@ -1,0 +1,10 @@
+Hi {{ full_name }},
+
+Your membership at {{ org_name }} has been activated. You can now log in
+and access member-only content:
+
+{{ portal_url }}
+
+Welcome aboard!
+
+— {{ org_name }}

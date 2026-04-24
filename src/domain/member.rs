@@ -22,8 +22,18 @@ pub struct Member {
     pub stripe_customer_id: Option<String>,
     pub stripe_subscription_id: Option<String>,
     pub billing_mode: BillingMode,
+    /// When the member verified ownership of their email address.
+    /// NULL = never verified. New signups start NULL; existing members
+    /// were backfilled to their joined_at by migration 007.
+    pub email_verified_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl Member {
+    pub fn email_verified(&self) -> bool {
+        self.email_verified_at.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, PartialEq)]

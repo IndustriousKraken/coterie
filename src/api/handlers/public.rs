@@ -68,14 +68,61 @@ pub async fn signup(
             },
             _ => e,
         })?;
-    
+
+    // Send email verification. Soft-fail on send error: the account is
+    // already created and an admin can manually verify / resend later.
+    if let Err(e) = send_verification_email(&state, &member).await {
+        tracing::error!(
+            "Signup succeeded but verification email failed for member {}: {}",
+            member.id, e
+        );
+    }
+
     let response = SignupResponse {
         member_id: member.id,
         status: member.status,
-        message: "Registration successful. Your account is pending approval.".to_string(),
+        message: "Registration successful. Please check your email to verify your account.".to_string(),
     };
-    
+
     Ok((StatusCode::CREATED, Json(response)))
+}
+
+/// Generate a verification token and email the link to the member.
+async fn send_verification_email(
+    state: &AppState,
+    member: &crate::domain::Member,
+) -> Result<()> {
+    use crate::{auth::EmailTokenService, email::{self, templates::{VerifyHtml, VerifyText}}};
+
+    let service = EmailTokenService::verification(state.service_context.db_pool.clone());
+    let created = service.create(member.id, chrono::Duration::hours(24)).await?;
+
+    let verify_url = format!(
+        "{}/verify?token={}",
+        state.settings.server.base_url.trim_end_matches('/'),
+        created.token,
+    );
+    let org_name = org_name(state).await;
+    let html = VerifyHtml { full_name: &member.full_name, org_name: &org_name, verify_url: &verify_url };
+    let text = VerifyText { full_name: &member.full_name, org_name: &org_name, verify_url: &verify_url };
+    let message = email::message_from_templates(
+        member.email.clone(),
+        format!("Verify your email for {}", org_name),
+        &html,
+        &text,
+    )?;
+    state.service_context.email_sender.send(&message).await
+}
+
+/// Look up the configured organization name from settings, falling back
+/// to "Coterie" if unset.
+async fn org_name(state: &AppState) -> String {
+    state.service_context.settings_service
+        .get_value("organization.name")
+        .await
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Coterie".to_string())
 }
 
 pub async fn list_events(

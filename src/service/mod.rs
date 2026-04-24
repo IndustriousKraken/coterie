@@ -10,6 +10,7 @@ use sqlx::SqlitePool;
 use crate::repository::*;
 use crate::integrations::IntegrationManager;
 use crate::auth::{AuthService, CsrfService};
+use crate::email::EmailSender;
 use settings_service::SettingsService;
 use event_type_service::EventTypeService;
 use announcement_type_service::AnnouncementTypeService;
@@ -32,6 +33,7 @@ pub struct ServiceContext {
     pub event_type_service: Arc<EventTypeService>,
     pub announcement_type_service: Arc<AnnouncementTypeService>,
     pub membership_type_service: Arc<MembershipTypeService>,
+    pub email_sender: Arc<dyn EmailSender>,
     pub db_pool: SqlitePool,
 }
 
@@ -43,6 +45,7 @@ impl ServiceContext {
         payment_repo: Arc<dyn PaymentRepository>,
         integration_manager: Arc<IntegrationManager>,
         auth_service: Arc<AuthService>,
+        email_sender: Arc<dyn EmailSender>,
         db_pool: SqlitePool,
     ) -> Self {
         let settings_service = Arc::new(SettingsService::new(db_pool.clone()));
@@ -78,6 +81,7 @@ impl ServiceContext {
             event_type_service,
             announcement_type_service,
             membership_type_service,
+            email_sender,
             db_pool,
         }
     }

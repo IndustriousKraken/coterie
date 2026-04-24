@@ -28,6 +28,7 @@ struct MemberRow {
     stripe_customer_id: Option<String>,
     stripe_subscription_id: Option<String>,
     billing_mode: String,
+    email_verified_at: Option<NaiveDateTime>,
     created_at: NaiveDateTime,
     updated_at: NaiveDateTime,
 }
@@ -68,6 +69,7 @@ impl SqliteMemberRepository {
             stripe_customer_id: row.stripe_customer_id,
             stripe_subscription_id: row.stripe_subscription_id,
             billing_mode,
+            email_verified_at: row.email_verified_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
             updated_at: DateTime::from_naive_utc_and_offset(row.updated_at, Utc),
         })
@@ -173,7 +175,7 @@ impl MemberRepository for SqliteMemberRepository {
             r#"
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
-                   stripe_customer_id, stripe_subscription_id, billing_mode,
+                   stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
                    created_at, updated_at
             FROM members
             WHERE id = ?
@@ -195,7 +197,7 @@ impl MemberRepository for SqliteMemberRepository {
             r#"
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
-                   stripe_customer_id, stripe_subscription_id, billing_mode,
+                   stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
                    created_at, updated_at
             FROM members
             WHERE email = ?
@@ -217,7 +219,7 @@ impl MemberRepository for SqliteMemberRepository {
             r#"
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
-                   stripe_customer_id, stripe_subscription_id, billing_mode,
+                   stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
                    created_at, updated_at
             FROM members
             WHERE username = ?
@@ -239,7 +241,7 @@ impl MemberRepository for SqliteMemberRepository {
             r#"
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
-                   stripe_customer_id, stripe_subscription_id, billing_mode,
+                   stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
                    created_at, updated_at
             FROM members
             ORDER BY created_at DESC
@@ -264,7 +266,7 @@ impl MemberRepository for SqliteMemberRepository {
             r#"
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
-                   stripe_customer_id, stripe_subscription_id, billing_mode,
+                   stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
                    created_at, updated_at
             FROM members
             WHERE status = ?
@@ -288,7 +290,7 @@ impl MemberRepository for SqliteMemberRepository {
             r#"
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
-                   stripe_customer_id, stripe_subscription_id, billing_mode,
+                   stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
                    created_at, updated_at
             FROM members
             WHERE status = ?
@@ -374,6 +376,37 @@ impl MemberRepository for SqliteMemberRepository {
         self.find_by_id(id).await?.ok_or_else(|| {
             AppError::NotFound("Member not found".to_string())
         })
+    }
+
+    async fn mark_email_verified(&self, id: Uuid) -> Result<()> {
+        let id_str = id.to_string();
+        let now_naive = Utc::now().naive_utc();
+        sqlx::query(
+            "UPDATE members SET email_verified_at = ?, updated_at = ? \
+             WHERE id = ? AND email_verified_at IS NULL"
+        )
+            .bind(now_naive)
+            .bind(now_naive)
+            .bind(&id_str)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn update_password_hash(&self, id: Uuid, password_hash: &str) -> Result<()> {
+        let id_str = id.to_string();
+        let now_naive = Utc::now().naive_utc();
+        sqlx::query(
+            "UPDATE members SET password_hash = ?, updated_at = ? WHERE id = ?"
+        )
+            .bind(password_hash)
+            .bind(now_naive)
+            .bind(&id_str)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
     }
 
     async fn delete(&self, id: Uuid) -> Result<()> {

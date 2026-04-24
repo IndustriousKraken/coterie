@@ -36,6 +36,15 @@ pub fn create_web_routes(state: AppState) -> Router {
         .route("/login", post(templates::auth::login_handler))
         .route("/logout", post(templates::auth::logout_handler))
 
+        // Email verification landing (from signup email link)
+        .route("/verify", get(templates::verify::verify_handler))
+
+        // Password reset flow
+        .route("/forgot-password", get(templates::reset::forgot_password_page))
+        .route("/forgot-password", post(templates::reset::forgot_password_handler))
+        .route("/reset-password", get(templates::reset::reset_password_page))
+        .route("/reset-password", post(templates::reset::reset_password_handler))
+
         // Portal routes
         .nest("/portal", portal::create_portal_routes(state.clone()))
 

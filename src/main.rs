@@ -2,6 +2,7 @@ mod api;
 mod auth;
 mod config;
 mod domain;
+mod email;
 mod error;
 mod integrations;
 mod jobs;
@@ -95,6 +96,9 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Initialize email sender from config (Log in dev, SMTP in prod).
+    let email_sender = email::create_sender(&settings.email);
+
     // Create service context
     let service_context = Arc::new(ServiceContext::new(
         member_repo,
@@ -103,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
         payment_repo.clone(),
         integration_manager,
         auth_service,
+        email_sender,
         db_pool.clone(),
     ));
 

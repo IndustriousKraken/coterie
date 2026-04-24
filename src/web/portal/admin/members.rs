@@ -264,6 +264,15 @@ pub async fn admin_activate_member(
                 .invalidate_all_sessions(member.id)
                 .await;
 
+            // Send welcome email. Soft-fail: activation already succeeded,
+            // and an admin can always resend manually if it didn't arrive.
+            if let Err(e) = send_welcome_email(&state, &member).await {
+                tracing::error!(
+                    "Member {} activated but welcome email failed: {}",
+                    member.id, e
+                );
+            }
+
             let initials: String = member.full_name
                 .split_whitespace()
                 .filter_map(|word| word.chars().next())
@@ -888,4 +897,33 @@ pub async fn admin_create_member(
             )).into_response()
         }
     }
+}
+
+/// Send the welcome email after an admin activates a member.
+async fn send_welcome_email(
+    state: &AppState,
+    member: &crate::domain::Member,
+) -> crate::error::Result<()> {
+    use crate::email::{self, templates::{WelcomeHtml, WelcomeText}};
+
+    let portal_url = format!(
+        "{}/portal/dashboard",
+        state.settings.server.base_url.trim_end_matches('/'),
+    );
+    let org_name = state.service_context.settings_service
+        .get_value("organization.name")
+        .await
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Coterie".to_string());
+
+    let html = WelcomeHtml { full_name: &member.full_name, org_name: &org_name, portal_url: &portal_url };
+    let text = WelcomeText { full_name: &member.full_name, org_name: &org_name, portal_url: &portal_url };
+    let message = email::message_from_templates(
+        member.email.clone(),
+        format!("Welcome to {}", org_name),
+        &html,
+        &text,
+    )?;
+    state.service_context.email_sender.send(&message).await
 }
