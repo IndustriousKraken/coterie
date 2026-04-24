@@ -26,6 +26,11 @@ pub struct Member {
     /// NULL = never verified. New signups start NULL; existing members
     /// were backfilled to their joined_at by migration 007.
     pub email_verified_at: Option<DateTime<Utc>>,
+    /// When we last sent a "dues expiring soon" reminder for the
+    /// current dues cycle. Cleared on payment (when dues_paid_until
+    /// advances), set when the reminder goes out. One reminder per
+    /// cycle per member.
+    pub dues_reminder_sent_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

@@ -185,7 +185,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Spawn billing runner (runs every hour)
     {
-        let billing_service = Arc::new(service_context.billing_service(stripe_client.clone()));
+        let billing_service = Arc::new(service_context.billing_service(
+            stripe_client.clone(),
+            settings.server.base_url.clone(),
+        ));
         let runner = jobs::BillingRunner::new(billing_service, 60 * 60);
         runner.spawn();
         tracing::info!("Billing runner spawned");

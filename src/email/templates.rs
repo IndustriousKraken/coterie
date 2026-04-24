@@ -51,3 +51,23 @@ pub struct WelcomeText<'a> {
     pub org_name: &'a str,
     pub portal_url: &'a str,
 }
+
+#[derive(Template)]
+#[template(path = "emails/reminder.html")]
+pub struct ReminderHtml<'a> {
+    pub full_name: &'a str,
+    pub org_name: &'a str,
+    pub due_date: &'a str,
+    pub days_remaining: i64,
+    pub pay_url: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "emails/reminder.txt")]
+pub struct ReminderText<'a> {
+    pub full_name: &'a str,
+    pub org_name: &'a str,
+    pub due_date: &'a str,
+    pub days_remaining: i64,
+    pub pay_url: &'a str,
+}

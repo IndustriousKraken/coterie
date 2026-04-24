@@ -59,5 +59,15 @@ impl BillingRunner {
                 tracing::error!("Member expiration check error: {}", e);
             }
         }
+
+        // Send dues-expiring-soon reminders (idempotent per cycle via
+        // dues_reminder_sent_at flag, so running hourly is fine — only
+        // newly-eligible members get email).
+        match self.billing_service.send_dues_reminders().await {
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!("Dues reminder cycle error: {}", e);
+            }
+        }
     }
 }

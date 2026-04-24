@@ -1,0 +1,13 @@
+Hi {{ full_name }},
+
+This is a friendly reminder that your {{ org_name }} dues are due on
+{{ due_date }} ({{ days_remaining }} days away).
+
+You can pay your dues at any time through the member portal:
+
+{{ pay_url }}
+
+If you've already paid, you can safely ignore this message — it may
+just take a moment to process.
+
+— {{ org_name }}

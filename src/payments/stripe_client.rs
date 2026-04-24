@@ -267,12 +267,15 @@ impl StripeClient {
         };
 
         // Also restore Expired -> Active so the member regains access after
-        // paying. We only touch the status when it's currently Expired — we
-        // don't want to overwrite Suspended (admin-initiated) or Honorary.
+        // paying, and clear the dues_reminder_sent_at flag so the next
+        // dues cycle can trigger a fresh reminder. We only touch the
+        // status when it's currently Expired — we don't want to
+        // overwrite Suspended (admin-initiated) or Honorary.
         sqlx::query(
             "UPDATE members \
              SET dues_paid_until = ?, \
                  status = CASE WHEN status = 'Expired' THEN 'Active' ELSE status END, \
+                 dues_reminder_sent_at = NULL, \
                  updated_at = CURRENT_TIMESTAMP \
              WHERE id = ?"
         )
@@ -404,6 +407,7 @@ impl StripeClient {
                 "UPDATE members \
                  SET dues_paid_until = ?, \
                      status = CASE WHEN status = 'Expired' THEN 'Active' ELSE status END, \
+                     dues_reminder_sent_at = NULL, \
                      updated_at = CURRENT_TIMESTAMP \
                  WHERE id = ?"
             )

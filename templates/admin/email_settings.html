@@ -20,6 +20,19 @@
         <div class="mb-4 p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-900">{{ msg }}</div>
         {% endif %}
 
+        {% if password_undecryptable %}
+        <div class="mb-4 p-4 bg-amber-50 border-l-4 border-amber-500 rounded-md">
+            <h3 class="text-sm font-semibold text-amber-900">SMTP password can't be decrypted</h3>
+            <p class="mt-1 text-sm text-amber-800">
+                There's an encrypted SMTP password in the database, but Coterie
+                can't decrypt it. This almost always means <code class="font-mono bg-amber-100 px-1 rounded">session_secret</code>
+                was changed since the password was saved. Please re-enter the
+                SMTP password below and save — Coterie will re-encrypt it with
+                the current secret.
+            </p>
+        </div>
+        {% endif %}
+
         <!-- Status summary -->
         <div class="mb-6 bg-white rounded-lg shadow-sm p-5">
             <div class="flex items-start justify-between">
@@ -51,14 +64,19 @@
                         {% endif %}
                     </p>
                 </div>
-                <button
-                    hx-post="/portal/admin/settings/email/test"
-                    hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'
-                    hx-target="#test-result"
-                    hx-swap="outerHTML"
-                    class="flex-shrink-0 px-4 py-2 bg-gray-700 text-white rounded-md hover:bg-gray-800 text-sm font-medium">
-                    Send test email
-                </button>
+                <form class="flex-shrink-0 flex items-stretch gap-2"
+                      hx-post="/portal/admin/settings/email/test"
+                      hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'
+                      hx-target="#test-result"
+                      hx-swap="outerHTML">
+                    <input type="email" name="to"
+                           placeholder="optional: send to..."
+                           class="px-3 py-2 border border-gray-300 rounded-md text-sm w-56 focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    <button type="submit"
+                            class="px-4 py-2 bg-gray-700 text-white rounded-md hover:bg-gray-800 text-sm font-medium whitespace-nowrap">
+                        Send test
+                    </button>
+                </form>
             </div>
             <div id="test-result"></div>
         </div>

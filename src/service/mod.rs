@@ -90,6 +90,7 @@ impl ServiceContext {
     pub fn billing_service(
         &self,
         stripe_client: Option<Arc<crate::payments::StripeClient>>,
+        base_url: String,
     ) -> billing_service::BillingService {
         billing_service::BillingService::new(
             self.scheduled_payment_repo.clone(),
@@ -97,7 +98,9 @@ impl ServiceContext {
             self.saved_card_repo.clone(),
             self.membership_type_service.clone(),
             self.settings_service.clone(),
+            self.email_sender.clone(),
             stripe_client,
+            base_url,
             self.db_pool.clone(),
         )
     }

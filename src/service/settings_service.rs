@@ -279,6 +279,17 @@ impl SettingsService {
         })
     }
 
+    /// Returns `true` if the stored SMTP password exists but can't be
+    /// decrypted — almost always a sign that `session_secret` was
+    /// rotated. The admin UI uses this to show a clear warning banner.
+    pub async fn smtp_password_undecryptable(&self) -> bool {
+        let encrypted = self.get_value(email_keys::SMTP_PASSWORD).await.unwrap_or_default();
+        if encrypted.is_empty() {
+            return false;
+        }
+        self.crypto.decrypt(&encrypted).is_err()
+    }
+
     /// Persist an updated email configuration. Encrypts the SMTP
     /// password before storage; leaves it unchanged when `smtp_password`
     /// is `None` (e.g. the form was submitted without re-typing it).

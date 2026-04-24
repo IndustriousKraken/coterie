@@ -7,6 +7,7 @@ use crate::{
         configurable_types::BillingPeriod, BillingMode, Payment, PaymentMethod, PaymentStatus,
         ScheduledPayment, ScheduledPaymentStatus,
     },
+    email::EmailSender,
     error::{AppError, Result},
     payments::StripeClient,
     repository::{PaymentRepository, SavedCardRepository, ScheduledPaymentRepository},
@@ -20,7 +21,11 @@ pub struct BillingService {
     saved_card_repo: Arc<dyn SavedCardRepository>,
     membership_type_service: Arc<MembershipTypeService>,
     settings_service: Arc<SettingsService>,
+    email_sender: Arc<dyn EmailSender>,
     stripe_client: Option<Arc<StripeClient>>,
+    /// Absolute URL to this Coterie instance — used to build links in
+    /// outgoing reminder emails. Comes from ServerConfig::base_url.
+    base_url: String,
     db_pool: SqlitePool,
 }
 
@@ -31,7 +36,9 @@ impl BillingService {
         saved_card_repo: Arc<dyn SavedCardRepository>,
         membership_type_service: Arc<MembershipTypeService>,
         settings_service: Arc<SettingsService>,
+        email_sender: Arc<dyn EmailSender>,
         stripe_client: Option<Arc<StripeClient>>,
+        base_url: String,
         db_pool: SqlitePool,
     ) -> Self {
         Self {
@@ -40,7 +47,9 @@ impl BillingService {
             saved_card_repo,
             membership_type_service,
             settings_service,
+            email_sender,
             stripe_client,
+            base_url,
             db_pool,
         }
     }
@@ -357,6 +366,110 @@ impl BillingService {
         Ok(expired_count)
     }
 
+    /// Find members whose dues will lapse within the reminder window
+    /// but haven't been reminded yet this cycle, and email each one.
+    ///
+    /// Idempotent per cycle: we mark `dues_reminder_sent_at` on each
+    /// successful send, and the column is cleared by `extend_dues`
+    /// paths so the next cycle is eligible again. Safe to call
+    /// multiple times per day; only newly-eligible members get email.
+    pub async fn send_dues_reminders(&self) -> Result<u32> {
+        use crate::email::{self, templates::{ReminderHtml, ReminderText}};
+
+        let reminder_days = self.settings_service
+            .get_number("membership.reminder_days_before")
+            .await
+            .unwrap_or(7);
+
+        // Sanity clamp — a bogus large value would nag everyone at once.
+        let reminder_days = reminder_days.clamp(1, 90);
+
+        let org_name = self.settings_service
+            .get_value("org.name").await
+            .ok().filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Coterie".to_string());
+
+        let pay_url = format!(
+            "{}/portal/payments/new",
+            self.base_url.trim_end_matches('/'),
+        );
+
+        // Find Active members whose dues fall inside the window
+        //   now < dues_paid_until <= now + reminder_days
+        // and who haven't already been reminded for this cycle.
+        let rows: Vec<(String, String, String, chrono::NaiveDateTime)> = sqlx::query_as(
+            r#"
+            SELECT id, email, full_name, dues_paid_until
+            FROM members
+            WHERE status = 'Active'
+              AND bypass_dues = 0
+              AND dues_paid_until IS NOT NULL
+              AND dues_paid_until > CURRENT_TIMESTAMP
+              AND date(dues_paid_until) <= date(CURRENT_TIMESTAMP, '+' || ? || ' days')
+              AND dues_reminder_sent_at IS NULL
+            "#
+        )
+        .bind(reminder_days)
+        .fetch_all(&self.db_pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("DB error in reminder query: {}", e)))?;
+
+        let total = rows.len();
+        let mut sent = 0u32;
+        let now = Utc::now();
+
+        for (id_str, email_addr, full_name, due_naive) in rows {
+            let due = chrono::DateTime::<Utc>::from_naive_utc_and_offset(due_naive, Utc);
+            let due_formatted = due.format("%B %d, %Y").to_string();
+            let days_remaining = (due - now).num_days().max(0);
+
+            let html = ReminderHtml {
+                full_name: &full_name, org_name: &org_name,
+                due_date: &due_formatted, days_remaining, pay_url: &pay_url,
+            };
+            let text = ReminderText {
+                full_name: &full_name, org_name: &org_name,
+                due_date: &due_formatted, days_remaining, pay_url: &pay_url,
+            };
+            let message = match email::message_from_templates(
+                email_addr.clone(),
+                format!("Your {} dues are due soon", org_name),
+                &html, &text,
+            ) {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::error!("Reminder template render failed for {}: {}", id_str, e);
+                    continue;
+                }
+            };
+
+            match self.email_sender.send(&message).await {
+                Ok(()) => {
+                    // Mark sent only on success. If send fails we'll
+                    // retry on the next cycle.
+                    let _ = sqlx::query(
+                        "UPDATE members SET dues_reminder_sent_at = CURRENT_TIMESTAMP WHERE id = ?"
+                    )
+                    .bind(&id_str)
+                    .execute(&self.db_pool)
+                    .await;
+                    sent += 1;
+                }
+                Err(e) => {
+                    tracing::warn!("Reminder send failed for {}: {}", email_addr, e);
+                }
+            }
+        }
+
+        if total > 0 {
+            tracing::info!(
+                "Dues reminders: {}/{} sent (window: {} days)",
+                sent, total, reminder_days
+            );
+        }
+        Ok(sent)
+    }
+
     async fn extend_member_dues(&self, member_id: Uuid, membership_type_id: Uuid) -> Result<()> {
         let membership_type = self
             .membership_type_service
@@ -397,12 +510,13 @@ impl BillingService {
             BillingPeriod::Lifetime => chrono::DateTime::<Utc>::MAX_UTC,
         };
 
-        // Restore Expired -> Active on payment, but don't clobber Suspended
-        // (admin-initiated) or Honorary.
+        // Restore Expired -> Active on payment, clear the reminder flag,
+        // but don't clobber Suspended (admin-initiated) or Honorary.
         sqlx::query(
             "UPDATE members \
              SET dues_paid_until = ?, \
                  status = CASE WHEN status = 'Expired' THEN 'Active' ELSE status END, \
+                 dues_reminder_sent_at = NULL, \
                  updated_at = CURRENT_TIMESTAMP \
              WHERE id = ?",
         )

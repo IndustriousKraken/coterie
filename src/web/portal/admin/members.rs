@@ -418,6 +418,7 @@ pub struct AdminMemberDetailInfo {
     pub dues_paid_until: Option<String>,
     pub dues_expired: bool,
     pub bypass_dues: bool,
+    pub email_verified: bool,
     pub notes: String,
     pub billing_mode: String,
     pub stripe_customer_id: Option<String>,
@@ -489,6 +490,8 @@ pub async fn admin_member_detail_page(
         })
         .collect();
 
+    let email_verified = member.email_verified();
+
     let member_info = AdminMemberDetailInfo {
         id: member.id.to_string(),
         email: member.email.clone(),
@@ -501,6 +504,7 @@ pub async fn admin_member_detail_page(
         dues_paid_until: member.dues_paid_until.map(|d| d.format("%B %d, %Y").to_string()),
         dues_expired,
         bypass_dues: member.bypass_dues,
+        email_verified,
         notes: member.notes.unwrap_or_default(),
         billing_mode: member.billing_mode.as_str().to_string(),
         stripe_customer_id: member.stripe_customer_id,
@@ -926,4 +930,88 @@ async fn send_welcome_email(
         &text,
     )?;
     state.service_context.email_sender.send(&message).await
+}
+
+/// Admin-triggered: regenerate a verification token for an unverified
+/// member and email them the fresh link. Invalidates any previously
+/// outstanding tokens so the old email (if the member still has it)
+/// can't be used.
+pub async fn admin_resend_verification(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+    Path(member_id): Path<String>,
+) -> axum::response::Response {
+    use crate::{
+        auth::EmailTokenService,
+        email::{self, templates::{VerifyHtml, VerifyText}},
+    };
+
+    if !is_admin(&current_user.member) {
+        return resend_result(false, "Access denied").into_response();
+    }
+
+    let id = match uuid::Uuid::parse_str(&member_id) {
+        Ok(id) => id,
+        Err(_) => return resend_result(false, "Invalid member ID").into_response(),
+    };
+
+    let member = match state.service_context.member_repo.find_by_id(id).await {
+        Ok(Some(m)) => m,
+        Ok(None) => return resend_result(false, "Member not found").into_response(),
+        Err(e) => return resend_result(false, &format!("DB error: {}", e)).into_response(),
+    };
+
+    if member.email_verified() {
+        return resend_result(false, "Member's email is already verified").into_response();
+    }
+
+    let service = EmailTokenService::verification(state.service_context.db_pool.clone());
+
+    // Invalidate any existing unconsumed tokens so only the newest link works.
+    let _ = service.invalidate_for_member(id).await;
+
+    let created = match service.create(id, chrono::Duration::hours(24)).await {
+        Ok(c) => c,
+        Err(e) => return resend_result(false, &format!("Token create failed: {}", e)).into_response(),
+    };
+
+    let org_name = state.service_context.settings_service
+        .get_value("org.name").await
+        .ok().filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Coterie".to_string());
+    let verify_url = format!(
+        "{}/verify?token={}",
+        state.settings.server.base_url.trim_end_matches('/'),
+        created.token,
+    );
+    let html = VerifyHtml { full_name: &member.full_name, org_name: &org_name, verify_url: &verify_url };
+    let text = VerifyText { full_name: &member.full_name, org_name: &org_name, verify_url: &verify_url };
+
+    let message = match email::message_from_templates(
+        member.email.clone(),
+        format!("Verify your email for {}", org_name),
+        &html,
+        &text,
+    ) {
+        Ok(m) => m,
+        Err(e) => return resend_result(false, &format!("Render failed: {}", e)).into_response(),
+    };
+
+    match state.service_context.email_sender.send(&message).await {
+        Ok(()) => resend_result(true, &format!("Verification email resent to {}.", member.email)).into_response(),
+        Err(e) => resend_result(false, &format!("Send failed: {}", e)).into_response(),
+    }
+}
+
+fn resend_result(ok: bool, detail: &str) -> axum::response::Html<String> {
+    let escaped = crate::web::escape_html(detail);
+    let (bg, fg) = if ok {
+        ("bg-green-50", "text-green-900")
+    } else {
+        ("bg-red-50", "text-red-900")
+    };
+    axum::response::Html(format!(
+        r#"<div id="verify-resend-result" class="mt-2 p-2 {bg} {fg} rounded text-sm">{detail}</div>"#,
+        bg = bg, fg = fg, detail = escaped,
+    ))
 }

@@ -43,6 +43,10 @@ pub struct AdminEmailSettingsTemplate {
     pub last_test_status: String,
     pub last_test_at: String,
     pub last_test_error: String,
+    /// True when the stored SMTP password exists but can't be decrypted
+    /// (usually means session_secret was rotated). Triggers a banner
+    /// telling the admin they need to re-enter it.
+    pub password_undecryptable: bool,
     pub flash_success: Option<String>,
     pub flash_error: Option<String>,
 }
@@ -76,6 +80,12 @@ async fn render_page(
         .generate_token(&session_info.session_id)
         .await
         .unwrap_or_else(|_| String::new());
+
+    // If the password is undecryptable (session_secret rotated), we
+    // still want to show the page — fall back to default config so
+    // the admin can see the warning banner and re-enter credentials.
+    let password_undecryptable = state.service_context.settings_service
+        .smtp_password_undecryptable().await;
 
     let cfg = state.service_context.settings_service
         .get_email_config()
@@ -111,6 +121,7 @@ async fn render_page(
         last_test_status,
         last_test_at,
         last_test_error,
+        password_undecryptable,
         flash_success,
         flash_error,
     }).into_response()
@@ -215,12 +226,23 @@ pub async fn update_email_settings(
     }
 }
 
-/// Send a test email to the logged-in admin's address using the
-/// current (live, DB-sourced) configuration. Returns an HTMX-friendly
-/// fragment that replaces the status area on the settings page.
+#[derive(Debug, Deserialize, Default)]
+pub struct TestEmailForm {
+    /// Optional override: send the test to this address instead of the
+    /// logged-in admin's. Handy for verifying delivery to a throwaway
+    /// Gmail / Outlook / etc. inbox without cluttering your real inbox.
+    #[serde(default)]
+    pub to: String,
+}
+
+/// Send a test email using the current (live, DB-sourced) configuration.
+/// Defaults to the logged-in admin's address; optionally overridden via
+/// the `to` form field. Returns an HTMX-friendly fragment that replaces
+/// the status area on the settings page.
 pub async fn send_test_email(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
+    Form(form): Form<TestEmailForm>,
 ) -> impl IntoResponse {
     if !is_admin(&current_user.member) {
         return axum::response::Html(
@@ -228,7 +250,18 @@ pub async fn send_test_email(
         );
     }
 
-    let admin_email = current_user.member.email.clone();
+    // Prefer the override, fall back to the admin's own address.
+    let admin_email = match form.to.trim() {
+        "" => current_user.member.email.clone(),
+        other => {
+            // Cheap validation — a real RFC 5322 parser is overkill here,
+            // and lettre will reject malformed addresses downstream.
+            if !other.contains('@') || other.contains(|c: char| c.is_whitespace()) {
+                return test_result_html(false, "Invalid email address.");
+            }
+            other.to_string()
+        }
+    };
     let full_name = current_user.member.full_name.clone();
 
     // Look up org name for the subject line / body.
