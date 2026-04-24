@@ -29,14 +29,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build release binary
-        run: cargo build --release
-
-      - name: Build Tailwind CSS
-        run: |
-          curl -sL https://github.com/tailwindlabs/tailwindcss/releases/download/v3.4.17/tailwindcss-linux-x64 -o tailwindcss
-          chmod +x tailwindcss
-          ./tailwindcss -i static/input.css -o static/style.css --minify
+      - name: Build release (CSS + Rust binary)
+        run: make release
 
       - name: Prepare deployment files
         run: |

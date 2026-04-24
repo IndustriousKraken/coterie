@@ -5,12 +5,20 @@ Status: Active Development, alpha.
 ## Quick Start
 
 ```bash
+# First-time setup (downloads Tailwind CLI, builds CSS)
+make setup
+
+# Copy and configure environment
+cp .env.example .env  # then edit .env with your values
+
 # Seed the database with test data (optional, clears existing data)
-cargo run --bin seed
+make seed
 
 # Run the server
-cargo run --bin coterie
+make dev
 ```
+
+Run `make help` to see all available targets.
 
 **Server runs at**: http://127.0.0.1:8080
 
