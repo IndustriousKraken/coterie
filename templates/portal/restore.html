@@ -1,0 +1,74 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Restore Account - Coterie{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="max-w-3xl mx-auto">
+        <!-- Expired banner -->
+        <div class="bg-red-50 border-l-4 border-red-500 rounded-md p-6 mb-6">
+            <div class="flex items-start">
+                <div class="flex-shrink-0">
+                    <svg class="h-6 w-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                    </svg>
+                </div>
+                <div class="ml-3">
+                    <h3 class="text-lg font-semibold text-red-900">Your membership has expired</h3>
+                    {% if let Some(expired_on) = expired_on %}
+                    <p class="mt-1 text-sm text-red-800">
+                        Your dues lapsed on <strong>{{ expired_on }}</strong>. Pay now to restore
+                        your account and regain full access.
+                    </p>
+                    {% else %}
+                    <p class="mt-1 text-sm text-red-800">
+                        Pay now to restore your account and regain full access.
+                    </p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Pay now CTA -->
+        <div class="bg-white rounded-lg shadow-sm p-6 mb-6">
+            <h2 class="text-xl font-semibold text-gray-900 mb-2">Pay now</h2>
+            <p class="text-sm text-gray-600 mb-4">
+                Use a saved card or a new card to pay your dues. Your account will be
+                reactivated as soon as payment is confirmed.
+            </p>
+            <div class="flex gap-3">
+                <a href="/portal/payments/new"
+                   class="inline-flex items-center px-5 py-2.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+                    Pay dues
+                </a>
+                <a href="/portal/payments/methods"
+                   class="inline-flex items-center px-5 py-2.5 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 text-sm font-medium">
+                    Manage cards
+                </a>
+            </div>
+        </div>
+
+        <!-- Past payments -->
+        <div class="bg-white rounded-lg shadow-sm">
+            <div class="px-6 py-4 border-b">
+                <h2 class="text-lg font-semibold text-gray-900">Past payments</h2>
+            </div>
+            <div id="payments-list"
+                 hx-get="/portal/api/payments/list"
+                 hx-trigger="load"
+                 hx-swap="innerHTML">
+                <div class="p-6 text-center text-gray-500 text-sm">Loading&hellip;</div>
+            </div>
+        </div>
+
+        <div class="mt-6 text-center">
+            <form hx-post="/logout" hx-target="body">
+                <button type="submit" class="text-sm text-gray-500 hover:text-gray-700 underline">
+                    Log out
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

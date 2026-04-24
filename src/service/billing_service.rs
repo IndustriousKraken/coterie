@@ -397,8 +397,14 @@ impl BillingService {
             BillingPeriod::Lifetime => chrono::DateTime::<Utc>::MAX_UTC,
         };
 
+        // Restore Expired -> Active on payment, but don't clobber Suspended
+        // (admin-initiated) or Honorary.
         sqlx::query(
-            "UPDATE members SET dues_paid_until = ?, status = 'Active', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            "UPDATE members \
+             SET dues_paid_until = ?, \
+                 status = CASE WHEN status = 'Expired' THEN 'Active' ELSE status END, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?",
         )
         .bind(new_dues_date)
         .bind(member_id.to_string())

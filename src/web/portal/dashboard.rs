@@ -28,6 +28,59 @@ pub struct MemberDashboardTemplate {
     pub member: MemberInfo,
 }
 
+/// Async-loaded banner on every portal page. Shows a warning when dues
+/// are past due but the member is still within grace period (status is
+/// still Active). Returns empty HTML when dues are current or the
+/// member is already Expired (their dedicated /portal/restore page
+/// already tells them).
+pub async fn dues_warning(
+    Extension(current_user): Extension<CurrentUser>,
+) -> impl IntoResponse {
+    use crate::domain::MemberStatus;
+
+    let member = &current_user.member;
+
+    // Nothing to warn about for Honorary members or bypass-dues accounts.
+    if member.status != MemberStatus::Active || member.bypass_dues {
+        return axum::response::Html(String::new());
+    }
+
+    let now = chrono::Utc::now();
+    let Some(due) = member.dues_paid_until else {
+        return axum::response::Html(String::new());
+    };
+
+    if due > now {
+        // Dues are current.
+        return axum::response::Html(String::new());
+    }
+
+    // Past due but still Active — within grace period. Nudge them.
+    let days_overdue = (now - due).num_days();
+    let overdue_text = match days_overdue {
+        0 => "today".to_string(),
+        1 => "1 day ago".to_string(),
+        n => format!("{} days ago", n),
+    };
+
+    let html = format!(
+        r#"<div id="dues-banner" class="bg-amber-50 border-l-4 border-amber-500 px-4 py-3">
+            <div class="max-w-7xl mx-auto flex items-center justify-between">
+                <p class="text-sm text-amber-900">
+                    <strong>Dues overdue.</strong>
+                    Your membership dues lapsed {}. Please pay soon to avoid losing access.
+                </p>
+                <a href="/portal/payments/new"
+                   class="ml-4 flex-shrink-0 text-sm font-medium text-amber-900 underline hover:text-amber-700">
+                    Pay now
+                </a>
+            </div>
+        </div>"#,
+        crate::web::escape_html(&overdue_text),
+    );
+    axum::response::Html(html)
+}
+
 pub async fn member_dashboard(
     Extension(current_user): Extension<CurrentUser>,
 ) -> impl IntoResponse {

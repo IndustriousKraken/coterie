@@ -5,6 +5,7 @@ mod donations;
 mod events;
 mod payments;
 mod profile;
+mod restore;
 
 use axum::{
     Router,
@@ -77,30 +78,21 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
             crate::api::middleware::auth::require_admin_redirect,
         ));
 
-    // Member routes — any Active/Honorary user can access.
-    let member_routes = Router::new()
-        .route("/dashboard", get(dashboard::member_dashboard))
-        .route("/events", get(events::events_page))
-        .route("/announcements", get(announcements::announcements_page))
-        .route("/payments", get(payments::payments_page))
+    // Restoration routes — allow Expired members alongside Active/Honorary.
+    // These are the narrow set of routes an Expired member needs to pay
+    // their dues and reactivate their account. Nothing else.
+    let restorable_routes = Router::new()
+        .route("/restore", get(restore::restore_page))
+        // Dues-warning banner (loaded on every portal page by base.html)
+        .route("/api/dues-warning", get(dashboard::dues_warning))
+        // Payment pages
         .route("/payments/new", get(payments::payment_new_page))
         .route("/payments/methods", get(payments::payment_methods_page))
         .route("/payments/success", get(payments::payment_success_page))
         .route("/payments/cancel", get(payments::payment_cancel_page))
-        .route("/donate", get(donations::donate_page))
-        .route("/profile", get(profile::profile_page))
-        .route("/profile", post(profile::update_profile))
-        .route("/profile/password", post(profile::update_password))
-        // API endpoints (HTMX fragments)
-        .route("/api/events/upcoming", get(dashboard::upcoming_events))
-        .route("/api/events/list", get(events::events_list_api))
-        .route("/api/events/:id/rsvp", post(events::rsvp_event))
-        .route("/api/events/:id/cancel", post(events::cancel_rsvp_event))
-        .route("/api/announcements/list", get(announcements::announcements_list_api))
-        .route("/api/payments/recent", get(dashboard::recent_payments))
+        // Payment/card APIs
         .route("/api/payments/checkout", post(payments::checkout_api))
         .route("/api/payments/charge-saved", post(payments::charge_saved_card_api))
-        .route("/api/donate", post(donations::donate_api))
         .route("/api/payments/list", get(payments::payments_list_api))
         .route("/api/payments/summary", get(payments::payments_summary_api))
         .route("/api/payments/dues-status", get(payments::dues_status_api))
@@ -115,12 +107,41 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         ))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
+            crate::api::middleware::auth::require_restorable,
+        ));
+
+    // Active-only routes — standard member pages. Expired members hitting
+    // these get bounced to /portal/restore by require_auth_redirect.
+    let active_only_routes = Router::new()
+        .route("/dashboard", get(dashboard::member_dashboard))
+        .route("/events", get(events::events_page))
+        .route("/announcements", get(announcements::announcements_page))
+        .route("/payments", get(payments::payments_page))
+        .route("/donate", get(donations::donate_page))
+        .route("/profile", get(profile::profile_page))
+        .route("/profile", post(profile::update_profile))
+        .route("/profile/password", post(profile::update_password))
+        // API endpoints (HTMX fragments) — for Active members only
+        .route("/api/events/upcoming", get(dashboard::upcoming_events))
+        .route("/api/events/list", get(events::events_list_api))
+        .route("/api/events/:id/rsvp", post(events::rsvp_event))
+        .route("/api/events/:id/cancel", post(events::cancel_rsvp_event))
+        .route("/api/announcements/list", get(announcements::announcements_list_api))
+        .route("/api/payments/recent", get(dashboard::recent_payments))
+        .route("/api/donate", post(donations::donate_api))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::api::middleware::auth::require_csrf,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
             crate::api::middleware::auth::require_auth_redirect,
         ));
 
     Router::new()
         .nest("/admin", admin_routes)
-        .merge(member_routes)
+        .merge(restorable_routes)
+        .merge(active_only_routes)
 }
 
 // Shared types used across portal modules

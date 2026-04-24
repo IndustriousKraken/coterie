@@ -69,13 +69,17 @@ pub async fn require_auth(
 
 /// Like require_auth but redirects to login page instead of returning Unauthorized.
 /// Used for portal routes where we want a user-friendly redirect.
+///
+/// Expired members are redirected to `/portal/restore` (the account
+/// restoration flow) rather than `/login` — they need a path to update
+/// payment info. Suspended/Pending members shouldn't reach here because
+/// the login handler rejects them before a session is created.
 pub async fn require_auth_redirect(
     State(state): State<AppState>,
     jar: CookieJar,
     mut request: Request,
     next: Next,
 ) -> Response {
-    // Capture the original URI for redirect back after login
     let original_uri = request.uri().clone();
 
     let session_cookie = match jar.get("session") {
@@ -90,22 +94,64 @@ pub async fn require_auth_redirect(
         _ => return redirect_to_login(&original_uri),
     };
 
-    // Get member from database
     let member_repo = SqliteMemberRepository::new(state.service_context.db_pool.clone());
     let member = match member_repo.find_by_id(session.member_id).await {
         Ok(Some(m)) => m,
         _ => return redirect_to_login(&original_uri),
     };
 
-    // Check if member is active
     match member.status {
-        MemberStatus::Active | MemberStatus::Honorary => {
-            // Member is allowed
+        MemberStatus::Active | MemberStatus::Honorary => {}
+        MemberStatus::Expired => {
+            // Expired: send them to the restoration flow rather than bouncing
+            // to login. The restoration routes use require_restorable and
+            // will let them reach the pay-to-restore page.
+            return Redirect::to("/portal/restore").into_response();
         }
         _ => return redirect_to_login(&original_uri),
     }
 
-    // Insert current user and session info into request extensions
+    request.extensions_mut().insert(CurrentUser { member });
+    request.extensions_mut().insert(SessionInfo { session_id: session.id.clone() });
+
+    next.run(request).await
+}
+
+/// Allows Active, Honorary, AND Expired members through. Used on the
+/// narrow restoration-flow routes (/portal/restore, payment pages, card
+/// management) so Expired members can update payment and restore their
+/// account. Active/Honorary members pass through unaffected.
+pub async fn require_restorable(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let original_uri = request.uri().clone();
+
+    let session_cookie = match jar.get("session") {
+        Some(cookie) => cookie,
+        None => return redirect_to_login(&original_uri),
+    };
+
+    let auth_service = &state.service_context.auth_service;
+
+    let session = match auth_service.validate_session(session_cookie.value()).await {
+        Ok(Some(s)) => s,
+        _ => return redirect_to_login(&original_uri),
+    };
+
+    let member_repo = SqliteMemberRepository::new(state.service_context.db_pool.clone());
+    let member = match member_repo.find_by_id(session.member_id).await {
+        Ok(Some(m)) => m,
+        _ => return redirect_to_login(&original_uri),
+    };
+
+    match member.status {
+        MemberStatus::Active | MemberStatus::Honorary | MemberStatus::Expired => {}
+        _ => return redirect_to_login(&original_uri),
+    }
+
     request.extensions_mut().insert(CurrentUser { member });
     request.extensions_mut().insert(SessionInfo { session_id: session.id.clone() });
 

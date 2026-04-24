@@ -48,11 +48,24 @@ pub async fn login_page(
 ) -> Response {
     // Check if user already has a valid session
     if let Some(session_cookie) = jar.get("session") {
-        if let Ok(Some(_session)) = state.service_context.auth_service
+        if let Ok(Some(session)) = state.service_context.auth_service
             .validate_session(session_cookie.value())
             .await
         {
-            return Redirect::to("/portal/dashboard").into_response();
+            // Already logged in — send Expired members to the restoration
+            // page directly, everyone else to the dashboard.
+            use crate::domain::MemberStatus;
+            let dest = match state.service_context.member_repo
+                .find_by_id(session.member_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|m| m.status)
+            {
+                Some(MemberStatus::Expired) => "/portal/restore",
+                _ => "/portal/dashboard",
+            };
+            return Redirect::to(dest).into_response();
         }
     }
 
@@ -118,6 +131,28 @@ pub async fn login_handler(
         };
 
         if password_valid {
+            // Reject login for Pending/Suspended — they shouldn't have a
+            // portal session at all. Expired members are allowed in so they
+            // can reach the restoration flow and update payment.
+            use crate::domain::MemberStatus;
+            match member.status {
+                MemberStatus::Active | MemberStatus::Honorary | MemberStatus::Expired => {}
+                MemberStatus::Pending => {
+                    return (StatusCode::FORBIDDEN, Json(LoginResponse {
+                        success: false,
+                        redirect: None,
+                        error: Some("Your account is awaiting admin approval.".to_string()),
+                    })).into_response();
+                }
+                MemberStatus::Suspended => {
+                    return (StatusCode::FORBIDDEN, Json(LoginResponse {
+                        success: false,
+                        redirect: None,
+                        error: Some("Your account has been suspended. Please contact an administrator.".to_string()),
+                    })).into_response();
+                }
+            }
+
             // Invalidate any pre-existing sessions for this member before
             // creating the new one. Prevents session fixation: if an attacker
             // planted a cookie in the victim's browser, that token is now
@@ -151,12 +186,17 @@ pub async fn login_handler(
                 token, max_age_secs, secure_attr,
             );
 
-            // Use redirect URL if provided, otherwise default to dashboard.
-            // Only allow paths under /portal/ (with the slash) to prevent
-            // open-redirect via crafted paths like "/portalevil.com".
+            // Expired members go straight to the restoration flow. Active/
+            // Honorary go to the originally-requested URL (if validated) or
+            // the dashboard. Path validation guards against open-redirect.
+            let default_destination = if member.status == MemberStatus::Expired {
+                "/portal/restore".to_string()
+            } else {
+                "/portal/dashboard".to_string()
+            };
             let redirect_url = credentials.redirect_url
                 .filter(|url| url.starts_with("/portal/") && !url.contains(".."))
-                .unwrap_or_else(|| "/portal/dashboard".to_string());
+                .unwrap_or(default_destination);
 
             let mut headers = HeaderMap::new();
             headers.insert(header::SET_COOKIE, cookie_value.parse().unwrap());

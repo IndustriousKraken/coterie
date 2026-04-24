@@ -266,7 +266,16 @@ impl StripeClient {
             BillingPeriod::Lifetime => chrono::DateTime::<Utc>::MAX_UTC,
         };
 
-        sqlx::query("UPDATE members SET dues_paid_until = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        // Also restore Expired -> Active so the member regains access after
+        // paying. We only touch the status when it's currently Expired — we
+        // don't want to overwrite Suspended (admin-initiated) or Honorary.
+        sqlx::query(
+            "UPDATE members \
+             SET dues_paid_until = ?, \
+                 status = CASE WHEN status = 'Expired' THEN 'Active' ELSE status END, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?"
+        )
             .bind(new_dues_date)
             .bind(member_id.to_string())
             .execute(&self.db_pool)
@@ -387,11 +396,16 @@ impl StripeClient {
         if let Some(slug) = membership_type_slug {
             self.extend_member_dues(member_uuid, &slug).await?;
         } else {
-            // Fallback: extend by 1 month (conservative default for subscriptions)
+            // Fallback: extend by 1 month (conservative default for subscriptions).
+            // Restore Expired -> Active but don't overwrite Suspended.
             let now = Utc::now();
             let new_date = now.checked_add_months(chrono::Months::new(1)).unwrap_or(now);
             sqlx::query(
-                "UPDATE members SET dues_paid_until = ?, status = 'Active', updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                "UPDATE members \
+                 SET dues_paid_until = ?, \
+                     status = CASE WHEN status = 'Expired' THEN 'Active' ELSE status END, \
+                     updated_at = CURRENT_TIMESTAMP \
+                 WHERE id = ?"
             )
             .bind(new_date)
             .bind(&member_id)

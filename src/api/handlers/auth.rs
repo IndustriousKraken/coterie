@@ -58,6 +58,16 @@ pub async fn login(
         .await?
         .ok_or(AppError::Unauthorized)?;
 
+    // Reject login for Pending/Suspended. Expired is allowed through so
+    // the member can reach the restoration flow and update payment.
+    use crate::domain::MemberStatus;
+    match member.status {
+        MemberStatus::Active | MemberStatus::Honorary | MemberStatus::Expired => {}
+        MemberStatus::Pending | MemberStatus::Suspended => {
+            return Err(AppError::Forbidden);
+        }
+    }
+
     // Invalidate pre-existing sessions to prevent session fixation.
     let _ = app.service_context.auth_service
         .invalidate_all_sessions(member.id)

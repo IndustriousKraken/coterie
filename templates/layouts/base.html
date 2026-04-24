@@ -140,7 +140,15 @@
     
     <!-- Toast notifications -->
     <div id="toast-container" class="fixed top-4 right-4 z-50"></div>
-    
+
+    {% if current_user.is_some() %}
+    <!-- Dues warning banner (loaded async; empty when dues are current) -->
+    <div id="dues-banner"
+         hx-get="/portal/api/dues-warning"
+         hx-trigger="load"
+         hx-swap="outerHTML"></div>
+    {% endif %}
+
     <!-- Main content -->
     <main class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
         {% block content %}{% endblock %}
