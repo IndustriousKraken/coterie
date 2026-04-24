@@ -135,6 +135,25 @@ pub async fn admin_update_setting(
         ).await;
     }
 
+    // Capture the old value (before the update) so the audit-log diff
+    // shows "was X, now Y". Sensitive settings get [REDACTED] on both
+    // sides — we don't want SMTP passwords or similar in the log.
+    let prior = state.service_context.settings_service
+        .get_setting(&form.setting_key)
+        .await
+        .ok();
+    let is_sensitive = prior.as_ref().map(|s| s.is_sensitive).unwrap_or(false);
+    let old_value: String = if is_sensitive {
+        "[REDACTED]".to_string()
+    } else {
+        prior.map(|s| s.value).unwrap_or_default()
+    };
+    let new_value_for_audit: String = if is_sensitive {
+        "[REDACTED]".to_string()
+    } else {
+        form.setting_value.clone()
+    };
+
     // Update the setting
     let update_request = UpdateSettingRequest {
         value: form.setting_value.clone(),
@@ -147,16 +166,17 @@ pub async fn admin_update_setting(
     {
         Ok(_) => {
             let display_name = form.setting_key.split('.').last().unwrap_or(&form.setting_key);
-            // Log to unified audit_logs (the settings_audit table inside
-            // SettingsService keeps detailed before/after values; this
-            // row is just so admins see all changes in one place).
+            // Log to unified audit_logs with both before and after so
+            // the audit page can render the diff inline. (settings_audit
+            // also keeps the same data for richer queries; this row is
+            // for the unified view.)
             state.service_context.audit_service.log(
                 Some(current_user.member.id),
                 "update_setting",
                 "setting",
                 &form.setting_key,
-                None,
-                None,
+                Some(&old_value),
+                Some(&new_value_for_audit),
                 None,
             ).await;
             admin_settings_page_inner(
