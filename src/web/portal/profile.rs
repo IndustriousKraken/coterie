@@ -125,13 +125,12 @@ pub async fn update_password(
         );
     }
 
-    // Validate password length
-    if form.new_password.len() < 8 {
-        return axum::response::Html(
-            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">
-                Password must be at least 8 characters
-            </div>"#.to_string()
-        );
+    // Validate password complexity
+    if let Err(msg) = crate::auth::validate_password(&form.new_password) {
+        return axum::response::Html(format!(
+            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">{}</div>"#,
+            crate::web::escape_html(msg)
+        ));
     }
 
     // Verify current password

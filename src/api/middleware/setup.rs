@@ -38,14 +38,8 @@ pub async fn require_setup(
 
 /// Check if at least one admin user exists in the database
 async fn check_admin_exists(state: &AppState) -> bool {
-    // Query for any member with "ADMIN" in their notes
     let result: Result<Option<(i64,)>, _> = sqlx::query_as(
-        r#"
-        SELECT 1 as exists_flag
-        FROM members
-        WHERE notes LIKE '%ADMIN%'
-        LIMIT 1
-        "#,
+        "SELECT 1 as exists_flag FROM members WHERE is_admin = 1 LIMIT 1",
     )
     .fetch_optional(&state.service_context.db_pool)
     .await;

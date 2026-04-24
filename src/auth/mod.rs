@@ -105,6 +105,24 @@ impl AuthService {
     }
 }
 
+/// Validate password complexity. Returns `Ok(())` if the password meets
+/// requirements, or `Err(message)` describing what's missing.
+pub fn validate_password(password: &str) -> std::result::Result<(), &'static str> {
+    if password.len() < 10 {
+        return Err("Password must be at least 10 characters");
+    }
+    if !password.chars().any(|c| c.is_ascii_uppercase()) {
+        return Err("Password must contain at least one uppercase letter");
+    }
+    if !password.chars().any(|c| c.is_ascii_lowercase()) {
+        return Err("Password must contain at least one lowercase letter");
+    }
+    if !password.chars().any(|c| c.is_ascii_digit()) {
+        return Err("Password must contain at least one number");
+    }
+    Ok(())
+}
+
 fn generate_token() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 32];

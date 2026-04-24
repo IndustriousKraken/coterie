@@ -45,9 +45,9 @@ pub async fn signup(
         return Err(AppError::BadRequest("Invalid email format".to_string()));
     }
     
-    // Validate password strength (minimum 8 characters)
-    if request.password.len() < 8 {
-        return Err(AppError::BadRequest("Password must be at least 8 characters".to_string()));
+    // Validate password strength
+    if let Err(msg) = crate::auth::validate_password(&request.password) {
+        return Err(AppError::BadRequest(msg.to_string()));
     }
     
     // Create member with Pending status
@@ -189,6 +189,13 @@ pub async fn private_event_count(
     Ok(Json(PrivateEventCount { count }))
 }
 
+/// Escape text for use inside XML CDATA sections. The only sequence that
+/// can break a CDATA block is `]]>`, which we split into two adjacent
+/// CDATA sections: `]]]]><![CDATA[>`.
+fn escape_cdata(s: &str) -> String {
+    s.replace("]]>", "]]]]><![CDATA[>")
+}
+
 // Helper function to generate RSS feed
 fn generate_rss_feed(announcements: &[Announcement]) -> String {
     let mut rss = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -199,23 +206,33 @@ fn generate_rss_feed(announcements: &[Announcement]) -> String {
     <description>Latest announcements from Coterie</description>
     <language>en-us</language>
     <lastBuildDate>"#);
-    
+
     rss.push_str(&Utc::now().to_rfc2822());
     rss.push_str("</lastBuildDate>\n");
-    
+
     for announcement in announcements.iter().take(20) {
         if let Some(published) = announcement.published_at {
             rss.push_str("    <item>\n");
-            rss.push_str(&format!("        <title><![CDATA[{}]]></title>\n", announcement.title));
-            rss.push_str(&format!("        <description><![CDATA[{}]]></description>\n", announcement.content));
+            rss.push_str(&format!("        <title><![CDATA[{}]]></title>\n", escape_cdata(&announcement.title)));
+            rss.push_str(&format!("        <description><![CDATA[{}]]></description>\n", escape_cdata(&announcement.content)));
             rss.push_str(&format!("        <guid isPermaLink=\"false\">{}</guid>\n", announcement.id));
             rss.push_str(&format!("        <pubDate>{}</pubDate>\n", published.to_rfc2822()));
             rss.push_str("    </item>\n");
         }
     }
-    
+
     rss.push_str("</channel>\n</rss>");
     rss
+}
+
+/// Escape a text value for iCal (RFC 5545 Section 3.3.11).
+/// Backslashes, semicolons, commas, and newlines must be escaped.
+fn escape_ical_text(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace(';', "\\;")
+        .replace(',', "\\,")
+        .replace('\n', "\\n")
+        .replace('\r', "")
 }
 
 // Helper function to generate iCal feed
@@ -243,13 +260,12 @@ fn generate_ical_feed(events: &[Event]) -> String {
             // Sanitize private events - show only that something is happening
             ical.push_str("SUMMARY:Members-Only Event\r\n");
             ical.push_str("DESCRIPTION:This event is for members only. Log in to the portal to see details.\r\n");
-            // No location for private events
         } else {
-            ical.push_str(&format!("SUMMARY:{}\r\n", event.title));
-            ical.push_str(&format!("DESCRIPTION:{}\r\n", event.description.replace('\n', "\\n")));
+            ical.push_str(&format!("SUMMARY:{}\r\n", escape_ical_text(&event.title)));
+            ical.push_str(&format!("DESCRIPTION:{}\r\n", escape_ical_text(&event.description)));
 
             if let Some(location) = &event.location {
-                ical.push_str(&format!("LOCATION:{}\r\n", location));
+                ical.push_str(&format!("LOCATION:{}\r\n", escape_ical_text(location)));
             }
         }
 

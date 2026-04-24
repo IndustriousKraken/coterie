@@ -83,12 +83,12 @@ pub async fn setup_handler(
         })).into_response();
     }
 
-    // Validate password length
-    if request.password.len() < 8 {
+    // Validate password complexity
+    if let Err(msg) = crate::auth::validate_password(&request.password) {
         return (StatusCode::BAD_REQUEST, Json(SetupResponse {
             success: false,
             redirect: None,
-            error: Some("Password must be at least 8 characters".to_string()),
+            error: Some(msg.to_string()),
         })).into_response();
     }
 

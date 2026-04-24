@@ -7,13 +7,11 @@ use axum::{
 
 use crate::api::state::AppState;
 
-/// Adds baseline security response headers.
+/// Adds baseline security response headers including a Content-Security-Policy.
 ///
-/// Intentionally omits a strict Content-Security-Policy for now — the portal
-/// templates pull HTMX, Alpine, Tailwind, and Stripe from third-party CDNs
-/// without SRI, and locking down script-src would break them. Once those
-/// are either vendored locally or pinned with SRI, add a script-src/style-src
-/// directive here.
+/// CDN scripts (HTMX, Alpine.js) are pinned with SRI hashes in the HTML.
+/// Tailwind CSS is built locally — no CDN or unsafe-eval needed.
+/// Stripe.js is loaded from js.stripe.com on payment pages only.
 pub async fn security_headers(
     State(state): State<AppState>,
     request: Request,
@@ -35,11 +33,26 @@ pub async fn security_headers(
         HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
 
-    // Limit the blast radius of any XSS to /self/ framing and object embeds
-    // even without a full script-src policy.
+    // Content-Security-Policy:
+    //  - script-src: self + CDN hosts for HTMX/Alpine/Stripe (all pinned with SRI),
+    //    'unsafe-inline' for the small inline scripts in base.html.
+    //  - style-src: self + 'unsafe-inline' (for small inline <style> blocks).
+    //  - connect-src: self + Stripe API for payment processing.
+    //  - img-src: self + data: (for inline images).
+    //  - frame-src: js.stripe.com (Stripe 3D-Secure iframes).
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("frame-ancestors 'none'; object-src 'none'; base-uri 'self'"),
+        HeaderValue::from_static(
+            "default-src 'self'; \
+             script-src 'self' https://unpkg.com https://js.stripe.com 'unsafe-inline'; \
+             style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data:; \
+             connect-src 'self' https://api.stripe.com; \
+             frame-src https://js.stripe.com; \
+             frame-ancestors 'none'; \
+             object-src 'none'; \
+             base-uri 'self'"
+        ),
     );
 
     // HSTS only meaningful on TLS deployments — sending it over plain HTTP

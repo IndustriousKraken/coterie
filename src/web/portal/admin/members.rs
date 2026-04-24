@@ -864,7 +864,7 @@ pub async fn admin_create_member(
                 <html>
                 <head>
                     <title>Error - Coterie</title>
-                    <script src="https://cdn.tailwindcss.com"></script>
+                    <link rel="stylesheet" href="/static/style.css">
                 </head>
                 <body class="bg-gray-100 min-h-screen flex items-center justify-center">
                     <div class="bg-white p-8 rounded-lg shadow-md max-w-md">

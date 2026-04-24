@@ -5,21 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Coterie{% endblock %}</title>
     
-    <!-- HTMX -->
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-    <!-- HTMX Extensions -->
-    <script src="https://unpkg.com/htmx.org@1.9.10/dist/ext/json-enc.js"></script>
-    
-    <!-- Alpine.js -->
-    <script defer src="https://unpkg.com/alpinejs@3.13.5/dist/cdn.min.js"></script>
-    
-    <!-- Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    
+    <!-- HTMX (pinned + SRI) -->
+    <script src="https://unpkg.com/htmx.org@1.9.10"
+            integrity="sha384-YwQSRkoBOUtKKVfHQ8C2zCPslUZHuxiPHts6X/xQCuGHipTtRXd7ImqS1VTLlpiT"
+            crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10/dist/ext/json-enc.js"
+            integrity="sha384-nRnAvEUI7N/XvvowiMiq7oEI04gOXMCqD3Bidvedw+YNbj7zTQACPlRI3Jt3vYM4"
+            crossorigin="anonymous"></script>
+
+    <!-- Alpine.js (pinned + SRI) -->
+    <script defer src="https://unpkg.com/alpinejs@3.13.5/dist/cdn.min.js"
+            integrity="sha384-BxpSbjbDhVKwnC1UfcjsNEuMuxg4af5IXOaSi1Iq5rASQ/9a7uslhEXbP9UI/fXo"
+            crossorigin="anonymous"></script>
+
+    <!-- Tailwind CSS (locally built) -->
+    <link rel="stylesheet" href="/static/style.css">
+
     <!-- Custom styles -->
     <style>
         [x-cloak] { display: none !important; }
-        
+
         .htmx-indicator {
             display: none;
         }

@@ -2,10 +2,9 @@ pub mod templates;
 pub mod portal;
 pub mod uploads;
 
-use axum::{
-    Router,
-    routing::{get, post},
-};
+use axum::Router;
+use axum::routing::{get, post};
+use tower_http::services::ServeDir;
 use crate::api::state::AppState;
 
 /// Escape HTML special characters to prevent XSS in raw HTML responses.
@@ -42,6 +41,9 @@ pub fn create_web_routes(state: AppState) -> Router {
 
         // Serve uploaded files (with auth check for private content)
         .route("/uploads/:filename", get(uploads::serve_upload))
+
+        // Serve static assets (CSS, etc.) — no auth required
+        .nest_service("/static", ServeDir::new("static"))
 
         .with_state(state)
 }

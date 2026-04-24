@@ -44,5 +44,8 @@ temp/
 # Uploaded files (local testing)
 uploads/
 
+# Tailwind standalone CLI binary (platform-specific, download per SETUP.md)
+/tailwindcss
+
 # AI
 .claude/

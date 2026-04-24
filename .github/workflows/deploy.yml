@@ -32,12 +32,19 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
+      - name: Build Tailwind CSS
+        run: |
+          curl -sL https://github.com/tailwindlabs/tailwindcss/releases/download/v3.4.17/tailwindcss-linux-x64 -o tailwindcss
+          chmod +x tailwindcss
+          ./tailwindcss -i static/input.css -o static/style.css --minify
+
       - name: Prepare deployment files
         run: |
           mkdir -p dist
           cp target/release/coterie dist/
           cp target/release/seed dist/
           cp -r templates dist/
+          cp -r static dist/
           cp -r migrations dist/
           cp -r deploy dist/
           cp -r config dist/
