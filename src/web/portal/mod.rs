@@ -122,10 +122,6 @@ pub struct MemberInfo {
     pub dues_paid_until: Option<String>,
 }
 
-// Helper function to check if a user is an admin
 pub fn is_admin(member: &crate::domain::Member) -> bool {
-    member.notes
-        .as_ref()
-        .map(|n| n.contains("ADMIN"))
-        .unwrap_or(false)
+    member.is_admin
 }

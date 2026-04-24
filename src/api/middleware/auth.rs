@@ -145,14 +145,7 @@ pub async fn require_admin(
         .await?
         .ok_or(AppError::Unauthorized)?;
 
-    // For now, check if member has a special marker in notes field
-    // In production, you'd have a proper roles table
-    let is_admin = member.notes
-        .as_ref()
-        .map(|n| n.contains("ADMIN"))
-        .unwrap_or(false);
-
-    if !is_admin {
+    if !member.is_admin {
         return Err(AppError::Forbidden);
     }
 

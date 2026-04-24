@@ -25,6 +25,11 @@ pub struct ServerConfig {
     pub data_dir: String,
     /// Directory for uploaded files. Defaults to "{data_dir}/uploads"
     pub uploads_dir: Option<String>,
+    /// Force the Secure flag on session cookies. When None, inferred from
+    /// base_url: https:// → true, anything else → false. Override to `true`
+    /// when Coterie sits behind a TLS-terminating reverse proxy that
+    /// presents itself as http:// internally.
+    pub secure_cookies: Option<bool>,
 }
 
 impl ServerConfig {
@@ -33,6 +38,11 @@ impl ServerConfig {
         self.uploads_dir.clone().unwrap_or_else(|| {
             format!("{}/uploads", self.data_dir)
         })
+    }
+
+    pub fn cookies_are_secure(&self) -> bool {
+        self.secure_cookies
+            .unwrap_or_else(|| self.base_url.starts_with("https://"))
     }
 }
 

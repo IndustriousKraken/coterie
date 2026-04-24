@@ -72,14 +72,19 @@ pub async fn list(
 
 pub async fn get(
     State(state): State<AppState>,
-    Extension(_user): Extension<CurrentUser>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<MemberDto>> {
+    // A member can read their own record; admins can read any.
+    if id != user.member.id && !user.member.is_admin {
+        return Err(AppError::Forbidden);
+    }
+
     let member = state.service_context.member_repo
         .find_by_id(id)
         .await?
         .ok_or_else(|| AppError::NotFound("Member not found".to_string()))?;
-    
+
     Ok(Json(member.into()))
 }
 

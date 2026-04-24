@@ -17,6 +17,7 @@ pub struct Member {
     pub expires_at: Option<DateTime<Utc>>,
     pub dues_paid_until: Option<DateTime<Utc>>,
     pub bypass_dues: bool,
+    pub is_admin: bool,
     pub notes: Option<String>,
     pub stripe_customer_id: Option<String>,
     pub stripe_subscription_id: Option<String>,

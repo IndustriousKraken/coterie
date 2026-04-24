@@ -35,6 +35,7 @@ pub trait MemberRepository: Send + Sync {
     async fn list_active(&self) -> Result<Vec<Member>>;
     async fn list_expired(&self) -> Result<Vec<Member>>;
     async fn update(&self, id: Uuid, update: UpdateMemberRequest) -> Result<Member>;
+    async fn set_admin(&self, id: Uuid, is_admin: bool) -> Result<Member>;
     async fn delete(&self, id: Uuid) -> Result<()>;
 }
 

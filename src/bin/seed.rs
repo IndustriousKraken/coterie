@@ -438,10 +438,11 @@ async fn main() -> anyhow::Result<()> {
 
     member_repo.update(admin.id, UpdateMemberRequest {
         status: Some(MemberStatus::Active),
-        notes: Some("ADMIN - System administrator".to_string()),
+        notes: Some("System administrator".to_string()),
         bypass_dues: Some(true),
         ..Default::default()
     }).await?;
+    member_repo.set_admin(admin.id, true).await?;
 
     used_usernames.insert(config.admin.username.clone());
     used_emails.insert(config.admin.email.clone());

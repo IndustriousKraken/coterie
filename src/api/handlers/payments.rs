@@ -17,10 +17,10 @@ use crate::{
 
 #[derive(Debug, Deserialize)]
 pub struct CreatePaymentRequest {
-    /// The slug of the membership type (e.g., "regular", "student", "corporate")
+    /// The slug of the membership type (e.g., "regular", "student", "corporate").
+    /// The amount charged is always the server-side fee on the matching
+    /// membership_types row — never a client-supplied value.
     pub membership_type_slug: String,
-    /// Optional override amount in cents. If not provided, uses the fee from membership_types table
-    pub amount_cents: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -51,10 +51,7 @@ pub struct WaivePaymentRequest {
 }
 
 fn is_admin(user: &CurrentUser) -> bool {
-    user.member.notes
-        .as_ref()
-        .map(|n| n.contains("ADMIN"))
-        .unwrap_or(false)
+    user.member.is_admin
 }
 
 pub async fn create(
@@ -86,8 +83,7 @@ pub async fn create(
         )));
     }
 
-    // Use the fee from the database, or allow override if provided
-    let amount_cents = request.amount_cents.unwrap_or(membership_type.fee_cents as i64);
+    let amount_cents = membership_type.fee_cents as i64;
 
     // Create checkout session
     let (checkout_url, payment_id) = stripe_client.create_membership_checkout_session(

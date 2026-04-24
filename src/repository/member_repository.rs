@@ -23,6 +23,7 @@ struct MemberRow {
     expires_at: Option<NaiveDateTime>,
     dues_paid_until: Option<NaiveDateTime>,
     bypass_dues: i32,
+    is_admin: i32,
     notes: Option<String>,
     stripe_customer_id: Option<String>,
     stripe_subscription_id: Option<String>,
@@ -62,6 +63,7 @@ impl SqliteMemberRepository {
             expires_at: row.expires_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
             dues_paid_until: row.dues_paid_until.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
             bypass_dues: row.bypass_dues != 0,
+            is_admin: row.is_admin != 0,
             notes: row.notes,
             stripe_customer_id: row.stripe_customer_id,
             stripe_subscription_id: row.stripe_subscription_id,
@@ -170,7 +172,7 @@ impl MemberRepository for SqliteMemberRepository {
         let row = sqlx::query_as::<_, MemberRow>(
             r#"
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
-                   joined_at, expires_at, dues_paid_until, bypass_dues, notes,
+                   joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
                    stripe_customer_id, stripe_subscription_id, billing_mode,
                    created_at, updated_at
             FROM members
@@ -192,7 +194,7 @@ impl MemberRepository for SqliteMemberRepository {
         let row = sqlx::query_as::<_, MemberRow>(
             r#"
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
-                   joined_at, expires_at, dues_paid_until, bypass_dues, notes,
+                   joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
                    stripe_customer_id, stripe_subscription_id, billing_mode,
                    created_at, updated_at
             FROM members
@@ -214,7 +216,7 @@ impl MemberRepository for SqliteMemberRepository {
         let row = sqlx::query_as::<_, MemberRow>(
             r#"
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
-                   joined_at, expires_at, dues_paid_until, bypass_dues, notes,
+                   joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
                    stripe_customer_id, stripe_subscription_id, billing_mode,
                    created_at, updated_at
             FROM members
@@ -236,7 +238,7 @@ impl MemberRepository for SqliteMemberRepository {
         let rows = sqlx::query_as::<_, MemberRow>(
             r#"
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
-                   joined_at, expires_at, dues_paid_until, bypass_dues, notes,
+                   joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
                    stripe_customer_id, stripe_subscription_id, billing_mode,
                    created_at, updated_at
             FROM members
@@ -261,7 +263,7 @@ impl MemberRepository for SqliteMemberRepository {
         let rows = sqlx::query_as::<_, MemberRow>(
             r#"
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
-                   joined_at, expires_at, dues_paid_until, bypass_dues, notes,
+                   joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
                    stripe_customer_id, stripe_subscription_id, billing_mode,
                    created_at, updated_at
             FROM members
@@ -285,7 +287,7 @@ impl MemberRepository for SqliteMemberRepository {
         let rows = sqlx::query_as::<_, MemberRow>(
             r#"
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
-                   joined_at, expires_at, dues_paid_until, bypass_dues, notes,
+                   joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
                    stripe_customer_id, stripe_subscription_id, billing_mode,
                    created_at, updated_at
             FROM members
@@ -353,6 +355,24 @@ impl MemberRepository for SqliteMemberRepository {
 
         self.find_by_id(id).await?.ok_or_else(|| {
             AppError::Database("Failed to retrieve updated member".to_string())
+        })
+    }
+
+    async fn set_admin(&self, id: Uuid, is_admin: bool) -> Result<Member> {
+        let id_str = id.to_string();
+        let now_naive = Utc::now().naive_utc();
+        let flag = if is_admin { 1i32 } else { 0i32 };
+
+        sqlx::query("UPDATE members SET is_admin = ?, updated_at = ? WHERE id = ?")
+            .bind(flag)
+            .bind(now_naive)
+            .bind(&id_str)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        self.find_by_id(id).await?.ok_or_else(|| {
+            AppError::NotFound("Member not found".to_string())
         })
     }
 

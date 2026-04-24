@@ -112,15 +112,21 @@ pub async fn login_handler(
                 )
                 .await
                 .unwrap();
-            // Create session cookie
+            // Create session cookie. Secure flag is driven by server config
+            // so local http dev still works while TLS deployments get it set.
+            let max_age_secs = if credentials.remember_me.unwrap_or(false) {
+                60 * 60 * 24 * 30 // 30 days
+            } else {
+                60 * 60 * 24 // 24 hours
+            };
+            let secure_attr = if state.settings.server.cookies_are_secure() {
+                "; Secure"
+            } else {
+                ""
+            };
             let cookie_value = format!(
-                "session={}; HttpOnly; SameSite=Lax; Path=/; Max-Age={}",
-                token,
-                if credentials.remember_me.unwrap_or(false) {
-                    60 * 60 * 24 * 30 // 30 days
-                } else {
-                    60 * 60 * 24 // 24 hours
-                }
+                "session={}; HttpOnly; SameSite=Lax; Path=/; Max-Age={}{}",
+                token, max_age_secs, secure_attr,
             );
 
             // Use redirect URL if provided, otherwise default to dashboard

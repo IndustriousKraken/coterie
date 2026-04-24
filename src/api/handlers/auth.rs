@@ -48,9 +48,10 @@ pub async fn login(
         .create_session(member.id, 24)
         .await?;
     
-    // Create cookie with the actual token
+    // Create cookie with the actual token. The Secure flag tracks whether
+    // the deployment is TLS-terminated; see ServerConfig::cookies_are_secure.
     let cookie = state.service_context.auth_service
-        .create_session_cookie(&token, false);
+        .create_session_cookie(&token, state.settings.server.cookies_are_secure());
     
     Ok((
         jar.add(cookie),

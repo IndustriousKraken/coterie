@@ -47,9 +47,13 @@ pub fn create_app(
         .nest("/admin", admin_routes(app_state.clone()))
         
         // Add state to the router
-        .with_state(app_state)
-        
+        .with_state(app_state.clone())
+
         // Middleware
+        .layer(axum::middleware::from_fn_with_state(
+            app_state,
+            middleware::security_headers::security_headers,
+        ))
         .layer(CompressionLayer::new())
         .layer(CorsLayer::permissive()) // Configure properly for production
         .layer(TraceLayer::new_for_http())
@@ -64,55 +68,76 @@ fn api_routes(state: AppState) -> Router<AppState> {
 }
 
 fn member_routes(state: AppState) -> Router<AppState> {
-    Router::new()
+    // Admin-only operations: listing everyone, creating, mutating, activating, expiring.
+    let admin_only = Router::new()
         .route("/", get(handlers::members::list))
         .route("/", post(handlers::members::create))
-        .route("/:id", get(handlers::members::get))
         .route("/:id", put(handlers::members::update))
         .route("/:id", delete(handlers::members::delete))
         .route("/:id/activate", post(handlers::members::activate))
         .route("/:id/expire", post(handlers::members::expire))
         .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::auth::require_admin,
+        ));
+
+    // Authenticated-but-not-admin: reading a single member record. The handler
+    // performs the self-or-admin ownership check (see handlers::members::get).
+    let authed = Router::new()
+        .route("/:id", get(handlers::members::get))
+        .route_layer(axum::middleware::from_fn_with_state(
             state,
             middleware::auth::require_auth,
-        ))
+        ));
+
+    Router::new().merge(admin_only).merge(authed)
 }
 
 fn event_routes_with_auth(state: AppState) -> Router<AppState> {
+    // Admin-only: creating/updating/deleting events.
+    let admin_only = Router::new()
+        .route("/", post(handlers::events::create))
+        .route("/:id", put(handlers::events::update))
+        .route("/:id", delete(handlers::events::delete))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::auth::require_admin,
+        ));
+
+    // Any authenticated member can RSVP.
+    let member_only = Router::new()
+        .route("/:id/register", post(handlers::events::register))
+        .route("/:id/cancel", post(handlers::events::cancel))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::auth::require_auth,
+        ));
+
     Router::new()
-        // Public routes (no auth required for viewing)
+        // Public reads (visibility is enforced inside the handlers).
         .route("/", get(handlers::events::list))
         .route("/:id", get(handlers::events::get))
-        // Protected routes - wrapped in a nested router with auth middleware
-        .nest("/", Router::new()
-            .route("/", post(handlers::events::create))
-            .route("/:id", put(handlers::events::update))
-            .route("/:id", delete(handlers::events::delete))
-            .route("/:id/register", post(handlers::events::register))
-            .route("/:id/cancel", post(handlers::events::cancel))
-            .route_layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                middleware::auth::require_auth,
-            ))
-        )
+        .merge(admin_only)
+        .merge(member_only)
 }
 
 fn announcement_routes_with_auth(state: AppState) -> Router<AppState> {
+    // Admin-only mutations.
+    let admin_only = Router::new()
+        .route("/", post(handlers::announcements::create))
+        .route("/:id", put(handlers::announcements::update))
+        .route("/:id", delete(handlers::announcements::delete))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::auth::require_admin,
+        ));
+
     Router::new()
-        // Public routes (no auth required for viewing public announcements)
+        // Public reads (visibility enforced inside the handlers).
         .route("/", get(handlers::announcements::list))
         .route("/:id", get(handlers::announcements::get))
         .route("/private-count", get(handlers::announcements::private_count))
-        // Protected routes - require auth
-        .nest("/", Router::new()
-            .route("/", post(handlers::announcements::create))
-            .route("/:id", put(handlers::announcements::update))
-            .route("/:id", delete(handlers::announcements::delete))
-            .route_layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                middleware::auth::require_auth,
-            ))
-        )
+        .merge(admin_only)
 }
 
 fn payment_routes(state: AppState) -> Router<AppState> {
