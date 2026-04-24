@@ -18,14 +18,23 @@ pub struct SavedCard {
 }
 
 impl SavedCard {
-    /// Check if the card is expired
-    pub fn is_expired(&self) -> bool {
-        let now = Utc::now();
-        let current_year = now.format("%Y").to_string().parse::<i32>().unwrap_or(0);
-        let current_month = now.format("%m").to_string().parse::<i32>().unwrap_or(0);
+    /// Whether the card is valid at a specific point in time. Cards are
+    /// valid through the END of their `exp_month` (industry convention),
+    /// so a card with exp 05/2026 is valid on any day in May 2026 but
+    /// invalid on 1 June 2026.
+    ///
+    /// Use this with the expected charge date — not just "now" — to
+    /// catch cards that will have expired by the time we try to charge.
+    pub fn is_valid_at(&self, when: DateTime<Utc>) -> bool {
+        use chrono::Datelike;
+        let year = when.year();
+        let month = when.month() as i32;
+        self.exp_year > year || (self.exp_year == year && self.exp_month >= month)
+    }
 
-        self.exp_year < current_year ||
-            (self.exp_year == current_year && self.exp_month < current_month)
+    /// Convenience: whether the card is valid right now.
+    pub fn is_expired(&self) -> bool {
+        !self.is_valid_at(Utc::now())
     }
 
     /// Display string like "Visa •••• 4242"
@@ -99,5 +108,60 @@ impl sqlx::Type<sqlx::Sqlite> for BillingMode {
 impl<'q> sqlx::Encode<'q, sqlx::Sqlite> for BillingMode {
     fn encode_by_ref(&self, args: &mut Vec<sqlx::sqlite::SqliteArgumentValue<'q>>) -> sqlx::encode::IsNull {
         <String as sqlx::Encode<'q, sqlx::Sqlite>>::encode_by_ref(&self.as_str().to_string(), args)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn card(exp_month: i32, exp_year: i32) -> SavedCard {
+        SavedCard {
+            id: Uuid::nil(),
+            member_id: Uuid::nil(),
+            stripe_payment_method_id: String::new(),
+            card_last_four: String::new(),
+            card_brand: String::new(),
+            exp_month,
+            exp_year,
+            is_default: false,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn day(y: i32, m: u32, d: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(y, m, d, 12, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn valid_through_end_of_exp_month() {
+        let c = card(5, 2026); // valid through May 2026
+        assert!(c.is_valid_at(day(2026, 5, 1)), "first of exp month");
+        assert!(c.is_valid_at(day(2026, 5, 31)), "last day of exp month");
+        assert!(!c.is_valid_at(day(2026, 6, 1)), "first of next month");
+    }
+
+    #[test]
+    fn before_expiry() {
+        let c = card(5, 2026);
+        assert!(c.is_valid_at(day(2025, 12, 1)));
+        assert!(c.is_valid_at(day(2026, 1, 1)));
+        assert!(c.is_valid_at(day(2026, 4, 30)));
+    }
+
+    #[test]
+    fn after_expiry() {
+        let c = card(5, 2026);
+        assert!(!c.is_valid_at(day(2026, 6, 15)));
+        assert!(!c.is_valid_at(day(2027, 1, 1)));
+    }
+
+    #[test]
+    fn december_year_boundary() {
+        let c = card(12, 2025);
+        assert!(c.is_valid_at(day(2025, 12, 31)));
+        assert!(!c.is_valid_at(day(2026, 1, 1)));
     }
 }

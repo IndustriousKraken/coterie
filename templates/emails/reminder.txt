@@ -2,7 +2,11 @@ Hi {{ full_name }},
 
 This is a friendly reminder that your {{ org_name }} dues are due on
 {{ due_date }} ({{ days_remaining }} days away).
-
+{% if card_invalid %}
+Heads up: the card we have on file for auto-renewal is no longer
+valid, so we won't be able to charge it automatically. You'll need
+to update your payment method or pay directly.
+{% endif %}
 You can pay your dues at any time through the member portal:
 
 {{ pay_url }}

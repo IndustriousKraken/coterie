@@ -60,6 +60,10 @@ pub struct ReminderHtml<'a> {
     pub due_date: &'a str,
     pub days_remaining: i64,
     pub pay_url: &'a str,
+    /// When true, the reminder includes a "your saved card is invalid"
+    /// callout. Used for members on auto-renew whose default card has
+    /// expired (so the charge would otherwise fail silently).
+    pub card_invalid: bool,
 }
 
 #[derive(Template)]
@@ -70,4 +74,29 @@ pub struct ReminderText<'a> {
     pub due_date: &'a str,
     pub days_remaining: i64,
     pub pay_url: &'a str,
+    pub card_invalid: bool,
+}
+
+#[derive(Template)]
+#[template(path = "emails/renewal_notice.html")]
+pub struct RenewalNoticeHtml<'a> {
+    pub full_name: &'a str,
+    pub org_name: &'a str,
+    pub due_date: &'a str,
+    pub days_remaining: i64,
+    pub amount: &'a str,
+    pub card_display: &'a str,
+    pub portal_url: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "emails/renewal_notice.txt")]
+pub struct RenewalNoticeText<'a> {
+    pub full_name: &'a str,
+    pub org_name: &'a str,
+    pub due_date: &'a str,
+    pub days_remaining: i64,
+    pub amount: &'a str,
+    pub card_display: &'a str,
+    pub portal_url: &'a str,
 }

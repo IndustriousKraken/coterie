@@ -5,6 +5,13 @@
     <h1 style="font-size: 20px; margin-bottom: 16px;">Dues reminder</h1>
     <p>Hi {{ full_name }},</p>
     <p>Your {{ org_name }} dues are due on <strong>{{ due_date }}</strong> ({{ days_remaining }} days away).</p>
+    {% if card_invalid %}
+    <p style="margin: 16px 0; padding: 12px; background: #fef3c7; border-left: 4px solid #f59e0b; border-radius: 4px; font-size: 14px;">
+        Heads up: the card we have on file for auto-renewal is no longer valid,
+        so we won't be able to charge it automatically. Please update your
+        payment method or pay directly.
+    </p>
+    {% endif %}
     <p style="margin: 28px 0;">
         <a href="{{ pay_url }}" style="background:#2563eb;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;display:inline-block;">Pay dues</a>
     </p>
