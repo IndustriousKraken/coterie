@@ -122,7 +122,7 @@ pub async fn upcoming_events(
         let mut html = String::from(r#"<div class="space-y-3">"#);
         for event in event_summaries {
             let image_html = event.image_url.as_ref().map(|url| {
-                format!(r#"<img src="/{}" alt="" class="w-16 h-16 object-cover rounded flex-shrink-0">"#, url)
+                format!(r#"<img src="/{}" alt="" class="w-16 h-16 object-cover rounded flex-shrink-0">"#, crate::web::escape_html(url))
             }).unwrap_or_default();
 
             html.push_str(&format!(
@@ -140,10 +140,10 @@ pub async fn upcoming_events(
                 </div>
                 "#,
                 image_html,
-                event.title,
+                crate::web::escape_html(&event.title),
                 event.date,
                 event.time,
-                event.location.map(|l| format!(r#"<p class="text-sm text-gray-600">📍 {}</p>"#, l)).unwrap_or_default(),
+                event.location.map(|l| format!(r#"<p class="text-sm text-gray-600">📍 {}</p>"#, crate::web::escape_html(&l))).unwrap_or_default(),
                 if event.attending {
                     r#"<span class="text-xs text-green-600 font-medium">Attending</span>"#.to_string()
                 } else {
@@ -202,7 +202,7 @@ pub async fn recent_payments(
             description: if p.description.is_empty() {
                 "Membership dues".to_string()
             } else {
-                p.description
+                crate::web::escape_html(&p.description)
             },
         })
         .collect();

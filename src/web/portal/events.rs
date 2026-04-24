@@ -113,7 +113,7 @@ pub async fn events_list_api(
         };
 
         let image_html = event.image_url.as_ref().map(|url| {
-            format!(r#"<div class="bg-gray-100 rounded-t-lg -mt-6 -mx-6 mb-4 overflow-hidden" style="width: calc(100% + 3rem);"><img src="/{}" alt="" class="w-full h-40 object-contain"></div>"#, url)
+            format!(r#"<div class="bg-gray-100 rounded-t-lg -mt-6 -mx-6 mb-4 overflow-hidden" style="width: calc(100% + 3rem);"><img src="/{}" alt="" class="w-full h-40 object-contain"></div>"#, crate::web::escape_html(url))
         }).unwrap_or_default();
 
         html.push_str(&format!(
@@ -131,6 +131,7 @@ pub async fn events_list_api(
                             <p>{} at {}</p>
                             {}
                         </div>
+
                     </div>
                     <div class="text-right">
                         {}
@@ -142,11 +143,11 @@ pub async fn events_list_api(
             type_badge_color,
             event.event_type,
             if is_past { r#"<span class="text-xs text-gray-500">Past event</span>"# } else { "" },
-            event.title,
-            event.description,
+            crate::web::escape_html(&event.title),
+            crate::web::escape_html(&event.description),
             event.start_time.format("%B %d, %Y"),
             event.start_time.format("%l:%M %p"),
-            event.location.map(|l| format!(r#"<p>Location: {}</p>"#, l)).unwrap_or_default(),
+            event.location.map(|l| format!(r#"<p>Location: {}</p>"#, crate::web::escape_html(&l))).unwrap_or_default(),
             rsvp_button,
         ));
     }
@@ -215,7 +216,7 @@ pub async fn rsvp_event(
     {
         return axum::response::Html(format!(
             r#"<div class="text-red-600 text-sm">Error: {}</div>"#,
-            e
+            crate::web::escape_html(&e.to_string())
         ));
     }
 
@@ -241,7 +242,7 @@ pub async fn cancel_rsvp_event(
     {
         return axum::response::Html(format!(
             r#"<div class="text-red-600 text-sm">Error: {}</div>"#,
-            e
+            crate::web::escape_html(&e.to_string())
         ));
     }
 

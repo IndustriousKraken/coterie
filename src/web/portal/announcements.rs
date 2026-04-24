@@ -104,7 +104,7 @@ pub async fn announcements_list_api(
         };
 
         let image_html = announcement.image_url.as_ref().map(|url| {
-            format!(r#"<div class="bg-gray-100 rounded-t-lg -mt-6 -mx-6 mb-4 overflow-hidden" style="width: calc(100% + 3rem);"><img src="/{}" alt="" class="w-full h-40 object-contain"></div>"#, url)
+            format!(r#"<div class="bg-gray-100 rounded-t-lg -mt-6 -mx-6 mb-4 overflow-hidden" style="width: calc(100% + 3rem);"><img src="/{}" alt="" class="w-full h-40 object-contain"></div>"#, crate::web::escape_html(url))
         }).unwrap_or_default();
 
         let published_date = announcement.published_at
@@ -128,8 +128,8 @@ pub async fn announcements_list_api(
             announcement.announcement_type,
             visibility_badge,
             featured_badge,
-            announcement.title,
-            announcement.content,
+            crate::web::escape_html(&announcement.title),
+            crate::web::escape_html(&announcement.content),
             published_date,
         ));
     }

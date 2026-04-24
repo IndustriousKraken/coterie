@@ -290,10 +290,10 @@ pub async fn admin_activate_member(
                         <span class="text-green-600">Activated!</span>
                     </td>
                 </tr>"#,
-                initials,
-                member.full_name,
-                member.email,
-                member.username,
+                crate::web::escape_html(&initials),
+                crate::web::escape_html(&member.full_name),
+                crate::web::escape_html(&member.email),
+                crate::web::escape_html(&member.username),
                 member.membership_type,
                 member.joined_at.format("%b %d, %Y"),
                 member.dues_paid_until.map(|d| d.format("%b %d, %Y").to_string()).unwrap_or_else(|| "—".to_string())
@@ -302,7 +302,7 @@ pub async fn admin_activate_member(
         Err(e) => {
             axum::response::Html(format!(
                 "<tr><td colspan='6' class='px-6 py-4 text-red-600'>Error: {}</td></tr>",
-                e
+                crate::web::escape_html(&e.to_string())
             ))
         }
     }
@@ -358,10 +358,10 @@ pub async fn admin_suspend_member(
                         <span class="text-yellow-600">Suspended</span>
                     </td>
                 </tr>"#,
-                initials,
-                member.full_name,
-                member.email,
-                member.username,
+                crate::web::escape_html(&initials),
+                crate::web::escape_html(&member.full_name),
+                crate::web::escape_html(&member.email),
+                crate::web::escape_html(&member.username),
                 member.membership_type,
                 member.joined_at.format("%b %d, %Y"),
                 member.dues_paid_until.map(|d| d.format("%b %d, %Y").to_string()).unwrap_or_else(|| "—".to_string())
@@ -370,7 +370,7 @@ pub async fn admin_suspend_member(
         Err(e) => {
             axum::response::Html(format!(
                 "<tr><td colspan='6' class='px-6 py-4 text-red-600'>Error: {}</td></tr>",
-                e
+                crate::web::escape_html(&e.to_string())
             ))
         }
     }
@@ -548,7 +548,7 @@ pub async fn admin_update_member(
         ),
         Err(e) => axum::response::Html(format!(
             r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Error: {}</div>"#,
-            e
+            crate::web::escape_html(&e.to_string())
         )),
     }
 }
@@ -607,7 +607,7 @@ pub async fn admin_extend_dues(
         )),
         Err(e) => axum::response::Html(format!(
             r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Error: {}</div>"#,
-            e
+            crate::web::escape_html(&e.to_string())
         )),
     }
 }
@@ -662,7 +662,7 @@ pub async fn admin_set_dues(
         )),
         Err(e) => axum::response::Html(format!(
             r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Error: {}</div>"#,
-            e
+            crate::web::escape_html(&e.to_string())
         )),
     }
 }
@@ -696,7 +696,7 @@ pub async fn admin_expire_now(
         ),
         Err(e) => axum::response::Html(format!(
             r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Error: {}</div>"#,
-            e
+            crate::web::escape_html(&e.to_string())
         )),
     }
 }
@@ -738,7 +738,7 @@ pub async fn admin_member_payments(
         let description = if payment.description.is_empty() {
             "Membership dues".to_string()
         } else {
-            payment.description.clone()
+            crate::web::escape_html(&payment.description)
         };
 
         html.push_str(&format!(
@@ -874,7 +874,7 @@ pub async fn admin_create_member(
                     </div>
                 </body>
                 </html>"#,
-                e
+                crate::web::escape_html(&e.to_string())
             )).into_response()
         }
     }

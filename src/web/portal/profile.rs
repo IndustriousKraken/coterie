@@ -95,7 +95,7 @@ pub async fn update_profile(
         Err(e) => {
             let html = format!(
                 "<div class=\"p-4 bg-red-50 text-red-800 rounded-md\">Failed to update profile: {}</div>",
-                e
+                crate::web::escape_html(&e.to_string())
             );
             axum::response::Html(html).into_response()
         }

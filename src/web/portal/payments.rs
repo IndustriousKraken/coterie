@@ -138,7 +138,7 @@ pub async fn payments_list_api(
         let description = if payment.description.is_empty() {
             "Membership dues".to_string()
         } else {
-            payment.description.clone()
+            crate::web::escape_html(&payment.description)
         };
 
         html.push_str(&format!(

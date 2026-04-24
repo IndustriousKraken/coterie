@@ -229,7 +229,7 @@ pub async fn admin_create_event_type(
 
     match state.service_context.event_type_service.create(request).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => axum::response::Html(format!("Error creating event type: {}", e)).into_response(),
+        Err(e) => axum::response::Html(format!("Error creating event type: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }
 
@@ -259,7 +259,7 @@ pub async fn admin_update_event_type(
 
     match state.service_context.event_type_service.update(id, request).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => axum::response::Html(format!("Error updating event type: {}", e)).into_response(),
+        Err(e) => axum::response::Html(format!("Error updating event type: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }
 
@@ -279,7 +279,7 @@ pub async fn admin_delete_event_type(
 
     match state.service_context.event_type_service.delete(id).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => axum::response::Html(format!("Error deleting event type: {}", e)).into_response(),
+        Err(e) => axum::response::Html(format!("Error deleting event type: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }
 
@@ -408,7 +408,7 @@ pub async fn admin_create_announcement_type(
 
     match state.service_context.announcement_type_service.create(request).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => axum::response::Html(format!("Error creating announcement type: {}", e)).into_response(),
+        Err(e) => axum::response::Html(format!("Error creating announcement type: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }
 
@@ -438,7 +438,7 @@ pub async fn admin_update_announcement_type(
 
     match state.service_context.announcement_type_service.update(id, request).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => axum::response::Html(format!("Error updating announcement type: {}", e)).into_response(),
+        Err(e) => axum::response::Html(format!("Error updating announcement type: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }
 
@@ -458,7 +458,7 @@ pub async fn admin_delete_announcement_type(
 
     match state.service_context.announcement_type_service.delete(id).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => axum::response::Html(format!("Error deleting announcement type: {}", e)).into_response(),
+        Err(e) => axum::response::Html(format!("Error deleting announcement type: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }
 
@@ -583,9 +583,12 @@ pub async fn admin_create_membership_type(
         return axum::response::Html("Access denied".to_string()).into_response();
     }
 
-    // Parse fee from dollars to cents
+    // Parse fee from dollars to cents, with bounds validation
     let fee_cents = match form.fee_dollars.parse::<f64>() {
-        Ok(dollars) => (dollars * 100.0).round() as i32,
+        Ok(dollars) if dollars.is_finite() && dollars >= 0.0 && dollars <= 999_999.99 => {
+            (dollars * 100.0).round() as i32
+        }
+        Ok(_) => return axum::response::Html("Fee must be between $0.00 and $999,999.99".to_string()).into_response(),
         Err(_) => return axum::response::Html("Invalid fee amount".to_string()).into_response(),
     };
 
@@ -601,7 +604,7 @@ pub async fn admin_create_membership_type(
 
     match state.service_context.membership_type_service.create(request).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => axum::response::Html(format!("Error creating membership type: {}", e)).into_response(),
+        Err(e) => axum::response::Html(format!("Error creating membership type: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }
 
@@ -620,9 +623,12 @@ pub async fn admin_update_membership_type(
         Err(_) => return axum::response::Html("Invalid type ID".to_string()).into_response(),
     };
 
-    // Parse fee from dollars to cents
+    // Parse fee from dollars to cents, with bounds validation
     let fee_cents = match form.fee_dollars.parse::<f64>() {
-        Ok(dollars) => (dollars * 100.0).round() as i32,
+        Ok(dollars) if dollars.is_finite() && dollars >= 0.0 && dollars <= 999_999.99 => {
+            (dollars * 100.0).round() as i32
+        }
+        Ok(_) => return axum::response::Html("Fee must be between $0.00 and $999,999.99".to_string()).into_response(),
         Err(_) => return axum::response::Html("Invalid fee amount".to_string()).into_response(),
     };
 
@@ -639,7 +645,7 @@ pub async fn admin_update_membership_type(
 
     match state.service_context.membership_type_service.update(id, request).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => axum::response::Html(format!("Error updating membership type: {}", e)).into_response(),
+        Err(e) => axum::response::Html(format!("Error updating membership type: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }
 
@@ -659,7 +665,7 @@ pub async fn admin_delete_membership_type(
 
     match state.service_context.membership_type_service.delete(id).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => axum::response::Html(format!("Error deleting membership type: {}", e)).into_response(),
+        Err(e) => axum::response::Html(format!("Error deleting membership type: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }
 

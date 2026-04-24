@@ -459,7 +459,7 @@ pub async fn admin_create_event(
                         if !data.is_empty() {
                             match save_uploaded_file(&state.settings.server.uploads_path(), &filename, &data).await {
                                 Ok(path) => image_url = Some(path),
-                                Err(e) => return axum::response::Html(format!("Error uploading image: {}", e)).into_response(),
+                                Err(e) => return axum::response::Html(format!("Error uploading image: {}", crate::web::escape_html(&e.to_string()))).into_response(),
                             }
                         }
                     }
@@ -518,7 +518,7 @@ pub async fn admin_create_event(
 
     match state.service_context.event_repo.create(event).await {
         Ok(created) => axum::response::Redirect::to(&format!("/portal/admin/events/{}", created.id)).into_response(),
-        Err(e) => axum::response::Html(format!("Error creating event: {}", e)).into_response(),
+        Err(e) => axum::response::Html(format!("Error creating event: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }
 
@@ -590,7 +590,7 @@ pub async fn admin_update_event(
                         if !data.is_empty() {
                             match save_uploaded_file(&state.settings.server.uploads_path(), &filename, &data).await {
                                 Ok(path) => new_image_url = Some(path),
-                                Err(e) => return axum::response::Html(format!(r#"<div class="px-4 py-3 bg-red-100 text-red-800 rounded-md text-sm">Error uploading image: {}</div>"#, e)).into_response(),
+                                Err(e) => return axum::response::Html(format!(r#"<div class="px-4 py-3 bg-red-100 text-red-800 rounded-md text-sm">Error uploading image: {}</div>"#, crate::web::escape_html(&e.to_string()))).into_response(),
                             }
                         }
                     }
@@ -661,7 +661,7 @@ pub async fn admin_update_event(
             axum::response::Html(r#"<div class="px-4 py-3 bg-green-100 text-green-800 rounded-md text-sm">Event updated successfully</div>"#.to_string()).into_response()
         }
         Err(e) => {
-            axum::response::Html(format!(r#"<div class="px-4 py-3 bg-red-100 text-red-800 rounded-md text-sm">Error updating event: {}</div>"#, e)).into_response()
+            axum::response::Html(format!(r#"<div class="px-4 py-3 bg-red-100 text-red-800 rounded-md text-sm">Error updating event: {}</div>"#, crate::web::escape_html(&e.to_string()))).into_response()
         }
     }
 }
@@ -682,6 +682,6 @@ pub async fn admin_delete_event(
 
     match state.service_context.event_repo.delete(id).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/events").into_response(),
-        Err(e) => axum::response::Html(format!("Error deleting event: {}", e)).into_response(),
+        Err(e) => axum::response::Html(format!("Error deleting event: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }

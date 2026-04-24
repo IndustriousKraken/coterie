@@ -59,17 +59,12 @@ pub async fn signup(
         membership_type: request.membership_type.unwrap_or(MembershipType::Regular),
     };
     
-    // Create the member
+    // Create the member. Use a generic error for UNIQUE violations to
+    // prevent attackers from enumerating valid emails/usernames.
     let member = state.service_context.member_repo.create(create_request).await
         .map_err(|e| match e {
             AppError::Database(msg) if msg.contains("UNIQUE") => {
-                if msg.contains("email") {
-                    AppError::Conflict("Email already registered".to_string())
-                } else if msg.contains("username") {
-                    AppError::Conflict("Username already taken".to_string())
-                } else {
-                    AppError::Conflict("Registration failed: duplicate information".to_string())
-                }
+                AppError::Conflict("Registration failed: an account with this information already exists".to_string())
             },
             _ => e,
         })?;

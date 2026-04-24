@@ -106,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
         db_pool.clone(),
     ));
 
-    // Spawn background cleanup task for expired sessions and orphaned CSRF tokens
+    // Spawn background cleanup task for expired sessions, CSRF tokens, and rate-limit state
     {
         let auth_service = service_context.auth_service.clone();
         let csrf_service = service_context.csrf_service.clone();
@@ -178,6 +178,18 @@ async fn main() -> anyhow::Result<()> {
         stripe_client,
         Arc::new(settings.clone()),
     );
+
+    // Spawn periodic cleanup for the login rate limiter
+    {
+        let limiter = web_app_state.login_limiter.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(15 * 60)).await;
+                limiter.cleanup();
+            }
+        });
+    }
+
     let web_app = web::create_web_routes(web_app_state.clone());
 
     // Combine API and web routes, apply setup check middleware

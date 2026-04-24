@@ -45,6 +45,9 @@ pub enum AppError {
     
     #[error("External service error: {0}")]
     External(String),
+
+    #[error("Too many requests")]
+    TooManyRequests,
 }
 
 impl IntoResponse for AppError {
@@ -74,6 +77,7 @@ impl IntoResponse for AppError {
                 tracing::error!("External service error: {}", msg);
                 (StatusCode::BAD_GATEWAY, msg.as_str())
             }
+            AppError::TooManyRequests => (StatusCode::TOO_MANY_REQUESTS, "Too many requests. Please try again later.")
         };
 
         let body = Json(json!({

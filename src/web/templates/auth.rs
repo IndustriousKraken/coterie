@@ -67,8 +67,19 @@ pub async fn login_page(
 // POST /auth/login
 pub async fn login_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(credentials): Json<LoginRequest>,
 ) -> Response {
+    // Rate-limit login attempts per IP
+    let ip = crate::api::state::client_ip(&headers);
+    if !state.login_limiter.check_and_record(ip) {
+        return (StatusCode::TOO_MANY_REQUESTS, Json(LoginResponse {
+            success: false,
+            redirect: None,
+            error: Some("Too many login attempts. Please try again later.".to_string()),
+        })).into_response();
+    }
+
     // Find member by username or email
     let member = state.service_context.member_repo
         .find_by_username(&credentials.username)
@@ -92,7 +103,7 @@ pub async fn login_handler(
             &state.service_context.db_pool,
             &member.email
         ).await.ok().flatten();
-        
+
         // Verify password
         let password_valid = if let Some(hash) = password_hash {
             crate::auth::AuthService::verify_password(
@@ -102,7 +113,7 @@ pub async fn login_handler(
         } else {
             false
         };
-        
+
         if password_valid {
             // Create session
             let (_session, token) = state.service_context.auth_service
@@ -129,9 +140,11 @@ pub async fn login_handler(
                 token, max_age_secs, secure_attr,
             );
 
-            // Use redirect URL if provided, otherwise default to dashboard
+            // Use redirect URL if provided, otherwise default to dashboard.
+            // Only allow paths under /portal/ (with the slash) to prevent
+            // open-redirect via crafted paths like "/portalevil.com".
             let redirect_url = credentials.redirect_url
-                .filter(|url| url.starts_with("/portal"))
+                .filter(|url| url.starts_with("/portal/") && !url.contains(".."))
                 .unwrap_or_else(|| "/portal/dashboard".to_string());
 
             let mut headers = HeaderMap::new();
@@ -144,8 +157,12 @@ pub async fn login_handler(
                 error: None,
             })).into_response();
         }
+    } else {
+        // User not found — run Argon2 against a dummy hash so the response
+        // latency is indistinguishable from a wrong-password attempt.
+        crate::auth::AuthService::verify_dummy(&credentials.password).await;
     }
-    
+
     // Invalid credentials
     (StatusCode::UNAUTHORIZED, Json(LoginResponse {
         success: false,

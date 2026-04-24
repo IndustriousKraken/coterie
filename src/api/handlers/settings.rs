@@ -34,8 +34,6 @@ pub async fn list_settings(
     State(state): State<AppState>,
     Extension(_user): Extension<CurrentUser>,
 ) -> Result<Json<SettingsResponse>> {
-    // TODO: Check if user is admin
-    
     let categories = state.service_context.settings_service
         .get_all_settings()
         .await?;
@@ -68,8 +66,6 @@ pub async fn get_category(
     Path(category): Path<String>,
     Extension(_user): Extension<CurrentUser>,
 ) -> Result<Json<Vec<AppSetting>>> {
-    // TODO: Check if user is admin
-    
     let settings = state.service_context.settings_service
         .get_settings_by_category(&category)
         .await?;
@@ -94,8 +90,6 @@ pub async fn get_setting(
     Path(key): Path<String>,
     Extension(_user): Extension<CurrentUser>,
 ) -> Result<Json<AppSetting>> {
-    // TODO: Check if user is admin
-    
     let mut setting = state.service_context.settings_service
         .get_setting(&key)
         .await?;
@@ -114,8 +108,6 @@ pub async fn update_setting(
     Extension(user): Extension<CurrentUser>,
     Json(request): Json<UpdateSettingRequest>,
 ) -> Result<Json<AppSetting>> {
-    // TODO: Check if user is admin
-    
     let updated = state.service_context.settings_service
         .update_setting(&key, request, user.member.id)
         .await?;
@@ -129,8 +121,6 @@ pub async fn batch_update(
     Extension(user): Extension<CurrentUser>,
     Json(request): Json<BatchUpdateRequest>,
 ) -> Result<(StatusCode, Json<Vec<AppSetting>>)> {
-    // TODO: Check if user is admin
-    
     let mut updated_settings = Vec::new();
     
     for update in request.updates {

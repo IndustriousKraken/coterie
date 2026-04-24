@@ -4,11 +4,12 @@ pub mod state;
 
 use axum::{
     Router,
+    http::{header, Method},
     routing::{get, post, put, delete},
 };
 use tower_http::{
     compression::CompressionLayer,
-    cors::CorsLayer,
+    cors::{CorsLayer, AllowOrigin},
     trace::TraceLayer,
 };
 use std::sync::Arc;
@@ -25,6 +26,7 @@ pub fn create_app(
     stripe_client: Option<Arc<StripeClient>>,
     settings: Arc<Settings>,
 ) -> Router {
+    let cors_layer = build_cors_layer(&settings);
     let app_state = AppState::new(service_context, stripe_client, settings);
 
     Router::new()
@@ -55,8 +57,33 @@ pub fn create_app(
             middleware::security_headers::security_headers,
         ))
         .layer(CompressionLayer::new())
-        .layer(CorsLayer::permissive()) // Configure properly for production
+        .layer(cors_layer)
         .layer(TraceLayer::new_for_http())
+}
+
+/// Build CORS layer from configuration. If `cors_origins` is set, only those
+/// origins are allowed. Otherwise the layer is restrictive (same-origin only).
+fn build_cors_layer(settings: &Settings) -> CorsLayer {
+    let origins: Vec<_> = settings.server.cors_origins
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse().ok())
+        .collect();
+
+    let layer = if origins.is_empty() {
+        // No configured origins → same-origin only (no Access-Control-Allow-Origin).
+        CorsLayer::new()
+    } else {
+        CorsLayer::new().allow_origin(AllowOrigin::list(origins))
+    };
+
+    layer
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
+        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION, "X-CSRF-Token".parse().unwrap()])
+        .allow_credentials(true)
 }
 
 fn api_routes(state: AppState) -> Router<AppState> {

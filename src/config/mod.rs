@@ -30,6 +30,11 @@ pub struct ServerConfig {
     /// when Coterie sits behind a TLS-terminating reverse proxy that
     /// presents itself as http:// internally.
     pub secure_cookies: Option<bool>,
+    /// Allowed CORS origins for the public API (comma-separated).
+    /// Example: "https://yoursite.com,https://www.yoursite.com"
+    /// If empty or omitted, only same-origin requests are allowed.
+    #[serde(default)]
+    pub cors_origins: Option<String>,
 }
 
 impl ServerConfig {

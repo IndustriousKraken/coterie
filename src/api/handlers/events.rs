@@ -89,9 +89,9 @@ pub async fn get(
             }
         },
         EventVisibility::AdminOnly => {
-            // Would need to check admin status here
-            if user.is_none() {
-                return Err(AppError::Forbidden);
+            match &user {
+                Some(u) if u.member.is_admin => {},
+                _ => return Err(AppError::Forbidden),
             }
         },
     }
@@ -140,8 +140,7 @@ pub async fn update(
         .ok_or(AppError::NotFound("Event not found".to_string()))?;
     
     // Check if user can update (must be creator or admin)
-    if event.created_by != user.member.id {
-        // TODO: Add admin check here
+    if event.created_by != user.member.id && !user.member.is_admin {
         return Err(AppError::Forbidden);
     }
     
@@ -193,8 +192,7 @@ pub async fn delete(
         .ok_or(AppError::NotFound("Event not found".to_string()))?;
     
     // Check if user can delete (must be creator or admin)
-    if event.created_by != user.member.id {
-        // TODO: Add admin check here
+    if event.created_by != user.member.id && !user.member.is_admin {
         return Err(AppError::Forbidden);
     }
     
@@ -218,8 +216,9 @@ pub async fn register(
     match event.visibility {
         EventVisibility::Public | EventVisibility::MembersOnly => {},
         EventVisibility::AdminOnly => {
-            // TODO: Add admin check
-            return Err(AppError::Forbidden);
+            if !user.member.is_admin {
+                return Err(AppError::Forbidden);
+            }
         },
     }
     

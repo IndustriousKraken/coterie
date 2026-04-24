@@ -456,7 +456,7 @@ pub async fn admin_create_announcement(
                         if !data.is_empty() {
                             match save_uploaded_file(&state.settings.server.uploads_path(), &filename, &data).await {
                                 Ok(path) => image_url = Some(path),
-                                Err(e) => return axum::response::Html(format!("Error uploading image: {}", e)).into_response(),
+                                Err(e) => return axum::response::Html(format!("Error uploading image: {}", crate::web::escape_html(&e.to_string()))).into_response(),
                             }
                         }
                     }
@@ -498,7 +498,7 @@ pub async fn admin_create_announcement(
 
     match state.service_context.announcement_repo.create(announcement).await {
         Ok(created) => axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", created.id)).into_response(),
-        Err(e) => axum::response::Html(format!("Error creating announcement: {}", e)).into_response(),
+        Err(e) => axum::response::Html(format!("Error creating announcement: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }
 
@@ -561,7 +561,7 @@ pub async fn admin_update_announcement(
                         if !data.is_empty() {
                             match save_uploaded_file(&state.settings.server.uploads_path(), &filename, &data).await {
                                 Ok(path) => new_image_url = Some(path),
-                                Err(e) => return axum::response::Html(format!(r#"<div class="px-4 py-3 bg-red-100 text-red-800 rounded-md text-sm">Error uploading image: {}</div>"#, e)).into_response(),
+                                Err(e) => return axum::response::Html(format!(r#"<div class="px-4 py-3 bg-red-100 text-red-800 rounded-md text-sm">Error uploading image: {}</div>"#, crate::web::escape_html(&e.to_string()))).into_response(),
                             }
                         }
                     }
@@ -609,7 +609,7 @@ pub async fn admin_update_announcement(
             axum::response::Html(r#"<div class="px-4 py-3 bg-green-100 text-green-800 rounded-md text-sm">Announcement updated successfully</div>"#.to_string()).into_response()
         }
         Err(e) => {
-            axum::response::Html(format!(r#"<div class="px-4 py-3 bg-red-100 text-red-800 rounded-md text-sm">Error updating announcement: {}</div>"#, e)).into_response()
+            axum::response::Html(format!(r#"<div class="px-4 py-3 bg-red-100 text-red-800 rounded-md text-sm">Error updating announcement: {}</div>"#, crate::web::escape_html(&e.to_string()))).into_response()
         }
     }
 }
@@ -630,7 +630,7 @@ pub async fn admin_delete_announcement(
 
     match state.service_context.announcement_repo.delete(id).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/announcements").into_response(),
-        Err(e) => axum::response::Html(format!("Error deleting announcement: {}", e)).into_response(),
+        Err(e) => axum::response::Html(format!("Error deleting announcement: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }
 
@@ -660,7 +660,7 @@ pub async fn admin_publish_announcement(
 
     match state.service_context.announcement_repo.update(id, updated).await {
         Ok(_) => axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", id)).into_response(),
-        Err(e) => axum::response::Html(format!("Error publishing announcement: {}", e)).into_response(),
+        Err(e) => axum::response::Html(format!("Error publishing announcement: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }
 
@@ -690,6 +690,6 @@ pub async fn admin_unpublish_announcement(
 
     match state.service_context.announcement_repo.update(id, updated).await {
         Ok(_) => axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", id)).into_response(),
-        Err(e) => axum::response::Html(format!("Error unpublishing announcement: {}", e)).into_response(),
+        Err(e) => axum::response::Html(format!("Error unpublishing announcement: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }

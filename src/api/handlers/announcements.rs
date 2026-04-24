@@ -130,8 +130,7 @@ pub async fn update(
         .ok_or(AppError::NotFound("Announcement not found".to_string()))?;
     
     // Check if user can update (must be creator or admin)
-    if announcement.created_by != user.member.id {
-        // TODO: Add admin check here
+    if announcement.created_by != user.member.id && !user.member.is_admin {
         return Err(AppError::Forbidden);
     }
     
@@ -174,8 +173,7 @@ pub async fn delete(
         .ok_or(AppError::NotFound("Announcement not found".to_string()))?;
     
     // Check if user can delete (must be creator or admin)
-    if announcement.created_by != user.member.id {
-        // TODO: Add admin check here
+    if announcement.created_by != user.member.id && !user.member.is_admin {
         return Err(AppError::Forbidden);
     }
     
