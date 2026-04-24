@@ -66,6 +66,10 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         // Settings
         .route("/settings", get(admin::settings::admin_settings_page))
         .route("/settings", post(admin::settings::admin_update_setting))
+        // Email settings (dedicated page with test button)
+        .route("/settings/email", get(admin::email::email_settings_page))
+        .route("/settings/email", post(admin::email::update_email_settings))
+        .route("/settings/email/test", post(admin::email::send_test_email))
         // CSRF runs after auth — in axum, the LAST route_layer is applied
         // OUTERMOST and runs FIRST. So add CSRF first, admin middleware
         // second, so admin runs first (setting SessionInfo) then CSRF.

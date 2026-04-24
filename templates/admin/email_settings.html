@@ -1,0 +1,218 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Email Settings - Coterie{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="max-w-3xl mx-auto">
+        <div class="mb-6">
+            <h1 class="text-3xl font-bold text-gray-900">Email settings</h1>
+            <p class="mt-2 text-sm text-gray-600">
+                Configure how Coterie sends email (verification links, password
+                resets, welcome messages, dues reminders).
+            </p>
+        </div>
+
+        {% if let Some(msg) = flash_success %}
+        <div class="mb-4 p-3 bg-green-50 border border-green-200 rounded-md text-sm text-green-900">{{ msg }}</div>
+        {% endif %}
+        {% if let Some(msg) = flash_error %}
+        <div class="mb-4 p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-900">{{ msg }}</div>
+        {% endif %}
+
+        <!-- Status summary -->
+        <div class="mb-6 bg-white rounded-lg shadow-sm p-5">
+            <div class="flex items-start justify-between">
+                <div>
+                    <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">Current status</h2>
+                    <p class="mt-2 text-sm">
+                        Mode:
+                        {% if mode == "smtp" %}
+                            <span class="font-mono text-gray-900">smtp</span>
+                            via <span class="font-mono text-gray-900">{{ smtp_host }}</span>
+                        {% else %}
+                            <span class="font-mono text-amber-700">log</span>
+                            <span class="text-amber-700">— real mail is not being delivered</span>
+                        {% endif %}
+                    </p>
+                    <p class="mt-1 text-sm">
+                        Last test:
+                        {% if last_test_status == "never" %}
+                            <span class="text-gray-500">never tested</span>
+                        {% else if last_test_status == "ok" %}
+                            <span class="text-green-700">✓ succeeded</span>
+                            <span class="text-gray-500">at {{ last_test_at }}</span>
+                        {% else %}
+                            <span class="text-red-700">✗ failed</span>
+                            <span class="text-gray-500">at {{ last_test_at }}</span>
+                            {% if !last_test_error.is_empty() %}
+                            <span class="block mt-1 text-xs font-mono text-red-800 break-all">{{ last_test_error }}</span>
+                            {% endif %}
+                        {% endif %}
+                    </p>
+                </div>
+                <button
+                    hx-post="/portal/admin/settings/email/test"
+                    hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'
+                    hx-target="#test-result"
+                    hx-swap="outerHTML"
+                    class="flex-shrink-0 px-4 py-2 bg-gray-700 text-white rounded-md hover:bg-gray-800 text-sm font-medium">
+                    Send test email
+                </button>
+            </div>
+            <div id="test-result"></div>
+        </div>
+
+        <!-- Form -->
+        <form method="POST" action="/portal/admin/settings/email"
+              class="bg-white rounded-lg shadow-sm divide-y divide-gray-200">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+            <!-- Mode + envelope -->
+            <div class="p-6 space-y-4" x-data="{ mode: '{{ mode }}' }">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Mode</label>
+                    <select name="mode"
+                            x-model="mode"
+                            class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                        <option value="log" {% if mode == "log" %}selected{% endif %}>Log (dev / testing — no real mail sent)</option>
+                        <option value="smtp" {% if mode == "smtp" %}selected{% endif %}>SMTP (deliver mail)</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">From address</label>
+                    <input type="email" name="from_address" value="{{ from_address }}" required
+                           class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    <p class="mt-1 text-xs text-gray-500">
+                        Must be on a domain you own and have verified with your email provider.
+                    </p>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">From name</label>
+                    <input type="text" name="from_name" value="{{ from_name }}" required
+                           class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                </div>
+
+                <!-- SMTP-only fields -->
+                <div x-show="mode === 'smtp'" x-cloak class="space-y-4 pt-2 border-t">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">SMTP host</label>
+                        <input type="text" name="smtp_host" value="{{ smtp_host }}"
+                               placeholder="smtp.postmarkapp.com"
+                               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">SMTP port</label>
+                        <input type="number" name="smtp_port" value="{{ smtp_port }}" min="1" max="65535"
+                               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                        <p class="mt-1 text-xs text-gray-500">
+                            587 for STARTTLS (most common). 465 for implicit TLS. 25 for unencrypted (don't).
+                        </p>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">SMTP username</label>
+                        <input type="text" name="smtp_username" value="{{ smtp_username }}"
+                               autocomplete="off"
+                               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">SMTP password</label>
+                        <input type="password" name="smtp_password" value=""
+                               autocomplete="new-password"
+                               placeholder="{% if smtp_password_set %}(stored — leave blank to keep){% else %}(none set){% endif %}"
+                               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                        <p class="mt-1 text-xs text-gray-500">
+                            Encrypted at rest. Leave blank to keep the current value.
+                            Type <code class="font-mono bg-gray-100 px-1 rounded">__CLEAR__</code> to remove it.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Save button -->
+            <div class="p-6 flex items-center justify-between">
+                <a href="/portal/admin/settings" class="text-sm text-gray-600 hover:text-gray-900">← All settings</a>
+                <button type="submit"
+                        class="px-5 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+                    Save email settings
+                </button>
+            </div>
+        </form>
+
+        <!-- Help section -->
+        <div class="mt-8 bg-white rounded-lg shadow-sm p-6" x-data="{ open: false }">
+            <button type="button" @click="open = !open"
+                    class="w-full flex items-center justify-between text-left">
+                <h2 class="text-lg font-semibold text-gray-900">Setup guide: deliverability in 20 minutes</h2>
+                <svg class="h-5 w-5 text-gray-400 transition-transform"
+                     :class="open ? 'rotate-180' : ''"
+                     fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                </svg>
+            </button>
+            <div x-show="open" x-cloak class="mt-4 space-y-4 text-sm text-gray-700">
+                <div>
+                    <h3 class="font-semibold text-gray-900">1. Pick a transactional email provider</h3>
+                    <p class="mt-1">
+                        Running your own mail server is a years-long commitment.
+                        Use a provider — they handle IP reputation, bounce
+                        processing, and the authentication machinery Gmail and
+                        friends expect.
+                    </p>
+                    <ul class="mt-2 ml-6 list-disc space-y-1">
+                        <li><a href="https://postmarkapp.com/pricing" target="_blank" rel="noopener" class="text-blue-600 hover:underline">Postmark</a> — best reputation for transactional mail, 100 free/mo.</li>
+                        <li><a href="https://resend.com/pricing" target="_blank" rel="noopener" class="text-blue-600 hover:underline">Resend</a> — newer, dev-friendly, 3,000 free/mo.</li>
+                        <li><a href="https://aws.amazon.com/ses/pricing/" target="_blank" rel="noopener" class="text-blue-600 hover:underline">Amazon SES</a> — cheapest at scale, rougher UX.</li>
+                        <li><a href="https://sendgrid.com/pricing" target="_blank" rel="noopener" class="text-blue-600 hover:underline">SendGrid</a> — big, 100/day free forever.</li>
+                    </ul>
+                </div>
+
+                <div>
+                    <h3 class="font-semibold text-gray-900">2. Verify your sending domain</h3>
+                    <p class="mt-1">
+                        Your provider will walk you through a domain-verification
+                        wizard. It'll give you <strong>three TXT/CNAME records</strong>
+                        to add to your DNS. Paste them into your DNS host
+                        (Cloudflare, Namecheap, Route53, etc.) and wait a few minutes
+                        for propagation. The three records are:
+                    </p>
+                    <ul class="mt-2 ml-6 list-disc space-y-1">
+                        <li><strong>SPF</strong> — which servers are allowed to send as you.</li>
+                        <li><strong>DKIM</strong> — the public half of a key your provider uses to sign outbound mail.</li>
+                        <li><strong>DMARC</strong> — the policy receivers should use if SPF or DKIM fail, plus an address for reports.</li>
+                    </ul>
+                    <p class="mt-2">
+                        You don't need to understand the details. Your provider's
+                        wizard generates the correct values — you just copy them in.
+                    </p>
+                </div>
+
+                <div>
+                    <h3 class="font-semibold text-gray-900">3. Plug the SMTP credentials in above</h3>
+                    <p class="mt-1">
+                        Your provider gives you an SMTP host, port (usually 587),
+                        username, and password. Paste them into the form, switch
+                        Mode to SMTP, save, and hit <em>Send test email</em>.
+                    </p>
+                </div>
+
+                <div>
+                    <h3 class="font-semibold text-gray-900">Common errors</h3>
+                    <dl class="mt-2 space-y-2">
+                        <dt class="font-mono text-xs text-gray-800">authentication failed</dt>
+                        <dd class="ml-4 text-xs">Wrong username or password. Some providers use an API key as the password and a fixed string (e.g. "apikey") as the username.</dd>
+                        <dt class="font-mono text-xs text-gray-800">domain not verified / sender rejected</dt>
+                        <dd class="ml-4 text-xs">You haven't finished the domain-verification wizard with your provider, or the From address isn't on your verified domain.</dd>
+                        <dt class="font-mono text-xs text-gray-800">connection timed out</dt>
+                        <dd class="ml-4 text-xs">Wrong SMTP host, wrong port, or a firewall is blocking outbound on that port.</dd>
+                        <dt class="font-mono text-xs text-gray-800">TLS handshake failed</dt>
+                        <dd class="ml-4 text-xs">Port mismatch (465 expects implicit TLS, 587 expects STARTTLS) or cert verification failure on the provider side.</dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

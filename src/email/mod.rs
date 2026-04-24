@@ -1,22 +1,20 @@
 //! Email sending infrastructure.
 //!
-//! Provides an [`EmailSender`] trait with two built-in implementations:
-//! [`LogSender`] (for dev/tests — writes emails to tracing logs) and
-//! [`SmtpSender`] (lettre-backed SMTP). Use [`create_sender`] to build
-//! one from [`EmailConfig`].
+//! At runtime the app uses [`DynamicSender`], which reads its config
+//! from the DB on every send and constructs a concrete sender
+//! ([`LogSender`] or [`SmtpSender`]) on the fly. This lets admins edit
+//! SMTP settings from the UI without restarting the server.
 
 use async_trait::async_trait;
-use std::sync::Arc;
 
-use crate::{
-    config::{EmailConfig, EmailMode},
-    error::{AppError, Result},
-};
+use crate::error::{AppError, Result};
 
+pub mod dynamic_sender;
 pub mod log_sender;
 pub mod smtp_sender;
 pub mod templates;
 
+pub use dynamic_sender::DynamicSender;
 pub use log_sender::LogSender;
 pub use smtp_sender::SmtpSender;
 
@@ -33,38 +31,6 @@ pub struct EmailMessage {
 #[async_trait]
 pub trait EmailSender: Send + Sync {
     async fn send(&self, message: &EmailMessage) -> Result<()>;
-}
-
-/// Build a sender from config. Returns `LogSender` if mode is Log or if
-/// SMTP mode is selected but required fields are missing (with a warning
-/// logged) — we prefer falling back to Log over panicking at startup.
-pub fn create_sender(config: &EmailConfig) -> Arc<dyn EmailSender> {
-    match config.mode {
-        EmailMode::Log => {
-            tracing::info!("Email mode: log (emails will be written to stdout/logs only)");
-            Arc::new(LogSender::new(
-                config.from_address.clone().unwrap_or_else(|| "noreply@localhost".to_string()),
-                config.from_name.clone().unwrap_or_else(|| "Coterie".to_string()),
-            ))
-        }
-        EmailMode::Smtp => match SmtpSender::from_config(config) {
-            Ok(sender) => {
-                tracing::info!("Email mode: smtp (host: {:?})", config.smtp_host);
-                Arc::new(sender)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Email mode is smtp but configuration is incomplete ({}). \
-                     Falling back to log mode — emails will not actually send.",
-                    e
-                );
-                Arc::new(LogSender::new(
-                    config.from_address.clone().unwrap_or_else(|| "noreply@localhost".to_string()),
-                    config.from_name.clone().unwrap_or_else(|| "Coterie".to_string()),
-                ))
-            }
-        },
-    }
 }
 
 /// Convenience: build an EmailMessage from an Askama template pair

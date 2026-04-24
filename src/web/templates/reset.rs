@@ -81,7 +81,7 @@ pub async fn forgot_password_handler(
                     created.token,
                 );
                 let org_name = state.service_context.settings_service
-                    .get_value("organization.name")
+                    .get_value("org.name")
                     .await
                     .ok()
                     .filter(|s| !s.is_empty())

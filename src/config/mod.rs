@@ -12,9 +12,12 @@ pub struct Settings {
     pub integrations: IntegrationConfig,
     #[serde(default)]
     pub seed: SeedConfig,
-    #[serde(default)]
-    pub email: EmailConfig,
 }
+
+// Email configuration lives in the database (app_settings table) so
+// admins can edit it through the portal UI. The types below describe
+// the shape the SmtpSender expects; they're populated from the DB by
+// the DynamicSender on each send.
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ServerConfig {

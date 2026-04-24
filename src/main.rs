@@ -69,6 +69,25 @@ async fn main() -> anyhow::Result<()> {
         settings.auth.session_secret.clone(),
     ));
 
+    // Encryption helper for secrets-at-rest (e.g. SMTP password in
+    // settings). Key is derived from session_secret — if the operator
+    // rotates that, encrypted settings become unreadable and must be
+    // re-entered.
+    let crypto = Arc::new(auth::SecretCrypto::new(&settings.auth.session_secret));
+
+    // Settings service needs to exist before both the ServiceContext
+    // (which holds it) and the email sender (which reads live config
+    // from it on every send).
+    let settings_service = Arc::new(service::settings_service::SettingsService::new(
+        db_pool.clone(),
+        crypto.clone(),
+    ));
+
+    // Email sender reads config from the DB at send time so admins can
+    // change SMTP settings from the UI without a restart.
+    let email_sender: Arc<dyn email::EmailSender> =
+        Arc::new(email::DynamicSender::new(settings_service.clone()));
+
     // Initialize repositories
     let member_repo = Arc::new(repository::SqliteMemberRepository::new(db_pool.clone()));
     let event_repo = Arc::new(repository::SqliteEventRepository::new(db_pool.clone()));
@@ -96,9 +115,6 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Initialize email sender from config (Log in dev, SMTP in prod).
-    let email_sender = email::create_sender(&settings.email);
-
     // Create service context
     let service_context = Arc::new(ServiceContext::new(
         member_repo,
@@ -108,6 +124,7 @@ async fn main() -> anyhow::Result<()> {
         integration_manager,
         auth_service,
         email_sender,
+        settings_service,
         db_pool.clone(),
     ));
 

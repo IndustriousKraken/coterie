@@ -911,7 +911,7 @@ async fn send_welcome_email(
         state.settings.server.base_url.trim_end_matches('/'),
     );
     let org_name = state.service_context.settings_service
-        .get_value("organization.name")
+        .get_value("org.name")
         .await
         .ok()
         .filter(|s| !s.is_empty())

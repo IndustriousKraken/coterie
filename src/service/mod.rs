@@ -46,9 +46,9 @@ impl ServiceContext {
         integration_manager: Arc<IntegrationManager>,
         auth_service: Arc<AuthService>,
         email_sender: Arc<dyn EmailSender>,
+        settings_service: Arc<SettingsService>,
         db_pool: SqlitePool,
     ) -> Self {
-        let settings_service = Arc::new(SettingsService::new(db_pool.clone()));
         let csrf_service = Arc::new(CsrfService::new(db_pool.clone()));
 
         // Create type repositories

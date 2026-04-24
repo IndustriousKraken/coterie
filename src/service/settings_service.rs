@@ -1,11 +1,58 @@
+use std::sync::Arc;
+
 use chrono::{Utc, NaiveDateTime, DateTime};
 use uuid::Uuid;
 use sqlx::{SqlitePool, FromRow};
 
 use crate::{
+    auth::SecretCrypto,
     domain::{AppSetting, UpdateSettingRequest, SettingsCategory, PaymentConfig, MembershipConfig, SettingType},
     error::{AppError, Result},
 };
+
+/// Keys used for email configuration. One source of truth so the
+/// settings table and handlers can't drift.
+pub mod email_keys {
+    pub const MODE: &str = "email.mode";
+    pub const FROM_ADDRESS: &str = "email.from_address";
+    pub const FROM_NAME: &str = "email.from_name";
+    pub const SMTP_HOST: &str = "email.smtp_host";
+    pub const SMTP_PORT: &str = "email.smtp_port";
+    pub const SMTP_USERNAME: &str = "email.smtp_username";
+    pub const SMTP_PASSWORD: &str = "email.smtp_password";
+    pub const LAST_TEST_AT: &str = "email.last_test_at";
+    pub const LAST_TEST_OK: &str = "email.last_test_ok";
+    pub const LAST_TEST_ERROR: &str = "email.last_test_error";
+}
+
+/// A complete email configuration loaded from the settings table.
+/// The SMTP password is decrypted into plaintext for the sender's
+/// use — it only lives in memory, never leaves the process.
+#[derive(Debug, Clone, Default)]
+pub struct DbEmailConfig {
+    pub mode: String,
+    pub from_address: String,
+    pub from_name: String,
+    pub smtp_host: String,
+    pub smtp_port: u16,
+    pub smtp_username: String,
+    pub smtp_password: String,
+}
+
+/// User-facing form: same shape as [`DbEmailConfig`] but without the
+/// "last test" status fields. Used by the admin UI.
+#[derive(Debug, Clone)]
+pub struct UpdateEmailConfig {
+    pub mode: String,
+    pub from_address: String,
+    pub from_name: String,
+    pub smtp_host: String,
+    pub smtp_port: u16,
+    pub smtp_username: String,
+    /// None = leave existing password unchanged. Some(empty) = clear it.
+    /// Some(nonempty) = encrypt and replace.
+    pub smtp_password: Option<String>,
+}
 
 #[derive(FromRow)]
 struct SettingRow {
@@ -21,11 +68,12 @@ struct SettingRow {
 
 pub struct SettingsService {
     pool: SqlitePool,
+    crypto: Arc<SecretCrypto>,
 }
 
 impl SettingsService {
-    pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub fn new(pool: SqlitePool, crypto: Arc<SecretCrypto>) -> Self {
+        Self { pool, crypto }
     }
 
     pub async fn get_setting(&self, key: &str) -> Result<AppSetting> {
@@ -206,5 +254,79 @@ impl SettingsService {
     pub async fn get_number(&self, key: &str) -> Result<i64> {
         let value = self.get_value(key).await?;
         value.parse().map_err(|_| AppError::Internal(format!("Invalid number value for {}", key)))
+    }
+
+    /// Load the full email configuration from the settings table,
+    /// decrypting the SMTP password into plaintext.
+    pub async fn get_email_config(&self) -> Result<DbEmailConfig> {
+        let mode = self.get_value(email_keys::MODE).await.unwrap_or_else(|_| "log".to_string());
+        let from_address = self.get_value(email_keys::FROM_ADDRESS).await.unwrap_or_default();
+        let from_name = self.get_value(email_keys::FROM_NAME).await.unwrap_or_else(|_| "Coterie".to_string());
+        let smtp_host = self.get_value(email_keys::SMTP_HOST).await.unwrap_or_default();
+        let smtp_port = self.get_number(email_keys::SMTP_PORT).await.unwrap_or(587) as u16;
+        let smtp_username = self.get_value(email_keys::SMTP_USERNAME).await.unwrap_or_default();
+        let encrypted_password = self.get_value(email_keys::SMTP_PASSWORD).await.unwrap_or_default();
+        let smtp_password = self.crypto.decrypt(&encrypted_password)?;
+
+        Ok(DbEmailConfig {
+            mode,
+            from_address,
+            from_name,
+            smtp_host,
+            smtp_port,
+            smtp_username,
+            smtp_password,
+        })
+    }
+
+    /// Persist an updated email configuration. Encrypts the SMTP
+    /// password before storage; leaves it unchanged when `smtp_password`
+    /// is `None` (e.g. the form was submitted without re-typing it).
+    pub async fn update_email_config(
+        &self,
+        config: UpdateEmailConfig,
+        updated_by: Uuid,
+    ) -> Result<()> {
+        self.set_value_raw(email_keys::MODE, &config.mode, updated_by).await?;
+        self.set_value_raw(email_keys::FROM_ADDRESS, &config.from_address, updated_by).await?;
+        self.set_value_raw(email_keys::FROM_NAME, &config.from_name, updated_by).await?;
+        self.set_value_raw(email_keys::SMTP_HOST, &config.smtp_host, updated_by).await?;
+        self.set_value_raw(email_keys::SMTP_PORT, &config.smtp_port.to_string(), updated_by).await?;
+        self.set_value_raw(email_keys::SMTP_USERNAME, &config.smtp_username, updated_by).await?;
+
+        if let Some(new_password) = config.smtp_password {
+            let encrypted = self.crypto.encrypt(&new_password)?;
+            self.set_value_raw(email_keys::SMTP_PASSWORD, &encrypted, updated_by).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Record the result of a test-email attempt so the admin UI can
+    /// show health at a glance.
+    pub async fn record_email_test(&self, ok: bool, error: &str, updated_by: Uuid) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.set_value_raw(email_keys::LAST_TEST_AT, &now, updated_by).await?;
+        self.set_value_raw(email_keys::LAST_TEST_OK, if ok { "true" } else { "false" }, updated_by).await?;
+        self.set_value_raw(email_keys::LAST_TEST_ERROR, error, updated_by).await?;
+        Ok(())
+    }
+
+    /// Write a setting value directly without going through the audit
+    /// log (used for bulk updates like `update_email_config` and for
+    /// system-recorded state like test-result timestamps).
+    async fn set_value_raw(&self, key: &str, value: &str, updated_by: Uuid) -> Result<()> {
+        let now = Utc::now().naive_utc();
+        sqlx::query(
+            "UPDATE app_settings SET value = ?, updated_by = ?, updated_at = ? WHERE key = ?"
+        )
+        .bind(value)
+        .bind(updated_by.to_string())
+        .bind(now)
+        .bind(key)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
     }
 }

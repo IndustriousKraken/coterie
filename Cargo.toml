@@ -77,5 +77,9 @@ tokio-util = { version = "0.7.18", features = ["io"] }
 # Email (SMTP via lettre, async on tokio + rustls)
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "hostname"] }
 
+# Symmetric encryption for secrets-at-rest (e.g. SMTP password stored in DB)
+chacha20poly1305 = "0.10"
+base64 = "0.22"
+
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

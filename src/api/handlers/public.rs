@@ -118,7 +118,7 @@ async fn send_verification_email(
 /// to "Coterie" if unset.
 async fn org_name(state: &AppState) -> String {
     state.service_context.settings_service
-        .get_value("organization.name")
+        .get_value("org.name")
         .await
         .ok()
         .filter(|s| !s.is_empty())
