@@ -293,8 +293,16 @@ pub async fn send_test_email(
     // Borrow the welcome template as a generic "friendly test" body —
     // keeps the template surface smaller. The admin sees it and knows
     // SMTP is working.
-    let html = WelcomeHtml { full_name: &full_name, org_name: &org_name, portal_url: &portal_url };
-    let text = WelcomeText { full_name: &full_name, org_name: &org_name, portal_url: &portal_url };
+    // Test message: never includes the Discord-invite line — it's just
+    // a "your SMTP works" smoke test, not an actual welcome.
+    let html = WelcomeHtml {
+        full_name: &full_name, org_name: &org_name, portal_url: &portal_url,
+        discord_invite: None,
+    };
+    let text = WelcomeText {
+        full_name: &full_name, org_name: &org_name, portal_url: &portal_url,
+        discord_invite: None,
+    };
     let message = match email::message_from_templates(
         admin_email.clone(),
         format!("[Test] Email from {} is working", org_name),

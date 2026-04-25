@@ -171,8 +171,29 @@ pub async fn stripe_webhook(
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| AppError::BadRequest("Missing Stripe signature".to_string()))?;
 
-    // Handle the webhook
-    stripe_client.handle_webhook(&body, stripe_signature).await?;
+    // Handle the webhook. On signature failure, dispatch an admin
+    // alert before returning the error so an operator gets notified
+    // (in Discord, if configured) — bad signature usually means
+    // either Stripe rotated the webhook secret and we still have
+    // the old one, OR something is forging requests at our endpoint.
+    if let Err(e) = stripe_client.handle_webhook(&body, stripe_signature).await {
+        if matches!(&e, AppError::BadRequest(msg) if msg.contains("Invalid signature")) {
+            state.service_context.integration_manager
+                .handle_event(crate::integrations::IntegrationEvent::AdminAlert {
+                    subject: "Stripe webhook signature failed".to_string(),
+                    body: format!(
+                        "A Stripe webhook arrived with an invalid signature. \
+                         If you recently rotated the webhook secret in Stripe, \
+                         update it in /portal/admin/settings (it lives in env \
+                         config currently — see deploy/.env). If you didn't \
+                         rotate anything, someone may be forging webhooks at \
+                         /api/payments/webhook/stripe."
+                    ),
+                })
+                .await;
+        }
+        return Err(e);
+    }
 
     Ok(StatusCode::OK)
 }

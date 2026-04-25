@@ -507,6 +507,16 @@ pub async fn admin_create_announcement(
                 Some(&created.title),
                 None,
             ).await;
+            // If the admin chose "publish now", treat that the same as
+            // a separate publish action — fire the integration event so
+            // Discord posts to the announcements channel. Drafts (no
+            // published_at) don't fire; they'll fire when the admin
+            // hits the Publish button later.
+            if created.published_at.is_some() {
+                state.service_context.integration_manager
+                    .handle_event(crate::integrations::IntegrationEvent::AnnouncementPublished(created.clone()))
+                    .await;
+            }
             axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", created.id)).into_response()
         }
         Err(e) => axum::response::Html(format!("Error creating announcement: {}", crate::web::escape_html(&e.to_string()))).into_response(),
@@ -700,12 +710,24 @@ pub async fn admin_publish_announcement(
         Err(_) => return axum::response::Html("Error loading announcement".to_string()).into_response(),
     };
 
+    let was_already_published = existing.published_at.is_some();
     let mut updated = existing;
     updated.published_at = Some(chrono::Utc::now());
     updated.updated_at = chrono::Utc::now();
 
     match state.service_context.announcement_repo.update(id, updated).await {
-        Ok(_) => axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", id)).into_response(),
+        Ok(saved) => {
+            // Only fire the integration event on the transition from
+            // unpublished → published, not on re-publishing an already-
+            // public announcement (which can happen if an admin clicks
+            // Publish twice for some reason).
+            if !was_already_published {
+                state.service_context.integration_manager
+                    .handle_event(crate::integrations::IntegrationEvent::AnnouncementPublished(saved))
+                    .await;
+            }
+            axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", id)).into_response()
+        }
         Err(e) => axum::response::Html(format!("Error publishing announcement: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
 }

@@ -8,6 +8,11 @@
     <p style="margin: 28px 0;">
         <a href="{{ portal_url }}" style="background:#2563eb;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;display:inline-block;">Open portal</a>
     </p>
+    {% if let Some(invite) = discord_invite %}
+    <p style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e7eb;">
+        We also use Discord for member chat. <a href="{{ invite }}" style="color: #5865F2; font-weight: 600;">Join the server</a>.
+    </p>
+    {% endif %}
     <p style="font-size: 13px; color: #6b7280;">— {{ org_name }}</p>
 </body>
 </html>

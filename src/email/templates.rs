@@ -42,6 +42,9 @@ pub struct WelcomeHtml<'a> {
     pub full_name: &'a str,
     pub org_name: &'a str,
     pub portal_url: &'a str,
+    /// If set, the welcome email includes a "join Discord" line. The
+    /// admin configures this URL in Discord settings.
+    pub discord_invite: Option<&'a str>,
 }
 
 #[derive(Template)]
@@ -50,6 +53,7 @@ pub struct WelcomeText<'a> {
     pub full_name: &'a str,
     pub org_name: &'a str,
     pub portal_url: &'a str,
+    pub discord_invite: Option<&'a str>,
 }
 
 #[derive(Template)]

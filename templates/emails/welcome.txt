@@ -4,7 +4,11 @@ Your membership at {{ org_name }} has been activated. You can now log in
 and access member-only content:
 
 {{ portal_url }}
+{% if let Some(invite) = discord_invite %}
+We also use Discord for member chat. Join the server here:
 
+{{ invite }}
+{% endif %}
 Welcome aboard!
 
 — {{ org_name }}

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use crate::domain::Member;
+use crate::domain::{Announcement, Event, Member};
 use crate::error::Result;
 
 pub mod discord;
@@ -15,6 +15,18 @@ pub enum IntegrationEvent {
     MemberExpired(Member),
     MemberUpdated { old: Member, new: Member },
     MemberDeleted(Member),
+    /// An event was created or made visible. Visibility decides which
+    /// Discord channel (if any) the integration routes this to —
+    /// AdminOnly events go to the admin-alerts channel, others to the
+    /// events channel.
+    EventPublished(Event),
+    /// An announcement transitioned from draft to published — either
+    /// via `publish_now` on create or the dedicated publish action.
+    AnnouncementPublished(Announcement),
+    /// Operational notification for admins. Free-form subject/body so
+    /// any subsystem can dispatch one without coordinating with the
+    /// integration layer's enums.
+    AdminAlert { subject: String, body: String },
 }
 
 #[async_trait]

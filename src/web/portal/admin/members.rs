@@ -1091,8 +1091,27 @@ async fn send_welcome_email(
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Coterie".to_string());
 
-    let html = WelcomeHtml { full_name: &member.full_name, org_name: &org_name, portal_url: &portal_url };
-    let text = WelcomeText { full_name: &member.full_name, org_name: &org_name, portal_url: &portal_url };
+    // Pull the Discord invite URL from settings if the operator has
+    // configured one. None → the welcome email omits the Discord
+    // section entirely. Empty string is treated the same as None.
+    let discord_invite = state.service_context.settings_service
+        .get_value("discord.invite_url")
+        .await
+        .ok()
+        .filter(|s| !s.is_empty());
+
+    let html = WelcomeHtml {
+        full_name: &member.full_name,
+        org_name: &org_name,
+        portal_url: &portal_url,
+        discord_invite: discord_invite.as_deref(),
+    };
+    let text = WelcomeText {
+        full_name: &member.full_name,
+        org_name: &org_name,
+        portal_url: &portal_url,
+        discord_invite: discord_invite.as_deref(),
+    };
     let message = email::message_from_templates(
         member.email.clone(),
         format!("Welcome to {}", org_name),

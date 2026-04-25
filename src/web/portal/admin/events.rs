@@ -527,6 +527,11 @@ pub async fn admin_create_event(
                 Some(&created.title),
                 None,
             ).await;
+            // Notify integrations (Discord channel post if configured).
+            // Routing by visibility happens inside DiscordIntegration.
+            state.service_context.integration_manager
+                .handle_event(crate::integrations::IntegrationEvent::EventPublished(created.clone()))
+                .await;
             axum::response::Redirect::to(&format!("/portal/admin/events/{}", created.id)).into_response()
         }
         Err(e) => axum::response::Html(format!("Error creating event: {}", crate::web::escape_html(&e.to_string()))).into_response(),

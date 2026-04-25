@@ -34,11 +34,15 @@ pub fn is_valid_snowflake(s: &str) -> bool {
 
 pub struct DiscordIntegration {
     settings: Arc<SettingsService>,
+    /// Absolute Coterie base URL (from ServerConfig::base_url), used
+    /// to build links in outgoing Discord messages so members can
+    /// click through to events/announcements/payment pages.
+    base_url: String,
 }
 
 impl DiscordIntegration {
-    pub fn new(settings: Arc<SettingsService>) -> Self {
-        Self { settings }
+    pub fn new(settings: Arc<SettingsService>, base_url: String) -> Self {
+        Self { settings, base_url }
     }
 
     /// Pull the live config + a ready-to-use HTTP client. Returns
@@ -122,6 +126,24 @@ impl DiscordIntegration {
         }
     }
 
+    /// Post a message to a configured channel. No-op (with a debug
+    /// trace) when the channel ID is empty — the operator just hasn't
+    /// set up that channel.
+    async fn post_to_channel(&self, channel_id: &str, content: &str) {
+        let Some((_, client)) = self.load().await else {
+            return;
+        };
+        if channel_id.is_empty() {
+            return;
+        }
+        if let Err(e) = client.send_message(channel_id, content).await {
+            tracing::error!(
+                "Discord send_message to channel {}: {}",
+                channel_id, e
+            );
+        }
+    }
+
     /// Strip any Coterie-managed role. Used on member deletion.
     async fn clear_roles(&self, member: &Member) {
         let Some((cfg, client)) = self.load().await else {
@@ -202,6 +224,83 @@ impl Integration for DiscordIntegration {
                 if status_changed || id_changed {
                     self.sync_roles(new).await;
                 }
+                Ok(())
+            }
+
+            IntegrationEvent::EventPublished(event) => {
+                let Some((cfg, _)) = self.load().await else {
+                    return Ok(());
+                };
+                // AdminOnly events go to the admin alerts channel
+                // (members shouldn't see those), public/members-only
+                // go to the events channel.
+                let channel = match event.visibility {
+                    crate::domain::EventVisibility::AdminOnly => &cfg.admin_alerts_channel_id,
+                    _ => &cfg.events_channel_id,
+                };
+                if channel.is_empty() {
+                    return Ok(());
+                }
+                let prefix = match event.visibility {
+                    crate::domain::EventVisibility::AdminOnly => "**[Admin only]** ",
+                    crate::domain::EventVisibility::MembersOnly => "**[Members only]** ",
+                    _ => "",
+                };
+                let when = event.start_time.format("%a %b %d, %Y at %H:%M UTC");
+                let location = event.location.as_deref().unwrap_or("(no location set)");
+                let link = format!(
+                    "{}/portal/events/{}",
+                    self.base_url.trim_end_matches('/'),
+                    event.id
+                );
+                let content = format!(
+                    "{}📅 **New event: {}**\n{}\nWhere: {}\nDetails: {}",
+                    prefix, event.title, when, location, link,
+                );
+                self.post_to_channel(channel, &content).await;
+                Ok(())
+            }
+
+            IntegrationEvent::AnnouncementPublished(announcement) => {
+                let Some((cfg, _)) = self.load().await else {
+                    return Ok(());
+                };
+                if cfg.announcements_channel_id.is_empty() {
+                    return Ok(());
+                }
+                let visibility_tag = if announcement.is_public {
+                    ""
+                } else {
+                    "**[Members only]** "
+                };
+                // Trim the body for chat: full content can be long, the
+                // link drives them to the portal for the rest.
+                let preview = if announcement.content.len() > 280 {
+                    format!("{}…", &announcement.content[..280])
+                } else {
+                    announcement.content.clone()
+                };
+                let link = format!(
+                    "{}/portal/announcements",
+                    self.base_url.trim_end_matches('/'),
+                );
+                let content = format!(
+                    "{}📣 **{}**\n{}\n\n{}",
+                    visibility_tag, announcement.title, preview, link,
+                );
+                self.post_to_channel(&cfg.announcements_channel_id, &content).await;
+                Ok(())
+            }
+
+            IntegrationEvent::AdminAlert { subject, body } => {
+                let Some((cfg, _)) = self.load().await else {
+                    return Ok(());
+                };
+                if cfg.admin_alerts_channel_id.is_empty() {
+                    return Ok(());
+                }
+                let content = format!("⚠️ **{}**\n{}", subject, body);
+                self.post_to_channel(&cfg.admin_alerts_channel_id, &content).await;
                 Ok(())
             }
         }

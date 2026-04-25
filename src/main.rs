@@ -107,7 +107,10 @@ async fn main() -> anyhow::Result<()> {
     // disabled. Admin can flip discord.enabled at runtime via the
     // settings page without a restart.
     integration_manager
-        .register(Arc::new(DiscordIntegration::new(settings_service.clone())))
+        .register(Arc::new(DiscordIntegration::new(
+            settings_service.clone(),
+            settings.server.base_url.clone(),
+        )))
         .await;
 
     // Unifi: still env-var-driven for now (D5+ scope). Skip if config
