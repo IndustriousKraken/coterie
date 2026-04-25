@@ -79,6 +79,7 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/settings/discord", get(admin::discord::discord_settings_page))
         .route("/settings/discord", post(admin::discord::update_discord_settings))
         .route("/settings/discord/test", post(admin::discord::test_discord_connection))
+        .route("/settings/discord/reconcile", post(admin::discord::reconcile_roles))
         // Audit log viewer + CSV export
         .route("/audit", get(admin::audit::audit_log_page))
         .route("/audit/export", get(admin::audit::audit_log_export))

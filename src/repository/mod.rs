@@ -34,6 +34,11 @@ pub trait MemberRepository: Send + Sync {
     async fn list(&self, limit: i64, offset: i64) -> Result<Vec<Member>>;
     async fn list_active(&self) -> Result<Vec<Member>>;
     async fn list_expired(&self) -> Result<Vec<Member>>;
+    /// Every member with a non-empty `discord_id`, regardless of
+    /// status. Used by the Discord reconcile sweep so we can catch
+    /// drift on Active / Honorary / Expired / Suspended members in
+    /// one pass.
+    async fn list_with_discord_id(&self) -> Result<Vec<Member>>;
     async fn update(&self, id: Uuid, update: UpdateMemberRequest) -> Result<Member>;
     async fn set_admin(&self, id: Uuid, is_admin: bool) -> Result<Member>;
     async fn mark_email_verified(&self, id: Uuid) -> Result<()>;

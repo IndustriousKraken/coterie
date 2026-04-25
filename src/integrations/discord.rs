@@ -20,8 +20,21 @@ use crate::{
         Integration, IntegrationEvent,
         discord_client::DiscordClient,
     },
+    repository::MemberRepository,
     service::settings_service::{DbDiscordConfig, SettingsService},
 };
+
+/// Summary returned by `reconcile_all`. Used to render an admin-facing
+/// confirmation message and to log the daily sweep.
+#[derive(Debug, Default, Clone)]
+pub struct ReconcileSummary {
+    /// Members evaluated (had a discord_id and a syncable status).
+    pub processed: usize,
+    /// Members skipped because their snowflake didn't validate.
+    pub skipped_invalid_id: usize,
+    /// Members skipped because their status isn't reconciled (Pending).
+    pub skipped_pending: usize,
+}
 
 /// Whether `s` looks like a Discord snowflake (user / guild / role /
 /// channel ID). Snowflakes are 17–20 ASCII digits as of 2026 and are
@@ -142,6 +155,46 @@ impl DiscordIntegration {
                 channel_id, e
             );
         }
+    }
+
+    /// Walk every member with a discord_id and re-apply roles from
+    /// scratch based on their current status. Idempotent — Discord's
+    /// PUT-role endpoint is fine with re-adding a role they already
+    /// have, and remove returns 404 (treated as success) if it's
+    /// already gone.
+    ///
+    /// Caller is responsible for not running this concurrently with
+    /// itself; a single 500-member club takes ~few seconds at the
+    /// rate Discord allows. Failures per-member are logged and don't
+    /// abort the rest of the sweep.
+    pub async fn reconcile_all(&self, members: Arc<dyn MemberRepository>) -> ReconcileSummary {
+        let mut summary = ReconcileSummary::default();
+        if self.load().await.is_none() {
+            return summary;
+        }
+        let all = match members.list_with_discord_id().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("Discord reconcile: couldn't list members: {}", e);
+                return summary;
+            }
+        };
+        for m in &all {
+            // Validate before counting as "processed" — we want the
+            // summary to reflect actual sync attempts.
+            let Some(id) = &m.discord_id else { continue };
+            if !is_valid_snowflake(id) {
+                summary.skipped_invalid_id += 1;
+                continue;
+            }
+            if matches!(m.status, MemberStatus::Pending) {
+                summary.skipped_pending += 1;
+                continue;
+            }
+            self.sync_roles(m).await;
+            summary.processed += 1;
+        }
+        summary
     }
 
     /// Strip any Coterie-managed role. Used on member deletion.

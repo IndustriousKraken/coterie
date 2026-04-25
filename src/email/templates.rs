@@ -104,3 +104,19 @@ pub struct RenewalNoticeText<'a> {
     pub card_display: &'a str,
     pub portal_url: &'a str,
 }
+
+#[derive(Template)]
+#[template(path = "emails/admin_alert.html")]
+pub struct AdminAlertHtml<'a> {
+    pub org_name: &'a str,
+    pub subject: &'a str,
+    pub body: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "emails/admin_alert.txt")]
+pub struct AdminAlertText<'a> {
+    pub org_name: &'a str,
+    pub subject: &'a str,
+    pub body: &'a str,
+}

@@ -4,6 +4,7 @@ use tokio::sync::RwLock;
 use crate::domain::{Announcement, Event, Member};
 use crate::error::Result;
 
+pub mod admin_alert_email;
 pub mod discord;
 pub mod discord_client;
 pub mod unifi;

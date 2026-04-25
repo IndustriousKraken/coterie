@@ -17,7 +17,12 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
     config::Settings,
-    integrations::{IntegrationManager, discord::DiscordIntegration, unifi::UnifiIntegration},
+    integrations::{
+        IntegrationManager,
+        admin_alert_email::AdminAlertEmailIntegration,
+        discord::DiscordIntegration,
+        unifi::UnifiIntegration,
+    },
     service::ServiceContext,
 };
 
@@ -106,10 +111,25 @@ async fn main() -> anyhow::Result<()> {
     // own config from the DB on each event and skips silently when
     // disabled. Admin can flip discord.enabled at runtime via the
     // settings page without a restart.
+    //
+    // Keep a separate handle so the daily reconcile task can call
+    // its concrete `reconcile_all` method (the Integration trait
+    // intentionally doesn't expose Discord-specific operations).
+    let discord_integration = Arc::new(DiscordIntegration::new(
+        settings_service.clone(),
+        settings.server.base_url.clone(),
+    ));
     integration_manager
-        .register(Arc::new(DiscordIntegration::new(
+        .register(discord_integration.clone())
+        .await;
+
+    // Email backup for AdminAlert events: ensures critical
+    // notifications still reach operators when Discord is down or
+    // unconfigured. Sends to org.contact_email.
+    integration_manager
+        .register(Arc::new(AdminAlertEmailIntegration::new(
             settings_service.clone(),
-            settings.server.base_url.clone(),
+            email_sender.clone(),
         )))
         .await;
 
@@ -180,6 +200,31 @@ async fn main() -> anyhow::Result<()> {
                     }
                     _ => {}
                 }
+            }
+        });
+    }
+
+    // Spawn daily Discord role reconcile. Catches drift from any
+    // events that didn't deliver during a Discord outage. Cheap
+    // enough at the volumes we expect (<1k members) that running
+    // every 24h is fine. The integration itself no-ops when Discord
+    // is disabled or unconfigured.
+    {
+        let discord = discord_integration.clone();
+        let members = service_context.member_repo.clone();
+        tokio::spawn(async move {
+            let interval = tokio::time::Duration::from_secs(24 * 60 * 60);
+            // Initial delay so we don't hammer Discord during a
+            // restart loop and so the first reconcile runs in the
+            // background after the server has settled.
+            tokio::time::sleep(tokio::time::Duration::from_secs(5 * 60)).await;
+            loop {
+                let summary = discord.reconcile_all(members.clone()).await;
+                tracing::info!(
+                    "Discord daily reconcile: processed={}, skipped_invalid_id={}, skipped_pending={}",
+                    summary.processed, summary.skipped_invalid_id, summary.skipped_pending,
+                );
+                tokio::time::sleep(interval).await;
             }
         });
     }

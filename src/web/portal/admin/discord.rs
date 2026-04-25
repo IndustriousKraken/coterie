@@ -17,7 +17,7 @@ use crate::{
         middleware::auth::{CurrentUser, SessionInfo},
         state::AppState,
     },
-    integrations::discord_client::DiscordClient,
+    integrations::{discord::DiscordIntegration, discord_client::DiscordClient},
     service::settings_service::UpdateDiscordConfig,
     web::templates::{HtmlTemplate, UserInfo},
 };
@@ -304,4 +304,52 @@ fn test_result_html(ok: bool, detail: &str) -> axum::response::Html<String> {
         r#"<div id="discord-test-result" class="mt-2 p-3 {bg} {fg} rounded-md text-sm">{icon} {detail}</div>"#,
         bg = bg, fg = fg, icon = icon, detail = escaped,
     ))
+}
+
+/// Reconcile every member's Discord roles against their current
+/// status. Fired by the admin "Re-sync all roles" button. The same
+/// logic also runs daily in a background task — this is the manual
+/// trigger for "I just fixed a Discord outage, get state right NOW."
+///
+/// Returns an HTMX-friendly fragment that replaces the test-result
+/// area with a summary.
+pub async fn reconcile_roles(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+) -> impl IntoResponse {
+    if !is_admin(&current_user.member) {
+        return axum::response::Html(
+            r#"<div class="p-3 bg-red-50 text-red-800 rounded text-sm">Access denied</div>"#.to_string()
+        );
+    }
+
+    let cfg = match state.service_context.settings_service.get_discord_config().await {
+        Ok(c) => c,
+        Err(e) => return test_result_html(false, &format!("Couldn't load Discord config: {}", e)),
+    };
+    if !cfg.enabled || cfg.bot_token.is_empty() || cfg.guild_id.is_empty() {
+        return test_result_html(false, "Discord integration isn't enabled or configured.");
+    }
+
+    let integration = DiscordIntegration::new(
+        state.service_context.settings_service.clone(),
+        state.settings.server.base_url.clone(),
+    );
+    let summary = integration
+        .reconcile_all(state.service_context.member_repo.clone())
+        .await;
+
+    state.service_context.audit_service.log(
+        Some(current_user.member.id),
+        "discord_reconcile_manual",
+        "settings",
+        "discord",
+        None, None, None,
+    ).await;
+
+    let detail = format!(
+        "Reconciled {} member(s). Skipped {} with invalid Discord ID, {} pending.",
+        summary.processed, summary.skipped_invalid_id, summary.skipped_pending,
+    );
+    test_result_html(true, &detail)
 }

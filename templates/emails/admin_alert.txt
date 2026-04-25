@@ -1,0 +1,10 @@
+[{{ org_name }} admin alert]
+
+{{ subject }}
+
+{{ body }}
+
+--
+This message was sent because the Discord admin-alerts channel
+either isn't configured or couldn't be reached. Once Discord is
+healthy again, future alerts will land there as well.

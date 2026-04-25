@@ -60,16 +60,30 @@
                         {% endif %}
                     </p>
                 </div>
-                <button
-                    hx-post="/portal/admin/settings/discord/test"
-                    hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'
-                    hx-target="#discord-test-result"
-                    hx-swap="outerHTML"
-                    class="flex-shrink-0 px-4 py-2 bg-gray-700 text-white rounded-md hover:bg-gray-800 text-sm font-medium">
-                    Test connection
-                </button>
+                <div class="flex-shrink-0 flex flex-col gap-2">
+                    <button
+                        hx-post="/portal/admin/settings/discord/test"
+                        hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'
+                        hx-target="#discord-test-result"
+                        hx-swap="outerHTML"
+                        class="px-4 py-2 bg-gray-700 text-white rounded-md hover:bg-gray-800 text-sm font-medium">
+                        Test connection
+                    </button>
+                    <button
+                        hx-post="/portal/admin/settings/discord/reconcile"
+                        hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'
+                        hx-target="#discord-test-result"
+                        hx-swap="outerHTML"
+                        hx-confirm="Re-sync Discord roles for every member with a Discord ID? This may take a few seconds."
+                        class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 text-sm font-medium">
+                        Re-sync all roles
+                    </button>
+                </div>
             </div>
             <div id="discord-test-result"></div>
+            <p class="mt-3 text-xs text-gray-500">
+                Roles are also reconciled automatically once a day. Use this button after restoring Discord access or making bulk changes.
+            </p>
         </div>
 
         <!-- Form -->
