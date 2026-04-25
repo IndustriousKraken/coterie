@@ -5,6 +5,7 @@ use crate::domain::Member;
 use crate::error::Result;
 
 pub mod discord;
+pub mod discord_client;
 pub mod unifi;
 
 #[derive(Debug, Clone)]

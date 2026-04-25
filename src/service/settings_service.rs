@@ -54,6 +54,50 @@ pub struct UpdateEmailConfig {
     pub smtp_password: Option<String>,
 }
 
+/// Keys for Discord integration settings.
+pub mod discord_keys {
+    pub const ENABLED: &str = "discord.enabled";
+    pub const BOT_TOKEN: &str = "discord.bot_token";
+    pub const GUILD_ID: &str = "discord.guild_id";
+    pub const MEMBER_ROLE_ID: &str = "discord.member_role_id";
+    pub const EXPIRED_ROLE_ID: &str = "discord.expired_role_id";
+    pub const EVENTS_CHANNEL_ID: &str = "discord.events_channel_id";
+    pub const ANNOUNCEMENTS_CHANNEL_ID: &str = "discord.announcements_channel_id";
+    pub const ADMIN_ALERTS_CHANNEL_ID: &str = "discord.admin_alerts_channel_id";
+    pub const INVITE_URL: &str = "discord.invite_url";
+    pub const LAST_TEST_AT: &str = "discord.last_test_at";
+    pub const LAST_TEST_OK: &str = "discord.last_test_ok";
+    pub const LAST_TEST_ERROR: &str = "discord.last_test_error";
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DbDiscordConfig {
+    pub enabled: bool,
+    pub bot_token: String,
+    pub guild_id: String,
+    pub member_role_id: String,
+    pub expired_role_id: String,
+    pub events_channel_id: String,
+    pub announcements_channel_id: String,
+    pub admin_alerts_channel_id: String,
+    pub invite_url: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateDiscordConfig {
+    pub enabled: bool,
+    pub guild_id: String,
+    pub member_role_id: String,
+    pub expired_role_id: String,
+    pub events_channel_id: String,
+    pub announcements_channel_id: String,
+    pub admin_alerts_channel_id: String,
+    pub invite_url: String,
+    /// None = leave existing token unchanged. Some(empty) = clear it.
+    /// Some(nonempty) = encrypt and replace.
+    pub bot_token: Option<String>,
+}
+
 #[derive(FromRow)]
 struct SettingRow {
     key: String,
@@ -310,6 +354,68 @@ impl SettingsService {
             self.set_value_raw(email_keys::SMTP_PASSWORD, &encrypted, updated_by).await?;
         }
 
+        Ok(())
+    }
+
+    /// Load the full Discord integration configuration. Bot token is
+    /// decrypted into plaintext for the integration's use.
+    pub async fn get_discord_config(&self) -> Result<DbDiscordConfig> {
+        let enabled = self.get_bool(discord_keys::ENABLED).await.unwrap_or(false);
+        let guild_id = self.get_value(discord_keys::GUILD_ID).await.unwrap_or_default();
+        let member_role_id = self.get_value(discord_keys::MEMBER_ROLE_ID).await.unwrap_or_default();
+        let expired_role_id = self.get_value(discord_keys::EXPIRED_ROLE_ID).await.unwrap_or_default();
+        let events_channel_id = self.get_value(discord_keys::EVENTS_CHANNEL_ID).await.unwrap_or_default();
+        let announcements_channel_id = self.get_value(discord_keys::ANNOUNCEMENTS_CHANNEL_ID).await.unwrap_or_default();
+        let admin_alerts_channel_id = self.get_value(discord_keys::ADMIN_ALERTS_CHANNEL_ID).await.unwrap_or_default();
+        let invite_url = self.get_value(discord_keys::INVITE_URL).await.unwrap_or_default();
+        let encrypted = self.get_value(discord_keys::BOT_TOKEN).await.unwrap_or_default();
+        let bot_token = self.crypto.decrypt(&encrypted)?;
+
+        Ok(DbDiscordConfig {
+            enabled, bot_token, guild_id, member_role_id, expired_role_id,
+            events_channel_id, announcements_channel_id, admin_alerts_channel_id,
+            invite_url,
+        })
+    }
+
+    /// True if the encrypted bot token exists but won't decrypt — same
+    /// shape as `smtp_password_undecryptable`. Triggers the admin UI's
+    /// rotation banner.
+    pub async fn discord_token_undecryptable(&self) -> bool {
+        let encrypted = self.get_value(discord_keys::BOT_TOKEN).await.unwrap_or_default();
+        if encrypted.is_empty() {
+            return false;
+        }
+        self.crypto.decrypt(&encrypted).is_err()
+    }
+
+    pub async fn update_discord_config(
+        &self,
+        config: UpdateDiscordConfig,
+        updated_by: Uuid,
+    ) -> Result<()> {
+        self.set_value_raw(discord_keys::ENABLED, if config.enabled { "true" } else { "false" }, updated_by).await?;
+        self.set_value_raw(discord_keys::GUILD_ID, &config.guild_id, updated_by).await?;
+        self.set_value_raw(discord_keys::MEMBER_ROLE_ID, &config.member_role_id, updated_by).await?;
+        self.set_value_raw(discord_keys::EXPIRED_ROLE_ID, &config.expired_role_id, updated_by).await?;
+        self.set_value_raw(discord_keys::EVENTS_CHANNEL_ID, &config.events_channel_id, updated_by).await?;
+        self.set_value_raw(discord_keys::ANNOUNCEMENTS_CHANNEL_ID, &config.announcements_channel_id, updated_by).await?;
+        self.set_value_raw(discord_keys::ADMIN_ALERTS_CHANNEL_ID, &config.admin_alerts_channel_id, updated_by).await?;
+        self.set_value_raw(discord_keys::INVITE_URL, &config.invite_url, updated_by).await?;
+
+        if let Some(new_token) = config.bot_token {
+            let encrypted = self.crypto.encrypt(&new_token)?;
+            self.set_value_raw(discord_keys::BOT_TOKEN, &encrypted, updated_by).await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn record_discord_test(&self, ok: bool, error: &str, updated_by: Uuid) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.set_value_raw(discord_keys::LAST_TEST_AT, &now, updated_by).await?;
+        self.set_value_raw(discord_keys::LAST_TEST_OK, if ok { "true" } else { "false" }, updated_by).await?;
+        self.set_value_raw(discord_keys::LAST_TEST_ERROR, error, updated_by).await?;
         Ok(())
     }
 

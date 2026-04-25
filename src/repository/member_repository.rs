@@ -30,6 +30,7 @@ struct MemberRow {
     billing_mode: String,
     email_verified_at: Option<NaiveDateTime>,
     dues_reminder_sent_at: Option<NaiveDateTime>,
+    discord_id: Option<String>,
     created_at: NaiveDateTime,
     updated_at: NaiveDateTime,
 }
@@ -72,6 +73,7 @@ impl SqliteMemberRepository {
             billing_mode,
             email_verified_at: row.email_verified_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
             dues_reminder_sent_at: row.dues_reminder_sent_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
+            discord_id: row.discord_id,
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
             updated_at: DateTime::from_naive_utc_and_offset(row.updated_at, Utc),
         })
@@ -178,7 +180,7 @@ impl MemberRepository for SqliteMemberRepository {
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
                    stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
-                   dues_reminder_sent_at, created_at, updated_at
+                   dues_reminder_sent_at, discord_id, created_at, updated_at
             FROM members
             WHERE id = ?
             "#
@@ -200,7 +202,7 @@ impl MemberRepository for SqliteMemberRepository {
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
                    stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
-                   dues_reminder_sent_at, created_at, updated_at
+                   dues_reminder_sent_at, discord_id, created_at, updated_at
             FROM members
             WHERE email = ?
             "#
@@ -222,7 +224,7 @@ impl MemberRepository for SqliteMemberRepository {
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
                    stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
-                   dues_reminder_sent_at, created_at, updated_at
+                   dues_reminder_sent_at, discord_id, created_at, updated_at
             FROM members
             WHERE username = ?
             "#
@@ -244,7 +246,7 @@ impl MemberRepository for SqliteMemberRepository {
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
                    stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
-                   dues_reminder_sent_at, created_at, updated_at
+                   dues_reminder_sent_at, discord_id, created_at, updated_at
             FROM members
             ORDER BY created_at DESC
             LIMIT ? OFFSET ?
@@ -269,7 +271,7 @@ impl MemberRepository for SqliteMemberRepository {
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
                    stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
-                   dues_reminder_sent_at, created_at, updated_at
+                   dues_reminder_sent_at, discord_id, created_at, updated_at
             FROM members
             WHERE status = ?
             ORDER BY joined_at DESC
@@ -293,7 +295,7 @@ impl MemberRepository for SqliteMemberRepository {
             SELECT id, email, username, full_name, status, membership_type, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
                    stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
-                   dues_reminder_sent_at, created_at, updated_at
+                   dues_reminder_sent_at, discord_id, created_at, updated_at
             FROM members
             WHERE status = ?
             ORDER BY expires_at DESC
@@ -403,6 +405,21 @@ impl MemberRepository for SqliteMemberRepository {
             "UPDATE members SET password_hash = ?, updated_at = ? WHERE id = ?"
         )
             .bind(password_hash)
+            .bind(now_naive)
+            .bind(&id_str)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn update_discord_id(&self, id: Uuid, discord_id: Option<&str>) -> Result<()> {
+        let id_str = id.to_string();
+        let now_naive = Utc::now().naive_utc();
+        sqlx::query(
+            "UPDATE members SET discord_id = ?, updated_at = ? WHERE id = ?"
+        )
+            .bind(discord_id)
             .bind(now_naive)
             .bind(&id_str)
             .execute(&self.pool)

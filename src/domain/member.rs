@@ -31,6 +31,9 @@ pub struct Member {
     /// advances), set when the reminder goes out. One reminder per
     /// cycle per member.
     pub dues_reminder_sent_at: Option<DateTime<Utc>>,
+    /// Discord user ID (snowflake). NULL means we don't know who they
+    /// are on Discord — role sync skips them.
+    pub discord_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

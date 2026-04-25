@@ -34,6 +34,7 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/members/:id/expire-now", post(admin::members::admin_expire_now))
         .route("/members/:id/payments", get(admin::members::admin_member_payments))
         .route("/members/:id/resend-verification", post(admin::members::admin_resend_verification))
+        .route("/members/:id/discord-id", post(admin::members::admin_update_discord_id))
         // Events
         .route("/events", get(admin::events::admin_events_page))
         .route("/events/new", get(admin::events::admin_new_event_page))
@@ -74,6 +75,10 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/settings/email", get(admin::email::email_settings_page))
         .route("/settings/email", post(admin::email::update_email_settings))
         .route("/settings/email/test", post(admin::email::send_test_email))
+        // Discord settings (dedicated page with test connection button)
+        .route("/settings/discord", get(admin::discord::discord_settings_page))
+        .route("/settings/discord", post(admin::discord::update_discord_settings))
+        .route("/settings/discord/test", post(admin::discord::test_discord_connection))
         // Audit log viewer + CSV export
         .route("/audit", get(admin::audit::audit_log_page))
         .route("/audit/export", get(admin::audit::audit_log_export))

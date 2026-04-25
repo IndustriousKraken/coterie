@@ -38,6 +38,10 @@ pub trait MemberRepository: Send + Sync {
     async fn set_admin(&self, id: Uuid, is_admin: bool) -> Result<Member>;
     async fn mark_email_verified(&self, id: Uuid) -> Result<()>;
     async fn update_password_hash(&self, id: Uuid, password_hash: &str) -> Result<()>;
+    /// Set or clear the member's Discord snowflake ID. `None` clears it.
+    /// Validation is the caller's responsibility (see
+    /// `integrations::discord::is_valid_snowflake`).
+    async fn update_discord_id(&self, id: Uuid, discord_id: Option<&str>) -> Result<()>;
     async fn delete(&self, id: Uuid) -> Result<()>;
 }
 

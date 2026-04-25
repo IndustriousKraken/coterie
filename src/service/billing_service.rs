@@ -9,8 +9,9 @@ use crate::{
     },
     email::EmailSender,
     error::{AppError, Result},
+    integrations::{IntegrationEvent, IntegrationManager},
     payments::StripeClient,
-    repository::{PaymentRepository, SavedCardRepository, ScheduledPaymentRepository},
+    repository::{MemberRepository, PaymentRepository, SavedCardRepository, ScheduledPaymentRepository},
     service::{membership_type_service::MembershipTypeService, settings_service::SettingsService},
 };
 use sqlx::SqlitePool;
@@ -19,9 +20,11 @@ pub struct BillingService {
     scheduled_payment_repo: Arc<dyn ScheduledPaymentRepository>,
     payment_repo: Arc<dyn PaymentRepository>,
     saved_card_repo: Arc<dyn SavedCardRepository>,
+    member_repo: Arc<dyn MemberRepository>,
     membership_type_service: Arc<MembershipTypeService>,
     settings_service: Arc<SettingsService>,
     email_sender: Arc<dyn EmailSender>,
+    integration_manager: Arc<IntegrationManager>,
     stripe_client: Option<Arc<StripeClient>>,
     /// Absolute URL to this Coterie instance — used to build links in
     /// outgoing reminder emails. Comes from ServerConfig::base_url.
@@ -34,9 +37,11 @@ impl BillingService {
         scheduled_payment_repo: Arc<dyn ScheduledPaymentRepository>,
         payment_repo: Arc<dyn PaymentRepository>,
         saved_card_repo: Arc<dyn SavedCardRepository>,
+        member_repo: Arc<dyn MemberRepository>,
         membership_type_service: Arc<MembershipTypeService>,
         settings_service: Arc<SettingsService>,
         email_sender: Arc<dyn EmailSender>,
+        integration_manager: Arc<IntegrationManager>,
         stripe_client: Option<Arc<StripeClient>>,
         base_url: String,
         db_pool: SqlitePool,
@@ -45,9 +50,11 @@ impl BillingService {
             scheduled_payment_repo,
             payment_repo,
             saved_card_repo,
+            member_repo,
             membership_type_service,
             settings_service,
             email_sender,
+            integration_manager,
             stripe_client,
             base_url,
             db_pool,
@@ -408,6 +415,19 @@ impl BillingService {
                      bounced to /portal/restore on next request.",
                     expired_count, e
                 );
+            }
+        }
+
+        // Fire MemberExpired events so integrations (Discord role swap,
+        // future Unifi access revocation) can react. Best-effort — a
+        // failure here doesn't roll back the expiration.
+        for (id_str,) in &expired_ids {
+            if let Ok(uuid) = Uuid::parse_str(id_str) {
+                if let Ok(Some(member)) = self.member_repo.find_by_id(uuid).await {
+                    self.integration_manager
+                        .handle_event(IntegrationEvent::MemberExpired(member))
+                        .await;
+                }
             }
         }
 

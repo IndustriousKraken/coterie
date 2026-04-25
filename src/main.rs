@@ -102,11 +102,16 @@ async fn main() -> anyhow::Result<()> {
     // Initialize integration manager
     let integration_manager = Arc::new(IntegrationManager::new());
 
-    // Register integrations
-    if let Some(discord) = DiscordIntegration::new(settings.integrations.discord.clone()) {
-        integration_manager.register(Arc::new(discord)).await;
-    }
+    // Discord: always register the integration object — it reads its
+    // own config from the DB on each event and skips silently when
+    // disabled. Admin can flip discord.enabled at runtime via the
+    // settings page without a restart.
+    integration_manager
+        .register(Arc::new(DiscordIntegration::new(settings_service.clone())))
+        .await;
 
+    // Unifi: still env-var-driven for now (D5+ scope). Skip if config
+    // is absent.
     if let Some(unifi) = UnifiIntegration::new(settings.integrations.unifi.clone()) {
         integration_manager.register(Arc::new(unifi)).await;
     }

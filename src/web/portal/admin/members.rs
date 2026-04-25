@@ -280,6 +280,14 @@ pub async fn admin_activate_member(
                 None,
             ).await;
 
+            // Notify integrations (Discord role sync, future Unifi
+            // access provisioning, etc.). The dispatcher is fire-
+            // and-forget at the integration level — individual
+            // failures are logged inside each impl.
+            state.service_context.integration_manager
+                .handle_event(crate::integrations::IntegrationEvent::MemberActivated(member.clone()))
+                .await;
+
             // Send welcome email. Soft-fail: activation already succeeded,
             // and an admin can always resend manually if it didn't arrive.
             if let Err(e) = send_welcome_email(&state, &member).await {
@@ -350,6 +358,11 @@ pub async fn admin_suspend_member(
         Err(_) => return axum::response::Html("<tr><td colspan='6' class='px-6 py-4 text-red-600'>Invalid member ID</td></tr>".to_string()),
     };
 
+    // Snapshot the pre-update member so we can dispatch the proper
+    // before/after pair to integrations (Discord uses this to decide
+    // which roles to remove vs add).
+    let old_member = state.service_context.member_repo.find_by_id(id).await.ok().flatten();
+
     let update = UpdateMemberRequest {
         status: Some(MemberStatus::Suspended),
         ..Default::default()
@@ -368,6 +381,15 @@ pub async fn admin_suspend_member(
                     "Suspended member {} but failed to invalidate sessions: {}",
                     member.id, e
                 );
+            }
+
+            // Fire integration event with old/new for status diff.
+            if let Some(old) = old_member {
+                state.service_context.integration_manager
+                    .handle_event(crate::integrations::IntegrationEvent::MemberUpdated {
+                        old, new: member.clone()
+                    })
+                    .await;
             }
 
             state.service_context.audit_service.log(
@@ -457,6 +479,7 @@ pub struct AdminMemberDetailInfo {
     pub billing_mode: String,
     pub stripe_customer_id: Option<String>,
     pub stripe_subscription_id: Option<String>,
+    pub discord_id: String,
     pub saved_cards: Vec<AdminSavedCardInfo>,
     pub created_at: String,
     pub updated_at: String,
@@ -543,6 +566,7 @@ pub async fn admin_member_detail_page(
         billing_mode: member.billing_mode.as_str().to_string(),
         stripe_customer_id: member.stripe_customer_id,
         stripe_subscription_id: member.stripe_subscription_id,
+        discord_id: member.discord_id.unwrap_or_default(),
         saved_cards,
         created_at: member.created_at.format("%B %d, %Y").to_string(),
         updated_at: member.updated_at.format("%B %d, %Y at %l:%M %p").to_string(),
@@ -591,6 +615,13 @@ pub async fn admin_update_member(
         _ => MembershipType::Regular,
     };
 
+    // Snapshot the old member so we can emit a complete MemberUpdated event.
+    // Currently this handler doesn't change status — only profile fields —
+    // so integrations like Discord won't act on it. We dispatch anyway so
+    // future fields (e.g., discord_id editable from the same form) are
+    // covered without further wiring.
+    let old_member = state.service_context.member_repo.find_by_id(id).await.ok().flatten();
+
     let update = UpdateMemberRequest {
         full_name: Some(form.full_name),
         membership_type: Some(membership_type),
@@ -600,7 +631,7 @@ pub async fn admin_update_member(
     };
 
     match state.service_context.member_repo.update(id, update).await {
-        Ok(_) => {
+        Ok(new_member) => {
             state.service_context.audit_service.log(
                 Some(current_user.member.id),
                 "update_member",
@@ -610,6 +641,13 @@ pub async fn admin_update_member(
                 None,
                 None,
             ).await;
+            if let Some(old) = old_member {
+                state.service_context.integration_manager
+                    .handle_event(crate::integrations::IntegrationEvent::MemberUpdated {
+                        old, new: new_member,
+                    })
+                    .await;
+            }
             axum::response::Html(
                 r#"<div class="p-3 bg-green-50 text-green-800 rounded-md text-sm">Member updated successfully!</div>"#.to_string()
             )
@@ -769,6 +807,7 @@ pub async fn admin_expire_now(
         ),
     };
 
+    let old_member = state.service_context.member_repo.find_by_id(id).await.ok().flatten();
     let yesterday = chrono::Utc::now() - chrono::Duration::days(1);
 
     // Backdate dues AND flip status to Expired so the effect is immediate
@@ -802,6 +841,16 @@ pub async fn admin_expire_now(
                     id, e
                 );
             }
+
+            // Fire integration event with old/new pair for the diff.
+            if let Some(old) = old_member {
+                if let Ok(Some(new)) = state.service_context.member_repo.find_by_id(id).await {
+                    state.service_context.integration_manager
+                        .handle_event(crate::integrations::IntegrationEvent::MemberUpdated { old, new })
+                        .await;
+                }
+            }
+
             state.service_context.audit_service.log(
                 Some(current_user.member.id),
                 "expire_member_now",
@@ -1051,6 +1100,86 @@ async fn send_welcome_email(
         &text,
     )?;
     state.service_context.email_sender.send(&message).await
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateDiscordIdForm {
+    /// Empty string means "clear the discord_id".
+    pub discord_id: String,
+    #[allow(dead_code)]
+    pub csrf_token: String,
+}
+
+/// Admin sets or clears a member's Discord snowflake ID. Validates the
+/// format up-front; on success, fires a MemberUpdated event so Discord
+/// integration can re-sync roles to the new ID (and strip them from
+/// the old, if any).
+pub async fn admin_update_discord_id(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+    Path(member_id): Path<String>,
+    axum::Form(form): axum::Form<UpdateDiscordIdForm>,
+) -> impl IntoResponse {
+    use crate::integrations::discord::is_valid_snowflake;
+
+    let id = match uuid::Uuid::parse_str(&member_id) {
+        Ok(id) => id,
+        Err(_) => return discord_id_result(false, "Invalid member ID"),
+    };
+
+    let trimmed = form.discord_id.trim();
+    let new_value: Option<&str> = if trimmed.is_empty() {
+        None
+    } else if !is_valid_snowflake(trimmed) {
+        return discord_id_result(
+            false,
+            "Discord ID must be 17–20 digits (snowflake format). Right-click the user in Discord with Developer Mode on → Copy User ID.",
+        );
+    } else {
+        Some(trimmed)
+    };
+
+    // Snapshot the old member so the integration sees the diff
+    // (it'll strip roles from the old discord_id, apply to the new).
+    let old_member = state.service_context.member_repo.find_by_id(id).await.ok().flatten();
+
+    if let Err(e) = state.service_context.member_repo.update_discord_id(id, new_value).await {
+        return discord_id_result(false, &format!("Failed to save: {}", e));
+    }
+
+    state.service_context.audit_service.log(
+        Some(current_user.member.id),
+        "update_discord_id",
+        "member",
+        &id.to_string(),
+        old_member.as_ref().and_then(|m| m.discord_id.as_deref()),
+        new_value,
+        None,
+    ).await;
+
+    if let (Some(old), Ok(Some(new))) = (
+        old_member,
+        state.service_context.member_repo.find_by_id(id).await,
+    ) {
+        state.service_context.integration_manager
+            .handle_event(crate::integrations::IntegrationEvent::MemberUpdated { old, new })
+            .await;
+    }
+
+    let msg = match new_value {
+        Some(v) => format!("Discord ID set to {} (role sync triggered).", v),
+        None => "Discord ID cleared.".to_string(),
+    };
+    discord_id_result(true, &msg)
+}
+
+fn discord_id_result(ok: bool, detail: &str) -> axum::response::Response {
+    let escaped = crate::web::escape_html(detail);
+    let (bg, fg) = if ok { ("bg-green-50", "text-green-900") } else { ("bg-red-50", "text-red-900") };
+    axum::response::Html(format!(
+        r#"<div id="discord-id-result" class="mt-2 p-2 {bg} {fg} rounded text-sm">{detail}</div>"#,
+        bg = bg, fg = fg, detail = escaped,
+    )).into_response()
 }
 
 /// Admin-triggered: regenerate a verification token for an unverified
