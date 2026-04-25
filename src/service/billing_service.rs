@@ -128,6 +128,89 @@ impl BillingService {
         self.scheduled_payment_repo.create(scheduled).await
     }
 
+    /// Whether the member is currently enrolled in Coterie-managed
+    /// auto-renewal. We treat StripeSubscription as a separate path
+    /// (charges happen on Stripe's side, no ScheduledPayment row), so
+    /// this returns true only for `coterie_managed`.
+    pub async fn is_auto_renew(&self, member_id: Uuid) -> Result<bool> {
+        let mode: Option<String> = sqlx::query_scalar(
+            "SELECT billing_mode FROM members WHERE id = ?",
+        )
+        .bind(member_id.to_string())
+        .fetch_optional(&self.db_pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+
+        Ok(mode.as_deref() == Some("coterie_managed"))
+    }
+
+    /// Transition a member onto Coterie-managed auto-renewal.
+    /// Idempotent — if they're already enrolled, we still cancel any
+    /// stale pending scheduled payments and queue a fresh one based on
+    /// the member's current `dues_paid_until`. Cancel-first guarantees
+    /// we never leave two pending charges for the same cycle (e.g.,
+    /// from a double-submit).
+    pub async fn enable_auto_renew(
+        &self,
+        member_id: Uuid,
+        membership_type_slug: &str,
+    ) -> Result<()> {
+        self.cancel_scheduled_payments(member_id).await?;
+
+        sqlx::query(
+            "UPDATE members \
+             SET billing_mode = 'coterie_managed', updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?",
+        )
+        .bind(member_id.to_string())
+        .execute(&self.db_pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to set billing_mode: {}", e)))?;
+
+        self.schedule_renewal(member_id, membership_type_slug).await?;
+        Ok(())
+    }
+
+    /// Replace an enrolled member's pending scheduled payment with a
+    /// fresh one based on their current `dues_paid_until`. Used when
+    /// the member pays *early* (e.g., via one-time Checkout) — the
+    /// previously queued ScheduledPayment now points at the wrong due
+    /// date and would over-charge them.
+    ///
+    /// No-op if the member isn't on coterie_managed: we don't queue
+    /// payments for manual or stripe_subscription members.
+    pub async fn reschedule_after_payment(
+        &self,
+        member_id: Uuid,
+        membership_type_slug: &str,
+    ) -> Result<()> {
+        if !self.is_auto_renew(member_id).await? {
+            return Ok(());
+        }
+        self.cancel_scheduled_payments(member_id).await?;
+        self.schedule_renewal(member_id, membership_type_slug).await?;
+        Ok(())
+    }
+
+    /// Move the member off Coterie-managed auto-renewal. Cancels any
+    /// pending scheduled payments and flips billing_mode back to
+    /// 'manual'. Doesn't touch their saved cards — those stay on
+    /// file for one-off payments.
+    #[allow(dead_code)]
+    pub async fn disable_auto_renew(&self, member_id: Uuid) -> Result<()> {
+        self.cancel_scheduled_payments(member_id).await?;
+        sqlx::query(
+            "UPDATE members \
+             SET billing_mode = 'manual', updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?",
+        )
+        .bind(member_id.to_string())
+        .execute(&self.db_pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to clear billing_mode: {}", e)))?;
+        Ok(())
+    }
+
     /// Cancel all pending scheduled payments for a member.
     pub async fn cancel_scheduled_payments(&self, member_id: Uuid) -> Result<u32> {
         let pending = self

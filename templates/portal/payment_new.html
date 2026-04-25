@@ -112,6 +112,33 @@
         </div>
     </div>
 
+    <!-- Auto-renew toggle: only meaningful when paying with a saved card.
+         JS hides this block whenever a non-saved method is selected, since
+         Stripe Checkout (one-time) can't enroll someone in auto-renew. -->
+    <div id="auto-renew-block" class="bg-white rounded-lg shadow-sm border mb-6 {% if saved_cards.is_empty() %}hidden{% endif %}">
+        <div class="px-6 py-4 border-b">
+            <h2 class="text-lg font-semibold text-gray-900">3. Auto-renew</h2>
+        </div>
+        <div class="p-6">
+            {% if is_auto_renew %}
+            <div class="flex items-start gap-3">
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">Enrolled</span>
+                <p class="text-sm text-gray-700">
+                    You're on auto-renew. This payment will refresh the schedule so the next charge fires when these new dues run out.
+                </p>
+            </div>
+            {% else %}
+            <label class="flex items-start gap-3 cursor-pointer">
+                <input type="checkbox" id="enable-auto-renew" class="mt-1 h-4 w-4 text-blue-600 rounded border-gray-300">
+                <span class="text-sm text-gray-700">
+                    <span class="font-medium text-gray-900">Enable auto-renew.</span>
+                    We'll charge this saved card automatically when your membership comes due, so you don't have to remember. You can turn this off any time from your payment methods page.
+                </span>
+            </label>
+            {% endif %}
+        </div>
+    </div>
+
     <!-- Pay Button -->
     <div class="flex justify-end">
         <button id="pay-btn" type="button"
@@ -159,15 +186,22 @@
         }
     }
 
-    // Show/hide new card form based on payment method selection
+    // Show/hide new card form based on payment method selection.
+    // The auto-renew block follows the same rule — Stripe Checkout
+    // (one-time) doesn't store a card on Coterie's side, so we can't
+    // enroll someone in auto-renew via that path.
+    const autoRenewBlock = document.getElementById('auto-renew-block');
     if (hasSavedCards) {
         document.querySelectorAll('input[name="payment_method"]').forEach(function(radio) {
             radio.addEventListener('change', function() {
-                if (this.value === 'new') {
+                const usingNewCard = this.value === 'new';
+                if (usingNewCard) {
                     newCardSection.classList.remove('hidden');
                     initCardElement();
+                    if (autoRenewBlock) autoRenewBlock.classList.add('hidden');
                 } else {
                     newCardSection.classList.add('hidden');
+                    if (autoRenewBlock) autoRenewBlock.classList.remove('hidden');
                 }
             });
         });
@@ -231,8 +265,14 @@
                     return;
                 }
             } else {
-                // Saved card: charge directly via API
+                // Saved card: charge directly via API.
+                // The enable-auto-renew checkbox is only present when
+                // the member ISN'T already enrolled — for already-
+                // enrolled members the handler keeps them on the loop
+                // automatically, so we don't need to send the flag.
                 const cardId = paymentMethod.replace('saved:', '');
+                const enableEl = document.getElementById('enable-auto-renew');
+                const enableAutoRenew = enableEl ? enableEl.checked : false;
                 const response = await fetch('/portal/api/payments/charge-saved', {
                     method: 'POST',
                     headers: {
@@ -243,6 +283,7 @@
                         membership_type_slug: selectedType.value,
                         saved_card_id: cardId,
                         idempotency_key: idempotencyKey,
+                        enable_auto_renew: enableAutoRenew,
                     }),
                 });
 

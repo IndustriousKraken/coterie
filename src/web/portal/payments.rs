@@ -35,6 +35,11 @@ pub struct PaymentNewTemplate {
     pub saved_cards: Vec<SavedCardDisplay>,
     pub stripe_publishable_key: String,
     pub csrf_token: String,
+    /// True when the member is already on Coterie-managed auto-renew.
+    /// We hide the "Enable auto-renew" checkbox in that case and show
+    /// an "already enrolled" badge instead — the saved-card payment
+    /// will keep them enrolled and refresh the schedule automatically.
+    pub is_auto_renew: bool,
 }
 
 pub struct SavedCardDisplay {
@@ -92,6 +97,14 @@ pub struct ChargeSavedCardRequest {
     /// Optional for API callers; handler falls back to a fresh UUID.
     #[serde(default)]
     pub idempotency_key: Option<String>,
+    /// If true, enroll the member in Coterie-managed auto-renewal as
+    /// part of this payment: future renewals will charge this saved
+    /// card automatically. If false (or omitted), enrollment is left
+    /// alone — already-enrolled members stay enrolled (and their
+    /// schedule is updated to the new due date), manual members stay
+    /// manual.
+    #[serde(default)]
+    pub enable_auto_renew: Option<bool>,
 }
 
 pub async fn payments_page(
@@ -304,6 +317,9 @@ pub async fn payment_new_page(
         })
         .collect();
 
+    let is_auto_renew = current_user.member.billing_mode
+        == crate::domain::BillingMode::CoterieManaged;
+
     let template = PaymentNewTemplate {
         current_user: Some(user_info),
         is_admin: is_admin(&current_user.member),
@@ -312,6 +328,7 @@ pub async fn payment_new_page(
         saved_cards,
         stripe_publishable_key,
         csrf_token,
+        is_auto_renew,
     };
 
     HtmlTemplate(template)
@@ -425,25 +442,56 @@ pub async fn charge_saved_card_api(
 
     let payment = state.service_context.payment_repo.create(payment).await?;
 
-    // Extend dues + queue the next auto-renewal. If the schedule fails,
-    // the user still gets the dues bump from this payment — but they
-    // won't be on the auto-renew loop. Log so operators can spot it.
+    // Extend dues first so the new dues_paid_until is what auto-renew
+    // schedules off of. This is the source of truth for "when does the
+    // next renewal fire" — if scheduling reads the old date, the queued
+    // charge would fire on the previous cycle's day.
+    stripe_client.extend_member_dues(current_user.member.id, &membership_type.slug).await?;
+
+    // Branch on auto-renew intent:
+    //   - enable_auto_renew=true: enroll (or re-enroll) and schedule.
+    //   - already enrolled: keep them on the loop, refresh the schedule
+    //     so it points at the new dues_paid_until.
+    //   - otherwise: this is a one-time pay-through, leave billing_mode
+    //     alone and don't queue a future charge.
+    //
+    // Failures are logged but don't roll back the successful charge —
+    // the member's dues are paid; the worst case is they fall off the
+    // auto-renew loop and an operator has to re-enroll them.
     let billing_service = state.service_context.billing_service(
         state.stripe_client.clone(),
         state.settings.server.base_url.clone(),
     );
-    if let Err(e) = billing_service
-        .schedule_renewal(current_user.member.id, &request.membership_type_slug)
+    let opt_in = request.enable_auto_renew.unwrap_or(false);
+    if opt_in {
+        if let Err(e) = billing_service
+            .enable_auto_renew(current_user.member.id, &request.membership_type_slug)
+            .await
+        {
+            tracing::error!(
+                "Charged member {} but failed to enable auto-renew: {}",
+                current_user.member.id, e,
+            );
+        } else {
+            state.service_context.audit_service.log(
+                Some(current_user.member.id),
+                "enable_auto_renew",
+                "member",
+                &current_user.member.id.to_string(),
+                None,
+                Some(&format!("via saved card payment ({})", request.membership_type_slug)),
+                None,
+            ).await;
+        }
+    } else if let Err(e) = billing_service
+        .reschedule_after_payment(current_user.member.id, &request.membership_type_slug)
         .await
     {
         tracing::error!(
-            "Charged member {} but failed to schedule next renewal: {}",
-            current_user.member.id, e
+            "Charged member {} but failed to reschedule auto-renew: {}",
+            current_user.member.id, e,
         );
     }
-
-    // Extend dues directly using stripe_client's method
-    stripe_client.extend_member_dues(current_user.member.id, &membership_type.slug).await?;
 
     Ok((StatusCode::OK, Json(serde_json::json!({
         "payment_id": payment.id,

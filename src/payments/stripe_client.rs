@@ -13,7 +13,7 @@ use crate::{
     domain::{Payment, PaymentMethod, PaymentStatus, configurable_types::BillingPeriod},
     error::{AppError, Result},
     repository::PaymentRepository,
-    service::membership_type_service::MembershipTypeService,
+    service::{billing_service::BillingService, membership_type_service::MembershipTypeService},
 };
 
 pub struct StripeClient {
@@ -114,6 +114,7 @@ impl StripeClient {
         &self,
         payload: &str,
         stripe_signature: &str,
+        billing_service: &BillingService,
     ) -> Result<()> {
         // Verify webhook signature and construct event
         let event = Webhook::construct_event(
@@ -151,7 +152,7 @@ impl StripeClient {
             // One-time checkout payments
             EventType::CheckoutSessionCompleted => {
                 if let EventObject::CheckoutSession(session) = event.data.object {
-                    self.handle_successful_payment(session).await?;
+                    self.handle_successful_payment(session, billing_service).await?;
                 }
             }
             EventType::CheckoutSessionExpired => {
@@ -198,6 +199,7 @@ impl StripeClient {
     async fn handle_successful_payment(
         &self,
         session: CheckoutSession,
+        billing_service: &BillingService,
     ) -> Result<()> {
         let session_id = session.id.to_string();
 
@@ -216,10 +218,29 @@ impl StripeClient {
                 .and_then(|m| m.get("membership_type_slug"))
                 .cloned();
 
-            if let Some(slug) = membership_type_slug {
-                self.extend_member_dues(payment.member_id, &slug).await?;
+            if let Some(slug) = &membership_type_slug {
+                self.extend_member_dues(payment.member_id, slug).await?;
             } else {
                 tracing::warn!("No membership_type_slug in session metadata for session: {}", session_id);
+            }
+
+            // If the member is on Coterie-managed auto-renew, this
+            // one-time Checkout payment shifted their dues forward —
+            // any pending ScheduledPayment now points at the wrong
+            // due date and would over-charge them. Cancel + reschedule
+            // so the next auto-charge fires when these new dues lapse.
+            //
+            // No-op for manual or stripe_subscription members.
+            if let Some(slug) = &membership_type_slug {
+                if let Err(e) = billing_service
+                    .reschedule_after_payment(payment.member_id, slug)
+                    .await
+                {
+                    tracing::error!(
+                        "Member {} paid via Checkout but reschedule failed: {}",
+                        payment.member_id, e,
+                    );
+                }
             }
 
             tracing::info!("Payment completed for member: {}", payment.member_id);

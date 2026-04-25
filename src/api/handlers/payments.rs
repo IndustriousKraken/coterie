@@ -171,12 +171,21 @@ pub async fn stripe_webhook(
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| AppError::BadRequest("Missing Stripe signature".to_string()))?;
 
+    // Build a BillingService for the webhook handler — it needs to
+    // re-schedule auto-renew charges when an enrolled member pays
+    // early via Checkout (otherwise the queued ScheduledPayment fires
+    // at the wrong time and double-charges them).
+    let billing_service = state.service_context.billing_service(
+        state.stripe_client.clone(),
+        state.settings.server.base_url.clone(),
+    );
+
     // Handle the webhook. On signature failure, dispatch an admin
     // alert before returning the error so an operator gets notified
     // (in Discord, if configured) — bad signature usually means
     // either Stripe rotated the webhook secret and we still have
     // the old one, OR something is forging requests at our endpoint.
-    if let Err(e) = stripe_client.handle_webhook(&body, stripe_signature).await {
+    if let Err(e) = stripe_client.handle_webhook(&body, stripe_signature, &billing_service).await {
         if matches!(&e, AppError::BadRequest(msg) if msg.contains("Invalid signature")) {
             state.service_context.integration_manager
                 .handle_event(crate::integrations::IntegrationEvent::AdminAlert {
