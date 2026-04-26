@@ -4,7 +4,7 @@ use stripe::{
     Webhook, WebhookError, Customer, CreateCustomer, SetupIntent, CreateSetupIntent,
     PaymentIntent, CreatePaymentIntent, PaymentIntentConfirmationMethod,
 };
-use chrono::{Months, Utc};
+use chrono::Utc;
 use uuid::Uuid;
 use std::sync::Arc;
 use std::time::Duration;
@@ -386,14 +386,28 @@ impl StripeClient {
         // not a CheckoutSession ID) can match this row by IN-clause.
         // Fall back to keeping cs_ if Stripe didn't expand the PI on
         // the session (rare, but defensive).
-        let pi_id = session.payment_intent.as_ref().map(|exp| exp.id().to_string());
-        payment.status = PaymentStatus::Completed;
-        payment.paid_at = Some(Utc::now());
-        payment.updated_at = Utc::now();
-        if let Some(ref pi) = pi_id {
-            payment.stripe_payment_id = Some(pi.clone());
+        //
+        // Use complete_pending_payment so that if Stripe retries this
+        // event (because dispatch failed somewhere below and we rolled
+        // back the idempotency claim), the second run sees the row as
+        // already Completed and skips the post-work — preventing the
+        // double-extension race that the per-payment dues claim also
+        // guards against.
+        let pi_for_row = session.payment_intent
+            .as_ref()
+            .map(|exp| exp.id().to_string())
+            .unwrap_or_else(|| session_id.clone());
+        let won_flip = self.payment_repo
+            .complete_pending_payment(payment.id, &pi_for_row)
+            .await?;
+        if !won_flip {
+            tracing::debug!(
+                "checkout.session.completed for payment {} that's already Completed; \
+                 skipping post-work (likely a Stripe retry after a previous handler error)",
+                payment.id,
+            );
+            return Ok(());
         }
-        self.payment_repo.update(payment.id, payment.clone()).await?;
 
         // Branch on payment type. Donations don't extend dues and
         // don't refresh auto-renew schedules — they're a separate
@@ -423,8 +437,32 @@ impl StripeClient {
             .and_then(|m| m.get("membership_type_slug"))
             .cloned();
 
-        if let Some(slug) = &membership_type_slug {
-            self.extend_member_dues(payment.member_id, slug).await?;
+        // Resolve slug: prefer the metadata stamp from
+        // create_membership_checkout_session; fall back to the
+        // member's current membership_type if the metadata is missing
+        // (legacy sessions, or anything created without our helper).
+        // Without the fallback, a missing metadata field meant the
+        // payment row was flipped Completed but dues were silently
+        // not extended — money taken, member expires later. Same
+        // self-heal logic as handle_payment_intent_succeeded.
+        let resolved_slug = if let Some(s) = membership_type_slug {
+            Some(s)
+        } else {
+            tracing::warn!(
+                "No membership_type_slug in session metadata for session {}; \
+                 falling back to member's current membership type",
+                session_id,
+            );
+            let member = self.member_repo.find_by_id(payment.member_id).await?;
+            let mt_id = member.as_ref().and_then(|m| m.membership_type_id);
+            match mt_id {
+                Some(id) => self.membership_type_service.get(id).await?.map(|mt| mt.slug),
+                None => None,
+            }
+        };
+
+        if let Some(slug) = &resolved_slug {
+            self.extend_member_dues(payment.id, payment.member_id, slug).await?;
 
             if let Err(e) = billing_service
                 .reschedule_after_payment(payment.member_id, slug)
@@ -436,10 +474,24 @@ impl StripeClient {
                 );
             }
         } else {
-            tracing::warn!(
-                "No membership_type_slug in session metadata for session: {}",
-                session_id,
+            tracing::error!(
+                "Couldn't resolve membership type for paid Checkout session {}; \
+                 dues NOT extended for member {} — operator must reconcile",
+                session_id, payment.member_id,
             );
+            self.integration_manager.handle_event(IntegrationEvent::AdminAlert {
+                subject: format!(
+                    "Checkout paid but dues not extended — member {}",
+                    payment.member_id,
+                ),
+                body: format!(
+                    "Checkout session {} (payment {}) was paid by member {} \
+                     but no membership type could be resolved (no metadata, \
+                     no current type on record). Dues were NOT extended. \
+                     Reconcile manually.",
+                    session_id, payment.id, payment.member_id,
+                ),
+            }).await;
         }
 
         tracing::info!("Payment completed for member: {}", payment.member_id);
@@ -448,6 +500,7 @@ impl StripeClient {
 
     pub async fn extend_member_dues(
         &self,
+        payment_id: Uuid,
         member_id: Uuid,
         membership_type_slug: &str,
     ) -> Result<()> {
@@ -461,35 +514,21 @@ impl StripeClient {
         let billing_period = membership_type.billing_period_enum()
             .unwrap_or(BillingPeriod::Yearly);
 
-        // Get the member's current dues_paid_until
-        let row = sqlx::query_scalar::<_, Option<chrono::DateTime<Utc>>>(
-            "SELECT dues_paid_until FROM members WHERE id = ?"
-        )
-            .bind(member_id.to_string())
-            .fetch_optional(&self.db_pool)
-            .await
-            .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
-
-        let current_dues = row.flatten();
-        let now = Utc::now();
-        let base_date = current_dues
-            .filter(|d| *d > now)
-            .unwrap_or(now);
-
-        let new_dues_date = match billing_period {
-            BillingPeriod::Monthly => base_date.checked_add_months(Months::new(1)).unwrap_or(base_date),
-            BillingPeriod::Yearly => base_date.checked_add_months(Months::new(12)).unwrap_or(base_date),
-            BillingPeriod::Lifetime => chrono::DateTime::<Utc>::MAX_UTC,
-        };
-
-        self.member_repo
-            .set_dues_paid_until_with_revival(member_id, new_dues_date)
+        let extended = self.payment_repo
+            .extend_dues_for_payment_atomic(payment_id, member_id, billing_period)
             .await?;
 
-        tracing::info!(
-            "Extended dues for member {} to {} (billing period: {:?})",
-            member_id, new_dues_date, billing_period
-        );
+        if extended {
+            tracing::info!(
+                "Extended dues for member {} (payment: {}, billing period: {:?})",
+                member_id, payment_id, billing_period,
+            );
+        } else {
+            tracing::debug!(
+                "Dues already extended for payment {}; skipping",
+                payment_id,
+            );
+        }
 
         Ok(())
     }
@@ -639,7 +678,7 @@ impl StripeClient {
                     return Ok(());
                 }
             };
-            self.extend_member_dues(payment.member_id, &slug).await?;
+            self.extend_member_dues(payment_id, payment.member_id, &slug).await?;
             if let Err(e) = billing_service
                 .reschedule_after_payment(payment.member_id, &slug)
                 .await
@@ -832,8 +871,9 @@ impl StripeClient {
         let amount_cents = invoice.amount_paid.unwrap_or(0);
 
         // Create payment record
+        let payment_id = Uuid::new_v4();
         let payment = Payment {
-            id: Uuid::new_v4(),
+            id: payment_id,
             member_id: member_uuid,
             amount_cents,
             currency: invoice.currency.map(|c| c.to_string()).unwrap_or_else(|| "usd".to_string()),
@@ -864,14 +904,13 @@ impl StripeClient {
         .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
 
         if let Some(slug) = membership_type_slug {
-            self.extend_member_dues(member_uuid, &slug).await?;
+            self.extend_member_dues(payment_id, member_uuid, &slug).await?;
         } else {
             // Fallback: extend by 1 month (conservative default for subscriptions
-            // we couldn't map to a membership type).
-            let now = Utc::now();
-            let new_date = now.checked_add_months(chrono::Months::new(1)).unwrap_or(now);
-            self.member_repo
-                .set_dues_paid_until_with_revival(member_uuid, new_date)
+            // we couldn't map to a membership type). Routes through the
+            // atomic per-payment claim so a webhook retry won't double-extend.
+            self.payment_repo
+                .extend_dues_for_payment_atomic(payment_id, member_uuid, BillingPeriod::Monthly)
                 .await?;
         }
 

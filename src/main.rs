@@ -12,7 +12,7 @@ mod service;
 mod web;
 
 use std::sync::Arc;
-use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::{Executor, sqlite::SqlitePoolOptions};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
@@ -58,8 +58,17 @@ async fn main() -> anyhow::Result<()> {
         std::fs::create_dir_all(data_dir)?;
     }
 
+    // Foreign keys are off by default in SQLite — every new
+    // connection from the pool needs PRAGMA foreign_keys = ON for
+    // the FK constraints in our migrations to actually fire. Without
+    // this they're decorative; orphan payment / saved_card / etc.
+    // rows can be inserted with member_ids that don't exist.
     let db_pool = SqlitePoolOptions::new()
         .max_connections(settings.database.max_connections)
+        .after_connect(|conn, _meta| Box::pin(async move {
+            conn.execute("PRAGMA foreign_keys = ON").await?;
+            Ok(())
+        }))
         .connect(&database_url)
         .await?;
 

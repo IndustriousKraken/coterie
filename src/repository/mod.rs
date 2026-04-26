@@ -116,6 +116,29 @@ pub trait PaymentRepository: Send + Sync {
     /// Returns true if a row was flipped. Idempotent against double-
     /// failure reports.
     async fn fail_pending_payment(&self, id: Uuid) -> Result<bool>;
+    /// Idempotently extend a member's dues for a single Payment.
+    ///
+    /// Implemented as a transactional claim-then-update: the row's
+    /// `dues_extended_at` is set to NOW under a per-payment uniqueness
+    /// guard, and `dues_paid_until` is recomputed from the latest
+    /// member state (read inside the same transaction so concurrent
+    /// payments can't lose each other's increments). Returns `true`
+    /// if THIS call did the extension; `false` if a previous call
+    /// already extended dues for this payment.
+    ///
+    /// This single method addresses two correctness issues:
+    /// (1) Stripe webhook retries that re-run a handler after a
+    ///     transient failure no longer double-extend dues (the second
+    ///     call sees the claim and no-ops).
+    /// (2) Two payments for the same member processed concurrently
+    ///     can't both compute `D + 1y` from the same starting `D` —
+    ///     the SQLite write lock serializes the SELECT/UPDATE pair.
+    async fn extend_dues_for_payment_atomic(
+        &self,
+        payment_id: Uuid,
+        member_id: Uuid,
+        billing_period: crate::domain::configurable_types::BillingPeriod,
+    ) -> Result<bool>;
 }
 
 #[async_trait]

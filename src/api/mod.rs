@@ -171,7 +171,13 @@ fn payment_routes(state: AppState) -> Router<AppState> {
     Router::new()
         // Public webhook endpoint (no auth)
         .route("/webhook/stripe", post(handlers::payments::stripe_webhook))
-        // Protected payment endpoints
+        // Protected payment endpoints. CSRF middleware is layered
+        // INSIDE require_auth so it can read SessionInfo populated by
+        // the auth pass. The portal's fetch() calls all stamp the
+        // X-CSRF-Token header (see templates/portal/payment_methods.html);
+        // require_csrf is a defense-in-depth backstop in case CORS
+        // policy widens or an XSS slips through and tries to abuse
+        // these card-management endpoints.
         .nest("/", Router::new()
             .route("/", post(handlers::payments::create))
             .route("/:id", get(handlers::payments::get))
@@ -182,6 +188,10 @@ fn payment_routes(state: AppState) -> Router<AppState> {
             .route("/cards/setup-intent", post(handlers::payments::create_setup_intent))
             .route("/cards/:card_id", delete(handlers::payments::delete_saved_card))
             .route("/cards/:card_id/default", put(handlers::payments::set_default_card))
+            .route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                middleware::auth::require_csrf,
+            ))
             .route_layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 middleware::auth::require_auth,

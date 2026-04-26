@@ -1,4 +1,4 @@
-use chrono::{Months, NaiveDate, Utc};
+use chrono::{NaiveDate, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -235,16 +235,16 @@ impl BillingService {
             self.saved_card_repo.set_default(member_id, card_id).await?;
         }
 
-        // 2. Cancel the Stripe subscription. If this fails, bail
-        // before touching local state — the member stays on
-        // stripe_subscription and the operator can retry.
-        stripe.cancel_subscription(subscription_id).await?;
-
-        // 3. Flip local state. The CASE guard makes this idempotent
-        // against the inevitable customer.subscription.deleted
-        // webhook: if it fires AFTER this update lands, the
-        // hardened webhook handler will see coterie_managed and
-        // leave us alone.
+        // 2. Flip local state FIRST, before Stripe cancellation.
+        // Stripe fires customer.subscription.deleted essentially
+        // simultaneously with the cancel_subscription return — if we
+        // cancel before flipping, the webhook can land between the
+        // two calls, read billing_mode='stripe_subscription' (still!),
+        // interpret as out-of-band cancellation, and email the member
+        // a misleading "auto-renew cancelled" message. By flipping
+        // first, the webhook reads coterie_managed and skips its
+        // notify path.
+        let stashed_sub_id = subscription_id.to_string();
         sqlx::query(
             "UPDATE members \
              SET billing_mode = 'coterie_managed', \
@@ -256,6 +256,31 @@ impl BillingService {
         .execute(&self.db_pool)
         .await
         .map_err(|e| AppError::Internal(format!("Failed to flip billing_mode: {}", e)))?;
+
+        // 3. Cancel the Stripe subscription. If this fails, roll
+        // back the local flip so the operator can retry — leaving
+        // local in coterie_managed while Stripe still bills would
+        // be the worst of both worlds.
+        if let Err(e) = stripe.cancel_subscription(&stashed_sub_id).await {
+            sqlx::query(
+                "UPDATE members \
+                 SET billing_mode = 'stripe_subscription', \
+                     stripe_subscription_id = ?, \
+                     updated_at = CURRENT_TIMESTAMP \
+                 WHERE id = ?",
+            )
+            .bind(&stashed_sub_id)
+            .bind(member_id.to_string())
+            .execute(&self.db_pool)
+            .await
+            .map_err(|rollback| AppError::Internal(format!(
+                "Stripe cancel failed ({}) AND local rollback failed ({}); \
+                 member {} is in coterie_managed but Stripe is still \
+                 billing them. Manual intervention required.",
+                e, rollback, member_id,
+            )))?;
+            return Err(e);
+        }
 
         // 4. Schedule the next renewal against current dues_paid_until.
         // Cancel any stale scheduled_payments first (defensive — there
@@ -590,18 +615,21 @@ impl BillingService {
         // and safe to call when there are none.
         self.cancel_scheduled_payments(member_id).await?;
 
-        // Cancel any active Stripe subscription. If Stripe rejects
-        // the cancel (e.g., the sub_id stale), bail BEFORE touching
-        // local state so the operator can investigate without us
-        // leaving a half-migrated member.
-        if member.billing_mode == BillingMode::StripeSubscription {
-            if let Some(sub_id) = member.stripe_subscription_id.as_deref() {
-                let stripe = self.stripe_client.as_ref().ok_or_else(|| {
-                    AppError::ServiceUnavailable("Stripe not configured".to_string())
-                })?;
-                stripe.cancel_subscription(sub_id).await?;
-            }
-        }
+        // Flip local state FIRST so the customer.subscription.deleted
+        // webhook (which Stripe fires near-simultaneously with our
+        // cancel_subscription return) reads billing_mode='manual' and
+        // skips the "out-of-band cancellation" notify path. If we
+        // cancelled before flipping, the webhook would email the
+        // member a contradictory "your auto-renew was cancelled"
+        // message during a flow they explicitly initiated.
+        let stripe_sub_to_cancel: Option<String> =
+            if member.billing_mode == BillingMode::StripeSubscription {
+                member.stripe_subscription_id.clone()
+            } else {
+                None
+            };
+        let prior_mode = member.billing_mode;
+        let prior_sub_id = member.stripe_subscription_id.clone();
 
         sqlx::query(
             "UPDATE members \
@@ -614,6 +642,42 @@ impl BillingService {
         .execute(&self.db_pool)
         .await
         .map_err(|e| AppError::Internal(format!("Failed to clear billing_mode: {}", e)))?;
+
+        // Cancel the Stripe subscription if the member had one. On
+        // failure, roll back so the operator can retry without us
+        // leaving them in 'manual' while Stripe keeps billing.
+        if let Some(sub_id) = stripe_sub_to_cancel {
+            let stripe = self.stripe_client.as_ref().ok_or_else(|| {
+                AppError::ServiceUnavailable("Stripe not configured".to_string())
+            })?;
+            if let Err(e) = stripe.cancel_subscription(&sub_id).await {
+                let prior_mode_str = match prior_mode {
+                    BillingMode::Manual => "manual",
+                    BillingMode::CoterieManaged => "coterie_managed",
+                    BillingMode::StripeSubscription => "stripe_subscription",
+                };
+                sqlx::query(
+                    "UPDATE members \
+                     SET billing_mode = ?, \
+                         stripe_subscription_id = ?, \
+                         updated_at = CURRENT_TIMESTAMP \
+                     WHERE id = ?",
+                )
+                .bind(prior_mode_str)
+                .bind(prior_sub_id.as_deref())
+                .bind(member_id.to_string())
+                .execute(&self.db_pool)
+                .await
+                .map_err(|rollback| AppError::Internal(format!(
+                    "Stripe cancel failed ({}) AND local rollback failed ({}); \
+                     member {} is in 'manual' but Stripe may still bill them. \
+                     Manual intervention required.",
+                    e, rollback, member_id,
+                )))?;
+                return Err(e);
+            }
+        }
+
         Ok(())
     }
 
@@ -763,7 +827,7 @@ impl BillingService {
                     .await?;
 
                 // Extend dues
-                self.extend_member_dues(sp.member_id, sp.membership_type_id)
+                self.extend_member_dues(payment.id, sp.member_id, sp.membership_type_id)
                     .await?;
 
                 // Schedule next renewal. Failure here doesn't roll back
@@ -1223,6 +1287,7 @@ impl BillingService {
     /// to do a separate slug→id round-trip first.
     pub async fn extend_member_dues_by_slug(
         &self,
+        payment_id: Uuid,
         member_id: Uuid,
         membership_type_slug: &str,
     ) -> Result<()> {
@@ -1232,10 +1297,15 @@ impl BillingService {
             .ok_or_else(|| AppError::NotFound(format!(
                 "Membership type '{}' not found", membership_type_slug
             )))?;
-        self.extend_member_dues(member_id, mt.id).await
+        self.extend_member_dues(payment_id, member_id, mt.id).await
     }
 
-    pub async fn extend_member_dues(&self, member_id: Uuid, membership_type_id: Uuid) -> Result<()> {
+    pub async fn extend_member_dues(
+        &self,
+        payment_id: Uuid,
+        member_id: Uuid,
+        membership_type_id: Uuid,
+    ) -> Result<()> {
         let membership_type = self
             .membership_type_service
             .get(membership_type_id)
@@ -1246,38 +1316,24 @@ impl BillingService {
             .billing_period_enum()
             .unwrap_or(BillingPeriod::Yearly);
 
-        let current_dues: Option<String> = sqlx::query_scalar(
-            "SELECT dues_paid_until FROM members WHERE id = ?",
-        )
-        .bind(member_id.to_string())
-        .fetch_optional(&self.db_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?
-        .flatten();
-
-        let now = Utc::now();
-        let base_date = current_dues
-            .and_then(|s| {
-                chrono::DateTime::parse_from_rfc3339(&s)
-                    .ok()
-                    .map(|dt| dt.with_timezone(&Utc))
-            })
-            .filter(|d| *d > now)
-            .unwrap_or(now);
-
-        let new_dues_date = match billing_period {
-            BillingPeriod::Monthly => base_date
-                .checked_add_months(Months::new(1))
-                .unwrap_or(base_date),
-            BillingPeriod::Yearly => base_date
-                .checked_add_months(Months::new(12))
-                .unwrap_or(base_date),
-            BillingPeriod::Lifetime => chrono::DateTime::<Utc>::MAX_UTC,
-        };
-
-        self.member_repo
-            .set_dues_paid_until_with_revival(member_id, new_dues_date)
+        // Atomic per-payment claim + member update — see
+        // PaymentRepository::extend_dues_for_payment_atomic for why
+        // this isn't a SELECT/compute/UPDATE pair anymore.
+        let extended = self.payment_repo
+            .extend_dues_for_payment_atomic(payment_id, member_id, billing_period)
             .await?;
+
+        if extended {
+            tracing::info!(
+                "Extended dues for member {} (payment: {}, billing period: {:?})",
+                member_id, payment_id, billing_period,
+            );
+        } else {
+            tracing::debug!(
+                "Dues already extended for payment {}; skipping",
+                payment_id,
+            );
+        }
 
         Ok(())
     }

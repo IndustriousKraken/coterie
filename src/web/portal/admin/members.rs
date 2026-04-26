@@ -1039,8 +1039,9 @@ pub async fn admin_record_payment_submit(
         form.description.clone()
     };
 
+    let payment_id = uuid::Uuid::new_v4();
     let payment = Payment {
-        id: uuid::Uuid::new_v4(),
+        id: payment_id,
         member_id: id,
         amount_cents,
         currency: "USD".to_string(),
@@ -1069,7 +1070,7 @@ pub async fn admin_record_payment_submit(
             state.settings.server.base_url.clone(),
         );
         if let Err(e) = billing_service
-            .extend_member_dues_by_slug(id, &form.membership_type_slug)
+            .extend_member_dues_by_slug(payment_id, id, &form.membership_type_slug)
             .await
         {
             tracing::error!("Recorded manual payment but dues extension failed: {}", e);
@@ -1208,6 +1209,15 @@ pub async fn admin_extend_dues(
             r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Member not found</div>"#.to_string()
         ),
     };
+
+    // 1..=120 months (10 years). Negative `i32 as u32` would
+    // wraparound to ~4.29B and silently no-op via unwrap_or(base_date),
+    // masking either a fat-finger or a deliberate audit-log dilution.
+    if !(1..=120).contains(&form.months) {
+        return axum::response::Html(
+            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Months must be between 1 and 120.</div>"#.to_string()
+        );
+    }
 
     let now = chrono::Utc::now();
     let base_date = member.dues_paid_until

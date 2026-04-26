@@ -227,6 +227,29 @@ pub async fn create_manual(
             request.payment_type,
         )))?;
 
+    // Boundary validation. The portal-side admin form enforces these
+    // already; mirror them here so the JSON API can't bypass — a
+    // compromised admin session (or careless tooling) shouldn't be
+    // able to record negative amounts, amounts above the cap, or rows
+    // for non-existent members.
+    if request.amount_cents <= 0 {
+        return Err(AppError::BadRequest("amount_cents must be positive".to_string()));
+    }
+    if request.amount_cents > crate::domain::MAX_PAYMENT_CENTS {
+        return Err(AppError::BadRequest(format!(
+            "amount_cents exceeds the ${} cap on a single payment",
+            crate::domain::MAX_PAYMENT_CENTS / 100,
+        )));
+    }
+    if state.service_context.member_repo
+        .find_by_id(request.member_id).await?
+        .is_none()
+    {
+        return Err(AppError::BadRequest(format!(
+            "member {} not found", request.member_id
+        )));
+    }
+
     // Donation payments may target a specific campaign or be a
     // "general donation" with no campaign (campaign_id=None) —
     // matches the user-facing donate flow which offers an untargeted
@@ -275,7 +298,7 @@ pub async fn create_manual(
                 state.stripe_client.clone(),
                 state.settings.server.base_url.clone(),
             );
-            billing_service.extend_member_dues_by_slug(request.member_id, slug).await?;
+            billing_service.extend_member_dues_by_slug(payment.id, request.member_id, slug).await?;
             if let Err(e) = billing_service
                 .reschedule_after_payment(request.member_id, slug)
                 .await
@@ -312,6 +335,15 @@ pub async fn waive(
 ) -> Result<(StatusCode, Json<Payment>)> {
     // Admin auth is enforced by the admin_routes middleware
 
+    if state.service_context.member_repo
+        .find_by_id(request.member_id).await?
+        .is_none()
+    {
+        return Err(AppError::BadRequest(format!(
+            "member {} not found", request.member_id
+        )));
+    }
+
     let payment = Payment {
         id: Uuid::new_v4(),
         member_id: request.member_id,
@@ -338,7 +370,7 @@ pub async fn waive(
             state.stripe_client.clone(),
             state.settings.server.base_url.clone(),
         );
-        billing_service.extend_member_dues_by_slug(request.member_id, slug).await?;
+        billing_service.extend_member_dues_by_slug(payment.id, request.member_id, slug).await?;
         if let Err(e) = billing_service
             .reschedule_after_payment(request.member_id, slug)
             .await

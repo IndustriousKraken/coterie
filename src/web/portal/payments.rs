@@ -489,7 +489,7 @@ pub async fn charge_saved_card_api(
     // schedules off of. This is the source of truth for "when does the
     // next renewal fire" — if scheduling reads the old date, the queued
     // charge would fire on the previous cycle's day.
-    stripe_client.extend_member_dues(current_user.member.id, &membership_type.slug).await?;
+    stripe_client.extend_member_dues(payment_id, current_user.member.id, &membership_type.slug).await?;
 
     // Branch on auto-renew intent:
     //   - enable_auto_renew=true: enroll (or re-enroll) and schedule.

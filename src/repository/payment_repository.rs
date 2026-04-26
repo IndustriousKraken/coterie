@@ -4,7 +4,7 @@ use sqlx::{SqlitePool, FromRow};
 use uuid::Uuid;
 
 use crate::{
-    domain::{Payment, PaymentStatus, PaymentMethod, PaymentType},
+    domain::{Payment, PaymentStatus, PaymentMethod, PaymentType, configurable_types::BillingPeriod},
     error::{AppError, Result},
     repository::PaymentRepository,
 };
@@ -293,6 +293,76 @@ impl PaymentRepository for SqlitePaymentRepository {
         .await
         .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(res.rows_affected() == 1)
+    }
+
+    async fn extend_dues_for_payment_atomic(
+        &self,
+        payment_id: Uuid,
+        member_id: Uuid,
+        billing_period: BillingPeriod,
+    ) -> Result<bool> {
+        use chrono::Months;
+
+        let mut tx = self.pool.begin().await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // Atomic claim. dues_extended_at is the per-payment idempotency
+        // anchor: only the first caller for this payment_id sees
+        // rows_affected == 1; any later caller (including a webhook
+        // retry after rollback) sees 0 and no-ops below.
+        let now_naive = Utc::now().naive_utc();
+        let claim = sqlx::query(
+            "UPDATE payments SET dues_extended_at = ? \
+             WHERE id = ? AND dues_extended_at IS NULL",
+        )
+        .bind(now_naive)
+        .bind(payment_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        if claim.rows_affected() == 0 {
+            tx.commit().await.map_err(|e| AppError::Database(e.to_string()))?;
+            return Ok(false);
+        }
+
+        // Read current dues INSIDE the transaction so SQLite's write
+        // lock serializes us against any concurrent payment for the
+        // same member. Without the txn, two payments could both read
+        // D and both write D+1y, losing one period.
+        let current_dues: Option<DateTime<Utc>> = sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+            "SELECT dues_paid_until FROM members WHERE id = ?",
+        )
+        .bind(member_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?
+        .flatten();
+
+        let now_utc = Utc::now();
+        let base_date = current_dues.filter(|d| *d > now_utc).unwrap_or(now_utc);
+        let new_dues_date = match billing_period {
+            BillingPeriod::Monthly => base_date.checked_add_months(Months::new(1)).unwrap_or(base_date),
+            BillingPeriod::Yearly => base_date.checked_add_months(Months::new(12)).unwrap_or(base_date),
+            BillingPeriod::Lifetime => DateTime::<Utc>::MAX_UTC,
+        };
+
+        sqlx::query(
+            "UPDATE members \
+             SET dues_paid_until = ?, \
+                 status = CASE WHEN status = 'Expired' THEN 'Active' ELSE status END, \
+                 dues_reminder_sent_at = NULL, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?",
+        )
+        .bind(new_dues_date)
+        .bind(member_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        tx.commit().await.map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(true)
     }
 
     async fn update_status(&self, id: Uuid, status: PaymentStatus) -> Result<Payment> {

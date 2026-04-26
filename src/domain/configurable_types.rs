@@ -80,7 +80,7 @@ pub struct UpdateAnnouncementTypeRequest {
 // Membership Type
 // =============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq, Eq)]
 #[sqlx(type_name = "TEXT")]
 pub enum BillingPeriod {
     Monthly,
