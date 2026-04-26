@@ -715,6 +715,13 @@ impl BillingService {
         // runner fires twice for the same scheduled payment, Stripe dedupes.
         let idempotency_key = format!("sched-{}", sp.id);
 
+        // Pre-allocate the Payment row ID. We pass it into Stripe as
+        // metadata.payment_id so the payment_intent.succeeded webhook
+        // can correlate; we use the same ID below when persisting the
+        // row. The runner's retry-with-same-idempotency-key gives us
+        // recovery if the row insert fails after the charge succeeds.
+        let payment_id = Uuid::new_v4();
+
         // Attempt the charge
         match stripe_client
             .charge_saved_card(
@@ -723,13 +730,14 @@ impl BillingService {
                 sp.amount_cents,
                 &description,
                 &idempotency_key,
+                payment_id,
             )
             .await
         {
             Ok(stripe_payment_id) => {
                 // Create payment record
                 let payment = Payment {
-                    id: Uuid::new_v4(),
+                    id: payment_id,
                     member_id: sp.member_id,
                     amount_cents: sp.amount_cents,
                     currency: sp.currency.clone(),
@@ -1267,21 +1275,9 @@ impl BillingService {
             BillingPeriod::Lifetime => chrono::DateTime::<Utc>::MAX_UTC,
         };
 
-        // Restore Expired -> Active on payment, clear the reminder flag,
-        // but don't clobber Suspended (admin-initiated) or Honorary.
-        sqlx::query(
-            "UPDATE members \
-             SET dues_paid_until = ?, \
-                 status = CASE WHEN status = 'Expired' THEN 'Active' ELSE status END, \
-                 dues_reminder_sent_at = NULL, \
-                 updated_at = CURRENT_TIMESTAMP \
-             WHERE id = ?",
-        )
-        .bind(new_dues_date)
-        .bind(member_id.to_string())
-        .execute(&self.db_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to update dues: {}", e)))?;
+        self.member_repo
+            .set_dues_paid_until_with_revival(member_id, new_dues_date)
+            .await?;
 
         Ok(())
     }

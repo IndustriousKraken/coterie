@@ -43,7 +43,7 @@ use crate::{
     domain::{Payment, PaymentMethod, PaymentStatus, PaymentType, configurable_types::BillingPeriod},
     error::{AppError, Result},
     integrations::{IntegrationEvent, IntegrationManager},
-    repository::PaymentRepository,
+    repository::{MemberRepository, PaymentRepository},
     service::{billing_service::BillingService, membership_type_service::MembershipTypeService},
 };
 
@@ -51,6 +51,7 @@ pub struct StripeClient {
     client: Client,
     webhook_secret: String,
     payment_repo: Arc<dyn PaymentRepository>,
+    member_repo: Arc<dyn MemberRepository>,
     membership_type_service: Arc<MembershipTypeService>,
     integration_manager: Arc<IntegrationManager>,
     db_pool: SqlitePool,
@@ -61,6 +62,7 @@ impl StripeClient {
         api_key: String,
         webhook_secret: String,
         payment_repo: Arc<dyn PaymentRepository>,
+        member_repo: Arc<dyn MemberRepository>,
         membership_type_service: Arc<MembershipTypeService>,
         integration_manager: Arc<IntegrationManager>,
         db_pool: SqlitePool,
@@ -70,6 +72,7 @@ impl StripeClient {
             client,
             webhook_secret,
             payment_repo,
+            member_repo,
             membership_type_service,
             integration_manager,
             db_pool,
@@ -285,6 +288,17 @@ impl StripeClient {
                     }
                 }
 
+                // Self-heal for saved-card / donation flows that insert
+                // a Pending payment row before charging Stripe. If the
+                // synchronous response was lost (process crash, network
+                // drop) the webhook arrives ~seconds later and flips
+                // the row to Completed + does the post-payment work.
+                EventType::PaymentIntentSucceeded => {
+                    if let EventObject::PaymentIntent(intent) = event.data.object {
+                        self.handle_payment_intent_succeeded(intent, billing_service).await?;
+                    }
+                }
+
                 // Refunds — fired when an admin issues one through Stripe's
                 // dashboard (or as the echo from our own admin-button refund).
                 EventType::ChargeRefunded => {
@@ -468,24 +482,9 @@ impl StripeClient {
             BillingPeriod::Lifetime => chrono::DateTime::<Utc>::MAX_UTC,
         };
 
-        // Also restore Expired -> Active so the member regains access after
-        // paying, and clear the dues_reminder_sent_at flag so the next
-        // dues cycle can trigger a fresh reminder. We only touch the
-        // status when it's currently Expired — we don't want to
-        // overwrite Suspended (admin-initiated) or Honorary.
-        sqlx::query(
-            "UPDATE members \
-             SET dues_paid_until = ?, \
-                 status = CASE WHEN status = 'Expired' THEN 'Active' ELSE status END, \
-                 dues_reminder_sent_at = NULL, \
-                 updated_at = CURRENT_TIMESTAMP \
-             WHERE id = ?"
-        )
-            .bind(new_dues_date)
-            .bind(member_id.to_string())
-            .execute(&self.db_pool)
-            .await
-            .map_err(|e| AppError::Internal(format!("Failed to update dues: {}", e)))?;
+        self.member_repo
+            .set_dues_paid_until_with_revival(member_id, new_dues_date)
+            .await?;
 
         tracing::info!(
             "Extended dues for member {} to {} (billing period: {:?})",
@@ -521,6 +520,135 @@ impl StripeClient {
             self.payment_repo.update(payment.id, payment).await?;
 
             tracing::warn!("Payment failed: {}", stripe_payment_id);
+        }
+
+        Ok(())
+    }
+
+    /// Self-heal handler for the Pending-first saved-card flow. When
+    /// donate_api or charge_saved_card_api inserts a Pending row,
+    /// charges Stripe, and crashes (or drops the response) before
+    /// completing the row, this webhook arrives ~seconds later and
+    /// finishes the work.
+    ///
+    /// The flip is race-free against the synchronous path:
+    /// `complete_pending_payment` only changes a row whose status is
+    /// still `Pending`, and returns whether *we* did the flip. Whoever
+    /// flips owns the post-work — the loser bails to avoid double-
+    /// extending dues.
+    ///
+    /// PIs that don't carry our `payment_id` metadata (legacy charges,
+    /// charges from other systems) are logged and skipped — we have
+    /// nothing to do for them. PIs whose Pending row hasn't been
+    /// inserted yet (e.g. the billing runner crashed between charge
+    /// and row insert) are also a no-op here; the runner's retry will
+    /// recover them via Stripe's idempotency key.
+    async fn handle_payment_intent_succeeded(
+        &self,
+        intent: stripe::PaymentIntent,
+        billing_service: &BillingService,
+    ) -> Result<()> {
+        let payment_id_str = match intent.metadata.get("payment_id") {
+            Some(s) => s.clone(),
+            None => {
+                tracing::debug!(
+                    "PI {} succeeded with no payment_id metadata; not a Coterie-tracked charge",
+                    intent.id,
+                );
+                return Ok(());
+            }
+        };
+        let payment_id = match Uuid::parse_str(&payment_id_str) {
+            Ok(id) => id,
+            Err(_) => {
+                tracing::warn!(
+                    "PI {} has malformed payment_id metadata: '{}'",
+                    intent.id, payment_id_str,
+                );
+                return Ok(());
+            }
+        };
+
+        let payment = match self.payment_repo.find_by_id(payment_id).await? {
+            Some(p) => p,
+            None => {
+                tracing::warn!(
+                    "PI {} succeeded but local payment {} doesn't exist — \
+                     either a runner-flow whose row insert hasn't run yet, \
+                     or a sync-path crash before the Pending row was created. \
+                     Will be reconciled on the next runner tick or via the \
+                     Pending-payments review.",
+                    intent.id, payment_id,
+                );
+                return Ok(());
+            }
+        };
+
+        let pi_id = intent.id.to_string();
+        let won_flip = self.payment_repo
+            .complete_pending_payment(payment_id, &pi_id)
+            .await?;
+        if !won_flip {
+            tracing::debug!(
+                "PI {} succeeded but payment {} was already completed; sync path won the race",
+                intent.id, payment_id,
+            );
+            return Ok(());
+        }
+
+        tracing::info!(
+            "Self-healing payment {} via PI.succeeded webhook (member: {})",
+            payment_id, payment.member_id,
+        );
+
+        // Post-work depends on payment_type. Donations have none —
+        // the row flip is the entire job. Membership payments need
+        // dues extended and (if auto-renew enrolled) the next renewal
+        // rescheduled. We look up the slug from the member's current
+        // membership_type since saved-card charges don't carry it on
+        // the Payment row.
+        if payment.payment_type == PaymentType::Membership {
+            let member = match self.member_repo.find_by_id(payment.member_id).await? {
+                Some(m) => m,
+                None => {
+                    tracing::warn!(
+                        "Self-healed payment {} for missing member {}; skipping post-work",
+                        payment_id, payment.member_id,
+                    );
+                    return Ok(());
+                }
+            };
+            let mt_id = match member.membership_type_id {
+                Some(id) => id,
+                None => {
+                    tracing::warn!(
+                        "Member {} has no membership_type_id; can't extend dues for self-healed payment {}",
+                        payment.member_id, payment_id,
+                    );
+                    return Ok(());
+                }
+            };
+            let mt = self.membership_type_service.get(mt_id).await?;
+            let slug = match mt {
+                Some(t) => t.slug,
+                None => {
+                    tracing::warn!(
+                        "Member {}'s membership_type {} not found; can't extend dues for self-healed payment {}",
+                        payment.member_id, mt_id, payment_id,
+                    );
+                    return Ok(());
+                }
+            };
+            self.extend_member_dues(payment.member_id, &slug).await?;
+            if let Err(e) = billing_service
+                .reschedule_after_payment(payment.member_id, &slug)
+                .await
+            {
+                tracing::error!(
+                    "Self-healed payment {} but reschedule failed: {}",
+                    payment_id, e,
+                );
+            }
         }
 
         Ok(())
@@ -738,23 +866,13 @@ impl StripeClient {
         if let Some(slug) = membership_type_slug {
             self.extend_member_dues(member_uuid, &slug).await?;
         } else {
-            // Fallback: extend by 1 month (conservative default for subscriptions).
-            // Restore Expired -> Active but don't overwrite Suspended.
+            // Fallback: extend by 1 month (conservative default for subscriptions
+            // we couldn't map to a membership type).
             let now = Utc::now();
             let new_date = now.checked_add_months(chrono::Months::new(1)).unwrap_or(now);
-            sqlx::query(
-                "UPDATE members \
-                 SET dues_paid_until = ?, \
-                     status = CASE WHEN status = 'Expired' THEN 'Active' ELSE status END, \
-                     dues_reminder_sent_at = NULL, \
-                     updated_at = CURRENT_TIMESTAMP \
-                 WHERE id = ?"
-            )
-            .bind(new_date)
-            .bind(&member_id)
-            .execute(&self.db_pool)
-            .await
-            .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+            self.member_repo
+                .set_dues_paid_until_with_revival(member_uuid, new_date)
+                .await?;
         }
 
         tracing::info!(
@@ -1048,6 +1166,12 @@ impl StripeClient {
     /// is only charged once. Callers typically generate this at form-render
     /// time (UUID in a hidden field) and thread it through.
     ///
+    /// `payment_id` is the Coterie-side Payment row ID (already
+    /// inserted as Pending by the caller). It rides on PI metadata so
+    /// the `payment_intent.succeeded` webhook can resolve the local
+    /// row even if the synchronous response is lost — closing the
+    /// "charged but no record" silent-loss case.
+    ///
     /// Returns the PaymentIntent ID if successful.
     pub async fn charge_saved_card(
         &self,
@@ -1056,6 +1180,7 @@ impl StripeClient {
         amount_cents: i64,
         description: &str,
         idempotency_key: &str,
+        payment_id: Uuid,
     ) -> Result<String> {
         // Get the member's stripe_customer_id
         let customer_id: Option<String> = sqlx::query_scalar(
@@ -1084,6 +1209,7 @@ impl StripeClient {
 
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("member_id".to_string(), member_id.to_string());
+        metadata.insert("payment_id".to_string(), payment_id.to_string());
         params.metadata = Some(metadata);
 
         // Attach the idempotency key to this specific request.

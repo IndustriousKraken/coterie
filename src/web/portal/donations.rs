@@ -185,34 +185,52 @@ pub async fn donate_api(
         let idempotency_key = request.idempotency_key.clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-        let stripe_payment_id = stripe_client.charge_saved_card(
+        // Pending-first: insert local row before charging Stripe, so
+        // a successful charge can never end up without a record.
+        // The conditional flip below races safely against the
+        // payment_intent.succeeded webhook — whoever flips wins.
+        let payment_id = Uuid::new_v4();
+        let pending = Payment {
+            id: payment_id,
+            member_id: current_user.member.id,
+            amount_cents: request.amount_cents,
+            currency: "USD".to_string(),
+            status: PaymentStatus::Pending,
+            payment_method: PaymentMethod::Stripe,
+            stripe_payment_id: None,
+            description: description.clone(),
+            payment_type: PaymentType::Donation,
+            donation_campaign_id: campaign_id,
+            paid_at: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        state.service_context.payment_repo.create(pending).await?;
+
+        let stripe_payment_id = match stripe_client.charge_saved_card(
             current_user.member.id,
             &card.stripe_payment_method_id,
             request.amount_cents,
             &description,
             &idempotency_key,
-        ).await?;
-
-        let payment = Payment {
-            id: Uuid::new_v4(),
-            member_id: current_user.member.id,
-            amount_cents: request.amount_cents,
-            currency: "USD".to_string(),
-            status: PaymentStatus::Completed,
-            payment_method: PaymentMethod::Stripe,
-            stripe_payment_id: Some(stripe_payment_id),
-            description,
-            payment_type: PaymentType::Donation,
-            donation_campaign_id: campaign_id,
-            paid_at: Some(chrono::Utc::now()),
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
+            payment_id,
+        ).await {
+            Ok(id) => id,
+            Err(e) => {
+                let _ = state.service_context.payment_repo.fail_pending_payment(payment_id).await;
+                return Err(e);
+            }
         };
 
-        let payment = state.service_context.payment_repo.create(payment).await?;
+        // Donation post-work is just the row flip — no dues
+        // extension, no rescheduling. So whether we or the webhook
+        // wins the flip, the user-visible result is the same.
+        let _ = state.service_context.payment_repo
+            .complete_pending_payment(payment_id, &stripe_payment_id)
+            .await?;
 
         return Ok((StatusCode::OK, Json(serde_json::json!({
-            "payment_id": payment.id,
+            "payment_id": payment_id,
             "status": "completed",
         }))));
     }

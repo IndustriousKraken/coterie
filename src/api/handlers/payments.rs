@@ -227,20 +227,20 @@ pub async fn create_manual(
             request.payment_type,
         )))?;
 
-    // Donation payments must point at a real campaign — otherwise
-    // they'd never count toward any total and we'd just have
-    // mystery $X rows on the books.
+    // Donation payments may target a specific campaign or be a
+    // "general donation" with no campaign (campaign_id=None) —
+    // matches the user-facing donate flow which offers an untargeted
+    // option. If a campaign IS supplied, it must resolve.
     if payment_type == PaymentType::Donation {
-        let campaign_id = request.donation_campaign_id.ok_or_else(|| {
-            AppError::BadRequest("donation payments require donation_campaign_id".to_string())
-        })?;
-        if state.service_context.donation_campaign_repo
-            .find_by_id(campaign_id).await?
-            .is_none()
-        {
-            return Err(AppError::BadRequest(
-                "donation_campaign_id doesn't match any campaign".to_string()
-            ));
+        if let Some(campaign_id) = request.donation_campaign_id {
+            if state.service_context.donation_campaign_repo
+                .find_by_id(campaign_id).await?
+                .is_none()
+            {
+                return Err(AppError::BadRequest(
+                    "donation_campaign_id doesn't match any campaign".to_string()
+                ));
+            }
         }
     }
 

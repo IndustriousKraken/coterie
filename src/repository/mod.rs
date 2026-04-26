@@ -47,6 +47,17 @@ pub trait MemberRepository: Send + Sync {
     /// Validation is the caller's responsibility (see
     /// `integrations::discord::is_valid_snowflake`).
     async fn update_discord_id(&self, id: Uuid, discord_id: Option<&str>) -> Result<()>;
+    /// Set the member's `dues_paid_until`, revive Expired→Active in
+    /// the same UPDATE, and clear the dues-reminder flag so the next
+    /// dues cycle can re-fire a reminder. Suspended/Honorary/Pending
+    /// statuses are left untouched. This is the single source of
+    /// truth for "a payment was just recorded" — every membership
+    /// payment path goes through here.
+    async fn set_dues_paid_until_with_revival(
+        &self,
+        id: Uuid,
+        new_dues_paid_until: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()>;
     async fn delete(&self, id: Uuid) -> Result<()>;
 }
 
@@ -89,6 +100,22 @@ pub trait PaymentRepository: Send + Sync {
     async fn find_by_stripe_id(&self, stripe_id: &str) -> Result<Option<Payment>>;
     async fn update(&self, id: Uuid, payment: Payment) -> Result<Payment>;
     async fn update_status(&self, id: Uuid, status: PaymentStatus) -> Result<Payment>;
+    /// Atomically flip a Pending payment to Completed and stamp the
+    /// Stripe PaymentIntent ID. Returns `true` if the row was actually
+    /// flipped (we own the post-payment work — extend dues, schedule
+    /// next renewal); `false` if the row had already been completed by
+    /// another caller (sync path vs. webhook race). The semantics
+    /// guarantee that exactly one caller does the post-work.
+    async fn complete_pending_payment(
+        &self,
+        id: Uuid,
+        stripe_payment_id: &str,
+    ) -> Result<bool>;
+    /// Counterpart to `complete_pending_payment` for the failure path:
+    /// flip a Pending row to Failed when the Stripe charge errored.
+    /// Returns true if a row was flipped. Idempotent against double-
+    /// failure reports.
+    async fn fail_pending_payment(&self, id: Uuid) -> Result<bool>;
 }
 
 #[async_trait]

@@ -430,33 +430,60 @@ pub async fn charge_saved_card_api(
     let idempotency_key = request.idempotency_key.clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    // Charge the card
-    let stripe_payment_id = stripe_client.charge_saved_card(
+    // Pending-first pattern: insert the local Payment row BEFORE
+    // calling Stripe. If Stripe charges but the local insert had
+    // failed, we'd have a charge with no record. Going Pending →
+    // Completed via a conditional UPDATE also gives us a race-free
+    // hand-off with the payment_intent.succeeded webhook: whoever
+    // flips the status owns the post-payment work below.
+    let payment_id = uuid::Uuid::new_v4();
+    let pending = crate::domain::Payment {
+        id: payment_id,
+        member_id: current_user.member.id,
+        amount_cents,
+        currency: "USD".to_string(),
+        status: crate::domain::PaymentStatus::Pending,
+        payment_method: crate::domain::PaymentMethod::Stripe,
+        stripe_payment_id: None,
+        description: description.clone(),
+        payment_type: crate::domain::PaymentType::Membership,
+        donation_campaign_id: None,
+        paid_at: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    state.service_context.payment_repo.create(pending).await?;
+
+    // Charge the card. On error, flip the Pending row to Failed so
+    // it doesn't haunt the "Pending older than 5 minutes — investigate"
+    // queue (and so the webhook self-heal won't act on a dead row).
+    let stripe_payment_id = match stripe_client.charge_saved_card(
         current_user.member.id,
         &card.stripe_payment_method_id,
         amount_cents,
         &description,
         &idempotency_key,
-    ).await?;
-
-    // Create payment record
-    let payment = crate::domain::Payment {
-        id: uuid::Uuid::new_v4(),
-        member_id: current_user.member.id,
-        amount_cents,
-        currency: "USD".to_string(),
-        status: crate::domain::PaymentStatus::Completed,
-        payment_method: crate::domain::PaymentMethod::Stripe,
-        stripe_payment_id: Some(stripe_payment_id),
-        description,
-        payment_type: crate::domain::PaymentType::Membership,
-        donation_campaign_id: None,
-        paid_at: Some(chrono::Utc::now()),
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+        payment_id,
+    ).await {
+        Ok(id) => id,
+        Err(e) => {
+            let _ = state.service_context.payment_repo.fail_pending_payment(payment_id).await;
+            return Err(e);
+        }
     };
 
-    let payment = state.service_context.payment_repo.create(payment).await?;
+    // Race-free flip. If we win (won_flip=true), do the post-work.
+    // If the webhook beat us, it already did the post-work and we
+    // return success without duplicating dues extension.
+    let won_flip = state.service_context.payment_repo
+        .complete_pending_payment(payment_id, &stripe_payment_id)
+        .await?;
+    if !won_flip {
+        return Ok((StatusCode::OK, Json(serde_json::json!({
+            "payment_id": payment_id,
+            "status": "completed",
+        }))));
+    }
 
     // Extend dues first so the new dues_paid_until is what auto-renew
     // schedules off of. This is the source of truth for "when does the
@@ -510,7 +537,7 @@ pub async fn charge_saved_card_api(
     }
 
     Ok((StatusCode::OK, Json(serde_json::json!({
-        "payment_id": payment.id,
+        "payment_id": payment_id,
         "status": "completed",
     }))))
 }

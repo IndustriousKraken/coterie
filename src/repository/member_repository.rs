@@ -449,6 +449,27 @@ impl MemberRepository for SqliteMemberRepository {
         Ok(())
     }
 
+    async fn set_dues_paid_until_with_revival(
+        &self,
+        id: Uuid,
+        new_dues_paid_until: chrono::DateTime<Utc>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE members \
+             SET dues_paid_until = ?, \
+                 status = CASE WHEN status = 'Expired' THEN 'Active' ELSE status END, \
+                 dues_reminder_sent_at = NULL, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?",
+        )
+        .bind(new_dues_paid_until)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     async fn delete(&self, id: Uuid) -> Result<()> {
         let id_str = id.to_string();
         sqlx::query("DELETE FROM members WHERE id = ?")

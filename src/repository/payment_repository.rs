@@ -256,6 +256,45 @@ impl PaymentRepository for SqlitePaymentRepository {
         })
     }
 
+    async fn complete_pending_payment(
+        &self,
+        id: Uuid,
+        stripe_payment_id: &str,
+    ) -> Result<bool> {
+        let now = Utc::now().naive_utc();
+        let res = sqlx::query(
+            "UPDATE payments \
+             SET status = 'Completed', \
+                 stripe_payment_id = ?, \
+                 paid_at = ?, \
+                 updated_at = ? \
+             WHERE id = ? AND status = 'Pending'",
+        )
+        .bind(stripe_payment_id)
+        .bind(now)
+        .bind(now)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(res.rows_affected() == 1)
+    }
+
+    async fn fail_pending_payment(&self, id: Uuid) -> Result<bool> {
+        let now = Utc::now().naive_utc();
+        let res = sqlx::query(
+            "UPDATE payments \
+             SET status = 'Failed', updated_at = ? \
+             WHERE id = ? AND status = 'Pending'",
+        )
+        .bind(now)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(res.rows_affected() == 1)
+    }
+
     async fn update_status(&self, id: Uuid, status: PaymentStatus) -> Result<Payment> {
         let id_str = id.to_string();
         let status_str = Self::payment_status_to_str(&status);

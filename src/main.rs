@@ -263,6 +263,7 @@ async fn main() -> anyhow::Result<()> {
                 api_key,
                 webhook_secret,
                 payment_repo,
+                service_context.member_repo.clone(),
                 service_context.membership_type_service.clone(),
                 service_context.integration_manager.clone(),
                 db_pool.clone(),
