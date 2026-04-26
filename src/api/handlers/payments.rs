@@ -70,12 +70,10 @@ pub async fn create(
     Extension(user): Extension<CurrentUser>,
     Json(request): Json<CreatePaymentRequest>,
 ) -> Result<(StatusCode, Json<CreatePaymentResponse>)> {
-    // Check if Stripe is configured
-    if !state.stripe_client.is_some() {
-        return Err(AppError::ServiceUnavailable("Payment processing is not configured".to_string()));
-    }
-
-    let stripe_client = state.stripe_client.as_ref().unwrap();
+    let stripe_client = state.stripe_client.as_ref()
+        .ok_or_else(|| AppError::ServiceUnavailable(
+            "Payment processing is not configured".to_string()
+        ))?;
 
     // Look up membership type from database to get pricing
     let membership_type = state.service_context.membership_type_service
@@ -169,12 +167,10 @@ pub async fn stripe_webhook(
     headers: HeaderMap,
     body: String,
 ) -> Result<impl IntoResponse> {
-    // Check if Stripe is configured
-    if !state.stripe_client.is_some() {
-        return Ok(StatusCode::SERVICE_UNAVAILABLE);
-    }
-
-    let stripe_client = state.stripe_client.as_ref().unwrap();
+    let stripe_client = match state.stripe_client.as_ref() {
+        Some(c) => c,
+        None => return Ok(StatusCode::SERVICE_UNAVAILABLE),
+    };
 
     // Get Stripe signature from headers
     let stripe_signature = headers
