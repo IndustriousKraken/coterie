@@ -87,6 +87,7 @@ subtle = "2.6"
 
 # HTTP client for outbound integrations (Discord, future Unifi)
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde_urlencoded = "0.7.1"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
