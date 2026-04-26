@@ -179,7 +179,7 @@ impl StripeClient {
             }
             EventType::CustomerSubscriptionDeleted => {
                 if let EventObject::Subscription(subscription) = event.data.object {
-                    self.handle_subscription_deleted(subscription).await?;
+                    self.handle_subscription_deleted(subscription, billing_service).await?;
                 }
             }
             EventType::CustomerSubscriptionUpdated => {
@@ -538,42 +538,85 @@ impl StripeClient {
 
     /// Handle customer.subscription.deleted.
     ///
-    /// Idempotent against migrations: when WE cancel the subscription
-    /// as part of moving a member to Coterie-managed auto-renew, the
-    /// member's billing_mode is already 'coterie_managed' by the time
-    /// this webhook arrives. Don't clobber it back to 'manual'. Only
-    /// flip when the member is still on 'stripe_subscription' (the
-    /// normal case: customer cancelled in Stripe's dashboard).
-    async fn handle_subscription_deleted(&self, subscription: stripe::Subscription) -> Result<()> {
+    /// This webhook fires in two distinct situations:
+    ///
+    /// 1. **Member cancelled out-of-band** (e.g. via Stripe's hosted
+    ///    customer portal). billing_mode is still 'stripe_subscription'
+    ///    when we get here. Flip them to 'manual' AND email them so
+    ///    they know auto-renew is off but their access continues.
+    ///
+    /// 2. **Echo from our own migration**. The migration cancelled
+    ///    Stripe sub as part of moving the member to coterie_managed,
+    ///    so by the time the webhook arrives billing_mode is already
+    ///    'coterie_managed'. Skip silently — emailing them about a
+    ///    "cancellation" they don't know about would be confusing.
+    async fn handle_subscription_deleted(
+        &self,
+        subscription: stripe::Subscription,
+        billing_service: &BillingService,
+    ) -> Result<()> {
         let customer_id = subscription.customer.id().to_string();
 
-        let result = sqlx::query(
+        // Look up state BEFORE writing — we need to distinguish the
+        // two cases above by reading billing_mode.
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT id, billing_mode FROM members WHERE stripe_customer_id = ?",
+        )
+        .bind(&customer_id)
+        .fetch_optional(&self.db_pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+
+        let (member_id_str, current_mode) = match row {
+            Some(r) => r,
+            None => {
+                tracing::debug!(
+                    "subscription.deleted for customer {} — no matching member",
+                    customer_id,
+                );
+                return Ok(());
+            }
+        };
+
+        if current_mode != "stripe_subscription" {
+            // Echo from our own migration; nothing to do.
+            tracing::debug!(
+                "subscription.deleted echo for migrated customer {} (mode={}); ignoring",
+                customer_id, current_mode,
+            );
+            return Ok(());
+        }
+
+        // Real out-of-band cancellation. Flip + notify.
+        sqlx::query(
             r#"
             UPDATE members
             SET stripe_subscription_id = NULL,
-                billing_mode = CASE
-                    WHEN billing_mode = 'stripe_subscription' THEN 'manual'
-                    ELSE billing_mode
-                END,
+                billing_mode = 'manual',
                 updated_at = CURRENT_TIMESTAMP
-            WHERE stripe_customer_id = ?
-            "#
+            WHERE id = ?
+            "#,
         )
-        .bind(&customer_id)
+        .bind(&member_id_str)
         .execute(&self.db_pool)
         .await
         .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
 
-        if result.rows_affected() > 0 {
-            tracing::info!(
-                "Subscription deleted for customer {} — local state reconciled.",
-                customer_id
-            );
-        } else {
-            tracing::debug!(
-                "Subscription deleted for customer {} but no matching member found",
-                customer_id
-            );
+        tracing::info!(
+            "Subscription cancelled out-of-band for customer {}; switched member to manual",
+            customer_id,
+        );
+
+        if let Ok(member_id) = Uuid::parse_str(&member_id_str) {
+            if let Err(e) = billing_service
+                .notify_subscription_cancelled(member_id)
+                .await
+            {
+                tracing::error!(
+                    "Switched member {} to manual but notification failed: {}",
+                    member_id, e,
+                );
+            }
         }
 
         Ok(())

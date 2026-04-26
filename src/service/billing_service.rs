@@ -328,6 +328,76 @@ impl BillingService {
         summary
     }
 
+    /// The member cancelled their Stripe subscription out-of-band
+    /// (e.g., via Stripe's customer portal). Emails them so they
+    /// know auto-renewal is off but they still have access through
+    /// their paid-through date, plus dispatches an AdminAlert so
+    /// operators see the churn signal.
+    ///
+    /// Caller is responsible for the local-state flip
+    /// (billing_mode='manual', clear sub_id) — this method is just
+    /// notification.
+    pub async fn notify_subscription_cancelled(&self, member_id: Uuid) -> Result<()> {
+        use crate::email::{self, templates::{SubscriptionCancelledHtml, SubscriptionCancelledText}};
+
+        let member = self.member_repo.find_by_id(member_id).await?
+            .ok_or_else(|| AppError::NotFound("Member not found".to_string()))?;
+
+        let org_name = self.settings_service
+            .get_value("org.name").await
+            .ok().filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Coterie".to_string());
+
+        let portal_url = format!(
+            "{}/portal/payments/methods",
+            self.base_url.trim_end_matches('/'),
+        );
+
+        let dues_until = member.dues_paid_until
+            .map(|d| d.format("%B %d, %Y").to_string())
+            .unwrap_or_else(|| "(unknown)".to_string());
+
+        let html = SubscriptionCancelledHtml {
+            full_name: &member.full_name,
+            org_name: &org_name,
+            dues_until: &dues_until,
+            portal_url: &portal_url,
+        };
+        let text = SubscriptionCancelledText {
+            full_name: &member.full_name,
+            org_name: &org_name,
+            dues_until: &dues_until,
+            portal_url: &portal_url,
+        };
+        let subject = format!("Your {} auto-renewal has been turned off", org_name);
+
+        let message = email::message_from_templates(
+            member.email.clone(), subject, &html, &text,
+        )?;
+        if let Err(e) = self.email_sender.send(&message).await {
+            tracing::error!(
+                "Couldn't email subscription-cancelled notice to member {}: {}",
+                member_id, e,
+            );
+        }
+
+        let alert_body = format!(
+            "Member: {} <{}>\n\
+             Their Stripe subscription was cancelled out-of-band. They've\n\
+             been emailed and switched to manual billing. Access continues\n\
+             through {}.",
+            member.full_name, member.email, dues_until,
+        );
+        self.integration_manager
+            .handle_event(IntegrationEvent::AdminAlert {
+                subject: format!("Stripe subscription cancelled — {}", member.full_name),
+                body: alert_body,
+            })
+            .await;
+
+        Ok(())
+    }
+
     /// A Stripe-managed subscription charge failed. Emails the member
     /// directly so they can update their card, and dispatches an
     /// AdminAlert so operators get a heads-up via Discord/email.

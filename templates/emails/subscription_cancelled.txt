@@ -1,0 +1,15 @@
+Hi {{ full_name }},
+
+We noticed your subscription was cancelled in Stripe, so we've turned
+off automatic renewals on your {{ org_name }} membership.
+
+Your access continues through {{ dues_until }}.
+
+If you'd like to keep your membership going past then, you can renew
+manually any time from the portal:
+
+{{ portal_url }}
+
+If you didn't mean to cancel, get in touch and we'll help sort it out.
+
+— {{ org_name }}

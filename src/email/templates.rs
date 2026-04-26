@@ -134,6 +134,24 @@ pub struct CardDeclinedText<'a> {
 }
 
 #[derive(Template)]
+#[template(path = "emails/subscription_cancelled.html")]
+pub struct SubscriptionCancelledHtml<'a> {
+    pub full_name: &'a str,
+    pub org_name: &'a str,
+    pub dues_until: &'a str,
+    pub portal_url: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "emails/subscription_cancelled.txt")]
+pub struct SubscriptionCancelledText<'a> {
+    pub full_name: &'a str,
+    pub org_name: &'a str,
+    pub dues_until: &'a str,
+    pub portal_url: &'a str,
+}
+
+#[derive(Template)]
 #[template(path = "emails/admin_alert.html")]
 pub struct AdminAlertHtml<'a> {
     pub org_name: &'a str,
