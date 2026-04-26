@@ -276,8 +276,9 @@
                     <a href="/portal/admin/members/{{ member.id }}/record-payment"
                        class="text-sm text-blue-600 hover:text-blue-800">Record Payment</a>
                 </div>
-                <div hx-get="/portal/admin/members/{{ member.id }}/payments"
-                     hx-trigger="load"
+                <div id="payments-list"
+                     hx-get="/portal/admin/members/{{ member.id }}/payments"
+                     hx-trigger="load, refresh"
                      hx-swap="innerHTML"
                      class="divide-y divide-gray-200">
                     <div class="p-6 text-center text-gray-500">Loading payments...</div>

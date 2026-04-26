@@ -667,6 +667,162 @@ pub struct ExtendDuesForm {
 }
 
 // =====================================================================
+// Refund a payment (admin action; called from member detail page)
+// =====================================================================
+
+/// Refund a previously-recorded payment. Behavior depends on payment_method:
+///
+///   - `Stripe`  → call Stripe's Refund API (full refund), then mark
+///                 the local Payment row as Refunded
+///   - `Manual`  → just mark the local row as Refunded; admin presumably
+///                 returned cash / wrote a check etc. out-of-band
+///   - `Waived`  → reject (nothing to refund — the row was $0 to begin with)
+///
+/// Already-Refunded payments return early without calling Stripe again
+/// (idempotent against double-clicks).
+///
+/// Refunds DO NOT roll back `dues_paid_until`. Refunding is usually a
+/// customer-service gesture rather than an access revocation; an admin
+/// can manually adjust dues afterward via the existing extend/set-dues
+/// UI if they actually want to kick someone out.
+///
+/// Returns to the member detail page on success or with an error flash
+/// on failure (HTMX-style fragment for inline rendering).
+pub async fn admin_refund_payment(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+    Path(payment_id): Path<String>,
+) -> impl IntoResponse {
+    if !is_admin(&current_user.member) {
+        return axum::response::Html(
+            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Access denied</div>"#.to_string()
+        );
+    }
+
+    let pid = match uuid::Uuid::parse_str(&payment_id) {
+        Ok(id) => id,
+        Err(_) => return refund_result_html(false, "Invalid payment ID"),
+    };
+
+    let mut payment = match state.service_context.payment_repo.find_by_id(pid).await {
+        Ok(Some(p)) => p,
+        _ => return refund_result_html(false, "Payment not found"),
+    };
+
+    use crate::domain::{PaymentMethod, PaymentStatus};
+
+    if payment.status == PaymentStatus::Refunded {
+        return refund_result_html(false, "Payment is already refunded");
+    }
+    if payment.status != PaymentStatus::Completed {
+        return refund_result_html(
+            false,
+            "Only completed payments can be refunded",
+        );
+    }
+
+    let stripe_refund_id: Option<String> = match payment.payment_method {
+        PaymentMethod::Waived => {
+            return refund_result_html(
+                false,
+                "Waived payments are $0 — nothing to refund. Use suspend or expire instead.",
+            );
+        }
+        PaymentMethod::Stripe => {
+            let stripe_id = match payment.stripe_payment_id.as_deref() {
+                Some(s) if !s.is_empty() => s,
+                _ => return refund_result_html(
+                    false,
+                    "Stripe payment has no Stripe ID on record — can't refund through the API. Mark Refunded manually if needed.",
+                ),
+            };
+            let stripe_client = match state.stripe_client.as_ref() {
+                Some(c) => c,
+                None => return refund_result_html(
+                    false,
+                    "Stripe isn't configured. Can't issue an API refund.",
+                ),
+            };
+            match stripe_client.refund_payment(stripe_id).await {
+                Ok(refund_id) => Some(refund_id),
+                Err(e) => return refund_result_html(
+                    false,
+                    &format!("Stripe refund failed: {}", e),
+                ),
+            }
+        }
+        PaymentMethod::Manual => None, // No external system to update.
+    };
+
+    // Local state: mark Refunded.
+    payment.status = PaymentStatus::Refunded;
+    payment.updated_at = chrono::Utc::now();
+    if let Err(e) = state.service_context.payment_repo.update(payment.id, payment.clone()).await {
+        return refund_result_html(false, &format!("DB update failed: {}", e));
+    }
+
+    let detail = match (&payment.payment_method, &stripe_refund_id) {
+        (PaymentMethod::Stripe, Some(rid)) => format!(
+            "Refunded ${:.2} via Stripe (refund {})",
+            payment.amount_cents as f64 / 100.0, rid,
+        ),
+        (PaymentMethod::Manual, _) => format!(
+            "Marked ${:.2} manual payment as Refunded (no API call — refund the cash/check yourself)",
+            payment.amount_cents as f64 / 100.0,
+        ),
+        _ => format!("Refunded ${:.2}", payment.amount_cents as f64 / 100.0),
+    };
+
+    state.service_context.audit_service.log(
+        Some(current_user.member.id),
+        "refund_payment",
+        "payment",
+        &payment_id,
+        None,
+        Some(&detail),
+        None,
+    ).await;
+
+    // Visibility: a refund is unusual enough to alert on. Goes to the
+    // Discord admin-alerts channel + (per D4.2) the org contact email.
+    state.service_context.integration_manager
+        .handle_event(crate::integrations::IntegrationEvent::AdminAlert {
+            subject: format!("Payment refunded — ${:.2}", payment.amount_cents as f64 / 100.0),
+            body: format!(
+                "Refunded by: {} <{}>\nMember: {}\nMethod: {:?}\nDetail: {}",
+                current_user.member.full_name,
+                current_user.member.email,
+                payment.member_id,
+                payment.payment_method,
+                detail,
+            ),
+        })
+        .await;
+
+    refund_result_html(true, &detail)
+}
+
+fn refund_result_html(ok: bool, detail: &str) -> axum::response::Html<String> {
+    let escaped = crate::web::escape_html(detail);
+    let (bg, fg) = if ok {
+        ("bg-green-50", "text-green-900")
+    } else {
+        ("bg-red-50", "text-red-900")
+    };
+    // On success we trigger a soft reload so the payments list re-renders
+    // with the new Refunded badge. On failure we just show the message.
+    let suffix = if ok {
+        r#"<script>setTimeout(() => htmx.trigger('#payments-list', 'refresh'), 800);</script>"#
+    } else {
+        ""
+    };
+    axum::response::Html(format!(
+        r#"<div class="mt-2 p-3 {bg} {fg} rounded-md text-sm">{escaped}</div>{suffix}"#,
+        bg = bg, fg = fg, escaped = escaped, suffix = suffix,
+    ))
+}
+
+// =====================================================================
 // Record-payment page (admin form for entering manual payments)
 // =====================================================================
 
@@ -1238,15 +1394,15 @@ pub async fn admin_member_payments(
         );
     }
 
+    use crate::domain::{PaymentMethod, PaymentStatus};
     let mut html = String::new();
 
     for payment in payments {
-        let status_badge = match format!("{:?}", payment.status).as_str() {
-            "Completed" => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-green-100 text-green-800">Completed</span>"#,
-            "Pending" => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-yellow-100 text-yellow-800">Pending</span>"#,
-            "Failed" => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-red-100 text-red-800">Failed</span>"#,
-            "Refunded" => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-800">Refunded</span>"#,
-            _ => "",
+        let status_badge = match payment.status {
+            PaymentStatus::Completed => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-green-100 text-green-800">Completed</span>"#,
+            PaymentStatus::Pending => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-yellow-100 text-yellow-800">Pending</span>"#,
+            PaymentStatus::Failed => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-red-100 text-red-800">Failed</span>"#,
+            PaymentStatus::Refunded => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-800">Refunded</span>"#,
         };
 
         let description = if payment.description.is_empty() {
@@ -1255,21 +1411,58 @@ pub async fn admin_member_payments(
             crate::web::escape_html(&payment.description)
         };
 
+        // Refund button: only for Completed Stripe / Manual rows.
+        // Waived rows are $0 — nothing to give back. Already-refunded
+        // rows obviously get no button.
+        let refund_btn = if payment.status == PaymentStatus::Completed
+            && payment.payment_method != PaymentMethod::Waived
+        {
+            let confirm_msg = match payment.payment_method {
+                PaymentMethod::Stripe => format!(
+                    "Issue a full Stripe refund of ${:.2}? This is irreversible.",
+                    payment.amount_cents as f64 / 100.0,
+                ),
+                _ => format!(
+                    "Mark this ${:.2} payment as Refunded? (No external system will be touched — refund the cash/check yourself.)",
+                    payment.amount_cents as f64 / 100.0,
+                ),
+            };
+            let escaped_confirm = crate::web::escape_html(&confirm_msg);
+            format!(
+                "<button \
+                 hx-post=\"/portal/admin/payments/{0}/refund\" \
+                 hx-target=\"#refund-result-{0}\" \
+                 hx-swap=\"innerHTML\" \
+                 hx-confirm=\"{1}\" \
+                 class=\"mt-1 text-xs text-red-600 hover:text-red-800\">\
+                 Refund\
+                 </button>",
+                payment.id,
+                escaped_confirm,
+            )
+        } else {
+            String::new()
+        };
+
         html.push_str(&format!(
-            r#"<div class="px-6 py-4 flex justify-between items-center">
+            r#"<div class="px-6 py-4 flex justify-between items-start">
                 <div>
-                    <p class="font-medium text-gray-900">{}</p>
-                    <p class="text-sm text-gray-500">{}</p>
+                    <p class="font-medium text-gray-900">{description}</p>
+                    <p class="text-sm text-gray-500">{date}</p>
                 </div>
                 <div class="text-right">
-                    <p class="font-medium text-gray-900">${:.2}</p>
-                    <div class="mt-1">{}</div>
+                    <p class="font-medium text-gray-900">${amount:.2}</p>
+                    <div class="mt-1">{badge}</div>
+                    {refund_btn}
+                    <div id="refund-result-{id}"></div>
                 </div>
             </div>"#,
-            description,
-            payment.created_at.format("%B %d, %Y"),
-            payment.amount_cents as f64 / 100.0,
-            status_badge
+            id = payment.id,
+            description = description,
+            date = payment.created_at.format("%B %d, %Y"),
+            amount = payment.amount_cents as f64 / 100.0,
+            badge = status_badge,
+            refund_btn = refund_btn,
         ));
     }
 

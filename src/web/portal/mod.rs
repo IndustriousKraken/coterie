@@ -35,6 +35,7 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/members/:id/payments", get(admin::members::admin_member_payments))
         .route("/members/:id/record-payment", get(admin::members::admin_record_payment_page))
         .route("/members/:id/record-payment", post(admin::members::admin_record_payment_submit))
+        .route("/payments/:id/refund", post(admin::members::admin_refund_payment))
         .route("/members/:id/resend-verification", post(admin::members::admin_resend_verification))
         .route("/members/:id/discord-id", post(admin::members::admin_update_discord_id))
         // Events

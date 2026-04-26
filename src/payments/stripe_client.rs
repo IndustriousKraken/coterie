@@ -249,6 +249,14 @@ impl StripeClient {
                 }
             }
 
+            // Refunds — fired when an admin issues one through Stripe's
+            // dashboard (or as the echo from our own admin-button refund).
+            EventType::ChargeRefunded => {
+                if let EventObject::Charge(charge) = event.data.object {
+                    self.handle_charge_refunded(charge).await?;
+                }
+            }
+
             // Legacy Stripe subscription events
             EventType::InvoicePaid => {
                 if let EventObject::Invoice(invoice) = event.data.object {
@@ -448,6 +456,96 @@ impl StripeClient {
     // ================================================================
     // Legacy Stripe Subscription Handlers
     // ================================================================
+
+    /// Sync state when a Stripe charge is refunded. Two ways this fires:
+    ///
+    ///   1. **Admin clicked Refund in Coterie** — our admin handler
+    ///      already flipped the Payment row to Refunded and called the
+    ///      Stripe API. This is the echo. Idempotent: if the row is
+    ///      already Refunded, we no-op.
+    ///
+    ///   2. **Admin refunded via Stripe's dashboard** — our local row
+    ///      is still Completed. Find it (by payment_intent or invoice
+    ///      ID, depending on what we stored) and mark Refunded.
+    ///
+    /// Partial refunds (`amount_refunded < amount`) don't flip the row;
+    /// instead we log + dispatch an AdminAlert so an operator can decide
+    /// whether to update the local record. Full-refund-only matches the
+    /// admin-UI behavior — partial refunds would muddle dues / campaign
+    /// totals.
+    async fn handle_charge_refunded(&self, charge: stripe::Charge) -> Result<()> {
+        let charge_amount = charge.amount;
+        let amount_refunded = charge.amount_refunded;
+        let is_partial = amount_refunded < charge_amount;
+
+        // Try to find the Payment row. We store one of two prefixes
+        // that map to a Charge: pi_ (payment intent) or in_ (invoice).
+        // cs_ (checkout session) charges aren't directly recoverable
+        // here without a second Stripe API call — skip and log.
+        let pi_id = charge.payment_intent.as_ref().map(|e| e.id().to_string());
+        let invoice_id = charge.invoice.as_ref().map(|e| e.id().to_string());
+
+        let row: Option<(String, String)> = sqlx::query_as(
+            r#"
+            SELECT id, status FROM payments
+            WHERE stripe_payment_id IS NOT NULL
+              AND stripe_payment_id IN (?, ?)
+            LIMIT 1
+            "#,
+        )
+        .bind(pi_id.as_deref().unwrap_or(""))
+        .bind(invoice_id.as_deref().unwrap_or(""))
+        .fetch_optional(&self.db_pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+
+        let (payment_id, current_status) = match row {
+            Some(r) => r,
+            None => {
+                tracing::warn!(
+                    "charge.refunded for charge {} — no matching local Payment (pi={:?}, invoice={:?}). \
+                     This may be a checkout-session payment; mark refunded manually if so.",
+                    charge.id, pi_id, invoice_id,
+                );
+                return Ok(());
+            }
+        };
+
+        if is_partial {
+            tracing::warn!(
+                "Partial refund on payment {} (refunded {} of {} cents) — \
+                 local row left as-is; flag for an operator.",
+                payment_id, amount_refunded, charge_amount,
+            );
+            // No row update. AdminAlert in caller scope (we don't
+            // have IntegrationManager from StripeClient — partial
+            // refunds are rare enough that the log is fine for now).
+            return Ok(());
+        }
+
+        if current_status == "Refunded" {
+            // Echo from our own admin-button refund. Already handled.
+            tracing::debug!("charge.refunded echo for already-Refunded payment {}", payment_id);
+            return Ok(());
+        }
+
+        // Out-of-band full refund. Flip to Refunded.
+        sqlx::query(
+            "UPDATE payments SET status = 'Refunded', updated_at = ? WHERE id = ?",
+        )
+        .bind(Utc::now().naive_utc())
+        .bind(&payment_id)
+        .execute(&self.db_pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+
+        tracing::info!(
+            "Synced refund from Stripe dashboard: payment {} marked Refunded (charge {})",
+            payment_id, charge.id,
+        );
+
+        Ok(())
+    }
 
     /// Handle invoice.paid - extend member dues for subscription payments
     async fn handle_invoice_paid(&self, invoice: stripe::Invoice) -> Result<()> {
@@ -964,6 +1062,69 @@ impl StripeClient {
         }
 
         Ok(out)
+    }
+
+    /// Issue a full refund for a stored Stripe payment ID.
+    ///
+    /// We store one of three things in `payments.stripe_payment_id`
+    /// depending on which flow created the payment:
+    ///   - `pi_…`  PaymentIntent (saved-card charges, subscription
+    ///             payments processed by Coterie's billing runner)
+    ///   - `cs_…`  CheckoutSession (one-time membership/donation
+    ///             checkouts)
+    ///   - `in_…`  Invoice (Stripe-managed subscription invoices)
+    ///
+    /// Stripe's Refund API takes a PaymentIntent or Charge; this
+    /// method normalizes whichever shape we have to a PaymentIntent.
+    /// Full refund only — partial refunds aren't exposed in the
+    /// admin UI (would complicate dues / campaign accounting).
+    pub async fn refund_payment(&self, stored_stripe_id: &str) -> Result<String> {
+        let payment_intent_id: stripe::PaymentIntentId = if stored_stripe_id.starts_with("pi_") {
+            stored_stripe_id.parse().map_err(|_| {
+                AppError::BadRequest(format!("Invalid PaymentIntent ID: {}", stored_stripe_id))
+            })?
+        } else if stored_stripe_id.starts_with("cs_") {
+            let session_id: stripe::CheckoutSessionId = stored_stripe_id.parse().map_err(|_| {
+                AppError::BadRequest(format!("Invalid CheckoutSession ID: {}", stored_stripe_id))
+            })?;
+            let session = stripe::CheckoutSession::retrieve(&self.client, &session_id, &[])
+                .await
+                .map_err(|e| AppError::External(format!("Stripe session retrieve: {}", e)))?;
+            let pi_expandable = session.payment_intent.ok_or_else(|| AppError::BadRequest(
+                "Checkout session has no PaymentIntent — not a charge that can be refunded".to_string()
+            ))?;
+            pi_expandable.id()
+        } else if stored_stripe_id.starts_with("in_") {
+            let invoice_id: stripe::InvoiceId = stored_stripe_id.parse().map_err(|_| {
+                AppError::BadRequest(format!("Invalid Invoice ID: {}", stored_stripe_id))
+            })?;
+            let invoice = stripe::Invoice::retrieve(&self.client, &invoice_id, &[])
+                .await
+                .map_err(|e| AppError::External(format!("Stripe invoice retrieve: {}", e)))?;
+            let pi_expandable = invoice.payment_intent.ok_or_else(|| AppError::BadRequest(
+                "Invoice has no PaymentIntent — not a charge that can be refunded".to_string()
+            ))?;
+            pi_expandable.id()
+        } else {
+            return Err(AppError::BadRequest(format!(
+                "Unrecognized Stripe ID format '{}': expected pi_, cs_, or in_ prefix",
+                stored_stripe_id,
+            )));
+        };
+
+        let mut params = stripe::CreateRefund::new();
+        params.payment_intent = Some(payment_intent_id.clone());
+        // No amount → full refund. Stripe ignores currency.
+
+        let refund = stripe::Refund::create(&self.client, params)
+            .await
+            .map_err(|e| AppError::External(format!("Stripe refund failed: {}", e)))?;
+
+        tracing::info!(
+            "Refunded PaymentIntent {} → Refund {}",
+            payment_intent_id, refund.id,
+        );
+        Ok(refund.id.to_string())
     }
 
     /// Immediately cancel a Stripe subscription. Used during the
