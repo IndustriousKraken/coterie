@@ -32,6 +32,46 @@
         </div>
     </div>
 
+    <!-- Auto-renew -->
+    <div class="bg-white rounded-lg shadow-sm border mb-6">
+        <div class="px-6 py-4 border-b flex items-center justify-between">
+            <div>
+                <h2 class="text-lg font-semibold text-gray-900">Auto-renew</h2>
+                <p class="text-sm text-gray-500 mt-1">
+                    {% if is_auto_renew %}
+                    We'll charge your default card automatically when your dues come up.
+                    {% else %}
+                    Renew manually each cycle. Turn this on to have us charge your default card automatically when dues come up.
+                    {% endif %}
+                </p>
+            </div>
+            <span id="auto-renew-status"
+                  class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if is_auto_renew %}bg-green-100 text-green-800{% else %}bg-gray-100 text-gray-700{% endif %}">
+                {% if is_auto_renew %}On{% else %}Off{% endif %}
+            </span>
+        </div>
+        <div class="p-6">
+            {% if is_auto_renew %}
+            <button id="auto-renew-toggle" type="button"
+                    data-enable="false"
+                    class="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 text-sm font-medium">
+                Turn off auto-renew
+            </button>
+            {% else %}
+            <button id="auto-renew-toggle" type="button"
+                    data-enable="true"
+                    {% if !has_default_card %}disabled title="Save a default card first"{% endif %}
+                    class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">
+                Turn on auto-renew
+            </button>
+            {% if !has_default_card %}
+            <p class="mt-2 text-xs text-gray-500">Add a default card below before enabling.</p>
+            {% endif %}
+            {% endif %}
+            <p id="auto-renew-error" class="mt-2 text-sm text-red-600 hidden"></p>
+        </div>
+    </div>
+
     <!-- Add New Card -->
     <div class="bg-white rounded-lg shadow-sm border">
         <div class="px-6 py-4 border-b">
@@ -155,6 +195,42 @@
             htmx.ajax('GET', '/portal/api/payments/cards', '#saved-cards');
         }
     });
+
+    // Auto-renew toggle. We do a full page reload on success rather
+    // than swap chunks of UI — the status badge, button label, and
+    // descriptive text all flip together, and the page is cheap.
+    const autoRenewBtn = document.getElementById('auto-renew-toggle');
+    const autoRenewError = document.getElementById('auto-renew-error');
+    if (autoRenewBtn) {
+        autoRenewBtn.addEventListener('click', async function() {
+            autoRenewError.classList.add('hidden');
+            autoRenewError.textContent = '';
+            const enable = autoRenewBtn.dataset.enable === 'true';
+            const originalLabel = autoRenewBtn.textContent;
+            autoRenewBtn.disabled = true;
+            autoRenewBtn.textContent = enable ? 'Turning on…' : 'Turning off…';
+            try {
+                const resp = await fetch('/portal/api/payments/auto-renew', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content,
+                    },
+                    body: JSON.stringify({ enable: enable }),
+                });
+                if (!resp.ok) {
+                    const data = await resp.json().catch(() => ({}));
+                    throw new Error(data.error || 'Update failed');
+                }
+                window.location.reload();
+            } catch (err) {
+                autoRenewError.textContent = err.message;
+                autoRenewError.classList.remove('hidden');
+                autoRenewBtn.disabled = false;
+                autoRenewBtn.textContent = originalLabel;
+            }
+        });
+    }
 })();
 </script>
 {% endif %}

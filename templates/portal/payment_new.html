@@ -129,10 +129,11 @@
             </div>
             {% else %}
             <label class="flex items-start gap-3 cursor-pointer">
-                <input type="checkbox" id="enable-auto-renew" class="mt-1 h-4 w-4 text-blue-600 rounded border-gray-300">
+                <input type="checkbox" id="enable-auto-renew" checked
+                       class="mt-1 h-4 w-4 text-blue-600 rounded border-gray-300">
                 <span class="text-sm text-gray-700">
-                    <span class="font-medium text-gray-900">Enable auto-renew.</span>
-                    We'll charge this saved card automatically when your membership comes due, so you don't have to remember. You can turn this off any time from your payment methods page.
+                    <span class="font-medium text-gray-900">Enable auto-renew (recommended).</span>
+                    We'll charge this saved card automatically when your membership comes due, so you don't have to remember. Uncheck this if you'd rather pay one-time and renew manually next cycle. You can change this any time from your payment methods page.
                 </span>
             </label>
             {% endif %}

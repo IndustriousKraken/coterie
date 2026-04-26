@@ -80,6 +80,15 @@ pub struct PaymentMethodsTemplate {
     pub stripe_enabled: bool,
     pub stripe_publishable_key: String,
     pub csrf_token: String,
+    /// True when the member is on Coterie-managed auto-renew. Drives
+    /// the "Auto-renew" toggle UI on this page — enrolled members see
+    /// a "Turn off" button, unenrolled members see a "Turn on" button
+    /// (only when they have a default card).
+    pub is_auto_renew: bool,
+    /// Whether the member has at least one default saved card. Used
+    /// to disable the "Turn on auto-renew" button when they don't —
+    /// a scheduled charge against no card would just fail.
+    pub has_default_card: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -520,15 +529,109 @@ pub async fn payment_methods_page(
         .clone()
         .unwrap_or_default();
 
+    let is_auto_renew = current_user.member.billing_mode
+        == crate::domain::BillingMode::CoterieManaged;
+
+    let has_default_card = state.service_context.saved_card_repo
+        .find_default_for_member(current_user.member.id)
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+
     let template = PaymentMethodsTemplate {
         current_user: Some(user_info),
         is_admin: is_admin(&current_user.member),
         stripe_enabled,
         stripe_publishable_key,
         csrf_token,
+        is_auto_renew,
+        has_default_card,
     };
 
     HtmlTemplate(template)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateAutoRenewRequest {
+    pub enable: bool,
+}
+
+/// Toggle Coterie-managed auto-renew on/off from the payment methods
+/// page. Disabling cancels any pending scheduled payments and flips
+/// `billing_mode` back to `manual`. Enabling looks up the member's
+/// current membership type to know which billing period to schedule
+/// against.
+///
+/// Idempotent: enabling an already-enrolled member just refreshes the
+/// schedule; disabling a manual member is a no-op.
+pub async fn update_auto_renew_api(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+    Json(request): Json<UpdateAutoRenewRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let billing_service = state.service_context.billing_service(
+        state.stripe_client.clone(),
+        state.settings.server.base_url.clone(),
+    );
+
+    if request.enable {
+        // Need the member's current membership type slug to schedule
+        // a renewal — that's where billing period (monthly/yearly) and
+        // amount come from.
+        let mt_id = current_user.member.membership_type_id
+            .ok_or_else(|| AppError::BadRequest(
+                "No membership type assigned. Contact an admin.".to_string()
+            ))?;
+        let mt = state.service_context.membership_type_service
+            .get(mt_id).await?
+            .ok_or_else(|| AppError::Internal(
+                "Member's membership type was deleted; contact an admin.".to_string()
+            ))?;
+
+        // Block enabling without a default card — the next scheduled
+        // charge would just immediately fail with "no default payment
+        // method" and we'd email them a confusing reminder.
+        let default_card = state.service_context.saved_card_repo
+            .find_default_for_member(current_user.member.id).await?;
+        if default_card.is_none() {
+            return Err(AppError::BadRequest(
+                "Save a default card before enabling auto-renew.".to_string()
+            ));
+        }
+
+        billing_service
+            .enable_auto_renew(current_user.member.id, &mt.slug)
+            .await?;
+
+        state.service_context.audit_service.log(
+            Some(current_user.member.id),
+            "enable_auto_renew",
+            "member",
+            &current_user.member.id.to_string(),
+            None,
+            Some("via payment methods page"),
+            None,
+        ).await;
+    } else {
+        billing_service
+            .disable_auto_renew(current_user.member.id)
+            .await?;
+
+        state.service_context.audit_service.log(
+            Some(current_user.member.id),
+            "disable_auto_renew",
+            "member",
+            &current_user.member.id.to_string(),
+            None,
+            Some("via payment methods page"),
+            None,
+        ).await;
+    }
+
+    Ok(Json(serde_json::json!({
+        "is_auto_renew": request.enable,
+    })))
 }
 
 /// HTMX endpoint - list saved cards as HTML

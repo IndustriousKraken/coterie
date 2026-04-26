@@ -117,6 +117,7 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/api/payments/cards", get(payments::saved_cards_html_api))
         .route("/api/payments/cards/:card_id", delete(payments::delete_card_api))
         .route("/api/payments/cards/:card_id/default", put(payments::set_default_card_api))
+        .route("/api/payments/auto-renew", post(payments::update_auto_renew_api))
         // CSRF first, auth second (see admin_routes comment on ordering).
         .route_layer(middleware::from_fn_with_state(
             state.clone(),

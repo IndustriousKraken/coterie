@@ -196,7 +196,6 @@ impl BillingService {
     /// pending scheduled payments and flips billing_mode back to
     /// 'manual'. Doesn't touch their saved cards — those stay on
     /// file for one-off payments.
-    #[allow(dead_code)]
     pub async fn disable_auto_renew(&self, member_id: Uuid) -> Result<()> {
         self.cancel_scheduled_payments(member_id).await?;
         sqlx::query(
