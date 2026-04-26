@@ -666,6 +666,347 @@ pub struct ExtendDuesForm {
     pub csrf_token: String,
 }
 
+// =====================================================================
+// Record-payment page (admin form for entering manual payments)
+// =====================================================================
+
+#[derive(askama::Template)]
+#[template(path = "admin/record_payment.html")]
+pub struct RecordPaymentTemplate {
+    pub current_user: Option<UserInfo>,
+    pub is_admin: bool,
+    pub csrf_token: String,
+    pub member_id: String,
+    pub member_name: String,
+    pub member_email: String,
+    pub membership_types: Vec<RecordPaymentMembershipType>,
+    pub donation_campaigns: Vec<RecordPaymentCampaign>,
+    /// The slug of the member's current membership type, so the form
+    /// can pre-select it. Empty if not assigned.
+    pub current_membership_slug: String,
+    pub flash_error: Option<String>,
+}
+
+pub struct RecordPaymentMembershipType {
+    pub slug: String,
+    pub name: String,
+    pub fee_display: String,
+    pub billing_period: String,
+}
+
+pub struct RecordPaymentCampaign {
+    pub id: String,
+    pub name: String,
+}
+
+pub async fn admin_record_payment_page(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+    Extension(session_info): Extension<SessionInfo>,
+    Path(member_id): Path<String>,
+) -> axum::response::Response {
+    if !is_admin(&current_user.member) {
+        return axum::response::Redirect::to("/portal/dashboard").into_response();
+    }
+
+    let id = match uuid::Uuid::parse_str(&member_id) {
+        Ok(id) => id,
+        Err(_) => return axum::response::Redirect::to("/portal/admin/members").into_response(),
+    };
+
+    let member = match state.service_context.member_repo.find_by_id(id).await {
+        Ok(Some(m)) => m,
+        _ => return axum::response::Redirect::to("/portal/admin/members").into_response(),
+    };
+
+    let csrf_token = state.service_context.csrf_service
+        .generate_token(&session_info.session_id)
+        .await
+        .unwrap_or_default();
+
+    let user_info = UserInfo {
+        id: current_user.member.id.to_string(),
+        username: current_user.member.username.clone(),
+        email: current_user.member.email.clone(),
+    };
+
+    let membership_types = state.service_context.membership_type_service
+        .list(false)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mt| RecordPaymentMembershipType {
+            slug: mt.slug,
+            name: mt.name,
+            fee_display: format!("{:.2}", mt.fee_cents as f64 / 100.0),
+            billing_period: mt.billing_period,
+        })
+        .collect();
+
+    let donation_campaigns = state.service_context.donation_campaign_repo
+        .list_active()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| RecordPaymentCampaign {
+            id: c.id.to_string(),
+            name: c.name,
+        })
+        .collect();
+
+    // Resolve current membership type slug for default selection.
+    let current_membership_slug = match member.membership_type_id {
+        Some(mt_id) => state.service_context.membership_type_service
+            .get(mt_id).await
+            .ok().flatten()
+            .map(|mt| mt.slug)
+            .unwrap_or_default(),
+        None => String::new(),
+    };
+
+    HtmlTemplate(RecordPaymentTemplate {
+        current_user: Some(user_info),
+        is_admin: true,
+        csrf_token,
+        member_id: member.id.to_string(),
+        member_name: member.full_name.clone(),
+        member_email: member.email.clone(),
+        membership_types,
+        donation_campaigns,
+        current_membership_slug,
+        flash_error: None,
+    }).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RecordPaymentForm {
+    #[allow(dead_code)]
+    pub csrf_token: String,
+    /// "membership" | "donation" | "other"
+    pub payment_type: String,
+    pub amount: String,
+    pub description: String,
+    /// Set when payment_type=membership
+    #[serde(default)]
+    pub membership_type_slug: String,
+    /// Set when payment_type=donation
+    #[serde(default)]
+    pub donation_campaign_id: String,
+}
+
+pub async fn admin_record_payment_submit(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+    Extension(session_info): Extension<SessionInfo>,
+    Path(member_id): Path<String>,
+    axum::Form(form): axum::Form<RecordPaymentForm>,
+) -> axum::response::Response {
+    if !is_admin(&current_user.member) {
+        return axum::response::Redirect::to("/portal/dashboard").into_response();
+    }
+
+    let id = match uuid::Uuid::parse_str(&member_id) {
+        Ok(id) => id,
+        Err(_) => return axum::response::Redirect::to("/portal/admin/members").into_response(),
+    };
+
+    // Parse dollars → cents. Accept "100" or "100.00" or "100.5".
+    let amount_cents = match parse_dollars_to_cents(&form.amount) {
+        Some(c) if c > 0 || form.payment_type == "membership" => c,
+        _ => return rerender_with_error(
+            state, current_user, session_info, member_id,
+            "Amount must be a positive dollar amount.",
+        ).await,
+    };
+
+    let payment_type = match crate::domain::PaymentType::from_str(&form.payment_type) {
+        Some(t) => t,
+        None => return rerender_with_error(
+            state, current_user, session_info, member_id,
+            "Invalid payment type.",
+        ).await,
+    };
+
+    use crate::domain::{Payment, PaymentMethod, PaymentStatus, PaymentType};
+    use chrono::Utc;
+
+    let donation_campaign_id = if payment_type == PaymentType::Donation {
+        let cid_str = form.donation_campaign_id.trim();
+        if cid_str.is_empty() {
+            return rerender_with_error(
+                state, current_user, session_info, member_id,
+                "Donation requires a campaign selection.",
+            ).await;
+        }
+        match uuid::Uuid::parse_str(cid_str) {
+            Ok(cid) => Some(cid),
+            Err(_) => return rerender_with_error(
+                state, current_user, session_info, member_id,
+                "Invalid campaign id.",
+            ).await,
+        }
+    } else {
+        None
+    };
+
+    let description = if form.description.trim().is_empty() {
+        match payment_type {
+            PaymentType::Membership => "Manual membership payment".to_string(),
+            PaymentType::Donation => "Donation".to_string(),
+            PaymentType::Other => "Manual payment".to_string(),
+        }
+    } else {
+        form.description.clone()
+    };
+
+    let payment = Payment {
+        id: uuid::Uuid::new_v4(),
+        member_id: id,
+        amount_cents,
+        currency: "USD".to_string(),
+        status: PaymentStatus::Completed,
+        payment_method: PaymentMethod::Manual,
+        stripe_payment_id: None,
+        description,
+        payment_type,
+        donation_campaign_id,
+        paid_at: Some(Utc::now()),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+
+    if let Err(e) = state.service_context.payment_repo.create(payment).await {
+        return rerender_with_error(
+            state, current_user, session_info, member_id,
+            &format!("Failed to record payment: {}", e),
+        ).await;
+    }
+
+    // Membership-type payments extend dues + refresh schedule.
+    if payment_type == PaymentType::Membership && !form.membership_type_slug.is_empty() {
+        let billing_service = state.service_context.billing_service(
+            state.stripe_client.clone(),
+            state.settings.server.base_url.clone(),
+        );
+        if let Err(e) = billing_service
+            .extend_member_dues_by_slug(id, &form.membership_type_slug)
+            .await
+        {
+            tracing::error!("Recorded manual payment but dues extension failed: {}", e);
+        }
+        if let Err(e) = billing_service
+            .reschedule_after_payment(id, &form.membership_type_slug)
+            .await
+        {
+            tracing::error!("Recorded manual payment but reschedule failed: {}", e);
+        }
+    }
+
+    state.service_context.audit_service.log(
+        Some(current_user.member.id),
+        match payment_type {
+            PaymentType::Membership => "manual_payment",
+            PaymentType::Donation => "manual_donation",
+            PaymentType::Other => "manual_other",
+        },
+        "member",
+        &member_id,
+        None,
+        Some(&format!("${:.2} — {}", amount_cents as f64 / 100.0, form.description)),
+        None,
+    ).await;
+
+    axum::response::Redirect::to(&format!("/portal/admin/members/{}", member_id)).into_response()
+}
+
+/// "100", "100.00", "100.5" → 10000, 10000, 10050. Returns None on
+/// junk input or negative values. Refuses more than 2 decimal places
+/// to prevent silent rounding.
+fn parse_dollars_to_cents(s: &str) -> Option<i64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (whole, frac) = match s.split_once('.') {
+        Some((w, f)) => (w, f),
+        None => (s, ""),
+    };
+    if frac.len() > 2 || !frac.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let whole: i64 = whole.parse().ok()?;
+    if whole < 0 {
+        return None;
+    }
+    let frac_padded = format!("{:0<2}", frac);
+    let frac: i64 = if frac_padded.is_empty() { 0 } else { frac_padded.parse().ok()? };
+    whole.checked_mul(100)?.checked_add(frac)
+}
+
+async fn rerender_with_error(
+    state: AppState,
+    current_user: CurrentUser,
+    session_info: SessionInfo,
+    member_id: String,
+    error: &str,
+) -> axum::response::Response {
+    let id = match uuid::Uuid::parse_str(&member_id) {
+        Ok(id) => id,
+        Err(_) => return axum::response::Redirect::to("/portal/admin/members").into_response(),
+    };
+    let member = match state.service_context.member_repo.find_by_id(id).await {
+        Ok(Some(m)) => m,
+        _ => return axum::response::Redirect::to("/portal/admin/members").into_response(),
+    };
+
+    let csrf_token = state.service_context.csrf_service
+        .generate_token(&session_info.session_id)
+        .await
+        .unwrap_or_default();
+
+    let user_info = UserInfo {
+        id: current_user.member.id.to_string(),
+        username: current_user.member.username.clone(),
+        email: current_user.member.email.clone(),
+    };
+
+    let membership_types = state.service_context.membership_type_service
+        .list(false).await.unwrap_or_default()
+        .into_iter()
+        .map(|mt| RecordPaymentMembershipType {
+            slug: mt.slug, name: mt.name,
+            fee_display: format!("{:.2}", mt.fee_cents as f64 / 100.0),
+            billing_period: mt.billing_period,
+        })
+        .collect();
+
+    let donation_campaigns = state.service_context.donation_campaign_repo
+        .list_active().await.unwrap_or_default()
+        .into_iter()
+        .map(|c| RecordPaymentCampaign { id: c.id.to_string(), name: c.name })
+        .collect();
+
+    let current_membership_slug = match member.membership_type_id {
+        Some(mt_id) => state.service_context.membership_type_service
+            .get(mt_id).await.ok().flatten()
+            .map(|mt| mt.slug).unwrap_or_default(),
+        None => String::new(),
+    };
+
+    HtmlTemplate(RecordPaymentTemplate {
+        current_user: Some(user_info),
+        is_admin: true,
+        csrf_token,
+        member_id: member.id.to_string(),
+        member_name: member.full_name.clone(),
+        member_email: member.email.clone(),
+        membership_types,
+        donation_campaigns,
+        current_membership_slug,
+        flash_error: Some(error.to_string()),
+    }).into_response()
+}
+
 pub async fn admin_extend_dues(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,

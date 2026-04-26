@@ -6,7 +6,7 @@ use coterie::{
         CreateEventTypeRequest, CreateAnnouncementTypeRequest, CreateMembershipTypeRequest,
         Event, EventType, EventVisibility,
         Announcement, AnnouncementType,
-        Payment, PaymentStatus, PaymentMethod,
+        Payment, PaymentStatus, PaymentMethod, PaymentType,
     },
     repository::{
         MemberRepository, SqliteMemberRepository,
@@ -200,6 +200,8 @@ fn make_payment(
         payment_method: method,
         stripe_payment_id: stripe_id,
         description: description.to_string(),
+        payment_type: PaymentType::Membership,
+        donation_campaign_id: None,
         paid_at,
         created_at: created,
         updated_at: created,

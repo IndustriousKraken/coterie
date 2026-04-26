@@ -449,6 +449,8 @@ pub async fn charge_saved_card_api(
         payment_method: crate::domain::PaymentMethod::Stripe,
         stripe_payment_id: Some(stripe_payment_id),
         description,
+        payment_type: crate::domain::PaymentType::Membership,
+        donation_campaign_id: None,
         paid_at: Some(chrono::Utc::now()),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),

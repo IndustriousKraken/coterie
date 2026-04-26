@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     api::{state::AppState, middleware::auth::CurrentUser},
-    domain::{Payment, PaymentMethod, PaymentStatus, SavedCard},
+    domain::{Payment, PaymentMethod, PaymentStatus, PaymentType, SavedCard},
     error::{AppError, Result},
 };
 
@@ -39,9 +39,20 @@ pub struct ListPaymentsQuery {
 pub struct ManualPaymentRequest {
     pub member_id: Uuid,
     pub amount_cents: i64,
+    /// "membership" | "donation" | "other". Defaults to "membership"
+    /// when absent so older API callers behave the same as before.
+    /// Only "membership" extends dues; the other two record a Payment
+    /// row without touching dues_paid_until.
+    #[serde(default = "default_manual_payment_type")]
+    pub payment_type: String,
     pub membership_type_slug: Option<String>,
+    /// Required when payment_type="donation"; ignored otherwise.
+    #[serde(default)]
+    pub donation_campaign_id: Option<Uuid>,
     pub description: String,
 }
+
+fn default_manual_payment_type() -> String { "membership".to_string() }
 
 #[derive(Debug, Deserialize)]
 pub struct WaivePaymentRequest {
@@ -214,6 +225,29 @@ pub async fn create_manual(
 ) -> Result<(StatusCode, Json<Payment>)> {
     // Admin auth is enforced by the admin_routes middleware
 
+    let payment_type = PaymentType::from_str(&request.payment_type)
+        .ok_or_else(|| AppError::BadRequest(format!(
+            "Invalid payment_type '{}': expected membership, donation, or other",
+            request.payment_type,
+        )))?;
+
+    // Donation payments must point at a real campaign — otherwise
+    // they'd never count toward any total and we'd just have
+    // mystery $X rows on the books.
+    if payment_type == PaymentType::Donation {
+        let campaign_id = request.donation_campaign_id.ok_or_else(|| {
+            AppError::BadRequest("donation payments require donation_campaign_id".to_string())
+        })?;
+        if state.service_context.donation_campaign_repo
+            .find_by_id(campaign_id).await?
+            .is_none()
+        {
+            return Err(AppError::BadRequest(
+                "donation_campaign_id doesn't match any campaign".to_string()
+            ));
+        }
+    }
+
     let payment = Payment {
         id: Uuid::new_v4(),
         member_id: request.member_id,
@@ -223,6 +257,12 @@ pub async fn create_manual(
         payment_method: PaymentMethod::Manual,
         stripe_payment_id: None,
         description: request.description.clone(),
+        payment_type,
+        donation_campaign_id: if payment_type == PaymentType::Donation {
+            request.donation_campaign_id
+        } else {
+            None
+        },
         paid_at: Some(Utc::now()),
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -230,32 +270,35 @@ pub async fn create_manual(
 
     let payment = state.service_context.payment_repo.create(payment).await?;
 
-    // Extend dues + refresh any auto-renew schedule.
-    // BillingService::extend_member_dues_by_slug also restores
-    // Expired→Active and clears the reminder flag — important when
-    // an admin records a payment for a lapsed member.
-    // reschedule_after_payment is a no-op for non-enrolled members,
-    // so this is safe to call unconditionally.
-    if let Some(slug) = &request.membership_type_slug {
-        let billing_service = state.service_context.billing_service(
-            state.stripe_client.clone(),
-            state.settings.server.base_url.clone(),
-        );
-        billing_service.extend_member_dues_by_slug(request.member_id, slug).await?;
-        if let Err(e) = billing_service
-            .reschedule_after_payment(request.member_id, slug)
-            .await
-        {
-            tracing::error!(
-                "Recorded manual payment for {} but reschedule failed: {}",
-                request.member_id, e,
+    // Only Membership-type payments touch dues. Donations and Other
+    // are recorded without affecting dues_paid_until or auto-renew
+    // schedules — that's the whole point of the typed handler.
+    if payment_type == PaymentType::Membership {
+        if let Some(slug) = &request.membership_type_slug {
+            let billing_service = state.service_context.billing_service(
+                state.stripe_client.clone(),
+                state.settings.server.base_url.clone(),
             );
+            billing_service.extend_member_dues_by_slug(request.member_id, slug).await?;
+            if let Err(e) = billing_service
+                .reschedule_after_payment(request.member_id, slug)
+                .await
+            {
+                tracing::error!(
+                    "Recorded manual payment for {} but reschedule failed: {}",
+                    request.member_id, e,
+                );
+            }
         }
     }
 
     state.service_context.audit_service.log(
         Some(user.member.id),
-        "manual_payment",
+        match payment_type {
+            PaymentType::Membership => "manual_payment",
+            PaymentType::Donation => "manual_donation",
+            PaymentType::Other => "manual_other",
+        },
         "member",
         &request.member_id.to_string(),
         None,
@@ -282,6 +325,8 @@ pub async fn waive(
         payment_method: PaymentMethod::Waived,
         stripe_payment_id: None,
         description: request.description.clone(),
+        payment_type: PaymentType::Membership,
+        donation_campaign_id: None,
         paid_at: Some(Utc::now()),
         created_at: Utc::now(),
         updated_at: Utc::now(),

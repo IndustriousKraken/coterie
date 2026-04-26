@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::{
     domain::{
         configurable_types::BillingPeriod, BillingMode, Payment, PaymentMethod, PaymentStatus,
-        SavedCard, ScheduledPayment, ScheduledPaymentStatus,
+        PaymentType, SavedCard, ScheduledPayment, ScheduledPaymentStatus,
     },
     email::EmailSender,
     error::{AppError, Result},
@@ -737,6 +737,8 @@ impl BillingService {
                     payment_method: PaymentMethod::Stripe,
                     stripe_payment_id: Some(stripe_payment_id),
                     description,
+                    payment_type: PaymentType::Membership,
+                    donation_campaign_id: None,
                     paid_at: Some(Utc::now()),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),

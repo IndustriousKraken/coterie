@@ -10,7 +10,7 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 
 use crate::{
-    domain::{Payment, PaymentMethod, PaymentStatus, configurable_types::BillingPeriod},
+    domain::{Payment, PaymentMethod, PaymentStatus, PaymentType, configurable_types::BillingPeriod},
     error::{AppError, Result},
     repository::PaymentRepository,
     service::{billing_service::BillingService, membership_type_service::MembershipTypeService},
@@ -73,9 +73,12 @@ impl StripeClient {
             ..Default::default()
         }]);
 
-        // Add metadata for tracking (store slug for dues extension lookup)
+        // Add metadata for tracking (store slug for dues extension lookup).
+        // payment_type makes the webhook handler's branching explicit
+        // — it pairs with the donation flow which sets payment_type=donation.
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("member_id".to_string(), member_id.to_string());
+        metadata.insert("payment_type".to_string(), "membership".to_string());
         metadata.insert("membership_type".to_string(), membership_type_name.to_string());
         metadata.insert("membership_type_slug".to_string(), membership_type_slug.to_string());
         params.metadata = Some(metadata);
@@ -97,6 +100,8 @@ impl StripeClient {
             payment_method: PaymentMethod::Stripe,
             stripe_payment_id: Some(session.id.to_string()),
             description: format!("{} Membership Payment", membership_type_name),
+            payment_type: PaymentType::Membership,
+            donation_campaign_id: None,
             paid_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -105,6 +110,84 @@ impl StripeClient {
         self.payment_repo.create(payment).await?;
 
         // Return the checkout URL and payment ID
+        let url = session.url
+            .ok_or_else(|| AppError::External("No checkout URL returned".to_string()))?;
+        Ok((url, payment_id))
+    }
+
+    /// Build a Stripe Checkout session for a one-time donation. The
+    /// session metadata includes `payment_type=donation` so the webhook
+    /// handler knows NOT to extend dues. A pending Payment row is
+    /// recorded with `payment_type=Donation` and (optionally)
+    /// `donation_campaign_id` so totals attribute correctly even
+    /// before the webhook flips the row to Completed.
+    pub async fn create_donation_checkout_session(
+        &self,
+        member_id: Uuid,
+        campaign_name: &str,
+        campaign_id: Option<Uuid>,
+        amount_cents: i64,
+        success_url: String,
+        cancel_url: String,
+    ) -> Result<(String, Uuid)> {
+        let mut params = CreateCheckoutSession::new();
+        params.mode = Some(CheckoutSessionMode::Payment);
+        params.success_url = Some(&success_url);
+        params.cancel_url = Some(&cancel_url);
+
+        let product_name = if campaign_id.is_some() {
+            format!("Donation to {}", campaign_name)
+        } else {
+            "Donation".to_string()
+        };
+
+        params.line_items = Some(vec![CreateCheckoutSessionLineItems {
+            price_data: Some(stripe::CreateCheckoutSessionLineItemsPriceData {
+                currency: Currency::USD,
+                unit_amount: Some(amount_cents),
+                product_data: Some(stripe::CreateCheckoutSessionLineItemsPriceDataProductData {
+                    name: product_name.clone(),
+                    description: Some(product_name.clone()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            quantity: Some(1),
+            ..Default::default()
+        }]);
+
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("member_id".to_string(), member_id.to_string());
+        metadata.insert("payment_type".to_string(), "donation".to_string());
+        if let Some(cid) = campaign_id {
+            metadata.insert("donation_campaign_id".to_string(), cid.to_string());
+        }
+        params.metadata = Some(metadata);
+        let member_id_str = member_id.to_string();
+        params.client_reference_id = Some(&member_id_str);
+
+        let session = CheckoutSession::create(&self.client, params)
+            .await
+            .map_err(|e| AppError::External(format!("Stripe error: {}", e)))?;
+
+        let payment_id = Uuid::new_v4();
+        let payment = Payment {
+            id: payment_id,
+            member_id,
+            amount_cents,
+            currency: "USD".to_string(),
+            status: PaymentStatus::Pending,
+            payment_method: PaymentMethod::Stripe,
+            stripe_payment_id: Some(session.id.to_string()),
+            description: product_name,
+            payment_type: PaymentType::Donation,
+            donation_campaign_id: campaign_id,
+            paid_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        self.payment_repo.create(payment).await?;
+
         let url = session.url
             .ok_or_else(|| AppError::External("No checkout URL returned".to_string()))?;
         Ok((url, payment_id))
@@ -203,51 +286,68 @@ impl StripeClient {
     ) -> Result<()> {
         let session_id = session.id.to_string();
 
-        // Find the payment by Stripe ID
-        if let Some(mut payment) = self.payment_repo.find_by_stripe_id(&session_id).await? {
-            // Update payment status
-            payment.status = PaymentStatus::Completed;
-            payment.paid_at = Some(Utc::now());
-            payment.updated_at = Utc::now();
-
-            self.payment_repo.update(payment.id, payment.clone()).await?;
-
-            // Extend member's dues_paid_until based on membership type billing period
-            let membership_type_slug = session.metadata
-                .as_ref()
-                .and_then(|m| m.get("membership_type_slug"))
-                .cloned();
-
-            if let Some(slug) = &membership_type_slug {
-                self.extend_member_dues(payment.member_id, slug).await?;
-            } else {
-                tracing::warn!("No membership_type_slug in session metadata for session: {}", session_id);
+        let mut payment = match self.payment_repo.find_by_stripe_id(&session_id).await? {
+            Some(p) => p,
+            None => {
+                tracing::warn!("Payment not found for Stripe session: {}", session_id);
+                return Ok(());
             }
+        };
 
-            // If the member is on Coterie-managed auto-renew, this
-            // one-time Checkout payment shifted their dues forward —
-            // any pending ScheduledPayment now points at the wrong
-            // due date and would over-charge them. Cancel + reschedule
-            // so the next auto-charge fires when these new dues lapse.
-            //
-            // No-op for manual or stripe_subscription members.
-            if let Some(slug) = &membership_type_slug {
-                if let Err(e) = billing_service
-                    .reschedule_after_payment(payment.member_id, slug)
-                    .await
-                {
-                    tracing::error!(
-                        "Member {} paid via Checkout but reschedule failed: {}",
-                        payment.member_id, e,
-                    );
-                }
-            }
+        // Always flip Pending → Completed on a successful checkout.
+        payment.status = PaymentStatus::Completed;
+        payment.paid_at = Some(Utc::now());
+        payment.updated_at = Utc::now();
+        self.payment_repo.update(payment.id, payment.clone()).await?;
 
-            tracing::info!("Payment completed for member: {}", payment.member_id);
-        } else {
-            tracing::warn!("Payment not found for Stripe session: {}", session_id);
+        // Branch on payment type. Donations don't extend dues and
+        // don't refresh auto-renew schedules — they're a separate
+        // bucket from membership renewal. Reading from session
+        // metadata avoids a second DB lookup; falling back to the
+        // payment row's stored type covers older sessions that
+        // didn't write the metadata key (i.e. created before this
+        // code shipped).
+        let payment_type_str = session.metadata
+            .as_ref()
+            .and_then(|m| m.get("payment_type"))
+            .cloned()
+            .unwrap_or_else(|| payment.payment_type.as_str().to_string());
+
+        if payment_type_str == "donation" {
+            tracing::info!(
+                "Donation completed for member {} (campaign: {:?}, amount: {})",
+                payment.member_id, payment.donation_campaign_id, payment.amount_cents,
+            );
+            return Ok(());
         }
 
+        // Membership flow. Look up the slug from metadata and run
+        // the dues-extend + reschedule-if-enrolled chain.
+        let membership_type_slug = session.metadata
+            .as_ref()
+            .and_then(|m| m.get("membership_type_slug"))
+            .cloned();
+
+        if let Some(slug) = &membership_type_slug {
+            self.extend_member_dues(payment.member_id, slug).await?;
+
+            if let Err(e) = billing_service
+                .reschedule_after_payment(payment.member_id, slug)
+                .await
+            {
+                tracing::error!(
+                    "Member {} paid via Checkout but reschedule failed: {}",
+                    payment.member_id, e,
+                );
+            }
+        } else {
+            tracing::warn!(
+                "No membership_type_slug in session metadata for session: {}",
+                session_id,
+            );
+        }
+
+        tracing::info!("Payment completed for member: {}", payment.member_id);
         Ok(())
     }
 
@@ -397,6 +497,8 @@ impl StripeClient {
             payment_method: PaymentMethod::Stripe,
             stripe_payment_id: Some(invoice.id.to_string()),
             description: format!("Subscription payment ({})", subscription_id),
+            payment_type: PaymentType::Membership,
+            donation_campaign_id: None,
             paid_at: Some(Utc::now()),
             created_at: Utc::now(),
             updated_at: Utc::now(),

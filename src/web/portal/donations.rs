@@ -14,7 +14,7 @@ use crate::{
         middleware::auth::{CurrentUser, SessionInfo},
         state::AppState,
     },
-    domain::{Payment, PaymentMethod, PaymentStatus},
+    domain::{Payment, PaymentMethod, PaymentStatus, PaymentType},
     error::AppError,
     web::templates::{HtmlTemplate, UserInfo},
 };
@@ -138,18 +138,23 @@ pub async fn donate_api(
         return Err(AppError::BadRequest("Amount must be positive".to_string()));
     }
 
-    let description = if let Some(slug) = &request.campaign_slug {
-        if slug.is_empty() {
-            "General donation".to_string()
-        } else {
-            let campaign = state.service_context.donation_campaign_repo
-                .find_by_slug(slug)
-                .await?;
-            match campaign {
-                Some(c) => format!("Donation to {}", c.name),
-                None => "General donation".to_string(),
+    // Resolve the campaign up front. We need both the ID (for the FK
+    // we'll write on the Payment row) and the name (for the human-
+    // readable description). A blank or unknown slug means "general
+    // donation" — recorded but not attributed to any campaign.
+    let (campaign_id, campaign_name) = match request.campaign_slug.as_deref() {
+        Some(slug) if !slug.is_empty() => {
+            match state.service_context.donation_campaign_repo
+                .find_by_slug(slug).await?
+            {
+                Some(c) => (Some(c.id), c.name),
+                None => (None, "General donation".to_string()),
             }
         }
+        _ => (None, "General donation".to_string()),
+    };
+    let description = if campaign_id.is_some() {
+        format!("Donation to {}", campaign_name)
     } else {
         "General donation".to_string()
     };
@@ -191,6 +196,8 @@ pub async fn donate_api(
             payment_method: PaymentMethod::Stripe,
             stripe_payment_id: Some(stripe_payment_id),
             description,
+            payment_type: PaymentType::Donation,
+            donation_campaign_id: campaign_id,
             paid_at: Some(chrono::Utc::now()),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -204,14 +211,18 @@ pub async fn donate_api(
         }))));
     }
 
-    // No saved card - redirect to Stripe Checkout for donation
+    // No saved card → Stripe Checkout. Use the dedicated donation
+    // helper so the webhook handler knows NOT to extend dues — the
+    // old code routed donations through the membership helper, which
+    // worked only because the webhook's NotFound on slug "donation"
+    // caused Stripe-retry-until-idempotent-skip side effects.
     let stripe_client = state.stripe_client.as_ref()
         .ok_or_else(|| AppError::ServiceUnavailable("Payment processing not configured".to_string()))?;
 
-    let (checkout_url, payment_id) = stripe_client.create_membership_checkout_session(
+    let (checkout_url, payment_id) = stripe_client.create_donation_checkout_session(
         current_user.member.id,
-        "Donation",
-        "donation",
+        &campaign_name,
+        campaign_id,
         request.amount_cents,
         format!("{}/portal/payments/success", state.settings.server.base_url),
         format!("{}/portal/payments/cancel", state.settings.server.base_url),

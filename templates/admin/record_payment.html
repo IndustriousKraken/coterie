@@ -1,0 +1,145 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Record Payment - Coterie Admin{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="max-w-2xl mx-auto">
+        <div class="mb-6">
+            <a href="/portal/admin/members/{{ member_id }}" class="text-sm text-blue-600 hover:text-blue-800">&larr; Back to {{ member_name }}</a>
+            <h1 class="text-3xl font-bold text-gray-900 mt-2">Record payment</h1>
+            <p class="mt-2 text-sm text-gray-600">
+                Recording for <strong>{{ member_name }}</strong> ({{ member_email }})
+            </p>
+        </div>
+
+        {% if let Some(err) = flash_error %}
+        <div class="mb-4 p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-900">{{ err }}</div>
+        {% endif %}
+
+        <form method="POST" action="/portal/admin/members/{{ member_id }}/record-payment"
+              class="bg-white rounded-lg shadow-sm border divide-y divide-gray-200">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+            <!-- Type -->
+            <div class="p-6">
+                <label class="block text-sm font-medium text-gray-900 mb-2">Type of payment</label>
+                <div class="space-y-2">
+                    <label class="flex items-start gap-3 cursor-pointer">
+                        <input type="radio" name="payment_type" value="membership" checked
+                               class="mt-1 h-4 w-4 text-blue-600">
+                        <span class="text-sm text-gray-700">
+                            <span class="font-medium text-gray-900">Membership dues.</span>
+                            Extends the member's paid-through date and refreshes their auto-renew schedule (if enrolled).
+                        </span>
+                    </label>
+                    <label class="flex items-start gap-3 cursor-pointer">
+                        <input type="radio" name="payment_type" value="donation"
+                               class="mt-1 h-4 w-4 text-blue-600">
+                        <span class="text-sm text-gray-700">
+                            <span class="font-medium text-gray-900">Donation.</span>
+                            Recorded against a campaign for fundraising totals. Doesn't touch dues. Useful for employer-matching checks.
+                        </span>
+                    </label>
+                    <label class="flex items-start gap-3 cursor-pointer">
+                        <input type="radio" name="payment_type" value="other"
+                               class="mt-1 h-4 w-4 text-blue-600">
+                        <span class="text-sm text-gray-700">
+                            <span class="font-medium text-gray-900">Other.</span>
+                            Anything else (merch, event fee, etc.). No dues effect, no campaign attribution.
+                        </span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Membership type (visible only when type=membership) -->
+            <div id="membership-section" class="p-6">
+                <label for="membership_type_slug" class="block text-sm font-medium text-gray-900 mb-2">Membership type</label>
+                <select name="membership_type_slug" id="membership_type_slug"
+                        class="block w-full rounded-md border-gray-300 text-sm">
+                    <option value="">— don't extend dues —</option>
+                    {% for mt in membership_types %}
+                    <option value="{{ mt.slug }}"
+                            {% if mt.slug == current_membership_slug %}selected{% endif %}>
+                        {{ mt.name }} (${{ mt.fee_display }} / {{ mt.billing_period }})
+                    </option>
+                    {% endfor %}
+                </select>
+                <p class="mt-1 text-xs text-gray-500">
+                    Picking a type extends the member's dues by that type's billing period — regardless of the dollar amount entered below.
+                </p>
+            </div>
+
+            <!-- Donation campaign (visible only when type=donation) -->
+            <div id="donation-section" class="p-6 hidden">
+                <label for="donation_campaign_id" class="block text-sm font-medium text-gray-900 mb-2">Campaign</label>
+                {% if donation_campaigns.is_empty() %}
+                <p class="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded p-3">
+                    No active donation campaigns exist yet. Create one in the admin settings before recording donations.
+                </p>
+                {% else %}
+                <select name="donation_campaign_id" id="donation_campaign_id"
+                        class="block w-full rounded-md border-gray-300 text-sm">
+                    <option value="">— pick a campaign —</option>
+                    {% for c in donation_campaigns %}
+                    <option value="{{ c.id }}">{{ c.name }}</option>
+                    {% endfor %}
+                </select>
+                {% endif %}
+            </div>
+
+            <!-- Amount + description -->
+            <div class="p-6 space-y-4">
+                <div>
+                    <label for="amount" class="block text-sm font-medium text-gray-900 mb-2">Amount (USD)</label>
+                    <div class="relative">
+                        <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500 text-sm">$</span>
+                        <input type="text" id="amount" name="amount" required
+                               inputmode="decimal" pattern="[0-9]+(\.[0-9]{1,2})?"
+                               placeholder="100.00"
+                               class="block w-full pl-7 rounded-md border-gray-300 text-sm">
+                    </div>
+                </div>
+                <div>
+                    <label for="description" class="block text-sm font-medium text-gray-900 mb-2">Description</label>
+                    <input type="text" id="description" name="description"
+                           placeholder="e.g. Cash, check #1234, employer match from Acme Corp"
+                           class="block w-full rounded-md border-gray-300 text-sm">
+                    <p class="mt-1 text-xs text-gray-500">
+                        Free-form note. Shown in payment history. Useful for tracking source (cash, check number, employer name).
+                    </p>
+                </div>
+            </div>
+
+            <div class="px-6 py-4 flex justify-end gap-3 bg-gray-50">
+                <a href="/portal/admin/members/{{ member_id }}"
+                   class="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 text-sm font-medium">
+                    Cancel
+                </a>
+                <button type="submit"
+                        class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+                    Record payment
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+(function() {
+    const membershipSection = document.getElementById('membership-section');
+    const donationSection = document.getElementById('donation-section');
+    function update() {
+        const checked = document.querySelector('input[name="payment_type"]:checked');
+        if (!checked) return;
+        const type = checked.value;
+        membershipSection.classList.toggle('hidden', type !== 'membership');
+        donationSection.classList.toggle('hidden', type !== 'donation');
+    }
+    document.querySelectorAll('input[name="payment_type"]').forEach(function(r) {
+        r.addEventListener('change', update);
+    });
+    update();
+})();
+</script>
+{% endblock %}

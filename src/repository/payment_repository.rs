@@ -4,7 +4,7 @@ use sqlx::{SqlitePool, FromRow};
 use uuid::Uuid;
 
 use crate::{
-    domain::{Payment, PaymentStatus, PaymentMethod},
+    domain::{Payment, PaymentStatus, PaymentMethod, PaymentType},
     error::{AppError, Result},
     repository::PaymentRepository,
 };
@@ -19,6 +19,8 @@ struct PaymentRow {
     payment_method: String,
     stripe_payment_id: Option<String>,
     description: String,
+    payment_type: String,
+    donation_campaign_id: Option<String>,
     paid_at: Option<NaiveDateTime>,
     created_at: NaiveDateTime,
     updated_at: NaiveDateTime,
@@ -34,6 +36,14 @@ impl SqlitePaymentRepository {
     }
 
     fn row_to_payment(row: PaymentRow) -> Result<Payment> {
+        // Tolerate unknown payment_type values from older rows by
+        // falling back to Membership (the column default) — that
+        // matches what the row was actually doing pre-migration.
+        let payment_type = PaymentType::from_str(&row.payment_type)
+            .unwrap_or(PaymentType::Membership);
+        let donation_campaign_id = row.donation_campaign_id
+            .as_deref()
+            .and_then(|s| Uuid::parse_str(s).ok());
         Ok(Payment {
             id: Uuid::parse_str(&row.id).map_err(|e| AppError::Database(e.to_string()))?,
             member_id: Uuid::parse_str(&row.member_id).map_err(|e| AppError::Database(e.to_string()))?,
@@ -43,6 +53,8 @@ impl SqlitePaymentRepository {
             payment_method: Self::parse_payment_method(&row.payment_method)?,
             stripe_payment_id: row.stripe_payment_id,
             description: row.description,
+            payment_type,
+            donation_campaign_id,
             paid_at: row.paid_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
             updated_at: DateTime::from_naive_utc_and_offset(row.updated_at, Utc),
@@ -97,13 +109,17 @@ impl PaymentRepository for SqlitePaymentRepository {
         let paid_at_naive = payment.paid_at.map(|dt| dt.naive_utc());
         let now = Utc::now().naive_utc();
 
+        let payment_type_str = payment.payment_type.as_str();
+        let donation_campaign_id_str = payment.donation_campaign_id.map(|u| u.to_string());
+
         sqlx::query(
             r#"
             INSERT INTO payments (
                 id, member_id, amount_cents, currency, status,
                 payment_method, stripe_payment_id, description,
+                payment_type, donation_campaign_id,
                 paid_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#
         )
         .bind(&id_str)
@@ -114,6 +130,8 @@ impl PaymentRepository for SqlitePaymentRepository {
         .bind(method_str)
         .bind(&payment.stripe_payment_id)
         .bind(&payment.description)
+        .bind(payment_type_str)
+        .bind(&donation_campaign_id_str)
         .bind(paid_at_naive)
         .bind(now)
         .bind(now)
@@ -132,6 +150,7 @@ impl PaymentRepository for SqlitePaymentRepository {
             r#"
             SELECT id, member_id, amount_cents, currency, status,
                    payment_method, stripe_payment_id, description,
+                   payment_type, donation_campaign_id,
                    paid_at, created_at, updated_at
             FROM payments
             WHERE id = ?
@@ -154,6 +173,7 @@ impl PaymentRepository for SqlitePaymentRepository {
             r#"
             SELECT id, member_id, amount_cents, currency, status,
                    payment_method, stripe_payment_id, description,
+                   payment_type, donation_campaign_id,
                    paid_at, created_at, updated_at
             FROM payments
             WHERE member_id = ?
@@ -175,6 +195,7 @@ impl PaymentRepository for SqlitePaymentRepository {
             r#"
             SELECT id, member_id, amount_cents, currency, status,
                    payment_method, stripe_payment_id, description,
+                   payment_type, donation_campaign_id,
                    paid_at, created_at, updated_at
             FROM payments
             WHERE stripe_payment_id = ?

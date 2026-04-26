@@ -116,12 +116,17 @@ impl DonationCampaignRepository for SqliteDonationCampaignRepository {
     }
 
     async fn get_total_donated(&self, campaign_id: Uuid) -> Result<i64> {
+        // Sum every Completed donation linked to this campaign by the
+        // donation_campaign_id FK. (The previous implementation
+        // matched on `description LIKE '%' || campaign_id || '%'`,
+        // but description stored the campaign NAME — totals were
+        // always 0.)
         let total: Option<i64> = sqlx::query_scalar(
             r#"
             SELECT COALESCE(SUM(p.amount_cents), 0)
             FROM payments p
-            WHERE p.payment_type = 'donation'
-              AND p.description LIKE '%' || ? || '%'
+            WHERE p.donation_campaign_id = ?
+              AND p.payment_type = 'donation'
               AND p.status = 'Completed'
             "#,
         )
