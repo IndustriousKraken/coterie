@@ -7,11 +7,42 @@ use stripe::{
 use chrono::{Months, Utc};
 use uuid::Uuid;
 use std::sync::Arc;
+use std::time::Duration;
 use sqlx::SqlitePool;
+
+/// Per-request timeout on every Stripe API call. async-stripe 0.39
+/// doesn't expose a way to plug in a reqwest/hyper client with a
+/// timeout — its Client owns a private `BaseClient` and the hyper
+/// builder doesn't apply request-level timeouts. Without this, a
+/// hung Stripe response would tie up an Axum handler forever
+/// (worst case: a webhook handler that never returns, blocking
+/// Stripe's retry from making forward progress).
+///
+/// 30s is well above Stripe's typical p99 response time but low
+/// enough to recover quickly from network or upstream stalls.
+const STRIPE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Apply STRIPE_TIMEOUT to any Stripe future and translate both the
+/// timeout and the underlying StripeError into AppError::External so
+/// callers can keep their existing `?` chains intact.
+async fn timed<T, F>(fut: F) -> Result<T>
+where
+    F: std::future::Future<Output = std::result::Result<T, stripe::StripeError>>,
+{
+    match tokio::time::timeout(STRIPE_TIMEOUT, fut).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(AppError::External(format!("Stripe error: {}", e))),
+        Err(_) => Err(AppError::External(format!(
+            "Stripe API timed out after {}s",
+            STRIPE_TIMEOUT.as_secs(),
+        ))),
+    }
+}
 
 use crate::{
     domain::{Payment, PaymentMethod, PaymentStatus, PaymentType, configurable_types::BillingPeriod},
     error::{AppError, Result},
+    integrations::{IntegrationEvent, IntegrationManager},
     repository::PaymentRepository,
     service::{billing_service::BillingService, membership_type_service::MembershipTypeService},
 };
@@ -21,6 +52,7 @@ pub struct StripeClient {
     webhook_secret: String,
     payment_repo: Arc<dyn PaymentRepository>,
     membership_type_service: Arc<MembershipTypeService>,
+    integration_manager: Arc<IntegrationManager>,
     db_pool: SqlitePool,
 }
 
@@ -30,6 +62,7 @@ impl StripeClient {
         webhook_secret: String,
         payment_repo: Arc<dyn PaymentRepository>,
         membership_type_service: Arc<MembershipTypeService>,
+        integration_manager: Arc<IntegrationManager>,
         db_pool: SqlitePool,
     ) -> Self {
         let client = Client::new(api_key);
@@ -38,6 +71,7 @@ impl StripeClient {
             webhook_secret,
             payment_repo,
             membership_type_service,
+            integration_manager,
             db_pool,
         }
     }
@@ -85,9 +119,7 @@ impl StripeClient {
         let member_id_str = member_id.to_string();
         params.client_reference_id = Some(&member_id_str);
 
-        let session = CheckoutSession::create(&self.client, params)
-            .await
-            .map_err(|e| AppError::External(format!("Stripe error: {}", e)))?;
+        let session = timed(CheckoutSession::create(&self.client, params)).await?;
 
         // Create pending payment record
         let payment_id = Uuid::new_v4();
@@ -166,9 +198,7 @@ impl StripeClient {
         let member_id_str = member_id.to_string();
         params.client_reference_id = Some(&member_id_str);
 
-        let session = CheckoutSession::create(&self.client, params)
-            .await
-            .map_err(|e| AppError::External(format!("Stripe error: {}", e)))?;
+        let session = timed(CheckoutSession::create(&self.client, params)).await?;
 
         let payment_id = Uuid::new_v4();
         let payment = Payment {
@@ -230,61 +260,95 @@ impl StripeClient {
             return Ok(());
         }
 
-        // Handle different event types
-        match event.type_ {
-            // One-time checkout payments
-            EventType::CheckoutSessionCompleted => {
-                if let EventObject::CheckoutSession(session) = event.data.object {
-                    self.handle_successful_payment(session, billing_service).await?;
+        // Dispatch to the right handler. Capture the result so we can
+        // roll back the idempotency claim on failure — otherwise a
+        // partial-success run (Payment row updated, dues extension
+        // failed) would be permanently stuck: the next Stripe retry
+        // would hit the claim and skip without re-running the failed
+        // step, leaving the member paid-but-not-extended forever.
+        let outcome: Result<()> = async {
+            match event.type_ {
+                // One-time checkout payments
+                EventType::CheckoutSessionCompleted => {
+                    if let EventObject::CheckoutSession(session) = event.data.object {
+                        self.handle_successful_payment(session, billing_service).await?;
+                    }
                 }
-            }
-            EventType::CheckoutSessionExpired => {
-                if let EventObject::CheckoutSession(session) = event.data.object {
-                    self.handle_expired_session(session).await?;
+                EventType::CheckoutSessionExpired => {
+                    if let EventObject::CheckoutSession(session) = event.data.object {
+                        self.handle_expired_session(session).await?;
+                    }
                 }
-            }
-            EventType::PaymentIntentPaymentFailed => {
-                if let EventObject::PaymentIntent(intent) = event.data.object {
-                    self.handle_failed_payment(intent.id.to_string()).await?;
+                EventType::PaymentIntentPaymentFailed => {
+                    if let EventObject::PaymentIntent(intent) = event.data.object {
+                        self.handle_failed_payment(intent.id.to_string()).await?;
+                    }
                 }
-            }
 
-            // Refunds — fired when an admin issues one through Stripe's
-            // dashboard (or as the echo from our own admin-button refund).
-            EventType::ChargeRefunded => {
-                if let EventObject::Charge(charge) = event.data.object {
-                    self.handle_charge_refunded(charge).await?;
+                // Refunds — fired when an admin issues one through Stripe's
+                // dashboard (or as the echo from our own admin-button refund).
+                EventType::ChargeRefunded => {
+                    if let EventObject::Charge(charge) = event.data.object {
+                        self.handle_charge_refunded(charge).await?;
+                    }
                 }
-            }
 
-            // Legacy Stripe subscription events
-            EventType::InvoicePaid => {
-                if let EventObject::Invoice(invoice) = event.data.object {
-                    self.handle_invoice_paid(invoice).await?;
+                // Legacy Stripe subscription events
+                EventType::InvoicePaid => {
+                    if let EventObject::Invoice(invoice) = event.data.object {
+                        self.handle_invoice_paid(invoice).await?;
+                    }
                 }
-            }
-            EventType::InvoicePaymentFailed => {
-                if let EventObject::Invoice(invoice) = event.data.object {
-                    self.handle_invoice_payment_failed(invoice, billing_service).await?;
+                EventType::InvoicePaymentFailed => {
+                    if let EventObject::Invoice(invoice) = event.data.object {
+                        self.handle_invoice_payment_failed(invoice, billing_service).await?;
+                    }
                 }
-            }
-            EventType::CustomerSubscriptionDeleted => {
-                if let EventObject::Subscription(subscription) = event.data.object {
-                    self.handle_subscription_deleted(subscription, billing_service).await?;
+                EventType::CustomerSubscriptionDeleted => {
+                    if let EventObject::Subscription(subscription) = event.data.object {
+                        self.handle_subscription_deleted(subscription, billing_service).await?;
+                    }
                 }
-            }
-            EventType::CustomerSubscriptionUpdated => {
-                if let EventObject::Subscription(subscription) = event.data.object {
-                    self.handle_subscription_updated(subscription).await?;
+                EventType::CustomerSubscriptionUpdated => {
+                    if let EventObject::Subscription(subscription) = event.data.object {
+                        self.handle_subscription_updated(subscription).await?;
+                    }
                 }
-            }
 
-            _ => {
-                tracing::debug!("Unhandled webhook event type: {:?}", event.type_);
+                _ => {
+                    tracing::debug!("Unhandled webhook event type: {:?}", event.type_);
+                }
+            }
+            Ok(())
+        }
+        .await;
+
+        if let Err(e) = &outcome {
+            tracing::error!(
+                "Webhook handler for event {} ({}) failed: {}; rolling back idempotency claim so Stripe retry can re-run",
+                event_id, event_type, e,
+            );
+            // Best-effort rollback. If THIS fails, the event stays
+            // claimed and the retry will skip — but at that point the
+            // DB is in a state where we can't trust further writes
+            // anyway, and the original error is the more important
+            // signal to surface.
+            if let Err(rollback_err) = sqlx::query(
+                "DELETE FROM processed_stripe_events WHERE event_id = ?",
+            )
+            .bind(&event_id)
+            .execute(&self.db_pool)
+            .await
+            {
+                tracing::error!(
+                    "Idempotency rollback failed for event {}: {}. The event \
+                     is permanently claimed; manual intervention may be needed.",
+                    event_id, rollback_err,
+                );
             }
         }
 
-        Ok(())
+        outcome
     }
 
     async fn handle_successful_payment(
@@ -303,9 +367,18 @@ impl StripeClient {
         };
 
         // Always flip Pending → Completed on a successful checkout.
+        // Also upgrade stripe_payment_id from cs_ → pi_ so future
+        // refund webhooks (charge.refunded carries a PaymentIntent ID,
+        // not a CheckoutSession ID) can match this row by IN-clause.
+        // Fall back to keeping cs_ if Stripe didn't expand the PI on
+        // the session (rare, but defensive).
+        let pi_id = session.payment_intent.as_ref().map(|exp| exp.id().to_string());
         payment.status = PaymentStatus::Completed;
         payment.paid_at = Some(Utc::now());
         payment.updated_at = Utc::now();
+        if let Some(ref pi) = pi_id {
+            payment.stripe_payment_id = Some(pi.clone());
+        }
         self.payment_repo.update(payment.id, payment.clone()).await?;
 
         // Branch on payment type. Donations don't extend dues and
@@ -478,14 +551,16 @@ impl StripeClient {
         let amount_refunded = charge.amount_refunded;
         let is_partial = amount_refunded < charge_amount;
 
-        // Try to find the Payment row. We store one of two prefixes
-        // that map to a Charge: pi_ (payment intent) or in_ (invoice).
-        // cs_ (checkout session) charges aren't directly recoverable
-        // here without a second Stripe API call — skip and log.
+        // Try to find the Payment row. New checkout flows upgrade
+        // stripe_payment_id from cs_ → pi_ on completion (see
+        // handle_successful_payment), so the IN clause covers them
+        // alongside saved-card (pi_) and Stripe-subscription (in_)
+        // payments. Legacy rows still keyed by cs_ fall through to
+        // the Stripe-API lookup below.
         let pi_id = charge.payment_intent.as_ref().map(|e| e.id().to_string());
         let invoice_id = charge.invoice.as_ref().map(|e| e.id().to_string());
 
-        let row: Option<(String, String)> = sqlx::query_as(
+        let mut row: Option<(String, String)> = sqlx::query_as(
             r#"
             SELECT id, status FROM payments
             WHERE stripe_payment_id IS NOT NULL
@@ -498,6 +573,29 @@ impl StripeClient {
         .fetch_optional(&self.db_pool)
         .await
         .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+
+        // Fallback for legacy cs_ rows: ask Stripe which CheckoutSession
+        // owns this PaymentIntent, then match. The list API filters
+        // server-side, so this is a single round trip.
+        if row.is_none() {
+            if let Some(pi) = pi_id.as_deref().and_then(|s| s.parse::<stripe::PaymentIntentId>().ok()) {
+                let mut params = stripe::ListCheckoutSessions::new();
+                params.payment_intent = Some(pi);
+                params.limit = Some(1);
+                if let Ok(sessions) = timed(stripe::CheckoutSession::list(&self.client, &params)).await {
+                    if let Some(session) = sessions.data.first() {
+                        let cs_id = session.id.to_string();
+                        row = sqlx::query_as(
+                            "SELECT id, status FROM payments WHERE stripe_payment_id = ? LIMIT 1",
+                        )
+                        .bind(&cs_id)
+                        .fetch_optional(&self.db_pool)
+                        .await
+                        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+                    }
+                }
+            }
+        }
 
         let (payment_id, current_status) = match row {
             Some(r) => r,
@@ -517,9 +615,29 @@ impl StripeClient {
                  local row left as-is; flag for an operator.",
                 payment_id, amount_refunded, charge_amount,
             );
-            // No row update. AdminAlert in caller scope (we don't
-            // have IntegrationManager from StripeClient — partial
-            // refunds are rare enough that the log is fine for now).
+            // We don't update the row — partial refunds would muddle
+            // dues/campaign accounting. Surface to operators so they
+            // can decide whether to mark Refunded manually.
+            self.integration_manager.handle_event(IntegrationEvent::AdminAlert {
+                subject: format!(
+                    "Partial Stripe refund — payment {} (${:.2} of ${:.2})",
+                    payment_id,
+                    amount_refunded as f64 / 100.0,
+                    charge_amount as f64 / 100.0,
+                ),
+                body: format!(
+                    "Stripe charge {} was partially refunded (${:.2} of ${:.2}).\n\n\
+                     The local Coterie payment row {} is unchanged — partial \
+                     refunds aren't supported in our admin UI because they \
+                     muddle dues / campaign accounting.\n\n\
+                     If this was intentional, mark the payment Refunded \
+                     manually in the DB and adjust dues / campaign totals \
+                     to match. Otherwise investigate who issued the \
+                     partial refund in Stripe's dashboard.",
+                    charge.id, amount_refunded as f64 / 100.0,
+                    charge_amount as f64 / 100.0, payment_id,
+                ),
+            }).await;
             return Ok(());
         }
 
@@ -880,9 +998,7 @@ impl StripeClient {
         metadata.insert("member_id".to_string(), member_id.to_string());
         params.metadata = Some(metadata);
 
-        let customer = Customer::create(&self.client, params)
-            .await
-            .map_err(|e| AppError::External(format!("Stripe error: {}", e)))?;
+        let customer = timed(Customer::create(&self.client, params)).await?;
 
         let customer_id = customer.id.to_string();
 
@@ -918,9 +1034,7 @@ impl StripeClient {
         metadata.insert("member_id".to_string(), member_id.to_string());
         params.metadata = Some(metadata);
 
-        let setup_intent = SetupIntent::create(&self.client, params)
-            .await
-            .map_err(|e| AppError::External(format!("Stripe error: {}", e)))?;
+        let setup_intent = timed(SetupIntent::create(&self.client, params)).await?;
 
         setup_intent.client_secret
             .ok_or_else(|| AppError::External("No client_secret in SetupIntent".to_string()))
@@ -977,9 +1091,11 @@ impl StripeClient {
             stripe::RequestStrategy::Idempotent(idempotency_key.to_string())
         );
 
-        let payment_intent = PaymentIntent::create(&idempotent_client, params)
-            .await
-            .map_err(|e| AppError::External(format!("Stripe charge failed: {}", e)))?;
+        let payment_intent = timed(PaymentIntent::create(&idempotent_client, params)).await
+            .map_err(|e| match e {
+                AppError::External(msg) => AppError::External(format!("Stripe charge failed: {}", msg)),
+                other => other,
+            })?;
 
         // Check status
         match payment_intent.status {
@@ -1015,9 +1131,7 @@ impl StripeClient {
 
         // Default PM lives on Customer.invoice_settings.default_payment_method.
         // We retrieve once so we can flag which list entry is the default.
-        let customer = stripe::Customer::retrieve(&self.client, &cid, &[])
-            .await
-            .map_err(|e| AppError::External(format!("Stripe customer lookup: {}", e)))?;
+        let customer = timed(stripe::Customer::retrieve(&self.client, &cid, &[])).await?;
 
         let default_pm_id: Option<String> = customer.invoice_settings
             .as_ref()
@@ -1031,9 +1145,7 @@ impl StripeClient {
         params.type_ = Some(stripe::PaymentMethodTypeFilter::Card);
         params.limit = Some(100);
 
-        let list = stripe::PaymentMethod::list(&self.client, &params)
-            .await
-            .map_err(|e| AppError::External(format!("Stripe PM list: {}", e)))?;
+        let list = timed(stripe::PaymentMethod::list(&self.client, &params)).await?;
 
         let mut out = Vec::new();
         for pm in list.data {
@@ -1078,7 +1190,16 @@ impl StripeClient {
     /// method normalizes whichever shape we have to a PaymentIntent.
     /// Full refund only — partial refunds aren't exposed in the
     /// admin UI (would complicate dues / campaign accounting).
-    pub async fn refund_payment(&self, stored_stripe_id: &str) -> Result<String> {
+    ///
+    /// `idempotency_key` must be stable per logical refund attempt
+    /// (callers pass the Coterie payment_id). Without it, a double-
+    /// click on the admin Refund button or a transient retry could
+    /// cause Stripe to issue two refunds.
+    pub async fn refund_payment(
+        &self,
+        stored_stripe_id: &str,
+        idempotency_key: &str,
+    ) -> Result<String> {
         let payment_intent_id: stripe::PaymentIntentId = if stored_stripe_id.starts_with("pi_") {
             stored_stripe_id.parse().map_err(|_| {
                 AppError::BadRequest(format!("Invalid PaymentIntent ID: {}", stored_stripe_id))
@@ -1087,9 +1208,7 @@ impl StripeClient {
             let session_id: stripe::CheckoutSessionId = stored_stripe_id.parse().map_err(|_| {
                 AppError::BadRequest(format!("Invalid CheckoutSession ID: {}", stored_stripe_id))
             })?;
-            let session = stripe::CheckoutSession::retrieve(&self.client, &session_id, &[])
-                .await
-                .map_err(|e| AppError::External(format!("Stripe session retrieve: {}", e)))?;
+            let session = timed(stripe::CheckoutSession::retrieve(&self.client, &session_id, &[])).await?;
             let pi_expandable = session.payment_intent.ok_or_else(|| AppError::BadRequest(
                 "Checkout session has no PaymentIntent — not a charge that can be refunded".to_string()
             ))?;
@@ -1098,9 +1217,7 @@ impl StripeClient {
             let invoice_id: stripe::InvoiceId = stored_stripe_id.parse().map_err(|_| {
                 AppError::BadRequest(format!("Invalid Invoice ID: {}", stored_stripe_id))
             })?;
-            let invoice = stripe::Invoice::retrieve(&self.client, &invoice_id, &[])
-                .await
-                .map_err(|e| AppError::External(format!("Stripe invoice retrieve: {}", e)))?;
+            let invoice = timed(stripe::Invoice::retrieve(&self.client, &invoice_id, &[])).await?;
             let pi_expandable = invoice.payment_intent.ok_or_else(|| AppError::BadRequest(
                 "Invoice has no PaymentIntent — not a charge that can be refunded".to_string()
             ))?;
@@ -1116,9 +1233,14 @@ impl StripeClient {
         params.payment_intent = Some(payment_intent_id.clone());
         // No amount → full refund. Stripe ignores currency.
 
-        let refund = stripe::Refund::create(&self.client, params)
-            .await
-            .map_err(|e| AppError::External(format!("Stripe refund failed: {}", e)))?;
+        let idempotent_client = self.client.clone().with_strategy(
+            stripe::RequestStrategy::Idempotent(idempotency_key.to_string())
+        );
+        let refund = timed(stripe::Refund::create(&idempotent_client, params)).await
+            .map_err(|e| match e {
+                AppError::External(msg) => AppError::External(format!("Stripe refund failed: {}", msg)),
+                other => other,
+            })?;
 
         tracing::info!(
             "Refunded PaymentIntent {} → Refund {}",
@@ -1139,9 +1261,11 @@ impl StripeClient {
         let sub_id: stripe::SubscriptionId = subscription_id.parse().map_err(|_| {
             AppError::BadRequest(format!("Invalid subscription ID: {}", subscription_id))
         })?;
-        stripe::Subscription::delete(&self.client, &sub_id)
-            .await
-            .map_err(|e| AppError::External(format!("Stripe cancel failed: {}", e)))?;
+        timed(stripe::Subscription::delete(&self.client, &sub_id)).await
+            .map_err(|e| match e {
+                AppError::External(msg) => AppError::External(format!("Stripe cancel failed: {}", msg)),
+                other => other,
+            })?;
         tracing::info!("Cancelled Stripe subscription {}", subscription_id);
         Ok(())
     }
@@ -1155,13 +1279,7 @@ impl StripeClient {
             AppError::Internal("Invalid payment method ID".to_string())
         })?;
 
-        let pm = stripe::PaymentMethod::retrieve(
-            &self.client,
-            &pm_id,
-            &[]
-        )
-            .await
-            .map_err(|e| AppError::External(format!("Stripe error: {}", e)))?;
+        let pm = timed(stripe::PaymentMethod::retrieve(&self.client, &pm_id, &[])).await?;
 
         let card = pm.card
             .ok_or_else(|| AppError::External("PaymentMethod has no card details".to_string()))?;

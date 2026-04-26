@@ -759,15 +759,40 @@ impl BillingService {
                     .await?;
 
                 // Schedule next renewal. Failure here doesn't roll back
-                // the successful charge, but it does mean the member
-                // falls off the auto-renew cycle silently — log so an
-                // operator can re-queue them by hand.
+                // the successful charge, but the member would fall off
+                // the auto-renew cycle silently. Dispatch an AdminAlert
+                // so an operator notices and can re-queue them — the
+                // log alone isn't enough because nobody reads logs
+                // until a member complains months later.
                 if let Some(mt) = &membership_type {
                     if let Err(e) = self.schedule_renewal(sp.member_id, &mt.slug).await {
                         tracing::error!(
                             "Charged member {} (sp {}) but failed to schedule next renewal: {}",
                             sp.member_id, id, e
                         );
+                        let member_label = self.member_repo
+                            .find_by_id(sp.member_id).await
+                            .ok().flatten()
+                            .map(|m| format!("{} <{}>", m.full_name, m.email))
+                            .unwrap_or_else(|| sp.member_id.to_string());
+                        self.integration_manager
+                            .handle_event(IntegrationEvent::AdminAlert {
+                                subject: format!(
+                                    "Auto-renew schedule failed after charge — {}",
+                                    member_label,
+                                ),
+                                body: format!(
+                                    "Member: {}\n\
+                                     Charged scheduled payment {} successfully, \
+                                     but failed to queue the NEXT renewal: {}\n\
+                                     \n\
+                                     The member's dues are paid through the new \
+                                     period, but they're now off the auto-renew \
+                                     loop. Re-enroll them via /portal/admin/members/{}/.",
+                                    member_label, id, e, sp.member_id,
+                                ),
+                            })
+                            .await;
                     }
                 }
 

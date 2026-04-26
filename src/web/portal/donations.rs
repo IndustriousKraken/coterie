@@ -137,6 +137,12 @@ pub async fn donate_api(
     if request.amount_cents <= 0 {
         return Err(AppError::BadRequest("Amount must be positive".to_string()));
     }
+    if request.amount_cents > crate::domain::MAX_PAYMENT_CENTS {
+        return Err(AppError::BadRequest(format!(
+            "Amount exceeds the ${} cap on a single donation",
+            crate::domain::MAX_PAYMENT_CENTS / 100,
+        )));
+    }
 
     // Resolve the campaign up front. We need both the ID (for the FK
     // we'll write on the Payment row) and the name (for the human-

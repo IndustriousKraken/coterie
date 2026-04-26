@@ -2,6 +2,13 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Hard ceiling on a single payment / donation / refund, in cents.
+/// Picked to be well above any legitimate Coterie transaction
+/// ($100k) but low enough that an unintended extra zero or a
+/// scripted abuse attempt fails fast at the boundary instead of
+/// hitting Stripe with a bogus amount.
+pub const MAX_PAYMENT_CENTS: i64 = 10_000_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Payment {
     pub id: Uuid,

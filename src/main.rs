@@ -169,6 +169,7 @@ async fn main() -> anyhow::Result<()> {
         let auth_service = service_context.auth_service.clone();
         let audit_service = service_context.audit_service.clone();
         let settings_service = service_context.settings_service.clone();
+        let cleanup_pool = db_pool.clone();
         tokio::spawn(async move {
             let cleanup_interval = tokio::time::Duration::from_secs(60 * 60); // 1 hour
             loop {
@@ -197,6 +198,30 @@ async fn main() -> anyhow::Result<()> {
                     }
                     Err(e) => {
                         tracing::warn!("Failed to prune audit log: {:?}", e);
+                    }
+                    _ => {}
+                }
+
+                // Stripe webhook idempotency table. Stripe retries for
+                // ~3 days max; anything older than 30 days has zero
+                // chance of a legitimate replay. Without this prune
+                // the table grows unbounded over the lifetime of the
+                // deployment.
+                match sqlx::query(
+                    "DELETE FROM processed_stripe_events \
+                     WHERE processed_at < datetime('now', '-30 days')",
+                )
+                .execute(&cleanup_pool)
+                .await
+                {
+                    Ok(res) if res.rows_affected() > 0 => {
+                        tracing::info!(
+                            "Pruned {} processed_stripe_events older than 30 days",
+                            res.rows_affected(),
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to prune processed_stripe_events: {:?}", e);
                     }
                     _ => {}
                 }
@@ -239,6 +264,7 @@ async fn main() -> anyhow::Result<()> {
                 webhook_secret,
                 payment_repo,
                 service_context.membership_type_service.clone(),
+                service_context.integration_manager.clone(),
                 db_pool.clone(),
             )))
         } else {

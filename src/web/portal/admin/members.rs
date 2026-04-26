@@ -743,7 +743,7 @@ pub async fn admin_refund_payment(
                     "Stripe isn't configured. Can't issue an API refund.",
                 ),
             };
-            match stripe_client.refund_payment(stripe_id).await {
+            match stripe_client.refund_payment(stripe_id, &payment.id.to_string()).await {
                 Ok(refund_id) => Some(refund_id),
                 Err(e) => return refund_result_html(
                     false,
@@ -974,6 +974,16 @@ pub async fn admin_record_payment_submit(
             "Amount must be a positive dollar amount.",
         ).await,
     };
+    if amount_cents > crate::domain::MAX_PAYMENT_CENTS {
+        return rerender_with_error(
+            state, current_user, session_info, member_id,
+            &format!(
+                "Amount exceeds the ${} cap on a single payment — \
+                 split it into multiple records if intentional.",
+                crate::domain::MAX_PAYMENT_CENTS / 100,
+            ),
+        ).await;
+    }
 
     let payment_type = match crate::domain::PaymentType::from_str(&form.payment_type) {
         Some(t) => t,
@@ -994,11 +1004,25 @@ pub async fn admin_record_payment_submit(
                 "Donation requires a campaign selection.",
             ).await;
         }
-        match uuid::Uuid::parse_str(cid_str) {
-            Ok(cid) => Some(cid),
+        let cid = match uuid::Uuid::parse_str(cid_str) {
+            Ok(cid) => cid,
             Err(_) => return rerender_with_error(
                 state, current_user, session_info, member_id,
                 "Invalid campaign id.",
+            ).await,
+        };
+        // Verify the campaign actually exists. The dropdown only
+        // offers valid campaigns, but a stale/forged form submission
+        // could otherwise create an orphan donation row.
+        match state.service_context.donation_campaign_repo.find_by_id(cid).await {
+            Ok(Some(_)) => Some(cid),
+            Ok(None) => return rerender_with_error(
+                state, current_user, session_info, member_id,
+                "Selected campaign no longer exists.",
+            ).await,
+            Err(e) => return rerender_with_error(
+                state, current_user, session_info, member_id,
+                &format!("Campaign lookup failed: {}", e),
             ).await,
         }
     } else {

@@ -13,7 +13,10 @@ use crate::{
 struct PaymentRow {
     id: String,
     member_id: String,
-    amount_cents: i32,
+    /// SQLite INTEGER is up to 8 bytes; using i64 here matches both
+    /// the schema's actual storage and the domain's `Payment.amount_cents`.
+    /// The previous i32 silently truncated values >$21.5M cents.
+    amount_cents: i64,
     currency: String,
     status: String,
     payment_method: String,
@@ -47,7 +50,7 @@ impl SqlitePaymentRepository {
         Ok(Payment {
             id: Uuid::parse_str(&row.id).map_err(|e| AppError::Database(e.to_string()))?,
             member_id: Uuid::parse_str(&row.member_id).map_err(|e| AppError::Database(e.to_string()))?,
-            amount_cents: row.amount_cents as i64,
+            amount_cents: row.amount_cents,
             currency: row.currency,
             status: Self::parse_payment_status(&row.status)?,
             payment_method: Self::parse_payment_method(&row.payment_method)?,
@@ -103,7 +106,7 @@ impl PaymentRepository for SqlitePaymentRepository {
     async fn create(&self, payment: Payment) -> Result<Payment> {
         let id_str = payment.id.to_string();
         let member_id_str = payment.member_id.to_string();
-        let amount_cents_int = payment.amount_cents as i32;
+        let amount_cents_int = payment.amount_cents;
         let status_str = Self::payment_status_to_str(&payment.status);
         let method_str = Self::payment_method_to_str(&payment.payment_method);
         let paid_at_naive = payment.paid_at.map(|dt| dt.naive_utc());
@@ -235,7 +238,7 @@ impl PaymentRepository for SqlitePaymentRepository {
             "#
         )
         .bind(payment.member_id.to_string())
-        .bind(payment.amount_cents as i32)
+        .bind(payment.amount_cents)
         .bind(&payment.currency)
         .bind(status_str)
         .bind(method_str)
