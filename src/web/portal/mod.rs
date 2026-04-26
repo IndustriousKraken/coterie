@@ -80,6 +80,9 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/settings/discord", post(admin::discord::update_discord_settings))
         .route("/settings/discord/test", post(admin::discord::test_discord_connection))
         .route("/settings/discord/reconcile", post(admin::discord::reconcile_roles))
+        // Billing settings (Stripe-sub → Coterie-managed bulk migration)
+        .route("/settings/billing", get(admin::billing::billing_settings_page))
+        .route("/settings/billing/migrate-stripe-subs", post(admin::billing::bulk_migrate_stripe_subs))
         // Audit log viewer + CSV export
         .route("/audit", get(admin::audit::audit_log_page))
         .route("/audit/export", get(admin::audit::audit_log_export))

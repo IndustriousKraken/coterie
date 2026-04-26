@@ -412,6 +412,38 @@ pub async fn save_card(
         state.service_context.saved_card_repo.set_default(user.member.id, card.id).await?;
     }
 
+    // If the member is on a Stripe-managed subscription, this card
+    // save is the trigger to migrate them to Coterie-managed
+    // auto-renew. Best-effort: log on failure but don't bounce the
+    // save itself — the card IS in Coterie's table either way, and
+    // an admin can finish the migration manually if needed.
+    if user.member.billing_mode == crate::domain::BillingMode::StripeSubscription {
+        let billing_service = state.service_context.billing_service(
+            state.stripe_client.clone(),
+            state.settings.server.base_url.clone(),
+        );
+        match billing_service.migrate_to_coterie_managed(user.member.id).await {
+            Ok(true) => {
+                state.service_context.audit_service.log(
+                    Some(user.member.id),
+                    "migrate_stripe_to_coterie",
+                    "member",
+                    &user.member.id.to_string(),
+                    None,
+                    Some("triggered by save_card"),
+                    None,
+                ).await;
+            }
+            Ok(false) => {} // Wasn't actually on stripe_sub by the time we ran; harmless.
+            Err(e) => {
+                tracing::error!(
+                    "Card saved for member {} but stripe→coterie migration failed: {}",
+                    user.member.id, e,
+                );
+            }
+        }
+    }
+
     Ok((StatusCode::CREATED, Json(card.into())))
 }
 

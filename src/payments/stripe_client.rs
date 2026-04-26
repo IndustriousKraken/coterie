@@ -536,16 +536,25 @@ impl StripeClient {
         Ok(())
     }
 
-    /// Handle customer.subscription.deleted - transition member to manual billing
+    /// Handle customer.subscription.deleted.
+    ///
+    /// Idempotent against migrations: when WE cancel the subscription
+    /// as part of moving a member to Coterie-managed auto-renew, the
+    /// member's billing_mode is already 'coterie_managed' by the time
+    /// this webhook arrives. Don't clobber it back to 'manual'. Only
+    /// flip when the member is still on 'stripe_subscription' (the
+    /// normal case: customer cancelled in Stripe's dashboard).
     async fn handle_subscription_deleted(&self, subscription: stripe::Subscription) -> Result<()> {
         let customer_id = subscription.customer.id().to_string();
 
-        // Find and update member
         let result = sqlx::query(
             r#"
             UPDATE members
             SET stripe_subscription_id = NULL,
-                billing_mode = 'manual',
+                billing_mode = CASE
+                    WHEN billing_mode = 'stripe_subscription' THEN 'manual'
+                    ELSE billing_mode
+                END,
                 updated_at = CURRENT_TIMESTAMP
             WHERE stripe_customer_id = ?
             "#
@@ -557,7 +566,7 @@ impl StripeClient {
 
         if result.rows_affected() > 0 {
             tracing::info!(
-                "Subscription deleted for customer {}. Member transitioned to manual billing.",
+                "Subscription deleted for customer {} — local state reconciled.",
                 customer_id
             );
         } else {
@@ -744,6 +753,93 @@ impl StripeClient {
         }
     }
 
+    /// Pull every card-type PaymentMethod attached to this Stripe
+    /// customer, marking which one is their `invoice_settings.
+    /// default_payment_method`. Used by the Stripe-subscription →
+    /// Coterie-managed migration so we can hydrate Coterie's
+    /// SavedCard table without making the member re-enter card info.
+    ///
+    /// Returns an empty list if the customer has no cards on file.
+    /// Bails on Stripe API errors — caller should treat that as
+    /// "don't migrate this member yet."
+    pub async fn list_customer_cards(
+        &self,
+        customer_id: &str,
+    ) -> Result<Vec<CustomerCardSummary>> {
+        let cid: stripe::CustomerId = customer_id.parse().map_err(|_| {
+            AppError::BadRequest(format!("Invalid customer ID: {}", customer_id))
+        })?;
+
+        // Default PM lives on Customer.invoice_settings.default_payment_method.
+        // We retrieve once so we can flag which list entry is the default.
+        let customer = stripe::Customer::retrieve(&self.client, &cid, &[])
+            .await
+            .map_err(|e| AppError::External(format!("Stripe customer lookup: {}", e)))?;
+
+        let default_pm_id: Option<String> = customer.invoice_settings
+            .as_ref()
+            .and_then(|s| s.default_payment_method.as_ref())
+            .map(|exp| exp.id().to_string());
+
+        // Single page is fine — typical members have 1–2 cards. Stripe's
+        // page size cap is 100 which is plenty.
+        let mut params = stripe::ListPaymentMethods::new();
+        params.customer = Some(cid);
+        params.type_ = Some(stripe::PaymentMethodTypeFilter::Card);
+        params.limit = Some(100);
+
+        let list = stripe::PaymentMethod::list(&self.client, &params)
+            .await
+            .map_err(|e| AppError::External(format!("Stripe PM list: {}", e)))?;
+
+        let mut out = Vec::new();
+        for pm in list.data {
+            let pm_id = pm.id.to_string();
+            let card = match pm.card {
+                Some(c) => c,
+                None => continue, // Defensive — type filter should prevent this
+            };
+            out.push(CustomerCardSummary {
+                is_default: default_pm_id.as_deref() == Some(pm_id.as_str()),
+                payment_method_id: pm_id,
+                last_four: card.last4,
+                brand: card.brand.to_lowercase(),
+                exp_month: card.exp_month as i32,
+                exp_year: card.exp_year as i32,
+            });
+        }
+
+        // Defensive: if Stripe didn't tell us which is default and we
+        // got exactly one, treat it as default. (Stripe sometimes
+        // leaves invoice_settings.default_payment_method null for
+        // older customers — the subscription was using "the only card
+        // on file" implicitly.)
+        if !out.iter().any(|c| c.is_default) && out.len() == 1 {
+            out[0].is_default = true;
+        }
+
+        Ok(out)
+    }
+
+    /// Immediately cancel a Stripe subscription. Used during the
+    /// migration from Stripe-managed to Coterie-managed auto-renew —
+    /// once we own the schedule, Stripe shouldn't keep charging.
+    ///
+    /// Stripe will fire `customer.subscription.deleted` to our
+    /// webhook in response. The webhook handler is intentionally
+    /// idempotent against members already in `coterie_managed`
+    /// (won't clobber their billing_mode back to manual).
+    pub async fn cancel_subscription(&self, subscription_id: &str) -> Result<()> {
+        let sub_id: stripe::SubscriptionId = subscription_id.parse().map_err(|_| {
+            AppError::BadRequest(format!("Invalid subscription ID: {}", subscription_id))
+        })?;
+        stripe::Subscription::delete(&self.client, &sub_id)
+            .await
+            .map_err(|e| AppError::External(format!("Stripe cancel failed: {}", e)))?;
+        tracing::info!("Cancelled Stripe subscription {}", subscription_id);
+        Ok(())
+    }
+
     /// Retrieve card details from a Stripe PaymentMethod
     pub async fn get_payment_method_details(
         &self,
@@ -779,4 +875,16 @@ pub struct CardDetails {
     pub brand: String,
     pub exp_month: i32,
     pub exp_year: i32,
+}
+
+/// One card-type PaymentMethod attached to a Stripe customer, plus a
+/// flag for whether it's the customer's invoice-default. Returned by
+/// `list_customer_cards` for use during stripe-subscription migration.
+pub struct CustomerCardSummary {
+    pub payment_method_id: String,
+    pub last_four: String,
+    pub brand: String,
+    pub exp_month: i32,
+    pub exp_year: i32,
+    pub is_default: bool,
 }

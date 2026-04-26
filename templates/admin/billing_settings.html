@@ -1,0 +1,100 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Billing settings - Coterie{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="max-w-3xl mx-auto">
+        <div class="mb-6">
+            <h1 class="text-3xl font-bold text-gray-900">Billing settings</h1>
+            <p class="mt-2 text-sm text-gray-600">
+                Operational tools for moving members between billing modes.
+                Auto-renew settings (reminder cadence, retry counts) live on
+                the general settings page.
+            </p>
+        </div>
+
+        {% if let Some(msg) = flash_success %}
+        <div class="mb-4 p-3 bg-green-50 border border-green-200 rounded-md text-sm text-green-900">{{ msg }}</div>
+        {% endif %}
+        {% if let Some(msg) = flash_error %}
+        <div class="mb-4 p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-900">{{ msg }}</div>
+        {% endif %}
+
+        <!-- Stripe-subscription migration -->
+        <div class="bg-white rounded-lg shadow-sm border mb-6">
+            <div class="px-6 py-4 border-b">
+                <h2 class="text-lg font-semibold text-gray-900">Stripe-managed subscriptions</h2>
+                <p class="text-sm text-gray-500 mt-1">
+                    Members on a legacy Stripe-managed subscription (set up
+                    before Coterie owned billing) can be migrated to
+                    Coterie-managed auto-renew. Coterie pulls their existing
+                    cards from Stripe so they don't have to re-enter anything,
+                    cancels the Stripe subscription, and takes over the
+                    schedule against their current paid-through date.
+                </p>
+            </div>
+            <div class="p-6">
+                {% if !stripe_enabled %}
+                <p class="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded p-3">
+                    Stripe isn't configured for this deployment. Configure Stripe credentials before running migration.
+                </p>
+                {% else if stripe_subscription_count == 0 %}
+                <p class="text-sm text-gray-700">
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">All migrated</span>
+                    No members are currently on Stripe-managed subscriptions. Members signing up now go straight to Coterie-managed.
+                </p>
+                {% else %}
+                <p class="text-sm text-gray-700 mb-4">
+                    <strong>{{ stripe_subscription_count }}</strong>
+                    member{% if stripe_subscription_count == 1 %} is{% else %}s are{% endif %}
+                    currently on a Stripe-managed subscription.
+                </p>
+                <form method="POST" action="/portal/admin/settings/billing/migrate-stripe-subs"
+                      onsubmit="return confirm('Migrate {{ stripe_subscription_count }} member(s) from Stripe-managed to Coterie-managed auto-renew? Stripe subscriptions will be cancelled and Coterie will own the schedule going forward.');">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit"
+                            class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+                        Migrate all to Coterie-managed
+                    </button>
+                </form>
+                <p class="mt-2 text-xs text-gray-500">
+                    Per-member failures don't stop the run — partial completion is normal if a Stripe customer no longer exists or has no cards on file.
+                </p>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="text-sm">
+            <a href="/portal/admin/settings" class="text-gray-600 hover:text-gray-900">← All settings</a>
+        </div>
+
+        {% if last_succeeded.is_some() || last_skipped.is_some() %}
+        <!-- Last run result -->
+        <div class="bg-white rounded-lg shadow-sm border mb-6">
+            <div class="px-6 py-4 border-b">
+                <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">Last run</h2>
+            </div>
+            <div class="p-6 space-y-2 text-sm">
+                {% if let Some(n) = last_succeeded %}
+                <p>Succeeded: <span class="font-mono text-green-700">{{ n }}</span></p>
+                {% endif %}
+                {% if let Some(n) = last_skipped %}
+                <p>Skipped (already migrated): <span class="font-mono text-gray-700">{{ n }}</span></p>
+                {% endif %}
+                {% if !last_failed.is_empty() %}
+                <div class="mt-3">
+                    <p class="font-semibold text-red-800">Failed ({{ last_failed.len() }}):</p>
+                    <ul class="mt-1 space-y-1 text-xs font-mono text-red-900 bg-red-50 rounded p-3">
+                        {% for (id, err) in last_failed %}
+                        <li>{{ id }}: {{ err }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

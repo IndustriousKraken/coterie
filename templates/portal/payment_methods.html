@@ -38,7 +38,9 @@
             <div>
                 <h2 class="text-lg font-semibold text-gray-900">Auto-renew</h2>
                 <p class="text-sm text-gray-500 mt-1">
-                    {% if is_auto_renew %}
+                    {% if is_stripe_subscription %}
+                    You're on a legacy Stripe-managed subscription. Switch to Coterie-managed auto-renew so dues, reminders, and card updates all live in one place.
+                    {% else if is_auto_renew %}
                     We'll charge your default card automatically when your dues come up.
                     {% else %}
                     Renew manually each cycle. Turn this on to have us charge your default card automatically when dues come up.
@@ -46,12 +48,28 @@
                 </p>
             </div>
             <span id="auto-renew-status"
-                  class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if is_auto_renew %}bg-green-100 text-green-800{% else %}bg-gray-100 text-gray-700{% endif %}">
-                {% if is_auto_renew %}On{% else %}Off{% endif %}
+                  class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+                         {% if is_stripe_subscription %}bg-amber-100 text-amber-800
+                         {% else if is_auto_renew %}bg-green-100 text-green-800
+                         {% else %}bg-gray-100 text-gray-700{% endif %}">
+                {% if is_stripe_subscription %}Stripe{% else if is_auto_renew %}On{% else %}Off{% endif %}
             </span>
         </div>
         <div class="p-6">
-            {% if is_auto_renew %}
+            {% if is_stripe_subscription %}
+            <button id="auto-renew-toggle" type="button"
+                    data-enable="true"
+                    hx-confirm="Switch from Stripe-managed billing to Coterie-managed auto-renew? Your existing card will keep working — Coterie will take over the renewal schedule."
+                    class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+                Switch to Coterie auto-renew
+            </button>
+            <button id="auto-renew-cancel" type="button"
+                    data-enable="false"
+                    hx-confirm="Cancel your Stripe subscription entirely? You'll keep access through your current paid-through date and renew manually after that."
+                    class="ml-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 text-sm font-medium">
+                Cancel subscription
+            </button>
+            {% else if is_auto_renew %}
             <button id="auto-renew-toggle" type="button"
                     data-enable="false"
                     class="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 text-sm font-medium">
@@ -199,16 +217,19 @@
     // Auto-renew toggle. We do a full page reload on success rather
     // than swap chunks of UI — the status badge, button label, and
     // descriptive text all flip together, and the page is cheap.
-    const autoRenewBtn = document.getElementById('auto-renew-toggle');
+    // The same handler binds to both the "switch to Coterie" and
+    // "cancel subscription" buttons on stripe-sub state; data-enable
+    // distinguishes them.
     const autoRenewError = document.getElementById('auto-renew-error');
-    if (autoRenewBtn) {
-        autoRenewBtn.addEventListener('click', async function() {
+    function bindAutoRenewBtn(btn) {
+        if (!btn) return;
+        btn.addEventListener('click', async function() {
             autoRenewError.classList.add('hidden');
             autoRenewError.textContent = '';
-            const enable = autoRenewBtn.dataset.enable === 'true';
-            const originalLabel = autoRenewBtn.textContent;
-            autoRenewBtn.disabled = true;
-            autoRenewBtn.textContent = enable ? 'Turning on…' : 'Turning off…';
+            const enable = btn.dataset.enable === 'true';
+            const originalLabel = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = enable ? 'Switching…' : 'Cancelling…';
             try {
                 const resp = await fetch('/portal/api/payments/auto-renew', {
                     method: 'POST',
@@ -226,11 +247,13 @@
             } catch (err) {
                 autoRenewError.textContent = err.message;
                 autoRenewError.classList.remove('hidden');
-                autoRenewBtn.disabled = false;
-                autoRenewBtn.textContent = originalLabel;
+                btn.disabled = false;
+                btn.textContent = originalLabel;
             }
         });
     }
+    bindAutoRenewBtn(document.getElementById('auto-renew-toggle'));
+    bindAutoRenewBtn(document.getElementById('auto-renew-cancel'));
 })();
 </script>
 {% endif %}

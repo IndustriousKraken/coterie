@@ -85,6 +85,11 @@ pub struct PaymentMethodsTemplate {
     /// a "Turn off" button, unenrolled members see a "Turn on" button
     /// (only when they have a default card).
     pub is_auto_renew: bool,
+    /// True when the member is on a legacy Stripe-managed subscription
+    /// (grandfathered from before Coterie owned billing). They're on
+    /// auto-renew, but it's Stripe controlling the cycle. UI surfaces
+    /// a "Switch to Coterie auto-renew" call to action.
+    pub is_stripe_subscription: bool,
     /// Whether the member has at least one default saved card. Used
     /// to disable the "Turn on auto-renew" button when they don't —
     /// a scheduled charge against no card would just fail.
@@ -531,6 +536,8 @@ pub async fn payment_methods_page(
 
     let is_auto_renew = current_user.member.billing_mode
         == crate::domain::BillingMode::CoterieManaged;
+    let is_stripe_subscription = current_user.member.billing_mode
+        == crate::domain::BillingMode::StripeSubscription;
 
     let has_default_card = state.service_context.saved_card_repo
         .find_default_for_member(current_user.member.id)
@@ -546,6 +553,7 @@ pub async fn payment_methods_page(
         stripe_publishable_key,
         csrf_token,
         is_auto_renew,
+        is_stripe_subscription,
         has_default_card,
     };
 
@@ -589,15 +597,21 @@ pub async fn update_auto_renew_api(
                 "Member's membership type was deleted; contact an admin.".to_string()
             ))?;
 
-        // Block enabling without a default card — the next scheduled
-        // charge would just immediately fail with "no default payment
-        // method" and we'd email them a confusing reminder.
-        let default_card = state.service_context.saved_card_repo
-            .find_default_for_member(current_user.member.id).await?;
-        if default_card.is_none() {
-            return Err(AppError::BadRequest(
-                "Save a default card before enabling auto-renew.".to_string()
-            ));
+        // Block enabling without a default card UNLESS the member
+        // is on a Stripe-managed subscription — in that case the
+        // migration will import their cards from Stripe before the
+        // first scheduled charge runs, so requiring a Coterie-side
+        // card up front would create a chicken-and-egg problem.
+        let on_stripe_sub = current_user.member.billing_mode
+            == crate::domain::BillingMode::StripeSubscription;
+        if !on_stripe_sub {
+            let default_card = state.service_context.saved_card_repo
+                .find_default_for_member(current_user.member.id).await?;
+            if default_card.is_none() {
+                return Err(AppError::BadRequest(
+                    "Save a default card before enabling auto-renew.".to_string()
+                ));
+            }
         }
 
         billing_service
