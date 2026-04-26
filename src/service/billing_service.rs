@@ -128,6 +128,103 @@ impl BillingService {
         self.scheduled_payment_repo.create(scheduled).await
     }
 
+    /// A Stripe-managed subscription charge failed. Emails the member
+    /// directly so they can update their card, and dispatches an
+    /// AdminAlert so operators get a heads-up via Discord/email.
+    ///
+    /// `is_final` should be true when Stripe has exhausted retries —
+    /// we soften the email copy in that case ("this was the last
+    /// attempt"). Doesn't touch dues_paid_until or member status:
+    /// the natural expiration job will handle them once the paid-
+    /// through date lapses.
+    pub async fn notify_subscription_payment_failed(
+        &self,
+        member_id: Uuid,
+        amount_display: Option<String>,
+        is_final: bool,
+    ) -> Result<()> {
+        use crate::email::{self, templates::{CardDeclinedHtml, CardDeclinedText}};
+
+        let member = self.member_repo.find_by_id(member_id).await?
+            .ok_or_else(|| AppError::NotFound("Member not found".to_string()))?;
+
+        let org_name = self.settings_service
+            .get_value("org.name").await
+            .ok().filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Coterie".to_string());
+
+        let base = self.base_url.trim_end_matches('/');
+        let portal_url = format!("{}/portal/payments/methods", base);
+
+        let dues_until = member.dues_paid_until
+            .map(|d| d.format("%B %d, %Y").to_string())
+            .unwrap_or_else(|| "(unknown)".to_string());
+
+        let html = CardDeclinedHtml {
+            full_name: &member.full_name,
+            org_name: &org_name,
+            amount: amount_display.as_deref(),
+            portal_url: &portal_url,
+            dues_until: &dues_until,
+            is_final,
+        };
+        let text = CardDeclinedText {
+            full_name: &member.full_name,
+            org_name: &org_name,
+            amount: amount_display.as_deref(),
+            portal_url: &portal_url,
+            dues_until: &dues_until,
+            is_final,
+        };
+
+        let subject = if is_final {
+            format!("Final notice: card declined for {} membership", org_name)
+        } else {
+            format!("Card declined for {} membership", org_name)
+        };
+
+        let message = email::message_from_templates(
+            member.email.clone(), subject, &html, &text,
+        )?;
+
+        if let Err(e) = self.email_sender.send(&message).await {
+            tracing::error!(
+                "Couldn't email card-declined notice to member {}: {}",
+                member_id, e,
+            );
+        }
+
+        // AdminAlert: the body is plain-text since it's piped into
+        // both Discord (markdown-ish) and email.
+        let alert_subject = if is_final {
+            format!("Stripe subscription charge failed (final) — {}", member.full_name)
+        } else {
+            format!("Stripe subscription charge failed — {}", member.full_name)
+        };
+        let alert_body = format!(
+            "Member: {} <{}>\n\
+             Amount: {}\n\
+             Status: {}\n\
+             Member has been emailed at their address on file.",
+            member.full_name,
+            member.email,
+            amount_display.as_deref().unwrap_or("(unknown)"),
+            if is_final {
+                "Stripe exhausted retries — member must manually re-pay or the membership will lapse"
+            } else {
+                "Stripe will retry automatically; member can update card to fix"
+            },
+        );
+        self.integration_manager
+            .handle_event(IntegrationEvent::AdminAlert {
+                subject: alert_subject,
+                body: alert_body,
+            })
+            .await;
+
+        Ok(())
+    }
+
     /// Whether the member is currently enrolled in Coterie-managed
     /// auto-renewal. We treat StripeSubscription as a separate path
     /// (charges happen on Stripe's side, no ScheduledPayment row), so

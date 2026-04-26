@@ -1,0 +1,20 @@
+Hi {{ full_name }},
+
+We tried to charge your card on file for your {{ org_name }} membership
+renewal, but the charge was declined.
+{% if let Some(amt) = amount %}
+Amount: {{ amt }}
+{% endif %}
+{% if is_final %}This was the last automatic retry. Your membership will lapse at the
+end of the current period unless you update your card and renew
+manually.
+{% else %}We'll try again automatically over the next several days. To avoid
+losing access, please update your card now — we'll use the new one on
+the next attempt.
+{% endif %}
+Update your payment method:
+{{ portal_url }}
+
+Your access remains active through {{ dues_until }}.
+
+— {{ org_name }}

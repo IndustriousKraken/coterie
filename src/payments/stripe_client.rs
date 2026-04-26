@@ -174,7 +174,7 @@ impl StripeClient {
             }
             EventType::InvoicePaymentFailed => {
                 if let EventObject::Invoice(invoice) = event.data.object {
-                    self.handle_invoice_payment_failed(invoice).await?;
+                    self.handle_invoice_payment_failed(invoice, billing_service).await?;
                 }
             }
             EventType::CustomerSubscriptionDeleted => {
@@ -447,22 +447,91 @@ impl StripeClient {
         Ok(())
     }
 
-    /// Handle invoice.payment_failed - log warning (Stripe handles subscription retries)
-    async fn handle_invoice_payment_failed(&self, invoice: stripe::Invoice) -> Result<()> {
-        let customer_id = invoice.customer
-            .as_ref()
-            .map(|c| c.id().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-
+    /// Handle invoice.payment_failed for Stripe-managed subscriptions.
+    ///
+    /// Stripe retries on its side over several days; we'd spam the
+    /// member if we emailed on every attempt. So we only notify on:
+    ///   - the first failure (attempt_count == 1) — "your card was
+    ///     declined, please update; we'll retry automatically"
+    ///   - the final failure (next_payment_attempt is None) — "this
+    ///     was the last try; update + manually re-pay or your
+    ///     membership will lapse"
+    ///
+    /// Doesn't touch member status or dues_paid_until — the existing
+    /// expiration job catches them naturally once Stripe gives up
+    /// and the paid-through date passes.
+    async fn handle_invoice_payment_failed(
+        &self,
+        invoice: stripe::Invoice,
+        billing_service: &BillingService,
+    ) -> Result<()> {
+        let customer_id = match &invoice.customer {
+            Some(c) => c.id().to_string(),
+            None => {
+                tracing::warn!("invoice.payment_failed without a customer; skipping");
+                return Ok(());
+            }
+        };
         let subscription_id = invoice.subscription
             .as_ref()
             .map(|s| s.id().to_string())
             .unwrap_or_else(|| "unknown".to_string());
 
+        // Find the member behind this Stripe customer.
+        let member_id_str: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM members WHERE stripe_customer_id = ?",
+        )
+        .bind(&customer_id)
+        .fetch_optional(&self.db_pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+
+        let member_id = match member_id_str.and_then(|s| Uuid::parse_str(&s).ok()) {
+            Some(id) => id,
+            None => {
+                tracing::warn!(
+                    "invoice.payment_failed for unknown Stripe customer {} (subscription: {})",
+                    customer_id, subscription_id,
+                );
+                return Ok(());
+            }
+        };
+
+        let attempt_count = invoice.attempt_count.unwrap_or(0);
+        let is_final = invoice.next_payment_attempt.is_none();
+        let is_first = attempt_count <= 1;
+
+        // Always log so operators have a paper trail of every retry.
         tracing::warn!(
-            "Subscription invoice payment failed for customer {} (subscription: {})",
-            customer_id, subscription_id
+            "Subscription charge failed for member {} (customer {}, subscription {}, attempt {}, final: {})",
+            member_id, customer_id, subscription_id, attempt_count, is_final,
         );
+
+        // Only notify on first + final to avoid spam during retries.
+        if !is_first && !is_final {
+            return Ok(());
+        }
+
+        // Format the amount for display. amount_due is the canonical
+        // figure for "what we tried to charge"; fall back to amount_remaining.
+        let amount_cents = invoice.amount_due
+            .or(invoice.amount_remaining)
+            .unwrap_or(0);
+        let amount_display = if amount_cents > 0 {
+            Some(format!("${:.2}", amount_cents as f64 / 100.0))
+        } else {
+            None
+        };
+
+        if let Err(e) = billing_service
+            .notify_subscription_payment_failed(member_id, amount_display, is_final)
+            .await
+        {
+            tracing::error!(
+                "Couldn't notify member {} of failed subscription charge: {}",
+                member_id, e,
+            );
+        }
 
         Ok(())
     }

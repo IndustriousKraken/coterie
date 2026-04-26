@@ -106,6 +106,34 @@ pub struct RenewalNoticeText<'a> {
 }
 
 #[derive(Template)]
+#[template(path = "emails/card_declined.html")]
+pub struct CardDeclinedHtml<'a> {
+    pub full_name: &'a str,
+    pub org_name: &'a str,
+    /// Formatted amount (e.g. "$50.00") if known. Sometimes Stripe
+    /// invoices arrive without an amount field on the failed-payment
+    /// event — render the message without it in that case.
+    pub amount: Option<&'a str>,
+    pub portal_url: &'a str,
+    /// Formatted "your access is good through {date}" string.
+    pub dues_until: &'a str,
+    /// True when this is Stripe's last retry; we soften "we'll try
+    /// again" to "this was the last attempt."
+    pub is_final: bool,
+}
+
+#[derive(Template)]
+#[template(path = "emails/card_declined.txt")]
+pub struct CardDeclinedText<'a> {
+    pub full_name: &'a str,
+    pub org_name: &'a str,
+    pub amount: Option<&'a str>,
+    pub portal_url: &'a str,
+    pub dues_until: &'a str,
+    pub is_final: bool,
+}
+
+#[derive(Template)]
 #[template(path = "emails/admin_alert.html")]
 pub struct AdminAlertHtml<'a> {
     pub org_name: &'a str,
