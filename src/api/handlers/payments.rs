@@ -5,13 +5,13 @@ use axum::{
     Extension,
     response::IntoResponse,
 };
-use chrono::{Months, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
     api::{state::AppState, middleware::auth::CurrentUser},
-    domain::{Payment, PaymentMethod, PaymentStatus, SavedCard, configurable_types::BillingPeriod},
+    domain::{Payment, PaymentMethod, PaymentStatus, SavedCard},
     error::{AppError, Result},
 };
 
@@ -207,57 +207,6 @@ pub async fn stripe_webhook(
     Ok(StatusCode::OK)
 }
 
-/// Extend a member's dues_paid_until based on a membership type's billing period.
-async fn extend_member_dues(
-    state: &AppState,
-    member_id: Uuid,
-    membership_type_slug: &str,
-) -> Result<()> {
-    let membership_type = state.service_context.membership_type_service
-        .get_by_slug(membership_type_slug)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!(
-            "Membership type '{}' not found", membership_type_slug
-        )))?;
-
-    let billing_period = membership_type.billing_period_enum()
-        .unwrap_or(BillingPeriod::Yearly);
-
-    let row = sqlx::query_scalar::<_, Option<chrono::DateTime<Utc>>>(
-        "SELECT dues_paid_until FROM members WHERE id = ?"
-    )
-        .bind(member_id.to_string())
-        .fetch_optional(&state.service_context.db_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
-
-    let current_dues = row.flatten();
-    let now = Utc::now();
-    let base_date = current_dues
-        .filter(|d| *d > now)
-        .unwrap_or(now);
-
-    let new_dues_date = match billing_period {
-        BillingPeriod::Monthly => base_date.checked_add_months(Months::new(1)).unwrap_or(base_date),
-        BillingPeriod::Yearly => base_date.checked_add_months(Months::new(12)).unwrap_or(base_date),
-        BillingPeriod::Lifetime => chrono::DateTime::<Utc>::MAX_UTC,
-    };
-
-    sqlx::query("UPDATE members SET dues_paid_until = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-        .bind(new_dues_date)
-        .bind(member_id.to_string())
-        .execute(&state.service_context.db_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to update dues: {}", e)))?;
-
-    tracing::info!(
-        "Extended dues for member {} to {} (billing period: {:?})",
-        member_id, new_dues_date, billing_period
-    );
-
-    Ok(())
-}
-
 pub async fn create_manual(
     State(state): State<AppState>,
     Extension(user): Extension<CurrentUser>,
@@ -281,9 +230,27 @@ pub async fn create_manual(
 
     let payment = state.service_context.payment_repo.create(payment).await?;
 
-    // Extend dues if membership_type_slug provided
+    // Extend dues + refresh any auto-renew schedule.
+    // BillingService::extend_member_dues_by_slug also restores
+    // Expired→Active and clears the reminder flag — important when
+    // an admin records a payment for a lapsed member.
+    // reschedule_after_payment is a no-op for non-enrolled members,
+    // so this is safe to call unconditionally.
     if let Some(slug) = &request.membership_type_slug {
-        extend_member_dues(&state, request.member_id, slug).await?;
+        let billing_service = state.service_context.billing_service(
+            state.stripe_client.clone(),
+            state.settings.server.base_url.clone(),
+        );
+        billing_service.extend_member_dues_by_slug(request.member_id, slug).await?;
+        if let Err(e) = billing_service
+            .reschedule_after_payment(request.member_id, slug)
+            .await
+        {
+            tracing::error!(
+                "Recorded manual payment for {} but reschedule failed: {}",
+                request.member_id, e,
+            );
+        }
     }
 
     state.service_context.audit_service.log(
@@ -322,9 +289,24 @@ pub async fn waive(
 
     let payment = state.service_context.payment_repo.create(payment).await?;
 
-    // Extend dues if membership_type_slug provided
+    // Extend dues + refresh any auto-renew schedule. Same rationale
+    // as create_manual above. Waiving counts as "this cycle is paid"
+    // — Expired members get restored, reminders reset.
     if let Some(slug) = &request.membership_type_slug {
-        extend_member_dues(&state, request.member_id, slug).await?;
+        let billing_service = state.service_context.billing_service(
+            state.stripe_client.clone(),
+            state.settings.server.base_url.clone(),
+        );
+        billing_service.extend_member_dues_by_slug(request.member_id, slug).await?;
+        if let Err(e) = billing_service
+            .reschedule_after_payment(request.member_id, slug)
+            .await
+        {
+            tracing::error!(
+                "Waived dues for {} but reschedule failed: {}",
+                request.member_id, e,
+            );
+        }
     }
 
     state.service_context.audit_service.log(

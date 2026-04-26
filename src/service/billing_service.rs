@@ -872,7 +872,25 @@ impl BillingService {
         }
     }
 
-    async fn extend_member_dues(&self, member_id: Uuid, membership_type_id: Uuid) -> Result<()> {
+    /// Slug-based variant of `extend_member_dues`. Convenient for
+    /// callers that already have the membership type slug (admin
+    /// manual-payment, waive, Stripe checkout success) and don't want
+    /// to do a separate slug→id round-trip first.
+    pub async fn extend_member_dues_by_slug(
+        &self,
+        member_id: Uuid,
+        membership_type_slug: &str,
+    ) -> Result<()> {
+        let mt = self.membership_type_service
+            .get_by_slug(membership_type_slug)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!(
+                "Membership type '{}' not found", membership_type_slug
+            )))?;
+        self.extend_member_dues(member_id, mt.id).await
+    }
+
+    pub async fn extend_member_dues(&self, member_id: Uuid, membership_type_id: Uuid) -> Result<()> {
         let membership_type = self
             .membership_type_service
             .get(membership_type_id)
