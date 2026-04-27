@@ -1,5 +1,22 @@
 # Stripe Billing Overhaul - Implementation Plan
 
+> **Status: Implemented.** This plan is preserved for design rationale.
+> The active code lives in `src/payments/stripe_client.rs`,
+> `src/service/billing_service.rs`, `src/jobs/billing_runner.rs`,
+> `src/repository/{payment,saved_card,scheduled_payment,donation}_repository.rs`,
+> `src/web/portal/{payments,donations}.rs`, and the migrations in
+> `migrations/` (notably 002 onward).
+>
+> **Items NOT built** (intentionally, or deferred — see TODO.md):
+> - **Public donation page** (Phase 4). Decided against hosting in
+>   Coterie; public donation forms live on the frontend site and POST
+>   to a forthcoming `POST /public/donate` API endpoint instead.
+> - **Recurring donations** (Phase 4, marked "optional" in the plan).
+> - **Standalone admin billing dashboard** (Phase 5). The current
+>   `admin/billing.rs` is a settings page; the dashboard with upcoming
+>   payments / recent failures / revenue metrics wasn't built.
+> - **Stripe Tax** (Open Question 5). Out of scope.
+
 ## Overview
 
 Replace redirect-based Stripe Checkout with embedded Stripe Elements. Add Coterie-managed recurring billing, support for legacy Stripe subscriptions during migration, and donation support.

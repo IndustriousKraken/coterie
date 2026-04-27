@@ -1,270 +1,98 @@
 # Coterie Development TODO
 
-## Phase 1: Core Implementation (Priority: High)
+Items still to do. Completed work lives in git history.
 
-### Database & Repository Layer
-- [x] Implement SQLite repository for Members
-  - [x] CRUD operations
-  - [x] Search and filtering (by email, username, id)
-  - [x] Password hashing integration (Argon2id)
-- [x] Implement SQLite repository for Events
-  - [x] CRUD operations with proper type conversions
-  - [x] Attendance registration/cancellation
-- [x] Implement SQLite repository for Announcements
-  - [x] CRUD operations with visibility control
-  - [x] List by recent, public, featured
-- [x] Implement SQLite repository for Payments
-  - [x] CRUD operations with status tracking
-  - [x] Find by member and Stripe ID
-- [x] Add database connection pooling and error handling
-- [x] Create database seeding script for development (`cargo run --bin seed`)
+## Authentication
 
-### Authentication & Authorization
-- [x] Implement session management
-  - [x] Session creation/validation
-  - [x] Secure cookie handling
-  - [x] Session expiry and cleanup
-- [x] Implement authentication middleware
-  - [x] Password verification
-  - [x] Session validation
-  - [x] Role-based access (member/admin)
-- [x] CSRF protection for state-changing requests
-- [ ] Add TOTP/2FA support
-- [ ] Implement password reset flow
+- [ ] TOTP/2FA support
 
-### API Handlers
-- [x] Implement member management handlers
-  - [x] Create, read, update, delete
-  - [x] Activation/expiration logic
-  - [ ] Profile management
-- [x] Implement event management handlers
-  - [x] CRUD operations
-  - [x] RSVP/attendance tracking
-  - [x] iCal feed generation
-- [x] Implement announcement handlers
-  - [x] CRUD with visibility controls
-  - [x] RSS feed generation
-- [x] Implement public API endpoints
-  - [x] Member signup
-  - [x] Public event listing
-  - [x] Public announcements
+## Member Portal
 
-### Testing
-- [ ] Unit tests for domain logic
-- [x] Integration tests for repositories (Member repository tested)
-- [ ] API endpoint tests
-- [x] Authentication/authorization tests (Basic auth tested)
+- [ ] **Download receipts** (member-facing). PDF or simple HTML print
+      view, generated per-payment. Must distinguish dues from donations
+      so members can hand the donation receipts to their accountant for
+      tax filing — group these separately on the receipt page or in
+      filenames (`dues-2026.pdf` vs `donation-2026-04-27.pdf`).
 
-## Phase 2: Payment Integration (Priority: High)
+## Public-Facing
 
-### Stripe Integration
-- [x] Implement Stripe client wrapper
-- [x] Create payment initiation flow
-- [x] Handle webhook callbacks
-- [x] Implement payment status synchronization
-- [ ] Add subscription management
-- [x] Create payment history views
+- [ ] **Public donation API endpoint** (`POST /public/donate`).
+      Coterie shouldn't host a public donation page — anyone not logged
+      in shouldn't be reaching the portal at all. The frontend site
+      (e.g. `~/Dropbox/code/neontemple.net`) hosts the donation form
+      and POSTs amount + email + optional campaign_slug to this
+      endpoint. Server flow: validate amount and campaign, look up
+      existing member by email or create a lightweight donor record,
+      create a Stripe Checkout session, return the URL. Webhook flow
+      then completes the same as the logged-in donate path.
 
-### Member Dues Management
-- [ ] Automated expiration checking (cron job)
-- [ ] Grace period handling
-- [ ] Payment reminder system
-- [x] Manual payment recording for cash/check
-
-## Phase 3: Frontend (Priority: Medium)
-
-### Admin Dashboard
-- [x] Create HTMX base template
-- [x] Member management interface
-  - [x] List/search members with filtering
-  - [x] Activate/suspend members
-  - [x] View member details page
-  - [x] Edit member details
-  - [x] Add new member
-  - [x] Manual dues expiration/extension
-- [x] Event management interface
-  - [x] List/search events with filtering (type, visibility, time)
-  - [x] Sortable columns
-  - [x] Create new event
-  - [x] Edit event details
-  - [x] Delete event
-  - [ ] Recurring events
-    - [ ] Recurrence patterns (daily, weekly, monthly, yearly)
-    - [ ] Custom patterns (e.g., "2nd Wednesday", "every other week")
-    - [ ] Repeat count (e.g., "for 10 occurrences") or end date
-    - [ ] Repeat forever option
-    - [ ] Edit single vs. all future occurrences
-    - [ ] Cancel single occurrence without deleting series
-  - [x] User-definable event types
-    - [x] Admin interface to create/edit event types
-    - [x] Custom colors/icons for event types
-    - [x] Replace hardcoded EventType enum with database table
-    - [x] Make all types deletable (removed is_system restriction)
-- [x] Announcement editor
-  - [x] List/search with filtering (type, status)
-  - [x] Create/edit/delete announcements
-  - [x] Publish/unpublish workflow
-  - [ ] Announcement distribution
-    - [ ] RSS feed for public announcements (frontend)
-    - [ ] Push to Discord channel on publish
-    - [ ] Scheduled delivery to chat (publish now vs. schedule for later)
-    - [ ] Support for other chat APIs (Slack, Matrix, etc.)
-- [ ] Payment history view
-- [ ] Audit log viewer
-
-### Member Portal
-- [x] Login/logout pages
-- [x] Member dashboard with status, events, payments
-- [x] Profile management (view/edit name, change password)
-- [x] Events listing page with filtering
-- [x] Payment history page with summary
-- [x] Event RSVP functionality
-- [ ] Download receipts
-
-### Public Pages
-- [x] Signup form (example sites)
-- [x] Event calendar view (example sites)
-- [x] Public announcements (example sites)
 - [ ] Member directory (opt-in)
 
-## Phase 4: Integrations (Priority: Medium)
+## Donations
 
-### Discord Integration
-- [ ] Implement Discord bot with serenity/twilight
-- [ ] Member role management
-- [ ] Expired member room handling
-- [ ] Sync member profiles
-- [ ] Command interface for checking member status
+- [ ] Recurring donations (monthly subscription, separate from dues
+      auto-renew). Plan-stripe-billing flagged this as optional —
+      promote if any org actually wants it.
 
-### Unifi Integration
-- [ ] Implement Unifi API client
-- [ ] Access card provisioning
-- [ ] VPN user management
-- [ ] Access revocation on expiry
-- [ ] Sync scheduling
+## Admin
 
-### Calendar Integration
-- [ ] Google Calendar sync
-- [ ] Office 365 calendar sync
-- [ ] CalDAV support
+- [ ] Billing dashboard: upcoming scheduled payments, recent failures,
+      revenue metrics. Plan-stripe-billing called for this; current
+      admin/billing.rs is just a settings page.
+- [ ] Recurring events (recurrence patterns, custom rules like
+      "2nd Wednesday", repeat count or end date, edit single vs.
+      future occurrences, cancel single occurrence)
+- [ ] Announcement distribution
+  - [ ] Push to Discord channel on publish
+  - [ ] Scheduled delivery (publish now vs. schedule for later)
+  - [ ] Support for other chat APIs (Slack, Matrix)
 
-## Phase 5: Extended Features (Priority: Low)
+## Integrations
 
-### Expense Tracking
-- [ ] Expense entry interface
-- [ ] Receipt upload and storage
-- [ ] Category management
-- [ ] Quarterly report generation
-- [ ] Public transparency dashboard
+- [ ] Discord command interface (status check, etc.) — low priority,
+      bot-style features beyond the existing webhook role-sync.
+- [ ] Unifi access provisioning (API client exists; provisioning,
+      revocation, sync scheduling not wired up)
+- [ ] Calendar sync (Google, O365, CalDAV). iCal feed already
+      exposes events read-only; this would be two-way.
 
-### Member Features
-- [ ] Skills directory
-- [ ] Blog aggregation from RSS feeds
-- [ ] Achievement badges
-- [ ] Equipment checkout system
-- [ ] Voting/polls system
+## Testing
 
-### Communication
-- [ ] Email notification system
-- [ ] Announcement digests
-- [ ] Event reminders
-- [ ] Welcome emails for new members
+- [ ] Unit tests for domain logic (light coverage today)
+- [ ] API endpoint tests
+- [ ] Frontend e2e tests (deferred — see project notes)
 
-### Advanced Admin Features
-- [ ] Bulk member import/export
-- [ ] Custom fields for members
-- [ ] Report builder
-- [ ] Backup and restore tools
-- [ ] Multi-tenant support (for other groups using the software)
+## Operations
 
-## Phase 6: Operations (Priority: Medium)
-
-### Deployment & Operations
 - [ ] Docker containerization
 - [ ] SystemD service files
 - [ ] Caddy configuration examples
 - [ ] Backup scripts
 - [ ] Monitoring and alerting setup
-- [ ] Rate limiting implementation
+- [ ] CI/CD pipeline (GitHub Actions)
+- [ ] Pre-commit hooks
 
-### Documentation
+## Documentation
+
 - [ ] API documentation (OpenAPI/Swagger)
 - [ ] Administrator guide
 - [ ] Installation guide
 - [ ] Contributing guidelines
 - [ ] Security policy
 
-### Performance & Security
-- [ ] Security audit
-- [ ] Performance profiling
-- [ ] Database query optimization
-- [ ] Caching strategy (Redis optional)
+## Extended Features (Lowest Priority)
+
+- [ ] Expense Tracking
+  - Expense entry, receipt upload, categories, quarterly reports,
+    public transparency dashboard
+- [ ] Member Features
+  - Skills directory, blog aggregation from RSS, achievement badges,
+    equipment checkout, voting/polls
+- [ ] Communication
+  - Welcome emails for new members, event reminders, announcement
+    digests (current emails are payment-related only)
+- [ ] Bulk member import/export
+- [ ] Custom fields for members
+- [ ] Report builder
+- [ ] Multi-tenant support
 - [ ] GDPR compliance tools
-
-## Development Environment
-
-### Tooling
-- [ ] Development container setup
-- [ ] Pre-commit hooks
-- [ ] CI/CD pipeline (GitHub Actions)
-- [ ] Database migration tooling
-
-### First-Run Setup & Seed Restructuring
-- [x] First-run setup flow
-  - [x] Middleware to detect fresh database (no admin users)
-  - [x] Redirect to /setup when no admin exists
-  - [x] Setup page: org name, admin email/username/password
-  - [x] Create admin user and redirect to login
-- [x] Restructure seed configs
-  - [x] Move config/seed.toml to config/examples/hacker-club.toml
-  - [x] Create config/examples/baduk-club.toml
-  - [x] Create config/examples/congregation.toml
-- [x] Update seed binary
-  - [x] Require --example flag (no default seed)
-  - [x] Load example config from config/examples/<name>.toml
-  - [x] Parse event_types and announcement_types from config
-
-### Seed Data Improvements
-- [x] Basic seed script with test accounts
-- [x] Realistic payment history (monthly dues over 1+ years per member)
-- [x] More calendar events (variety of types, past and upcoming)
-
-## Notes
-
-- **Current Status**: Core functionality complete. Admin portal fully functional with member, event, and announcement management. Configurable types (event, announcement, membership) fully implemented with admin UI. Member portal RSVP functionality complete.
-- **Next Step**: Public pages, announcement distribution, password reset flow
-- **Blocking Issues**: None currently
-- **Dependencies**: Need to evaluate specific Discord and Unifi API libraries
-- **Recently Completed**:
-  - ✅ Member portal RSVP functionality (register/cancel attendance, status display)
-  - ✅ Example public sites for baduk-club and congregation
-  - ✅ Seed config restructuring (config/examples/ with hacker-club, baduk-club, congregation)
-  - ✅ Seed binary now requires --example flag, parses all type configs
-  - ✅ First-run setup flow (middleware redirects to /setup, creates admin user)
-  - ✅ Configurable types system (event types, announcement types, membership types)
-  - ✅ Admin type management UI with create/edit/delete/reorder
-  - ✅ Removed is_system restriction - all types are now deletable
-  - ✅ Squashed migrations into single initial schema
-  - ✅ Generic default types in migrations (Member Meeting, Social, News, Awards, Member/Associate/Life Member)
-  - ✅ Admin announcement editor with full CRUD
-  - ✅ Announcement filtering by type and status (published/draft/featured/public)
-  - ✅ Publish/unpublish workflow for announcements
-  - ✅ Admin event management interface with full CRUD
-  - ✅ Event filtering by type, visibility, and time (upcoming/past/all)
-  - ✅ Sortable table columns for members and events
-  - ✅ Seed data scaled to 100 members with faker
-  - ✅ Admin member list with search/filter/pagination
-  - ✅ Admin member detail page with full editing
-  - ✅ Admin add new member page
-  - ✅ Manual dues management (extend, set date, expire)
-  - ✅ CSRF protection for all forms
-
-## Quick Start Tasks
-
-For getting a minimal viable product running:
-
-1. Implement member repository with SQLite
-2. Add basic authentication (no 2FA initially)
-3. Create simple HTMX admin interface for member management
-4. Add Stripe webhook handler for payment processing
-5. Deploy to a VPS with SQLite and Caddy

@@ -145,23 +145,30 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed integration examples.
 
 ## Core Features
 
-### Currently Planned
-- **Member Management**: Track active, expired, and pending members
-- **Payment Integration**: Stripe integration for dues (no card details stored)
-- **Public API**: For member signup and verification from static websites
-- **Admin Dashboard**: Manage members, view audit logs, configure settings
-- **Calendar System**: Manage events with public/member-only visibility
-- **Public Achievements**: Display meeting info, CTF results, member accomplishments
-- **RSS Feeds**: For public announcements and member blog aggregation
+### Built
+- **Member Management**: Active / Honorary / Expired / Suspended / Pending statuses; admin CRUD and bulk operations.
+- **Payment Integration**: Stripe Elements for one-time and saved-card payments. Coterie-managed auto-renew via scheduled charges; legacy Stripe-managed subscriptions still supported during migration. Donations with optional campaign attribution. Refund flow with idempotency.
+- **Public API**: Signup, public events (JSON + iCal), public announcements (JSON + RSS).
+- **Admin Dashboard**: Member management, event/announcement editors, manual payment + waive + refund + dues adjustment, audit log viewer, configurable type management (event types, announcement types, membership types), settings UI.
+- **Calendar System**: Events with public/member-only visibility, RSVP tracking, configurable event types.
+- **RSS / iCal Feeds**: Public announcements as RSS; events as iCal.
+- **Audit Logging**: Every admin action recorded with before/after; retention configurable.
+- **Email**: Dues reminders, payment-failure notifications, password reset, AdminAlert routing for operational events.
 
-### Integration System
-Coterie uses a modular plugin architecture for third-party integrations:
-- **Discord**: Automatically manage member roles based on dues status
-- **Unifi Access**: Grant/revoke physical access to facilities
-- **VPN/Network**: Manage WireGuard VPN access for lab resources
+### Integrations
+- **Discord**: Member role sync based on dues status, expired-member role handling, daily reconcile cron, AdminAlert email backup when Discord is unreachable.
+- **Unifi Access**: API client wired up; access provisioning / revocation flow not yet built.
 
-### Planned Features
-- **Expense Tracking**: Track and report group expenses with transparency reports
-- **Member Directory**: Opt-in skills/expertise directory
-- **Resource Library**: Share tools, guides, and writeups with access controls
-- **Audit Logging**: Complete trail of all administrative actions
+### Not Yet Built
+- TOTP/2FA
+- Member-facing receipt downloads (separates dues from donations for tax filing)
+- Public donation API endpoint (frontend hosts the form; POSTs to Coterie)
+- Member directory (opt-in)
+- Recurring donations
+- Recurring events (daily/weekly/monthly patterns, custom rules)
+- Discord push for announcement publish
+- Calendar two-way sync (Google, O365, CalDAV)
+- Expense tracking + transparency reports
+- Skills directory, achievement badges, voting/polls
+
+See [TODO.md](TODO.md) for the full open-items list.

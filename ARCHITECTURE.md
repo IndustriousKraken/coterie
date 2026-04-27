@@ -54,7 +54,8 @@ Coterie uses a **dual-frontend architecture** to separate concerns between publi
 - Profile management
 - Event RSVP
 - Payment history
-- Download receipts
+- Donations to active campaigns
+- Auto-renew enrollment / opt-out
 
 #### Admin Features:
 - Member management (approve, activate, expire)
