@@ -1,0 +1,35 @@
+[Unit]
+Description=Coterie database backup
+Documentation=man:sqlite3(1)
+# Run only after Coterie itself is up. If Coterie is down the DB file
+# is still readable, but waiting avoids racing the binary's own
+# startup migrations.
+After=coterie.service
+Requires=coterie.service
+
+[Service]
+Type=oneshot
+User=coterie
+Group=coterie
+
+# The script reads env from /etc/default/coterie-backup if present.
+# Operators typically set COTERIE_BACKUP_S3_URI and AWS credentials there.
+EnvironmentFile=-/etc/default/coterie-backup
+
+ExecStart=/opt/coterie/deploy/backup.sh
+
+# The backup runs unattended; surface failures via systemd's status
+# rather than swallowing them. journalctl -u coterie-backup will show
+# the script's stdout/stderr.
+StandardOutput=journal
+StandardError=journal
+
+# Same hardening as the main service, scoped to what the script needs.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/coterie/backups
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,42 @@
+# Keep the build context small and avoid leaking local state into images.
+
+# Build artifacts
+target/
+**/target/
+
+# Local data and secrets
+.env
+.env.local
+.env.*.local
+data/
+*.db
+*.db-shm
+*.db-wal
+test_seed.db
+coterie.db
+server.log
+
+# Git / editor / OS noise
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Tooling that doesn't belong in the image
+tailwindcss
+
+# Generated CSS — Dockerfile rebuilds it from input.css inside the
+# css-builder stage so we don't ship a host-built copy.
+static/style.css
+
+# Docs and example sites — not part of the running service
+*.md
+examples/
+
+# Tests don't ship in the production image
+tests/

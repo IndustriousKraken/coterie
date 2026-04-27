@@ -94,5 +94,3 @@ Items still to do. Completed work lives in git history.
 - [ ] Bulk member import/export
 - [ ] Custom fields for members
 - [ ] Report builder
-- [ ] Multi-tenant support
-- [ ] GDPR compliance tools
