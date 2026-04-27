@@ -132,8 +132,14 @@ pub struct DonateRequest {
 pub async fn donate_api(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<DonateRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
+    let ip = crate::api::state::client_ip(&headers, state.settings.server.trust_forwarded_for());
+    if !state.money_limiter.check_and_record(ip) {
+        return Err(AppError::TooManyRequests);
+    }
+
     if request.amount_cents <= 0 {
         return Err(AppError::BadRequest("Amount must be positive".to_string()));
     }
@@ -153,6 +159,17 @@ pub async fn donate_api(
             match state.service_context.donation_campaign_repo
                 .find_by_slug(slug).await?
             {
+                // Inactive campaigns aren't accepting donations.
+                // Without this filter a member who knows the slug of
+                // an archived campaign (cached pages, old emails)
+                // could continue to push the campaign's public total
+                // up after admins closed it.
+                Some(c) if !c.is_active => {
+                    return Err(AppError::BadRequest(format!(
+                        "Campaign '{}' is no longer accepting donations.",
+                        c.name,
+                    )));
+                }
                 Some(c) => (Some(c.id), c.name),
                 None => (None, "General donation".to_string()),
             }

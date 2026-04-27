@@ -318,6 +318,18 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // And for the money-endpoint limiter. Shorter window means we
+    // sweep more often to keep the per-IP map small.
+    {
+        let limiter = web_app_state.money_limiter.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                limiter.cleanup();
+            }
+        });
+    }
+
     let web_app = web::create_web_routes(web_app_state.clone());
 
     // Combine API and web routes, apply setup check middleware

@@ -207,6 +207,26 @@ pub async fn stripe_webhook(
                     ),
                 })
                 .await;
+        } else if matches!(&e, AppError::BadRequest(msg) if msg.contains("clock drift")) {
+            // Without this alert, a >5min server clock skew would
+            // silently reject every Stripe webhook (signature is
+            // tied to the timestamp). Members would pay successfully
+            // but dues / refunds wouldn't update on our side until
+            // someone notices.
+            state.service_context.integration_manager
+                .handle_event(crate::integrations::IntegrationEvent::AdminAlert {
+                    subject: "Stripe webhook rejected — clock drift".to_string(),
+                    body: format!(
+                        "A Stripe webhook was rejected because the server's \
+                         clock has drifted more than Stripe's tolerance (~5 \
+                         min) from real time. Until this is fixed, EVERY \
+                         webhook will fail and payments will not be \
+                         processed. Check NTP / time sync on the host. \
+                         Error detail: {}",
+                        e,
+                    ),
+                })
+                .await;
         }
         return Err(e);
     }
@@ -460,6 +480,20 @@ pub async fn save_card(
     // Get card details from Stripe
     let card_details = stripe_client.get_payment_method_details(&request.stripe_payment_method_id).await?;
 
+    // Cross-member PM stapling guard. Stripe's PaymentMethod attaches
+    // to exactly one Customer; a PM ID belonging to another member's
+    // Customer would let the requester surface that card's last4 +
+    // brand in their own saved-cards list. Refuse unless the PM
+    // belongs to THIS member's Stripe Customer (or is unattached,
+    // which is the normal SetupIntent state — confirmCardSetup
+    // attaches it during this flow).
+    let member_customer_id = user.member.stripe_customer_id.as_deref();
+    match (card_details.customer_id.as_deref(), member_customer_id) {
+        (None, _) => { /* fresh SetupIntent PM, attached to this member's customer momentarily */ }
+        (Some(pm_cust), Some(my_cust)) if pm_cust == my_cust => { /* match */ }
+        _ => return Err(AppError::Forbidden),
+    }
+
     // Check if this is the first card (will be default)
     let existing_cards = state.service_context.saved_card_repo.find_by_member(user.member.id).await?;
     let is_default = existing_cards.is_empty() || request.set_as_default.unwrap_or(false);
@@ -545,6 +579,21 @@ pub async fn delete_saved_card(
     }
 
     state.service_context.saved_card_repo.delete(card_id).await?;
+
+    // Also detach on Stripe's side. Local delete makes the row
+    // invisible to Coterie, but without detach the PaymentMethod
+    // continues to exist on the Stripe Customer indefinitely. Best-
+    // effort — a Stripe failure shouldn't fail the user-visible
+    // delete, but we log it loudly so operators can clean up.
+    if let Some(stripe) = state.stripe_client.as_ref() {
+        if let Err(e) = stripe.detach_payment_method(&card.stripe_payment_method_id).await {
+            tracing::error!(
+                "Locally deleted card {} (pm={}) but Stripe detach failed: {}",
+                card_id, card.stripe_payment_method_id, e,
+            );
+        }
+    }
+
     Ok(StatusCode::NO_CONTENT)
 }
 

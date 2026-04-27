@@ -232,7 +232,10 @@ impl StripeClient {
         stripe_signature: &str,
         billing_service: &BillingService,
     ) -> Result<()> {
-        // Verify webhook signature and construct event
+        // Verify webhook signature and construct event. Specific
+        // strings here are pattern-matched by the handler in
+        // api/handlers/payments.rs to dispatch AdminAlerts — keep
+        // them stable.
         let event = Webhook::construct_event(
             payload,
             stripe_signature,
@@ -240,6 +243,10 @@ impl StripeClient {
         )
         .map_err(|e| match e {
             WebhookError::BadSignature => AppError::BadRequest("Invalid signature".to_string()),
+            WebhookError::BadTimestamp(skew_secs) => AppError::BadRequest(format!(
+                "Webhook timestamp out of tolerance (skew: {}s) — clock drift",
+                skew_secs,
+            )),
             _ => AppError::External(format!("Webhook error: {}", e)),
         })?;
 
@@ -623,6 +630,31 @@ impl StripeClient {
             }
         };
 
+        // Cross-check PI metadata against the local row before
+        // mutating. The flip below is conditional on status='Pending',
+        // so a Completed row can't be re-flipped — but a Pending row
+        // belonging to one member could in theory be stapled to a PI
+        // crafted with that row's id but a different member/amount
+        // by anyone with Stripe API write access. We refuse if the
+        // shape doesn't match: same member, same amount.
+        let metadata_member_id = intent.metadata.get("member_id")
+            .and_then(|s| Uuid::parse_str(s).ok());
+        if metadata_member_id != Some(payment.member_id) {
+            tracing::warn!(
+                "PI {} payment_id metadata points at payment {} (member {}), \
+                 but PI's member_id metadata is {:?}; refusing to act",
+                intent.id, payment_id, payment.member_id, metadata_member_id,
+            );
+            return Ok(());
+        }
+        if intent.amount != payment.amount_cents {
+            tracing::warn!(
+                "PI {} amount {} doesn't match local payment {} amount {}; refusing to act",
+                intent.id, intent.amount, payment_id, payment.amount_cents,
+            );
+            return Ok(());
+        }
+
         let pi_id = intent.id.to_string();
         let won_flip = self.payment_repo
             .complete_pending_payment(payment_id, &pi_id)
@@ -839,6 +871,34 @@ impl StripeClient {
             Some(sub) => sub.id().to_string(),
             None => return Ok(()),
         };
+
+        // Reject non-USD invoices at the boundary. Coterie treats
+        // amount_cents as USD throughout dues math, totals, refund
+        // display, and admin UI; a single misconfigured Stripe Price
+        // in another currency would silently corrupt all of that.
+        // This guard fails loud and dispatches an AdminAlert so an
+        // operator can fix the Price config before more invoices land.
+        let currency_str = invoice.currency
+            .map(|c| c.to_string().to_lowercase())
+            .unwrap_or_default();
+        if !currency_str.is_empty() && currency_str != "usd" {
+            tracing::error!(
+                "Invoice {} arrived in non-USD currency '{}'; refusing to process",
+                invoice.id, currency_str,
+            );
+            self.integration_manager.handle_event(IntegrationEvent::AdminAlert {
+                subject: format!("Non-USD Stripe invoice received ({})", currency_str.to_uppercase()),
+                body: format!(
+                    "Invoice {} for subscription {} arrived in '{}' (not USD). \
+                     Coterie's payment math assumes USD throughout — the invoice \
+                     was NOT recorded locally and dues were NOT extended. \
+                     Check the Stripe Price config; once fixed, manually \
+                     reconcile this member's dues.",
+                    invoice.id, subscription_id, currency_str.to_uppercase(),
+                ),
+            }).await;
+            return Ok(());
+        }
 
         let customer_id = match &invoice.customer {
             Some(customer) => customer.id().to_string(),
@@ -1435,7 +1495,30 @@ impl StripeClient {
         Ok(())
     }
 
-    /// Retrieve card details from a Stripe PaymentMethod
+    /// Detach a PaymentMethod from its Stripe Customer. Coterie's
+    /// "delete saved card" handlers should call this after removing
+    /// the local row so the card doesn't continue to live on Stripe
+    /// indefinitely (compliance / trust). Idempotent — Stripe returns
+    /// success on an already-detached PM, error mapped to External.
+    pub async fn detach_payment_method(&self, payment_method_id: &str) -> Result<()> {
+        let pm_id: stripe::PaymentMethodId = payment_method_id.parse().map_err(|_| {
+            AppError::BadRequest(format!("Invalid payment method ID: {}", payment_method_id))
+        })?;
+        timed(stripe::PaymentMethod::detach(&self.client, &pm_id)).await
+            .map_err(|e| match e {
+                AppError::External(msg) => AppError::External(format!("Stripe detach failed: {}", msg)),
+                other => other,
+            })?;
+        Ok(())
+    }
+
+    /// Retrieve card details from a Stripe PaymentMethod, including
+    /// the Stripe customer ID it's currently attached to (or `None`
+    /// for un-attached PMs). Callers about to persist a `pm_…` ID
+    /// against a member MUST verify `customer_id` matches the
+    /// member's `stripe_customer_id` — otherwise a member who learns
+    /// another's PM ID could attach it to their own saved-cards UI
+    /// and learn the brand + last four (info disclosure).
     pub async fn get_payment_method_details(
         &self,
         payment_method_id: &str,
@@ -1446,14 +1529,15 @@ impl StripeClient {
 
         let pm = timed(stripe::PaymentMethod::retrieve(&self.client, &pm_id, &[])).await?;
 
-        let card = pm.card
+        let card = pm.card.as_ref()
             .ok_or_else(|| AppError::External("PaymentMethod has no card details".to_string()))?;
 
         Ok(CardDetails {
-            last_four: card.last4,
+            last_four: card.last4.clone(),
             brand: card.brand.to_lowercase(),
             exp_month: card.exp_month as i32,
             exp_year: card.exp_year as i32,
+            customer_id: pm.customer.as_ref().map(|c| c.id().to_string()),
         })
     }
 }
@@ -1464,6 +1548,10 @@ pub struct CardDetails {
     pub brand: String,
     pub exp_month: i32,
     pub exp_year: i32,
+    /// The Stripe Customer this PM is attached to, if any. Compare
+    /// against the local member's `stripe_customer_id` before
+    /// persisting to prevent cross-member PM stapling.
+    pub customer_id: Option<String>,
 }
 
 /// One card-type PaymentMethod attached to a Stripe customer, plus a

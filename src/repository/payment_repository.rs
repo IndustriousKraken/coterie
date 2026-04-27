@@ -295,6 +295,36 @@ impl PaymentRepository for SqlitePaymentRepository {
         Ok(res.rows_affected() == 1)
     }
 
+    async fn claim_payment_for_refund(&self, id: Uuid) -> Result<bool> {
+        let now = Utc::now().naive_utc();
+        let res = sqlx::query(
+            "UPDATE payments \
+             SET status = 'Refunded', updated_at = ? \
+             WHERE id = ? AND status = 'Completed'",
+        )
+        .bind(now)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(res.rows_affected() == 1)
+    }
+
+    async fn unclaim_refund(&self, id: Uuid) -> Result<()> {
+        let now = Utc::now().naive_utc();
+        sqlx::query(
+            "UPDATE payments \
+             SET status = 'Completed', updated_at = ? \
+             WHERE id = ? AND status = 'Refunded'",
+        )
+        .bind(now)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     async fn extend_dues_for_payment_atomic(
         &self,
         payment_id: Uuid,

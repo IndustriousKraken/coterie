@@ -113,6 +113,14 @@ pub struct AppState {
     pub settings: Arc<Settings>,
     /// Rate limiter for login endpoints (5 attempts per 15 minutes per IP).
     pub login_limiter: RateLimiter,
+    /// Rate limiter for money-moving endpoints (charge, donate, refund,
+    /// auto-renew toggle). 10 attempts/min per IP — well above any
+    /// legitimate workflow but tight enough to box in scripted abuse,
+    /// double-submit accidents, and runaway clients. Per-IP rather
+    /// than per-member because the source of an attack is the network,
+    /// not the authenticated identity (which an attacker controlling
+    /// a stolen session would also control).
+    pub money_limiter: RateLimiter,
     /// Serializes first-admin setup to prevent concurrent requests from
     /// both passing the "no admin exists" check and creating two admins.
     pub setup_lock: Arc<AsyncMutex<()>>,
@@ -129,6 +137,7 @@ impl AppState {
             stripe_client,
             settings,
             login_limiter: RateLimiter::new(5, Duration::from_secs(15 * 60)),
+            money_limiter: RateLimiter::new(10, Duration::from_secs(60)),
             setup_lock: Arc::new(AsyncMutex::new(())),
         }
     }

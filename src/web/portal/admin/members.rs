@@ -691,6 +691,7 @@ pub struct ExtendDuesForm {
 pub async fn admin_refund_payment(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
+    headers: axum::http::HeaderMap,
     Path(payment_id): Path<String>,
 ) -> impl IntoResponse {
     if !is_admin(&current_user.member) {
@@ -699,12 +700,20 @@ pub async fn admin_refund_payment(
         );
     }
 
+    let ip = crate::api::state::client_ip(&headers, state.settings.server.trust_forwarded_for());
+    if !state.money_limiter.check_and_record(ip) {
+        return refund_result_html(
+            false,
+            "Too many refund attempts — try again in a minute.",
+        );
+    }
+
     let pid = match uuid::Uuid::parse_str(&payment_id) {
         Ok(id) => id,
         Err(_) => return refund_result_html(false, "Invalid payment ID"),
     };
 
-    let mut payment = match state.service_context.payment_repo.find_by_id(pid).await {
+    let payment = match state.service_context.payment_repo.find_by_id(pid).await {
         Ok(Some(p)) => p,
         _ => return refund_result_html(false, "Payment not found"),
     };
@@ -720,46 +729,70 @@ pub async fn admin_refund_payment(
             "Only completed payments can be refunded",
         );
     }
+    if payment.payment_method == PaymentMethod::Waived {
+        return refund_result_html(
+            false,
+            "Waived payments are $0 — nothing to refund. Use suspend or expire instead.",
+        );
+    }
+
+    // Atomic claim BEFORE calling Stripe. Two simultaneous admin
+    // clicks both reach this point, but only one wins the
+    // Completed→Refunded flip; the other bails. Without this, both
+    // calls would invoke the Stripe API (idempotency-keyed so Stripe
+    // dedupes, but the audit log would still get two entries with
+    // different actors).
+    let claimed = match state.service_context.payment_repo
+        .claim_payment_for_refund(payment.id).await
+    {
+        Ok(c) => c,
+        Err(e) => return refund_result_html(false, &format!("DB update failed: {}", e)),
+    };
+    if !claimed {
+        return refund_result_html(
+            false,
+            "Payment was already refunded (or its status changed) by another action.",
+        );
+    }
 
     let stripe_refund_id: Option<String> = match payment.payment_method {
-        PaymentMethod::Waived => {
-            return refund_result_html(
-                false,
-                "Waived payments are $0 — nothing to refund. Use suspend or expire instead.",
-            );
-        }
+        PaymentMethod::Waived => unreachable!("Waived already short-circuited above"),
         PaymentMethod::Stripe => {
             let stripe_id = match payment.stripe_payment_id.as_deref() {
-                Some(s) if !s.is_empty() => s,
-                _ => return refund_result_html(
-                    false,
-                    "Stripe payment has no Stripe ID on record — can't refund through the API. Mark Refunded manually if needed.",
-                ),
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => {
+                    let _ = state.service_context.payment_repo.unclaim_refund(payment.id).await;
+                    return refund_result_html(
+                        false,
+                        "Stripe payment has no Stripe ID on record — can't refund through the API. Mark Refunded manually if needed.",
+                    );
+                }
             };
             let stripe_client = match state.stripe_client.as_ref() {
                 Some(c) => c,
-                None => return refund_result_html(
-                    false,
-                    "Stripe isn't configured. Can't issue an API refund.",
-                ),
+                None => {
+                    let _ = state.service_context.payment_repo.unclaim_refund(payment.id).await;
+                    return refund_result_html(
+                        false,
+                        "Stripe isn't configured. Can't issue an API refund.",
+                    );
+                }
             };
-            match stripe_client.refund_payment(stripe_id, &payment.id.to_string()).await {
+            match stripe_client.refund_payment(&stripe_id, &payment.id.to_string()).await {
                 Ok(refund_id) => Some(refund_id),
-                Err(e) => return refund_result_html(
-                    false,
-                    &format!("Stripe refund failed: {}", e),
-                ),
+                Err(e) => {
+                    // Stripe rejected — roll the local row back so a
+                    // future retry can re-claim and re-issue.
+                    let _ = state.service_context.payment_repo.unclaim_refund(payment.id).await;
+                    return refund_result_html(
+                        false,
+                        &format!("Stripe refund failed: {}", e),
+                    );
+                }
             }
         }
         PaymentMethod::Manual => None, // No external system to update.
     };
-
-    // Local state: mark Refunded.
-    payment.status = PaymentStatus::Refunded;
-    payment.updated_at = chrono::Utc::now();
-    if let Err(e) = state.service_context.payment_repo.update(payment.id, payment.clone()).await {
-        return refund_result_html(false, &format!("DB update failed: {}", e));
-    }
 
     let detail = match (&payment.payment_method, &stripe_refund_id) {
         (PaymentMethod::Stripe, Some(rid)) => format!(

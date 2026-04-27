@@ -390,8 +390,14 @@ pub async fn checkout_api(
 pub async fn charge_saved_card_api(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<ChargeSavedCardRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
+    let ip = crate::api::state::client_ip(&headers, state.settings.server.trust_forwarded_for());
+    if !state.money_limiter.check_and_record(ip) {
+        return Err(AppError::TooManyRequests);
+    }
+
     let stripe_client = state.stripe_client.as_ref()
         .ok_or_else(|| AppError::ServiceUnavailable("Payment processing not configured".to_string()))?;
 
@@ -605,8 +611,14 @@ pub struct UpdateAutoRenewRequest {
 pub async fn update_auto_renew_api(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<UpdateAutoRenewRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let ip = crate::api::state::client_ip(&headers, state.settings.server.trust_forwarded_for());
+    if !state.money_limiter.check_and_record(ip) {
+        return Err(AppError::TooManyRequests);
+    }
+
     let billing_service = state.service_context.billing_service(
         state.stripe_client.clone(),
         state.settings.server.base_url.clone(),
@@ -772,7 +784,51 @@ pub async fn delete_card_api(
         return Err(AppError::Forbidden);
     }
 
+    // For coterie_managed members removing their last card, the
+    // hourly billing runner will fail to charge their next renewal
+    // without a card to draw on. Surface the situation rather than
+    // letting the failure manifest silently weeks later.
+    let other_cards = state.service_context.saved_card_repo
+        .find_by_member(current_user.member.id).await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|c| c.id != card_id)
+        .count();
+    let leaving_with_no_cards = other_cards == 0
+        && current_user.member.billing_mode == crate::domain::BillingMode::CoterieManaged;
+
     state.service_context.saved_card_repo.delete(card_id).await?;
+
+    // Detach on Stripe so the card doesn't outlive the Coterie row.
+    if let Some(stripe) = state.stripe_client.as_ref() {
+        if let Err(e) = stripe.detach_payment_method(&card.stripe_payment_method_id).await {
+            tracing::error!(
+                "Locally deleted card {} (pm={}) but Stripe detach failed: {}",
+                card_id, card.stripe_payment_method_id, e,
+            );
+        }
+    }
+
+    if leaving_with_no_cards {
+        state.service_context.integration_manager
+            .handle_event(crate::integrations::IntegrationEvent::AdminAlert {
+                subject: format!(
+                    "Auto-renew member {} deleted their last card",
+                    current_user.member.id,
+                ),
+                body: format!(
+                    "Member {} <{}> is on coterie_managed auto-renew but \
+                     just removed their only saved card. The next \
+                     scheduled charge will fail. Reach out to confirm \
+                     they meant to disable auto-renew, or have them \
+                     re-add a card.",
+                    current_user.member.full_name,
+                    current_user.member.email,
+                ),
+            })
+            .await;
+    }
+
     Ok(StatusCode::OK)
 }
 

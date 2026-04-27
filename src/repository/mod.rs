@@ -116,6 +116,16 @@ pub trait PaymentRepository: Send + Sync {
     /// Returns true if a row was flipped. Idempotent against double-
     /// failure reports.
     async fn fail_pending_payment(&self, id: Uuid) -> Result<bool>;
+    /// Claim a Completed payment for refund. Atomic conditional UPDATE
+    /// (`WHERE status='Completed'`) — only the first caller observes
+    /// rows_affected==1; concurrent admin clicks see false and bail.
+    /// Pair with `unclaim_refund` if the subsequent Stripe call fails.
+    async fn claim_payment_for_refund(&self, id: Uuid) -> Result<bool>;
+    /// Roll back `claim_payment_for_refund` after a Stripe failure so
+    /// the row goes back to Completed and a future refund attempt can
+    /// re-claim. Conditional on status='Refunded' so this can't undo
+    /// a legitimate completed refund from a different code path.
+    async fn unclaim_refund(&self, id: Uuid) -> Result<()>;
     /// Idempotently extend a member's dues for a single Payment.
     ///
     /// Implemented as a transactional claim-then-update: the row's

@@ -246,8 +246,17 @@ pub async fn login_handler(
 }
 
 // POST /logout
+//
+// CSRF: SameSite=Lax cookies still ride along on top-level POST
+// navigations, so a cross-origin attacker page could `<form action=
+// "https://coterie.example/logout" method="POST">…</form>` and force-
+// log out a victim. Annoying rather than dangerous, but it lets an
+// attacker push the victim into a re-auth screen they could phish.
+// We require the X-CSRF-Token header (HTMX stamps it from the meta
+// tag) — direct-form-POST CSRF therefore fails fast.
 pub async fn logout_handler(
     State(state): State<AppState>,
+    headers_in: HeaderMap,
     jar: CookieJar,
 ) -> impl IntoResponse {
     // Properly invalidate session and CSRF token
@@ -257,10 +266,35 @@ pub async fn logout_handler(
             .validate_session(session_cookie.value())
             .await
         {
+            // Verify the CSRF token before doing anything destructive.
+            let token = headers_in
+                .get("X-CSRF-Token")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            let csrf_ok = state.service_context.csrf_service
+                .validate_token(&session.id, token)
+                .await
+                .unwrap_or(false);
+            if !csrf_ok {
+                let mut headers = HeaderMap::new();
+                headers.insert("HX-Redirect", "/login".parse().unwrap());
+                return (StatusCode::FORBIDDEN, headers);
+            }
             // Delete CSRF token for this session
             let _ = state.service_context.csrf_service
                 .delete_token(&session.id)
                 .await;
+            // Audit-trail the session lifecycle. Login is logged in
+            // the audit_service; logout was silent until this entry.
+            state.service_context.audit_service.log(
+                Some(session.member_id),
+                "logout",
+                "session",
+                &session.id,
+                None,
+                None,
+                None,
+            ).await;
         }
         // Invalidate the session
         let _ = state.service_context.auth_service
