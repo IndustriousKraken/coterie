@@ -6,16 +6,20 @@
     <title>{% block title %}Coterie{% endblock %}</title>
     
     <!-- HTMX (pinned + SRI) -->
-    <script src="https://unpkg.com/htmx.org@1.9.10"
+    <script nonce="__CSP_NONCE__"
+            src="https://unpkg.com/htmx.org@1.9.10"
             integrity="sha384-YwQSRkoBOUtKKVfHQ8C2zCPslUZHuxiPHts6X/xQCuGHipTtRXd7ImqS1VTLlpiT"
             crossorigin="anonymous"></script>
-    <script src="https://unpkg.com/htmx.org@1.9.10/dist/ext/json-enc.js"
+    <script nonce="__CSP_NONCE__"
+            src="https://unpkg.com/htmx.org@1.9.10/dist/ext/json-enc.js"
             integrity="sha384-nRnAvEUI7N/XvvowiMiq7oEI04gOXMCqD3Bidvedw+YNbj7zTQACPlRI3Jt3vYM4"
             crossorigin="anonymous"></script>
 
-    <!-- Alpine.js (pinned + SRI) -->
-    <script defer src="https://unpkg.com/alpinejs@3.13.5/dist/cdn.min.js"
-            integrity="sha384-BxpSbjbDhVKwnC1UfcjsNEuMuxg4af5IXOaSi1Iq5rASQ/9a7uslhEXbP9UI/fXo"
+    <!-- Alpine.js (CSP build — no `Function()` so works without 'unsafe-eval') -->
+    <script nonce="__CSP_NONCE__"
+            defer
+            src="https://unpkg.com/alpinejs@3.13.5/dist/cdn.csp.min.js"
+            integrity="sha384-qZ7VE99GohFZdSLmj9//6HiHLNWo5eOEs1RrcdDXTygxJB4VAuCIBei06IJemclm"
             crossorigin="anonymous"></script>
 
     <!-- Tailwind CSS (locally built) -->
@@ -167,7 +171,7 @@
     <div class="htmx-indicator fixed top-0 left-0 right-0 h-1 bg-blue-600"></div>
     
     <!-- Global scripts -->
-    <script>
+    <script nonce="__CSP_NONCE__">
         // HTMX configuration
         document.body.addEventListener('htmx:configRequest', (event) => {
             event.detail.headers['X-Requested-With'] = 'XMLHttpRequest';

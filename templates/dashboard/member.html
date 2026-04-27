@@ -124,7 +124,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
+<script nonce="__CSP_NONCE__">
     // Auto-refresh dashboard data every 30 seconds
     setInterval(() => {
         htmx.trigger('#upcoming-events', 'load');

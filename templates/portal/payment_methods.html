@@ -4,7 +4,7 @@
 
 {% block head %}
 <meta name="csrf-token" content="{{ csrf_token }}">
-<script src="https://js.stripe.com/v3/"></script>
+<script nonce="__CSP_NONCE__" src="https://js.stripe.com/v3/"></script>
 {% endblock %}
 
 {% block content %}
@@ -113,7 +113,7 @@
 </div>
 
 {% if stripe_enabled %}
-<script>
+<script nonce="__CSP_NONCE__">
 (function() {
     const stripe = Stripe('{{ stripe_publishable_key }}');
     const elements = stripe.elements();
