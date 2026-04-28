@@ -8,23 +8,17 @@ Items still to do. Completed work lives in git history.
 
 ## Member Portal
 
-- [ ] **Download receipts** (member-facing). PDF or simple HTML print
-      view, generated per-payment. Must distinguish dues from donations
-      so members can hand the donation receipts to their accountant for
-      tax filing — group these separately on the receipt page or in
-      filenames (`dues-2026.pdf` vs `donation-2026-04-27.pdf`).
+- [x] **Download receipts** (member-facing) — shipped. Per-payment
+      printable HTML at `/portal/payments/:id/receipt`; tax-year
+      aggregation at `/portal/payments/receipts` with dues vs.
+      donations totals split by year. PDF rendering deferred (browser
+      print-to-PDF covers it).
 
 ## Public-Facing
 
-- [ ] **Public donation API endpoint** (`POST /public/donate`).
-      Coterie shouldn't host a public donation page — anyone not logged
-      in shouldn't be reaching the portal at all. The frontend site
-      (e.g. `~/Dropbox/code/neontemple.net`) hosts the donation form
-      and POSTs amount + email + optional campaign_slug to this
-      endpoint. Server flow: validate amount and campaign, look up
-      existing member by email or create a lightweight donor record,
-      create a Stripe Checkout session, return the URL. Webhook flow
-      then completes the same as the logged-in donate path.
+- [x] **Public donation API endpoint** (`POST /public/donate`) —
+      shipped. The frontend form on neontemple.net (or any public site
+      in CORS_ORIGINS) is still TODO on the public-site side.
 
 - [ ] Member directory (opt-in)
 
@@ -43,7 +37,9 @@ Items still to do. Completed work lives in git history.
       "2nd Wednesday", repeat count or end date, edit single vs.
       future occurrences, cancel single occurrence)
 - [ ] Announcement distribution
-  - [ ] Push to Discord channel on publish
+  - [x] Push to Discord channel on publish — shipped (single org-level
+        channel via discord.announcements_channel_id setting; per-
+        announcement override deferred)
   - [ ] Scheduled delivery (publish now vs. schedule for later)
   - [ ] Support for other chat APIs (Slack, Matrix)
 

@@ -12,7 +12,12 @@ pub const MAX_PAYMENT_CENTS: i64 = 10_000_000;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Payment {
     pub id: Uuid,
-    pub member_id: Uuid,
+    /// FK to members. NULL only for public donations from non-members
+    /// (POST /public/donate from a donor whose email doesn't match any
+    /// existing member). When NULL, donor_name + donor_email carry the
+    /// giver's identity. The DB CHECK constraint enforces that one or
+    /// the other path is always populated.
+    pub member_id: Option<Uuid>,
     pub amount_cents: i64,
     pub currency: String,
     pub status: PaymentStatus,
@@ -25,6 +30,10 @@ pub struct Payment {
     /// FK to donation_campaigns. Set when payment_type=Donation; ignored
     /// otherwise. Used by `get_total_donated` for accurate progress.
     pub donation_campaign_id: Option<Uuid>,
+    /// Public donor's name. Set only when member_id is NULL.
+    pub donor_name: Option<String>,
+    /// Public donor's email. Set only when member_id is NULL.
+    pub donor_email: Option<String>,
     pub paid_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

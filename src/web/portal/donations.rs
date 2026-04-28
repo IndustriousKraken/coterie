@@ -209,7 +209,7 @@ pub async fn donate_api(
         let payment_id = Uuid::new_v4();
         let pending = Payment {
             id: payment_id,
-            member_id: current_user.member.id,
+            member_id: Some(current_user.member.id),
             amount_cents: request.amount_cents,
             currency: "USD".to_string(),
             status: PaymentStatus::Pending,
@@ -218,6 +218,8 @@ pub async fn donate_api(
             description: description.clone(),
             payment_type: PaymentType::Donation,
             donation_campaign_id: campaign_id,
+            donor_name: None,
+            donor_email: None,
             paid_at: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),

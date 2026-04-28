@@ -12,7 +12,7 @@ use crate::{
 #[derive(FromRow)]
 struct PaymentRow {
     id: String,
-    member_id: String,
+    member_id: Option<String>,
     /// SQLite INTEGER is up to 8 bytes; using i64 here matches both
     /// the schema's actual storage and the domain's `Payment.amount_cents`.
     /// The previous i32 silently truncated values >$21.5M cents.
@@ -24,6 +24,8 @@ struct PaymentRow {
     description: String,
     payment_type: String,
     donation_campaign_id: Option<String>,
+    donor_name: Option<String>,
+    donor_email: Option<String>,
     paid_at: Option<NaiveDateTime>,
     created_at: NaiveDateTime,
     updated_at: NaiveDateTime,
@@ -47,9 +49,14 @@ impl SqlitePaymentRepository {
         let donation_campaign_id = row.donation_campaign_id
             .as_deref()
             .and_then(|s| Uuid::parse_str(s).ok());
+        let member_id = row.member_id
+            .as_deref()
+            .map(Uuid::parse_str)
+            .transpose()
+            .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(Payment {
             id: Uuid::parse_str(&row.id).map_err(|e| AppError::Database(e.to_string()))?,
-            member_id: Uuid::parse_str(&row.member_id).map_err(|e| AppError::Database(e.to_string()))?,
+            member_id,
             amount_cents: row.amount_cents,
             currency: row.currency,
             status: Self::parse_payment_status(&row.status)?,
@@ -58,6 +65,8 @@ impl SqlitePaymentRepository {
             description: row.description,
             payment_type,
             donation_campaign_id,
+            donor_name: row.donor_name,
+            donor_email: row.donor_email,
             paid_at: row.paid_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
             updated_at: DateTime::from_naive_utc_and_offset(row.updated_at, Utc),
@@ -105,7 +114,7 @@ impl SqlitePaymentRepository {
 impl PaymentRepository for SqlitePaymentRepository {
     async fn create(&self, payment: Payment) -> Result<Payment> {
         let id_str = payment.id.to_string();
-        let member_id_str = payment.member_id.to_string();
+        let member_id_str = payment.member_id.map(|id| id.to_string());
         let amount_cents_int = payment.amount_cents;
         let status_str = Self::payment_status_to_str(&payment.status);
         let method_str = Self::payment_method_to_str(&payment.payment_method);
@@ -121,8 +130,9 @@ impl PaymentRepository for SqlitePaymentRepository {
                 id, member_id, amount_cents, currency, status,
                 payment_method, stripe_payment_id, description,
                 payment_type, donation_campaign_id,
+                donor_name, donor_email,
                 paid_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#
         )
         .bind(&id_str)
@@ -135,6 +145,8 @@ impl PaymentRepository for SqlitePaymentRepository {
         .bind(&payment.description)
         .bind(payment_type_str)
         .bind(&donation_campaign_id_str)
+        .bind(&payment.donor_name)
+        .bind(&payment.donor_email)
         .bind(paid_at_naive)
         .bind(now)
         .bind(now)
@@ -154,6 +166,7 @@ impl PaymentRepository for SqlitePaymentRepository {
             SELECT id, member_id, amount_cents, currency, status,
                    payment_method, stripe_payment_id, description,
                    payment_type, donation_campaign_id,
+                   donor_name, donor_email,
                    paid_at, created_at, updated_at
             FROM payments
             WHERE id = ?
@@ -177,6 +190,7 @@ impl PaymentRepository for SqlitePaymentRepository {
             SELECT id, member_id, amount_cents, currency, status,
                    payment_method, stripe_payment_id, description,
                    payment_type, donation_campaign_id,
+                   donor_name, donor_email,
                    paid_at, created_at, updated_at
             FROM payments
             WHERE member_id = ?
@@ -199,6 +213,7 @@ impl PaymentRepository for SqlitePaymentRepository {
             SELECT id, member_id, amount_cents, currency, status,
                    payment_method, stripe_payment_id, description,
                    payment_type, donation_campaign_id,
+                   donor_name, donor_email,
                    paid_at, created_at, updated_at
             FROM payments
             WHERE stripe_payment_id = ?
@@ -237,7 +252,7 @@ impl PaymentRepository for SqlitePaymentRepository {
             WHERE id = ?
             "#
         )
-        .bind(payment.member_id.to_string())
+        .bind(payment.member_id.map(|id| id.to_string()))
         .bind(payment.amount_cents)
         .bind(&payment.currency)
         .bind(status_str)

@@ -45,6 +45,47 @@ pub fn is_valid_snowflake(s: &str) -> bool {
     (17..=20).contains(&len) && s.chars().all(|c| c.is_ascii_digit())
 }
 
+/// Build the announcement preview shown in the Discord post.
+///
+/// Prefers the first paragraph (text up to a blank line) when it's a
+/// reasonable length; falls back to a char-boundary-safe ~280-char
+/// truncate otherwise. The naive `&s[..280]` would panic on content
+/// with a multi-byte UTF-8 character crossing the boundary (any emoji
+/// or non-ASCII script will hit this).
+fn build_announcement_preview(content: &str) -> String {
+    const MAX_CHARS: usize = 280;
+    const PARAGRAPH_BUDGET: usize = 500;  // bytes — paragraphs longer than this fall through to char truncate
+
+    let trimmed = content.trim();
+
+    // Look for a paragraph break. Treat both \n\n and \r\n\r\n as a
+    // separator — Coterie content can come from either Unix or Windows
+    // editors via the admin form.
+    let first_paragraph = trimmed
+        .split_once("\n\n")
+        .or_else(|| trimmed.split_once("\r\n\r\n"))
+        .map(|(first, _)| first)
+        .unwrap_or(trimmed);
+
+    if first_paragraph.len() <= PARAGRAPH_BUDGET && !first_paragraph.is_empty() {
+        // First paragraph is short enough to show in full. Add an
+        // ellipsis only if there was more content after it.
+        if first_paragraph.len() < trimmed.len() {
+            format!("{}…", first_paragraph)
+        } else {
+            first_paragraph.to_string()
+        }
+    } else {
+        // Char-boundary-safe truncation. Take MAX_CHARS chars regardless
+        // of byte width.
+        let mut out: String = trimmed.chars().take(MAX_CHARS).collect();
+        if out.chars().count() < trimmed.chars().count() {
+            out.push('…');
+        }
+        out
+    }
+}
+
 pub struct DiscordIntegration {
     settings: Arc<SettingsService>,
     /// Absolute Coterie base URL (from ServerConfig::base_url), used
@@ -327,12 +368,12 @@ impl Integration for DiscordIntegration {
                     "**[Members only]** "
                 };
                 // Trim the body for chat: full content can be long, the
-                // link drives them to the portal for the rest.
-                let preview = if announcement.content.len() > 280 {
-                    format!("{}…", &announcement.content[..280])
-                } else {
-                    announcement.content.clone()
-                };
+                // link drives them to the portal for the rest. Prefer
+                // the first paragraph (split on a blank line) if it's
+                // a reasonable length, otherwise truncate at ~280 chars
+                // on a char boundary — a raw byte slice would panic on
+                // non-ASCII content crossing the boundary.
+                let preview = build_announcement_preview(&announcement.content);
                 let link = format!(
                     "{}/portal/announcements",
                     self.base_url.trim_end_matches('/'),
@@ -379,5 +420,57 @@ mod snowflake_tests {
         assert!(!is_valid_snowflake("user#1234"));           // legacy username format
         assert!(!is_valid_snowflake("12345678901234567a"));  // non-digit
         assert!(!is_valid_snowflake(" 123456789012345678")); // leading space
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::build_announcement_preview;
+
+    #[test]
+    fn short_single_paragraph_returned_verbatim() {
+        let s = build_announcement_preview("We're meeting Saturday at 7pm.");
+        assert_eq!(s, "We're meeting Saturday at 7pm.");
+    }
+
+    #[test]
+    fn first_paragraph_with_more_content_gets_ellipsis() {
+        let s = build_announcement_preview(
+            "Quick note about Saturday.\n\nLong details follow about the event ..."
+        );
+        assert_eq!(s, "Quick note about Saturday.…");
+    }
+
+    #[test]
+    fn long_first_paragraph_falls_back_to_char_truncate() {
+        // Single paragraph longer than PARAGRAPH_BUDGET (500 bytes) → char-truncate to 280
+        let long = "x".repeat(600);
+        let s = build_announcement_preview(&long);
+        assert_eq!(s.chars().filter(|c| *c == 'x').count(), 280);
+        assert!(s.ends_with('…'));
+    }
+
+    #[test]
+    fn does_not_panic_on_multibyte_chars_at_boundary() {
+        // 281 emojis = ~1124 bytes (each emoji is 4 bytes UTF-8). Naive
+        // byte-slicing at index 280 would panic; char-aware truncation
+        // works fine.
+        let emoji_wall = "🎉".repeat(300);
+        let s = build_announcement_preview(&emoji_wall);
+        assert_eq!(s.chars().filter(|c| *c == '🎉').count(), 280);
+        assert!(s.ends_with('…'));
+    }
+
+    #[test]
+    fn handles_crlf_paragraph_separator() {
+        let s = build_announcement_preview("Hi.\r\n\r\nDetails ...");
+        assert_eq!(s, "Hi.…");
+    }
+
+    #[test]
+    fn empty_first_paragraph_falls_through() {
+        // Leading blank lines shouldn't produce an empty preview.
+        let s = build_announcement_preview("Real content");
+        assert_eq!(s, "Real content");
     }
 }

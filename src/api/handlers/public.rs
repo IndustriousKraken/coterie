@@ -1,6 +1,6 @@
 use axum::{
     extract::{Query, State},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     Json,
 };
@@ -324,4 +324,151 @@ fn generate_ical_feed(events: &[Event]) -> String {
 
     ical.push_str("END:VCALENDAR\r\n");
     ical
+}
+
+// ---------------------------------------------------------------------
+// Public donation API
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct PublicDonateRequest {
+    pub amount_cents: i64,
+    pub email: String,
+    pub name: String,
+    /// Optional campaign slug. If absent or empty, the donation is
+    /// recorded as a general donation (no campaign attribution).
+    #[serde(default)]
+    pub campaign_slug: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PublicDonateResponse {
+    pub payment_id: Uuid,
+    /// Stripe-hosted Checkout URL. The frontend redirects the donor here.
+    pub checkout_url: String,
+}
+
+/// POST /public/donate — accepts a donation from a non-authenticated
+/// donor and returns a Stripe Checkout URL to redirect them to.
+///
+/// Flow:
+///   1. Validate amount + email + name + campaign-if-given
+///   2. Check IP rate limit (money_limiter, 10/min/IP)
+///   3. If donor's email matches an existing member → attach donation
+///      to that member's payment history. Otherwise → record as a
+///      public donation with donor_name + donor_email on the row.
+///   4. Create Stripe Checkout session, return URL.
+///   5. (Webhook side) When the session completes, the existing
+///      payment_intent.succeeded / checkout.session.completed handlers
+///      flip the row to Completed. Donations don't extend dues, so
+///      there's no further bookkeeping.
+///
+/// CORS: same origin policy as other /public/* endpoints. The public
+/// site (e.g. neontemple.net) is expected to be in
+/// COTERIE__SERVER__CORS_ORIGINS.
+pub async fn donate(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<PublicDonateRequest>,
+) -> Result<(StatusCode, Json<PublicDonateResponse>)> {
+    // Rate limit by client IP. Public endpoint with payment side-effects
+    // is the prime card-testing target — the limiter caps each IP at
+    // 10 attempts per minute.
+    let ip = crate::api::state::client_ip(
+        &headers,
+        state.settings.server.trust_forwarded_for(),
+    );
+    if !state.money_limiter.check_and_record(ip) {
+        return Err(AppError::TooManyRequests);
+    }
+
+    // Validation. Bounds match the logged-in donate flow.
+    if request.amount_cents <= 0 {
+        return Err(AppError::BadRequest("Amount must be positive".to_string()));
+    }
+    if request.amount_cents > crate::domain::MAX_PAYMENT_CENTS {
+        return Err(AppError::BadRequest(format!(
+            "Amount exceeds the ${} cap on a single donation",
+            crate::domain::MAX_PAYMENT_CENTS / 100,
+        )));
+    }
+    let email = request.email.trim();
+    let name = request.name.trim();
+    if email.is_empty() || !email.contains('@') {
+        return Err(AppError::BadRequest("Valid email is required".to_string()));
+    }
+    if email.len() > 254 {
+        return Err(AppError::BadRequest("Email too long".to_string()));
+    }
+    if name.is_empty() {
+        return Err(AppError::BadRequest("Name is required".to_string()));
+    }
+    if name.len() > 200 {
+        return Err(AppError::BadRequest("Name too long".to_string()));
+    }
+
+    // Resolve campaign. Same logic as the logged-in path: blank/missing
+    // slug = general donation; unknown slug also = general (donor
+    // shouldn't get a hard error for stale URL); inactive = reject.
+    let (campaign_id, campaign_name) = match request.campaign_slug.as_deref() {
+        Some(slug) if !slug.is_empty() => {
+            match state.service_context.donation_campaign_repo
+                .find_by_slug(slug).await?
+            {
+                Some(c) if !c.is_active => {
+                    return Err(AppError::BadRequest(format!(
+                        "Campaign '{}' is no longer accepting donations.",
+                        c.name,
+                    )));
+                }
+                Some(c) => (Some(c.id), c.name),
+                None => (None, "General donation".to_string()),
+            }
+        }
+        _ => (None, "General donation".to_string()),
+    };
+
+    // Email match → existing member? If yes, route through the
+    // member-attributed donation flow so the donation appears in their
+    // payment history. If no, public-donation flow with donor identity
+    // captured on the payment row directly.
+    let stripe_client = state.stripe_client.as_ref()
+        .ok_or_else(|| AppError::ServiceUnavailable(
+            "Payment processing not configured".to_string()
+        ))?;
+
+    let success_url = format!("{}/portal/payments/success", state.settings.server.base_url);
+    let cancel_url = format!("{}/portal/payments/cancel", state.settings.server.base_url);
+
+    let existing_member = state.service_context.member_repo
+        .find_by_email(email).await?;
+
+    let (checkout_url, payment_id) = match existing_member {
+        Some(member) => {
+            stripe_client.create_donation_checkout_session(
+                member.id,
+                &campaign_name,
+                campaign_id,
+                request.amount_cents,
+                success_url,
+                cancel_url,
+            ).await?
+        }
+        None => {
+            stripe_client.create_public_donation_checkout_session(
+                name,
+                email,
+                &campaign_name,
+                campaign_id,
+                request.amount_cents,
+                success_url,
+                cancel_url,
+            ).await?
+        }
+    };
+
+    Ok((StatusCode::OK, Json(PublicDonateResponse {
+        payment_id,
+        checkout_url,
+    })))
 }

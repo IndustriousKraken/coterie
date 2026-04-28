@@ -1,0 +1,72 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Receipts - Coterie{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6 max-w-4xl mx-auto">
+
+    <div class="mb-6">
+        <a href="/portal/payments" class="text-sm text-blue-600 hover:underline">&larr; Back to payments</a>
+    </div>
+
+    <div class="mb-8">
+        <h1 class="text-3xl font-bold text-gray-900">Receipts</h1>
+        <p class="mt-2 text-sm text-gray-600">
+            Year-by-year totals for {{ member_full_name }}, with dues
+            and donations separated. Click any line for a printable
+            receipt to hand to your accountant.
+        </p>
+    </div>
+
+    {% if years.is_empty() %}
+        <div class="bg-white rounded-lg shadow-sm p-8 text-center text-gray-500">
+            No completed payments yet — receipts will appear here once
+            you've paid dues or made a donation.
+        </div>
+    {% else %}
+        {% for year_block in years %}
+            <div class="bg-white rounded-lg shadow-sm mb-6">
+                <div class="px-6 py-4 border-b flex justify-between items-center">
+                    <h2 class="text-xl font-semibold">{{ year_block.year }}</h2>
+                    <div class="text-right text-sm">
+                        <div class="text-gray-600">
+                            Dues:
+                            <span class="font-semibold text-gray-900">
+                                {{ year_block.dues_total_display }}
+                            </span>
+                        </div>
+                        <div class="text-gray-600">
+                            Donations:
+                            <span class="font-semibold text-gray-900">
+                                {{ year_block.donations_total_display }}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                <div class="divide-y">
+                    {% for line in year_block.items %}
+                        <a href="/portal/payments/{{ line.payment_id }}/receipt"
+                           class="block px-6 py-4 hover:bg-gray-50 flex justify-between items-center">
+                            <div>
+                                <p class="font-medium text-gray-900">{{ line.description }}</p>
+                                <p class="text-sm text-gray-500">
+                                    {{ line.date }} &middot; {{ line.kind_label }}
+                                </p>
+                            </div>
+                            <div class="font-medium text-gray-900">
+                                {{ line.amount_display }}
+                            </div>
+                        </a>
+                    {% endfor %}
+                </div>
+            </div>
+        {% endfor %}
+    {% endif %}
+
+    <p class="mt-8 text-xs text-gray-500">
+        Whether dues or donations are tax-deductible depends on your
+        organization's tax status. Receipts here are accurate records
+        of payment; consult your accountant for filing guidance.
+    </p>
+</div>
+{% endblock %}

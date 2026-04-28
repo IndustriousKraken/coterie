@@ -193,7 +193,7 @@ fn make_payment(
 
     Payment {
         id: Uuid::new_v4(),
-        member_id,
+        member_id: Some(member_id),
         amount_cents,
         currency: "USD".to_string(),
         status,
@@ -202,6 +202,8 @@ fn make_payment(
         description: description.to_string(),
         payment_type: PaymentType::Membership,
         donation_campaign_id: None,
+        donor_name: None,
+        donor_email: None,
         paid_at,
         created_at: created,
         updated_at: created,

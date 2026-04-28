@@ -52,40 +52,52 @@ Build before launch if time permits; otherwise in the first weeks
 after. Confirmed priorities for this tier.
 
 ### 2.1 Public donation API endpoint
-- [ ] `POST /public/donate` accepting `{ amount_cents, email, name,
+- [x] `POST /public/donate` accepting `{ amount_cents, email, name,
       campaign_slug? }`. Validates amount (positive, ≤ MAX_PAYMENT_CENTS),
       validates campaign is active if present.
-- [ ] Looks up existing member by email; if found, attaches donation
-      to that member. If not, creates a lightweight donor record
-      (member with a `Donor` status or similar — TBD during impl).
-- [ ] Returns a Stripe Checkout URL the frontend redirects to.
-      Webhook flow then completes identically to the logged-in
-      donate path.
-- [ ] **Frontend form lives in neontemple.net**, not Coterie. Coterie
-      only exposes the API. (Reason: anyone not logged in shouldn't
-      reach the portal at all.)
-- [ ] Rate-limit by IP using the existing `money_limiter`.
+- [x] Looks up existing member by email; if found, attaches donation
+      to that member. If no match, donation gets recorded with
+      donor_name + donor_email on the payment row (member_id NULL,
+      enforced by CHECK constraint). Schema change: migration 016
+      relaxed payments.member_id NOT NULL.
+- [x] Returns a Stripe Checkout URL the frontend redirects to.
+      Webhook flow completes identically to the logged-in donate path.
+- [ ] **Frontend form lives in neontemple.net**, not Coterie — to be
+      built on the public-site side. (Reason: anyone not logged in
+      shouldn't reach the portal at all.)
+- [x] Rate-limit by IP using the existing `money_limiter`.
 
 ### 2.2 Discord push on announcement publish
-- [ ] When admin transitions an announcement to Published, dispatch
+- [x] When admin transitions an announcement to Published, dispatch
       to a configured Discord channel via the existing
-      IntegrationManager.
-- [ ] Channel selector on the announcement form (or fall back to a
-      settings-default channel).
-- [ ] Format: title + first paragraph + link back to the portal.
-- Highest-leverage feature on this tier for NT specifically: removes
-  the "post here AND there" friction every single announcement.
+      IntegrationManager. Fires from both the dedicated publish action
+      and the create-with-publish-now path.
+- [x] Format: visibility tag + title + first paragraph (with
+      char-boundary-safe fallback to ~280 chars) + portal link.
+      Unit-tested for emoji walls and CRLF paragraph separators.
+- [ ] **Per-announcement channel selector** — deferred. NT has a
+      single announcements channel; the settings-level default is
+      sufficient. Promote if a real org needs to route different
+      announcement classes to different channels.
 
 ### 2.3 Member receipt downloads
-- [ ] Per-payment receipt: HTML page styled for print, with org
-      letterhead, member name, payment date, amount, type (Dues vs.
-      Donation), campaign if any. PDF can come later.
-- [ ] "Tax year" view: list of receipts grouped by year, with
-      Dues and Donation totals separated. Members hand the donation
-      total to their accountant.
-- [ ] Time-sensitive: launching now means 2026 payments will be
-      wanted for early-2027 tax filing. Target completion **before
-      October 2026** so members have a chance to find/use it.
+- [x] Per-payment receipt at `/portal/payments/:id/receipt` —
+      standalone print-friendly HTML page with org letterhead, member
+      name, payment date, amount, type (Dues vs. Donation), campaign,
+      and method. PDF deferred (browser "Save as PDF" works fine for
+      now). Standalone styling — no portal nav chrome — to keep the
+      printed artifact clean.
+- [x] "Tax year" view at `/portal/payments/receipts` — completed
+      payments grouped by year of paid_at, with Dues and Donation
+      totals split. Refunded / pending / failed payments excluded
+      (they'd mislead an accountant). Each line links to the printable
+      per-payment receipt. Newest year and newest line first.
+- [x] Two new org settings (migration 017): `org.address` (for
+      letterhead) and `org.tax_id` (optional EIN line). Both editable
+      via the existing admin settings UI, render conditionally on the
+      receipt.
+- Note for future: launching now covers 2026 payments for early-2027
+  tax filing. Target completion was October 2026 — done well ahead.
 
 ---
 

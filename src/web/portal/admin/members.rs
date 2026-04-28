@@ -822,10 +822,11 @@ pub async fn admin_refund_payment(
         .handle_event(crate::integrations::IntegrationEvent::AdminAlert {
             subject: format!("Payment refunded — ${:.2}", payment.amount_cents as f64 / 100.0),
             body: format!(
-                "Refunded by: {} <{}>\nMember: {}\nMethod: {:?}\nDetail: {}",
+                "Refunded by: {} <{}>\nMember: {:?}\nDonor: {:?}\nMethod: {:?}\nDetail: {}",
                 current_user.member.full_name,
                 current_user.member.email,
                 payment.member_id,
+                payment.donor_email,
                 payment.payment_method,
                 detail,
             ),
@@ -1075,7 +1076,7 @@ pub async fn admin_record_payment_submit(
     let payment_id = uuid::Uuid::new_v4();
     let payment = Payment {
         id: payment_id,
-        member_id: id,
+        member_id: Some(id),
         amount_cents,
         currency: "USD".to_string(),
         status: PaymentStatus::Completed,
@@ -1084,6 +1085,8 @@ pub async fn admin_record_payment_submit(
         description,
         payment_type,
         donation_campaign_id,
+        donor_name: None,
+        donor_email: None,
         paid_at: Some(Utc::now()),
         created_at: Utc::now(),
         updated_at: Utc::now(),

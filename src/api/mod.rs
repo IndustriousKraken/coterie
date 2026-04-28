@@ -202,6 +202,7 @@ fn payment_routes(state: AppState) -> Router<AppState> {
 fn public_routes(_state: AppState) -> Router<AppState> {
     Router::new()
         .route("/signup", post(handlers::public::signup))
+        .route("/donate", post(handlers::public::donate))
         .route("/events", get(handlers::public::list_events))
         .route("/events/private-count", get(handlers::public::private_event_count))
         .route("/announcements", get(handlers::public::list_announcements))

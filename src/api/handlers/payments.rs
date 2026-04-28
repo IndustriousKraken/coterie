@@ -122,8 +122,11 @@ pub async fn get(
         .await?
         .ok_or(AppError::NotFound("Payment not found".to_string()))?;
 
-    // Check if user can view this payment (must be the payer or admin)
-    if payment.member_id != user.member.id && !is_admin(&user) {
+    // Check if user can view this payment (must be the payer or admin).
+    // Public donations (member_id IS NULL) are admin-only — there's no
+    // member to authorize as the payer.
+    let is_self = payment.member_id == Some(user.member.id);
+    if !is_self && !is_admin(&user) {
         return Err(AppError::Forbidden);
     }
 
@@ -289,7 +292,7 @@ pub async fn create_manual(
 
     let payment = Payment {
         id: Uuid::new_v4(),
-        member_id: request.member_id,
+        member_id: Some(request.member_id),
         amount_cents: request.amount_cents,
         currency: "USD".to_string(),
         status: PaymentStatus::Completed,
@@ -302,6 +305,8 @@ pub async fn create_manual(
         } else {
             None
         },
+        donor_name: None,
+        donor_email: None,
         paid_at: Some(Utc::now()),
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -366,7 +371,7 @@ pub async fn waive(
 
     let payment = Payment {
         id: Uuid::new_v4(),
-        member_id: request.member_id,
+        member_id: Some(request.member_id),
         amount_cents: 0,
         currency: "USD".to_string(),
         status: PaymentStatus::Completed,
@@ -375,6 +380,8 @@ pub async fn waive(
         description: request.description.clone(),
         payment_type: PaymentType::Membership,
         donation_campaign_id: None,
+        donor_name: None,
+        donor_email: None,
         paid_at: Some(Utc::now()),
         created_at: Utc::now(),
         updated_at: Utc::now(),

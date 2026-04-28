@@ -128,7 +128,7 @@ impl StripeClient {
         let payment_id = Uuid::new_v4();
         let payment = Payment {
             id: payment_id,
-            member_id,
+            member_id: Some(member_id),
             amount_cents,
             currency: "USD".to_string(),
             status: PaymentStatus::Pending,
@@ -137,6 +137,8 @@ impl StripeClient {
             description: format!("{} Membership Payment", membership_type_name),
             payment_type: PaymentType::Membership,
             donation_campaign_id: None,
+            donor_name: None,
+            donor_email: None,
             paid_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -206,7 +208,7 @@ impl StripeClient {
         let payment_id = Uuid::new_v4();
         let payment = Payment {
             id: payment_id,
-            member_id,
+            member_id: Some(member_id),
             amount_cents,
             currency: "USD".to_string(),
             status: PaymentStatus::Pending,
@@ -215,6 +217,95 @@ impl StripeClient {
             description: product_name,
             payment_type: PaymentType::Donation,
             donation_campaign_id: campaign_id,
+            donor_name: None,
+            donor_email: None,
+            paid_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        self.payment_repo.create(payment).await?;
+
+        let url = session.url
+            .ok_or_else(|| AppError::External("No checkout URL returned".to_string()))?;
+        Ok((url, payment_id))
+    }
+
+    /// Donation Checkout for a public (non-member) donor. The donor's
+    /// name and email come from the public form, not from a logged-in
+    /// session. Stripe collects card + billing details on the hosted
+    /// page; we just stamp the metadata so the webhook knows it's a
+    /// public donation and can complete the row without trying to
+    /// extend dues.
+    ///
+    /// Mirrors `create_donation_checkout_session` except no member_id
+    /// is involved — the Pending Payment row gets donor_name +
+    /// donor_email instead, and the CHECK constraint on the table
+    /// keeps the invariant intact.
+    pub async fn create_public_donation_checkout_session(
+        &self,
+        donor_name: &str,
+        donor_email: &str,
+        campaign_name: &str,
+        campaign_id: Option<Uuid>,
+        amount_cents: i64,
+        success_url: String,
+        cancel_url: String,
+    ) -> Result<(String, Uuid)> {
+        let mut params = CreateCheckoutSession::new();
+        params.mode = Some(CheckoutSessionMode::Payment);
+        params.success_url = Some(&success_url);
+        params.cancel_url = Some(&cancel_url);
+        // Pre-fill the email on the hosted Checkout page. Stripe also
+        // sends the receipt to whatever email the donor confirms.
+        params.customer_email = Some(donor_email);
+
+        let product_name = if campaign_id.is_some() {
+            format!("Donation to {}", campaign_name)
+        } else {
+            "Donation".to_string()
+        };
+
+        params.line_items = Some(vec![CreateCheckoutSessionLineItems {
+            price_data: Some(stripe::CreateCheckoutSessionLineItemsPriceData {
+                currency: Currency::USD,
+                unit_amount: Some(amount_cents),
+                product_data: Some(stripe::CreateCheckoutSessionLineItemsPriceDataProductData {
+                    name: product_name.clone(),
+                    description: Some(product_name.clone()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            quantity: Some(1),
+            ..Default::default()
+        }]);
+
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("payment_type".to_string(), "donation".to_string());
+        metadata.insert("public_donation".to_string(), "1".to_string());
+        metadata.insert("donor_name".to_string(), donor_name.to_string());
+        metadata.insert("donor_email".to_string(), donor_email.to_string());
+        if let Some(cid) = campaign_id {
+            metadata.insert("donation_campaign_id".to_string(), cid.to_string());
+        }
+        params.metadata = Some(metadata);
+
+        let session = timed(CheckoutSession::create(&self.client, params)).await?;
+
+        let payment_id = Uuid::new_v4();
+        let payment = Payment {
+            id: payment_id,
+            member_id: None,
+            amount_cents,
+            currency: "USD".to_string(),
+            status: PaymentStatus::Pending,
+            payment_method: PaymentMethod::Stripe,
+            stripe_payment_id: Some(session.id.to_string()),
+            description: format!("{} — {}", product_name, donor_name),
+            payment_type: PaymentType::Donation,
+            donation_campaign_id: campaign_id,
+            donor_name: Some(donor_name.to_string()),
+            donor_email: Some(donor_email.to_string()),
             paid_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -431,14 +522,33 @@ impl StripeClient {
 
         if payment_type_str == "donation" {
             tracing::info!(
-                "Donation completed for member {} (campaign: {:?}, amount: {})",
-                payment.member_id, payment.donation_campaign_id, payment.amount_cents,
+                "Donation completed: payment={} member={:?} donor={:?} campaign={:?} amount={}",
+                payment.id, payment.member_id, payment.donor_email,
+                payment.donation_campaign_id, payment.amount_cents,
             );
             return Ok(());
         }
 
-        // Membership flow. Look up the slug from metadata and run
-        // the dues-extend + reschedule-if-enrolled chain.
+        // Membership flow. A membership Checkout session was always
+        // created with a real member_id (see create_membership_checkout_session)
+        // so the Option here is invariably Some. Bail loudly if not —
+        // it's a data-integrity violation and we don't want to silently
+        // run the rest of the flow with a fabricated UUID.
+        let member_id = match payment.member_id {
+            Some(id) => id,
+            None => {
+                tracing::error!(
+                    "Membership payment {} has NULL member_id — data integrity violation",
+                    payment.id,
+                );
+                return Err(AppError::Database(
+                    "membership payment without member_id".to_string()
+                ));
+            }
+        };
+
+        // Look up the slug from metadata and run the dues-extend +
+        // reschedule-if-enrolled chain.
         let membership_type_slug = session.metadata
             .as_ref()
             .and_then(|m| m.get("membership_type_slug"))
@@ -460,7 +570,7 @@ impl StripeClient {
                  falling back to member's current membership type",
                 session_id,
             );
-            let member = self.member_repo.find_by_id(payment.member_id).await?;
+            let member = self.member_repo.find_by_id(member_id).await?;
             let mt_id = member.as_ref().and_then(|m| m.membership_type_id);
             match mt_id {
                 Some(id) => self.membership_type_service.get(id).await?.map(|mt| mt.slug),
@@ -469,39 +579,39 @@ impl StripeClient {
         };
 
         if let Some(slug) = &resolved_slug {
-            self.extend_member_dues(payment.id, payment.member_id, slug).await?;
+            self.extend_member_dues(payment.id, member_id, slug).await?;
 
             if let Err(e) = billing_service
-                .reschedule_after_payment(payment.member_id, slug)
+                .reschedule_after_payment(member_id, slug)
                 .await
             {
                 tracing::error!(
                     "Member {} paid via Checkout but reschedule failed: {}",
-                    payment.member_id, e,
+                    member_id, e,
                 );
             }
         } else {
             tracing::error!(
                 "Couldn't resolve membership type for paid Checkout session {}; \
                  dues NOT extended for member {} — operator must reconcile",
-                session_id, payment.member_id,
+                session_id, member_id,
             );
             self.integration_manager.handle_event(IntegrationEvent::AdminAlert {
                 subject: format!(
                     "Checkout paid but dues not extended — member {}",
-                    payment.member_id,
+                    member_id,
                 ),
                 body: format!(
                     "Checkout session {} (payment {}) was paid by member {} \
                      but no membership type could be resolved (no metadata, \
                      no current type on record). Dues were NOT extended. \
                      Reconcile manually.",
-                    session_id, payment.id, payment.member_id,
+                    session_id, payment.id, member_id,
                 ),
             }).await;
         }
 
-        tracing::info!("Payment completed for member: {}", payment.member_id);
+        tracing::info!("Payment completed for member: {}", member_id);
         Ok(())
     }
 
@@ -636,12 +746,14 @@ impl StripeClient {
         // belonging to one member could in theory be stapled to a PI
         // crafted with that row's id but a different member/amount
         // by anyone with Stripe API write access. We refuse if the
-        // shape doesn't match: same member, same amount.
+        // shape doesn't match: same member, same amount. Public donations
+        // (payment.member_id IS NULL) skip the member equality check —
+        // the PI metadata for those carries donor_email instead.
         let metadata_member_id = intent.metadata.get("member_id")
             .and_then(|s| Uuid::parse_str(s).ok());
-        if metadata_member_id != Some(payment.member_id) {
+        if payment.member_id.is_some() && metadata_member_id != payment.member_id {
             tracing::warn!(
-                "PI {} payment_id metadata points at payment {} (member {}), \
+                "PI {} payment_id metadata points at payment {} (member {:?}), \
                  but PI's member_id metadata is {:?}; refusing to act",
                 intent.id, payment_id, payment.member_id, metadata_member_id,
             );
@@ -668,8 +780,8 @@ impl StripeClient {
         }
 
         tracing::info!(
-            "Self-healing payment {} via PI.succeeded webhook (member: {})",
-            payment_id, payment.member_id,
+            "Self-healing payment {} via PI.succeeded webhook (member: {:?}, donor: {:?})",
+            payment_id, payment.member_id, payment.donor_email,
         );
 
         // Post-work depends on payment_type. Donations have none —
@@ -679,12 +791,26 @@ impl StripeClient {
         // membership_type since saved-card charges don't carry it on
         // the Payment row.
         if payment.payment_type == PaymentType::Membership {
-            let member = match self.member_repo.find_by_id(payment.member_id).await? {
+            // Membership payments must have a member; data integrity
+            // violation otherwise (CHECK constraint should prevent it).
+            let member_id = match payment.member_id {
+                Some(id) => id,
+                None => {
+                    tracing::error!(
+                        "Membership payment {} has NULL member_id — data integrity violation",
+                        payment_id,
+                    );
+                    return Err(AppError::Database(
+                        "membership payment without member_id".to_string()
+                    ));
+                }
+            };
+            let member = match self.member_repo.find_by_id(member_id).await? {
                 Some(m) => m,
                 None => {
                     tracing::warn!(
                         "Self-healed payment {} for missing member {}; skipping post-work",
-                        payment_id, payment.member_id,
+                        payment_id, member_id,
                     );
                     return Ok(());
                 }
@@ -694,7 +820,7 @@ impl StripeClient {
                 None => {
                     tracing::warn!(
                         "Member {} has no membership_type_id; can't extend dues for self-healed payment {}",
-                        payment.member_id, payment_id,
+                        member_id, payment_id,
                     );
                     return Ok(());
                 }
@@ -705,14 +831,14 @@ impl StripeClient {
                 None => {
                     tracing::warn!(
                         "Member {}'s membership_type {} not found; can't extend dues for self-healed payment {}",
-                        payment.member_id, mt_id, payment_id,
+                        member_id, mt_id, payment_id,
                     );
                     return Ok(());
                 }
             };
-            self.extend_member_dues(payment_id, payment.member_id, &slug).await?;
+            self.extend_member_dues(payment_id, member_id, &slug).await?;
             if let Err(e) = billing_service
-                .reschedule_after_payment(payment.member_id, &slug)
+                .reschedule_after_payment(member_id, &slug)
                 .await
             {
                 tracing::error!(
@@ -934,7 +1060,7 @@ impl StripeClient {
         let payment_id = Uuid::new_v4();
         let payment = Payment {
             id: payment_id,
-            member_id: member_uuid,
+            member_id: Some(member_uuid),
             amount_cents,
             currency: invoice.currency.map(|c| c.to_string()).unwrap_or_else(|| "usd".to_string()),
             status: PaymentStatus::Completed,
@@ -943,6 +1069,8 @@ impl StripeClient {
             description: format!("Subscription payment ({})", subscription_id),
             payment_type: PaymentType::Membership,
             donation_campaign_id: None,
+            donor_name: None,
+            donor_email: None,
             paid_at: Some(Utc::now()),
             created_at: Utc::now(),
             updated_at: Utc::now(),

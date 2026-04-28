@@ -802,7 +802,7 @@ impl BillingService {
                 // Create payment record
                 let payment = Payment {
                     id: payment_id,
-                    member_id: sp.member_id,
+                    member_id: Some(sp.member_id),
                     amount_cents: sp.amount_cents,
                     currency: sp.currency.clone(),
                     status: PaymentStatus::Completed,
@@ -811,6 +811,8 @@ impl BillingService {
                     description,
                     payment_type: PaymentType::Membership,
                     donation_campaign_id: None,
+                    donor_name: None,
+                    donor_email: None,
                     paid_at: Some(Utc::now()),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),

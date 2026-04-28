@@ -113,6 +113,11 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/payments/methods", get(payments::payment_methods_page))
         .route("/payments/success", get(payments::payment_success_page))
         .route("/payments/cancel", get(payments::payment_cancel_page))
+        // Receipts. Restorable scope: Expired members can still pull
+        // historical receipts (for tax filing) even though they aren't
+        // currently Active.
+        .route("/payments/receipts", get(payments::receipts_page))
+        .route("/payments/:payment_id/receipt", get(payments::receipt_page))
         // Payment/card APIs
         .route("/api/payments/checkout", post(payments::checkout_api))
         .route("/api/payments/charge-saved", post(payments::charge_saved_card_api))
