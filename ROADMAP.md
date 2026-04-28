@@ -138,14 +138,34 @@ not mandate.
 - Primary audience: frontend-site developers consuming public APIs.
 
 ### 3.5 Payment-flow integration tests
-- [ ] Faked `StripeGateway` trait so handlers can be exercised
-      without the real Stripe API
-- [ ] Suite covering saved-card charge (sync + webhook self-heal),
-      refund (admin + dashboard echo), donation (campaign + general),
-      Stripe→Coterie migration, dues extension idempotency
-- Architecture review flagged that landing this unlocks the larger
-  refactors (BillingService split, Gateway/Dispatcher extraction)
-  with much lower risk.
+- [x] **Foundation**: `StripeGateway` trait + `RealStripeGateway`
+      (production) + `FakeStripeGateway` (tests) — see
+      `src/payments/gateway.rs` and `src/payments/fake_gateway.rs`.
+      Trait covers all stripe-rs API surface (~13 methods); fake
+      records every call and returns canned responses. Test-utils
+      Cargo feature exposes the fake to integration tests.
+- [x] First flight of tests in `tests/stripe_gateway_test.rs` (9):
+      saved-card-charge happy path + RequiresAction + missing-customer
+      bail; refund_payment via pi_/cs_/in_ ID forms + unknown-prefix
+      reject + cs_-with-no-intent + Stripe-error propagation. All
+      green.
+- [x] **Migrate remaining StripeClient methods** off direct
+      stripe-rs calls onto the trait. All Stripe SDK access now flows
+      through the gateway: checkout creation, customer get-or-create,
+      setup intents, list/retrieve/detach payment methods, refund
+      resolution (cs_/in_ → pi_), subscription cancel, and
+      `handle_charge_refunded`'s pi→cs fallback. The legacy
+      `client: Client` field on `StripeClient` is gone; the only
+      stripe-rs callsite in `stripe_client.rs` is the static
+      `Webhook::construct_event` for signature verification (kept off
+      the trait deliberately — see `gateway.rs` doc comment).
+- [ ] Webhook-flow tests: dues-extension idempotency on
+      `payment_intent.succeeded` retry, refund-echo
+      (`charge.refunded` finds row already Refunded), Stripe→Coterie
+      auto-renew migration, public-donation Checkout completion.
+- Architecture review flagged that landing the trait unlocks the
+  larger refactors (BillingService split, Gateway/Dispatcher
+  extraction) with much lower risk.
 
 ---
 

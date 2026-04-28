@@ -93,5 +93,11 @@ subtle = "2.6"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde_urlencoded = "0.7.1"
 
+[features]
+# Exposes test-only helpers (FakeStripeGateway, etc.) so integration
+# tests in tests/ can construct fixtures. Enabled automatically for
+# `cargo test`; production builds leave it off.
+test-utils = []
+
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

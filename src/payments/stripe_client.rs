@@ -1,54 +1,28 @@
-use stripe::{
-    Client, CheckoutSession, CheckoutSessionMode, CreateCheckoutSession,
-    CreateCheckoutSessionLineItems, Currency, EventObject, EventType,
-    Webhook, WebhookError, Customer, CreateCustomer, SetupIntent, CreateSetupIntent,
-    PaymentIntent, CreatePaymentIntent, PaymentIntentConfirmationMethod,
-};
+use stripe::{CheckoutSession, EventObject, EventType, Webhook, WebhookError};
 use chrono::Utc;
 use uuid::Uuid;
 use std::sync::Arc;
-use std::time::Duration;
 use sqlx::SqlitePool;
-
-/// Per-request timeout on every Stripe API call. async-stripe 0.39
-/// doesn't expose a way to plug in a reqwest/hyper client with a
-/// timeout — its Client owns a private `BaseClient` and the hyper
-/// builder doesn't apply request-level timeouts. Without this, a
-/// hung Stripe response would tie up an Axum handler forever
-/// (worst case: a webhook handler that never returns, blocking
-/// Stripe's retry from making forward progress).
-///
-/// 30s is well above Stripe's typical p99 response time but low
-/// enough to recover quickly from network or upstream stalls.
-const STRIPE_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Apply STRIPE_TIMEOUT to any Stripe future and translate both the
-/// timeout and the underlying StripeError into AppError::External so
-/// callers can keep their existing `?` chains intact.
-async fn timed<T, F>(fut: F) -> Result<T>
-where
-    F: std::future::Future<Output = std::result::Result<T, stripe::StripeError>>,
-{
-    match tokio::time::timeout(STRIPE_TIMEOUT, fut).await {
-        Ok(Ok(v)) => Ok(v),
-        Ok(Err(e)) => Err(AppError::External(format!("Stripe error: {}", e))),
-        Err(_) => Err(AppError::External(format!(
-            "Stripe API timed out after {}s",
-            STRIPE_TIMEOUT.as_secs(),
-        ))),
-    }
-}
 
 use crate::{
     domain::{Payment, PaymentMethod, PaymentStatus, PaymentType, configurable_types::BillingPeriod},
     error::{AppError, Result},
     integrations::{IntegrationEvent, IntegrationManager},
+    payments::gateway::{
+        CreateCheckoutInput, CreateCustomerInput, CreatePaymentIntentInput,
+        CreateRefundInput, CreateSetupIntentInput, LineItemInput,
+        PaymentIntentResult, StripeGateway,
+    },
     repository::{MemberRepository, PaymentRepository},
     service::{billing_service::BillingService, membership_type_service::MembershipTypeService},
 };
 
 pub struct StripeClient {
-    client: Client,
+    /// Trait-based seam over the Stripe API. Production wraps stripe-rs
+    /// (`RealStripeGateway`); tests substitute a fake. Webhook signature
+    /// verification (`Webhook::construct_event`) is static and lives
+    /// outside the trait.
+    gateway: Arc<dyn StripeGateway>,
     webhook_secret: String,
     payment_repo: Arc<dyn PaymentRepository>,
     member_repo: Arc<dyn MemberRepository>,
@@ -58,6 +32,8 @@ pub struct StripeClient {
 }
 
 impl StripeClient {
+    /// Production constructor: builds a `RealStripeGateway` from the
+    /// API key.
     pub fn new(
         api_key: String,
         webhook_secret: String,
@@ -67,9 +43,28 @@ impl StripeClient {
         integration_manager: Arc<IntegrationManager>,
         db_pool: SqlitePool,
     ) -> Self {
-        let client = Client::new(api_key);
+        let gateway: Arc<dyn StripeGateway> =
+            Arc::new(crate::payments::gateway::RealStripeGateway::new(api_key));
+        Self::with_gateway(
+            gateway, webhook_secret, payment_repo, member_repo,
+            membership_type_service, integration_manager, db_pool,
+        )
+    }
+
+    /// Test seam: build a `StripeClient` with an explicit gateway (e.g.
+    /// `FakeStripeGateway`). Used by integration tests to exercise the
+    /// application logic without making real Stripe calls.
+    pub fn with_gateway(
+        gateway: Arc<dyn StripeGateway>,
+        webhook_secret: String,
+        payment_repo: Arc<dyn PaymentRepository>,
+        member_repo: Arc<dyn MemberRepository>,
+        membership_type_service: Arc<MembershipTypeService>,
+        integration_manager: Arc<IntegrationManager>,
+        db_pool: SqlitePool,
+    ) -> Self {
         Self {
-            client,
+            gateway,
             webhook_secret,
             payment_repo,
             member_repo,
@@ -88,41 +83,28 @@ impl StripeClient {
         success_url: String,
         cancel_url: String,
     ) -> Result<(String, Uuid)> {
-        // Create checkout session with inline price data
-        let mut params = CreateCheckoutSession::new();
-        params.mode = Some(CheckoutSessionMode::Payment);
-        params.success_url = Some(&success_url);
-        params.cancel_url = Some(&cancel_url);
-
-        // Create line items with inline price data
-        params.line_items = Some(vec![CreateCheckoutSessionLineItems {
-            price_data: Some(stripe::CreateCheckoutSessionLineItemsPriceData {
-                currency: Currency::USD,
-                unit_amount: Some(amount_cents),
-                product_data: Some(stripe::CreateCheckoutSessionLineItemsPriceDataProductData {
-                    name: format!("{} Membership", membership_type_name),
-                    description: Some(format!("{} membership dues", membership_type_name)),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            quantity: Some(1),
-            ..Default::default()
-        }]);
-
-        // Add metadata for tracking (store slug for dues extension lookup).
-        // payment_type makes the webhook handler's branching explicit
-        // — it pairs with the donation flow which sets payment_type=donation.
+        // Metadata: payment_type makes the webhook handler's branching
+        // explicit (pairs with the donation flow which sets
+        // payment_type=donation); membership_type_slug is what dues
+        // extension looks up on the type registry.
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("member_id".to_string(), member_id.to_string());
         metadata.insert("payment_type".to_string(), "membership".to_string());
         metadata.insert("membership_type".to_string(), membership_type_name.to_string());
         metadata.insert("membership_type_slug".to_string(), membership_type_slug.to_string());
-        params.metadata = Some(metadata);
-        let member_id_str = member_id.to_string();
-        params.client_reference_id = Some(&member_id_str);
 
-        let session = timed(CheckoutSession::create(&self.client, params)).await?;
+        let session = self.gateway.create_checkout_session(CreateCheckoutInput {
+            success_url,
+            cancel_url,
+            line_items: vec![LineItemInput {
+                amount_cents,
+                product_name: format!("{} Membership", membership_type_name),
+                product_description: Some(format!("{} membership dues", membership_type_name)),
+            }],
+            metadata,
+            client_reference_id: Some(member_id.to_string()),
+            customer_email: None,
+        }).await?;
 
         // Create pending payment record
         let payment_id = Uuid::new_v4();
@@ -133,7 +115,7 @@ impl StripeClient {
             currency: "USD".to_string(),
             status: PaymentStatus::Pending,
             payment_method: PaymentMethod::Stripe,
-            stripe_payment_id: Some(session.id.to_string()),
+            stripe_payment_id: Some(session.session_id),
             description: format!("{} Membership Payment", membership_type_name),
             payment_type: PaymentType::Membership,
             donation_campaign_id: None,
@@ -146,10 +128,7 @@ impl StripeClient {
 
         self.payment_repo.create(payment).await?;
 
-        // Return the checkout URL and payment ID
-        let url = session.url
-            .ok_or_else(|| AppError::External("No checkout URL returned".to_string()))?;
-        Ok((url, payment_id))
+        Ok((session.url, payment_id))
     }
 
     /// Build a Stripe Checkout session for a one-time donation. The
@@ -167,31 +146,11 @@ impl StripeClient {
         success_url: String,
         cancel_url: String,
     ) -> Result<(String, Uuid)> {
-        let mut params = CreateCheckoutSession::new();
-        params.mode = Some(CheckoutSessionMode::Payment);
-        params.success_url = Some(&success_url);
-        params.cancel_url = Some(&cancel_url);
-
         let product_name = if campaign_id.is_some() {
             format!("Donation to {}", campaign_name)
         } else {
             "Donation".to_string()
         };
-
-        params.line_items = Some(vec![CreateCheckoutSessionLineItems {
-            price_data: Some(stripe::CreateCheckoutSessionLineItemsPriceData {
-                currency: Currency::USD,
-                unit_amount: Some(amount_cents),
-                product_data: Some(stripe::CreateCheckoutSessionLineItemsPriceDataProductData {
-                    name: product_name.clone(),
-                    description: Some(product_name.clone()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            quantity: Some(1),
-            ..Default::default()
-        }]);
 
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("member_id".to_string(), member_id.to_string());
@@ -199,11 +158,19 @@ impl StripeClient {
         if let Some(cid) = campaign_id {
             metadata.insert("donation_campaign_id".to_string(), cid.to_string());
         }
-        params.metadata = Some(metadata);
-        let member_id_str = member_id.to_string();
-        params.client_reference_id = Some(&member_id_str);
 
-        let session = timed(CheckoutSession::create(&self.client, params)).await?;
+        let session = self.gateway.create_checkout_session(CreateCheckoutInput {
+            success_url,
+            cancel_url,
+            line_items: vec![LineItemInput {
+                amount_cents,
+                product_name: product_name.clone(),
+                product_description: Some(product_name.clone()),
+            }],
+            metadata,
+            client_reference_id: Some(member_id.to_string()),
+            customer_email: None,
+        }).await?;
 
         let payment_id = Uuid::new_v4();
         let payment = Payment {
@@ -213,7 +180,7 @@ impl StripeClient {
             currency: "USD".to_string(),
             status: PaymentStatus::Pending,
             payment_method: PaymentMethod::Stripe,
-            stripe_payment_id: Some(session.id.to_string()),
+            stripe_payment_id: Some(session.session_id),
             description: product_name,
             payment_type: PaymentType::Donation,
             donation_campaign_id: campaign_id,
@@ -225,9 +192,7 @@ impl StripeClient {
         };
         self.payment_repo.create(payment).await?;
 
-        let url = session.url
-            .ok_or_else(|| AppError::External("No checkout URL returned".to_string()))?;
-        Ok((url, payment_id))
+        Ok((session.url, payment_id))
     }
 
     /// Donation Checkout for a public (non-member) donor. The donor's
@@ -251,34 +216,11 @@ impl StripeClient {
         success_url: String,
         cancel_url: String,
     ) -> Result<(String, Uuid)> {
-        let mut params = CreateCheckoutSession::new();
-        params.mode = Some(CheckoutSessionMode::Payment);
-        params.success_url = Some(&success_url);
-        params.cancel_url = Some(&cancel_url);
-        // Pre-fill the email on the hosted Checkout page. Stripe also
-        // sends the receipt to whatever email the donor confirms.
-        params.customer_email = Some(donor_email);
-
         let product_name = if campaign_id.is_some() {
             format!("Donation to {}", campaign_name)
         } else {
             "Donation".to_string()
         };
-
-        params.line_items = Some(vec![CreateCheckoutSessionLineItems {
-            price_data: Some(stripe::CreateCheckoutSessionLineItemsPriceData {
-                currency: Currency::USD,
-                unit_amount: Some(amount_cents),
-                product_data: Some(stripe::CreateCheckoutSessionLineItemsPriceDataProductData {
-                    name: product_name.clone(),
-                    description: Some(product_name.clone()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            quantity: Some(1),
-            ..Default::default()
-        }]);
 
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("payment_type".to_string(), "donation".to_string());
@@ -288,9 +230,21 @@ impl StripeClient {
         if let Some(cid) = campaign_id {
             metadata.insert("donation_campaign_id".to_string(), cid.to_string());
         }
-        params.metadata = Some(metadata);
 
-        let session = timed(CheckoutSession::create(&self.client, params)).await?;
+        let session = self.gateway.create_checkout_session(CreateCheckoutInput {
+            success_url,
+            cancel_url,
+            line_items: vec![LineItemInput {
+                amount_cents,
+                product_name: product_name.clone(),
+                product_description: Some(product_name.clone()),
+            }],
+            metadata,
+            client_reference_id: None,
+            // Pre-fill the email on the hosted Checkout page. Stripe also
+            // sends the receipt to whatever email the donor confirms.
+            customer_email: Some(donor_email.to_string()),
+        }).await?;
 
         let payment_id = Uuid::new_v4();
         let payment = Payment {
@@ -300,7 +254,7 @@ impl StripeClient {
             currency: "USD".to_string(),
             status: PaymentStatus::Pending,
             payment_method: PaymentMethod::Stripe,
-            stripe_payment_id: Some(session.id.to_string()),
+            stripe_payment_id: Some(session.session_id),
             description: format!("{} — {}", product_name, donor_name),
             payment_type: PaymentType::Donation,
             donation_campaign_id: campaign_id,
@@ -312,9 +266,7 @@ impl StripeClient {
         };
         self.payment_repo.create(payment).await?;
 
-        let url = session.url
-            .ok_or_else(|| AppError::External("No checkout URL returned".to_string()))?;
-        Ok((url, payment_id))
+        Ok((session.url, payment_id))
     }
 
     pub async fn handle_webhook(
@@ -903,17 +855,13 @@ impl StripeClient {
         // owns this PaymentIntent, then match. The list API filters
         // server-side, so this is a single round trip.
         if row.is_none() {
-            if let Some(pi) = pi_id.as_deref().and_then(|s| s.parse::<stripe::PaymentIntentId>().ok()) {
-                let mut params = stripe::ListCheckoutSessions::new();
-                params.payment_intent = Some(pi);
-                params.limit = Some(1);
-                if let Ok(sessions) = timed(stripe::CheckoutSession::list(&self.client, &params)).await {
-                    if let Some(session) = sessions.data.first() {
-                        let cs_id = session.id.to_string();
+            if let Some(pi) = pi_id.as_deref() {
+                if let Ok(sessions) = self.gateway.list_checkout_sessions_by_intent(pi).await {
+                    if let Some(cs_id) = sessions.first() {
                         row = sqlx::query_as(
                             "SELECT id, status FROM payments WHERE stripe_payment_id = ? LIMIT 1",
                         )
-                        .bind(&cs_id)
+                        .bind(cs_id)
                         .fetch_optional(&self.db_pool)
                         .await
                         .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
@@ -1336,16 +1284,14 @@ impl StripeClient {
         }
 
         // Create new Stripe Customer
-        let mut params = CreateCustomer::new();
-        params.email = Some(email);
-        params.name = Some(name);
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("member_id".to_string(), member_id.to_string());
-        params.metadata = Some(metadata);
 
-        let customer = timed(Customer::create(&self.client, params)).await?;
-
-        let customer_id = customer.id.to_string();
+        let customer_id = self.gateway.create_customer(CreateCustomerInput {
+            email: email.to_string(),
+            name: Some(name.to_string()),
+            metadata,
+        }).await?;
 
         // Store in member record
         sqlx::query("UPDATE members SET stripe_customer_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
@@ -1369,20 +1315,15 @@ impl StripeClient {
     ) -> Result<String> {
         let customer_id = self.get_or_create_customer(member_id, email, name).await?;
 
-        let mut params = CreateSetupIntent::new();
-        params.customer = Some(customer_id.parse().map_err(|_| {
-            AppError::Internal("Invalid customer ID".to_string())
-        })?);
-        params.payment_method_types = Some(vec!["card".to_string()]);
-
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("member_id".to_string(), member_id.to_string());
-        params.metadata = Some(metadata);
 
-        let setup_intent = timed(SetupIntent::create(&self.client, params)).await?;
+        let out = self.gateway.create_setup_intent(CreateSetupIntentInput {
+            customer_id,
+            metadata,
+        }).await?;
 
-        setup_intent.client_secret
-            .ok_or_else(|| AppError::External("No client_secret in SetupIntent".to_string()))
+        Ok(out.client_secret)
     }
 
     /// Charge a saved payment method (card).
@@ -1422,45 +1363,29 @@ impl StripeClient {
         let customer_id = customer_id
             .ok_or_else(|| AppError::BadRequest("Member has no Stripe customer".to_string()))?;
 
-        let mut params = CreatePaymentIntent::new(amount_cents, Currency::USD);
-        params.customer = Some(customer_id.parse().map_err(|_| {
-            AppError::Internal("Invalid customer ID".to_string())
-        })?);
-        params.payment_method = Some(stripe_payment_method_id.parse().map_err(|_| {
-            AppError::Internal("Invalid payment method ID".to_string())
-        })?);
-        params.confirm = Some(true);
-        params.confirmation_method = Some(PaymentIntentConfirmationMethod::Automatic);
-        params.description = Some(description);
-        params.off_session = Some(stripe::PaymentIntentOffSession::exists(true));
-
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("member_id".to_string(), member_id.to_string());
         metadata.insert("payment_id".to_string(), payment_id.to_string());
-        params.metadata = Some(metadata);
 
-        // Attach the idempotency key to this specific request.
-        let idempotent_client = self.client.clone().with_strategy(
-            stripe::RequestStrategy::Idempotent(idempotency_key.to_string())
-        );
+        let result = self.gateway.create_payment_intent(CreatePaymentIntentInput {
+            amount_cents,
+            customer_id,
+            payment_method_id: stripe_payment_method_id.to_string(),
+            description: description.to_string(),
+            metadata,
+            idempotency_key: idempotency_key.to_string(),
+        }).await?;
 
-        let payment_intent = timed(PaymentIntent::create(&idempotent_client, params)).await
-            .map_err(|e| match e {
-                AppError::External(msg) => AppError::External(format!("Stripe charge failed: {}", msg)),
-                other => other,
-            })?;
-
-        // Check status
-        match payment_intent.status {
-            stripe::PaymentIntentStatus::Succeeded => {
+        match result {
+            PaymentIntentResult::Succeeded { id } => {
                 tracing::info!("Successfully charged {} for member {}", amount_cents, member_id);
-                Ok(payment_intent.id.to_string())
+                Ok(id)
             }
-            stripe::PaymentIntentStatus::RequiresAction => {
+            PaymentIntentResult::RequiresAction { .. } => {
                 Err(AppError::External("Payment requires additional authentication".to_string()))
             }
-            status => {
-                Err(AppError::External(format!("Payment failed with status: {:?}", status)))
+            PaymentIntentResult::Other { status, .. } => {
+                Err(AppError::External(format!("Payment failed with status: {}", status)))
             }
         }
     }
@@ -1478,44 +1403,24 @@ impl StripeClient {
         &self,
         customer_id: &str,
     ) -> Result<Vec<CustomerCardSummary>> {
-        let cid: stripe::CustomerId = customer_id.parse().map_err(|_| {
-            AppError::BadRequest(format!("Invalid customer ID: {}", customer_id))
-        })?;
+        // Retrieve the customer once so we can identify which PM is the
+        // invoice-default; the gateway's list call returns the cards
+        // themselves.
+        let customer = self.gateway.retrieve_customer(customer_id).await?;
+        let default_pm_id = customer.default_payment_method_id;
 
-        // Default PM lives on Customer.invoice_settings.default_payment_method.
-        // We retrieve once so we can flag which list entry is the default.
-        let customer = timed(stripe::Customer::retrieve(&self.client, &cid, &[])).await?;
+        let pms = self.gateway.list_payment_methods(customer_id).await?;
 
-        let default_pm_id: Option<String> = customer.invoice_settings
-            .as_ref()
-            .and_then(|s| s.default_payment_method.as_ref())
-            .map(|exp| exp.id().to_string());
-
-        // Single page is fine — typical members have 1–2 cards. Stripe's
-        // page size cap is 100 which is plenty.
-        let mut params = stripe::ListPaymentMethods::new();
-        params.customer = Some(cid);
-        params.type_ = Some(stripe::PaymentMethodTypeFilter::Card);
-        params.limit = Some(100);
-
-        let list = timed(stripe::PaymentMethod::list(&self.client, &params)).await?;
-
-        let mut out = Vec::new();
-        for pm in list.data {
-            let pm_id = pm.id.to_string();
-            let card = match pm.card {
-                Some(c) => c,
-                None => continue, // Defensive — type filter should prevent this
-            };
-            out.push(CustomerCardSummary {
-                is_default: default_pm_id.as_deref() == Some(pm_id.as_str()),
-                payment_method_id: pm_id,
-                last_four: card.last4,
-                brand: card.brand.to_lowercase(),
-                exp_month: card.exp_month as i32,
-                exp_year: card.exp_year as i32,
-            });
-        }
+        let mut out: Vec<CustomerCardSummary> = pms.into_iter().map(|pm| {
+            CustomerCardSummary {
+                is_default: default_pm_id.as_deref() == Some(pm.id.as_str()),
+                payment_method_id: pm.id,
+                last_four: pm.last4,
+                brand: pm.brand,
+                exp_month: pm.exp_month,
+                exp_year: pm.exp_year,
+            }
+        }).collect();
 
         // Defensive: if Stripe didn't tell us which is default and we
         // got exactly one, treat it as default. (Stripe sometimes
@@ -1553,28 +1458,18 @@ impl StripeClient {
         stored_stripe_id: &str,
         idempotency_key: &str,
     ) -> Result<String> {
-        let payment_intent_id: stripe::PaymentIntentId = if stored_stripe_id.starts_with("pi_") {
-            stored_stripe_id.parse().map_err(|_| {
-                AppError::BadRequest(format!("Invalid PaymentIntent ID: {}", stored_stripe_id))
-            })?
+        let payment_intent_id: String = if stored_stripe_id.starts_with("pi_") {
+            stored_stripe_id.to_string()
         } else if stored_stripe_id.starts_with("cs_") {
-            let session_id: stripe::CheckoutSessionId = stored_stripe_id.parse().map_err(|_| {
-                AppError::BadRequest(format!("Invalid CheckoutSession ID: {}", stored_stripe_id))
-            })?;
-            let session = timed(stripe::CheckoutSession::retrieve(&self.client, &session_id, &[])).await?;
-            let pi_expandable = session.payment_intent.ok_or_else(|| AppError::BadRequest(
+            let session = self.gateway.retrieve_checkout_session(stored_stripe_id).await?;
+            session.payment_intent_id.ok_or_else(|| AppError::BadRequest(
                 "Checkout session has no PaymentIntent — not a charge that can be refunded".to_string()
-            ))?;
-            pi_expandable.id()
+            ))?
         } else if stored_stripe_id.starts_with("in_") {
-            let invoice_id: stripe::InvoiceId = stored_stripe_id.parse().map_err(|_| {
-                AppError::BadRequest(format!("Invalid Invoice ID: {}", stored_stripe_id))
-            })?;
-            let invoice = timed(stripe::Invoice::retrieve(&self.client, &invoice_id, &[])).await?;
-            let pi_expandable = invoice.payment_intent.ok_or_else(|| AppError::BadRequest(
+            let invoice = self.gateway.retrieve_invoice(stored_stripe_id).await?;
+            invoice.payment_intent_id.ok_or_else(|| AppError::BadRequest(
                 "Invoice has no PaymentIntent — not a charge that can be refunded".to_string()
-            ))?;
-            pi_expandable.id()
+            ))?
         } else {
             return Err(AppError::BadRequest(format!(
                 "Unrecognized Stripe ID format '{}': expected pi_, cs_, or in_ prefix",
@@ -1582,24 +1477,16 @@ impl StripeClient {
             )));
         };
 
-        let mut params = stripe::CreateRefund::new();
-        params.payment_intent = Some(payment_intent_id.clone());
-        // No amount → full refund. Stripe ignores currency.
-
-        let idempotent_client = self.client.clone().with_strategy(
-            stripe::RequestStrategy::Idempotent(idempotency_key.to_string())
-        );
-        let refund = timed(stripe::Refund::create(&idempotent_client, params)).await
-            .map_err(|e| match e {
-                AppError::External(msg) => AppError::External(format!("Stripe refund failed: {}", msg)),
-                other => other,
-            })?;
+        let refund = self.gateway.create_refund(CreateRefundInput {
+            payment_intent_id: payment_intent_id.clone(),
+            idempotency_key: idempotency_key.to_string(),
+        }).await?;
 
         tracing::info!(
             "Refunded PaymentIntent {} → Refund {}",
             payment_intent_id, refund.id,
         );
-        Ok(refund.id.to_string())
+        Ok(refund.id)
     }
 
     /// Immediately cancel a Stripe subscription. Used during the
@@ -1611,14 +1498,7 @@ impl StripeClient {
     /// idempotent against members already in `coterie_managed`
     /// (won't clobber their billing_mode back to manual).
     pub async fn cancel_subscription(&self, subscription_id: &str) -> Result<()> {
-        let sub_id: stripe::SubscriptionId = subscription_id.parse().map_err(|_| {
-            AppError::BadRequest(format!("Invalid subscription ID: {}", subscription_id))
-        })?;
-        timed(stripe::Subscription::delete(&self.client, &sub_id)).await
-            .map_err(|e| match e {
-                AppError::External(msg) => AppError::External(format!("Stripe cancel failed: {}", msg)),
-                other => other,
-            })?;
+        self.gateway.delete_subscription(subscription_id).await?;
         tracing::info!("Cancelled Stripe subscription {}", subscription_id);
         Ok(())
     }
@@ -1629,15 +1509,7 @@ impl StripeClient {
     /// indefinitely (compliance / trust). Idempotent — Stripe returns
     /// success on an already-detached PM, error mapped to External.
     pub async fn detach_payment_method(&self, payment_method_id: &str) -> Result<()> {
-        let pm_id: stripe::PaymentMethodId = payment_method_id.parse().map_err(|_| {
-            AppError::BadRequest(format!("Invalid payment method ID: {}", payment_method_id))
-        })?;
-        timed(stripe::PaymentMethod::detach(&self.client, &pm_id)).await
-            .map_err(|e| match e {
-                AppError::External(msg) => AppError::External(format!("Stripe detach failed: {}", msg)),
-                other => other,
-            })?;
-        Ok(())
+        self.gateway.detach_payment_method(payment_method_id).await
     }
 
     /// Retrieve card details from a Stripe PaymentMethod, including
@@ -1651,21 +1523,13 @@ impl StripeClient {
         &self,
         payment_method_id: &str,
     ) -> Result<CardDetails> {
-        let pm_id: stripe::PaymentMethodId = payment_method_id.parse().map_err(|_| {
-            AppError::Internal("Invalid payment method ID".to_string())
-        })?;
-
-        let pm = timed(stripe::PaymentMethod::retrieve(&self.client, &pm_id, &[])).await?;
-
-        let card = pm.card.as_ref()
-            .ok_or_else(|| AppError::External("PaymentMethod has no card details".to_string()))?;
-
+        let pm = self.gateway.retrieve_payment_method(payment_method_id).await?;
         Ok(CardDetails {
-            last_four: card.last4.clone(),
-            brand: card.brand.to_lowercase(),
-            exp_month: card.exp_month as i32,
-            exp_year: card.exp_year as i32,
-            customer_id: pm.customer.as_ref().map(|c| c.id().to_string()),
+            last_four: pm.last4,
+            brand: pm.brand,
+            exp_month: pm.exp_month,
+            exp_year: pm.exp_year,
+            customer_id: pm.customer_id,
         })
     }
 }
