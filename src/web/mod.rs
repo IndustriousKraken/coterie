@@ -34,6 +34,8 @@ pub fn create_web_routes(state: AppState) -> Router {
         // Auth pages (web interface)
         .route("/login", get(templates::auth::login_page))
         .route("/login", post(templates::auth::login_handler))
+        .route("/login/totp", get(templates::auth::login_totp_page))
+        .route("/login/totp", post(templates::auth::login_totp_handler))
         .route("/logout", post(templates::auth::logout_handler))
 
         // Email verification landing (from signup email link)

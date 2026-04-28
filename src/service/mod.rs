@@ -10,7 +10,7 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 use crate::repository::*;
 use crate::integrations::IntegrationManager;
-use crate::auth::{AuthService, CsrfService};
+use crate::auth::{AuthService, CsrfService, PendingLoginService, TotpService};
 use crate::email::EmailSender;
 use audit_service::AuditService;
 use settings_service::SettingsService;
@@ -31,6 +31,8 @@ pub struct ServiceContext {
     pub integration_manager: Arc<IntegrationManager>,
     pub auth_service: Arc<AuthService>,
     pub csrf_service: Arc<CsrfService>,
+    pub totp_service: Arc<TotpService>,
+    pub pending_login_service: Arc<PendingLoginService>,
     pub settings_service: Arc<SettingsService>,
     pub event_type_service: Arc<EventTypeService>,
     pub announcement_type_service: Arc<AnnouncementTypeService>,
@@ -51,6 +53,8 @@ impl ServiceContext {
         email_sender: Arc<dyn EmailSender>,
         settings_service: Arc<SettingsService>,
         csrf_service: Arc<CsrfService>,
+        totp_service: Arc<TotpService>,
+        pending_login_service: Arc<PendingLoginService>,
         db_pool: SqlitePool,
     ) -> Self {
         let audit_service = Arc::new(AuditService::new(db_pool.clone()));
@@ -81,6 +85,8 @@ impl ServiceContext {
             integration_manager,
             auth_service,
             csrf_service,
+            totp_service,
+            pending_login_service,
             settings_service,
             event_type_service,
             announcement_type_service,

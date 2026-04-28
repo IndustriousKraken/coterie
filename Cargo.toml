@@ -89,6 +89,13 @@ base64 = "0.22"
 hmac = "0.12"
 subtle = "2.6"
 
+# TOTP (RFC 6238) for admin/member 2FA + QR for the enrollment page.
+# `totp-rs` default features pull in qrcodegen-rs and a couple of
+# extras we don't need; we render the QR ourselves with `qrcode` so we
+# strip them.
+totp-rs = { version = "5", default-features = false, features = ["otpauth"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+
 # HTTP client for outbound integrations (Discord, future Unifi)
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde_urlencoded = "0.7.1"

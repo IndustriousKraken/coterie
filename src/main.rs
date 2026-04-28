@@ -107,6 +107,24 @@ async fn main() -> anyhow::Result<()> {
     // tokens (users get a 403 on next submit and retry).
     let csrf_service = Arc::new(auth::CsrfService::new(&settings.auth.session_secret));
 
+    // TOTP / 2FA. Issuer is the org name shown in authenticator apps;
+    // we look it up once at startup, fall back to "Coterie" if unset.
+    // Live org-name changes don't propagate without restart, but
+    // existing enrollments aren't affected (issuer is metadata in the
+    // enrolled otpauth URL, not part of the verification math).
+    let totp_issuer = settings_service
+        .get_setting("org.name").await
+        .ok()
+        .map(|s| s.value)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Coterie".to_string());
+    let totp_service = Arc::new(auth::TotpService::new(
+        db_pool.clone(),
+        crypto.clone(),
+        totp_issuer,
+    ));
+    let pending_login_service = Arc::new(auth::PendingLoginService::new(db_pool.clone()));
+
     // Initialize repositories
     let member_repo = Arc::new(repository::SqliteMemberRepository::new(db_pool.clone()));
     let event_repo = Arc::new(repository::SqliteEventRepository::new(db_pool.clone()));
@@ -168,6 +186,8 @@ async fn main() -> anyhow::Result<()> {
         email_sender,
         settings_service,
         csrf_service,
+        totp_service,
+        pending_login_service,
         db_pool.clone(),
     ));
 

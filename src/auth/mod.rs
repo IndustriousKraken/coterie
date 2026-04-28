@@ -12,13 +12,18 @@ use crate::{
 
 pub mod csrf;
 pub mod email_tokens;
+pub mod pending_login;
+pub mod recovery_codes;
 pub mod secret_crypto;
 pub mod session;
+pub mod totp;
 
 use session::{Session, SessionStore};
 pub use csrf::CsrfService;
 pub use email_tokens::EmailTokenService;
+pub use pending_login::PendingLoginService;
 pub use secret_crypto::SecretCrypto;
+pub use totp::TotpService;
 
 pub struct AuthService {
     session_store: SessionStore,

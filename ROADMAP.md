@@ -107,14 +107,35 @@ Pick by mood; nothing here gates anything else. Order is suggestion,
 not mandate.
 
 ### 3.1 Admin TOTP / 2FA
-- [ ] `totp-rs` (or equivalent), TOTP-based 2FA
-- [ ] Admins first. Members can opt in via profile settings.
-- [ ] Recovery codes (mandatory, generated at enrollment, displayed
-      once)
-- [ ] QR-code enrollment page
-- [ ] Two-step login UX for TOTP-enabled accounts
-- Rationale: highest-impact compromise is an admin session →
-  protect that first.
+- [x] `totp-rs` (RFC 6238) for codes, `qrcode` for inline-SVG QR.
+      Both pure-Rust, no native deps.
+- [x] Available to every member via `/portal/profile/security`.
+      Admin-only enforcement is a future toggle — the same opt-in
+      flow already covers admins.
+- [x] 10 recovery codes per enrollment, argon2-hashed in
+      `members.totp_recovery_codes` (JSON), one-time use, displayed
+      ONCE on enrollment + on regenerate. Format-tolerant verify
+      (case/whitespace/hyphens).
+- [x] QR + manual-key enrollment page (HTMX swap, no page reload).
+      Secret round-trips via hidden field, only persists once a fresh
+      TOTP code verifies.
+- [x] Two-step login: POST /login mints a 5-minute `pending_login`
+      cookie when 2FA is on, redirects to /login/totp; that page
+      accepts a 6-digit code OR a recovery code, atomically consumes
+      the pending row, and runs the session-fixation sweep before
+      issuing the real session.
+- [x] Disable + regenerate-codes both require a current TOTP or
+      recovery code — design choice: members already have a session,
+      so password-reuse here adds no defense.
+- [x] Migration 018: members.totp_secret_encrypted (TEXT, encrypted
+      with `SecretCrypto`), totp_enabled_at, totp_recovery_codes;
+      pending_logins table.
+- [x] 13 integration tests (`tests/totp_test.rs`) covering
+      enrollment round-trip, wrong-code rejection, off-window verify,
+      disable-clears-everything, recovery-code one-time use,
+      regenerate-invalidates-old-set, format normalization, and the
+      pending_login lifecycle (consume, find-without-consume, expiry,
+      disable-wipe). Plus 8 unit tests in the modules themselves.
 
 ### 3.2 Recurring events
 - [ ] RRULE subset that covers the patterns NT actually uses:

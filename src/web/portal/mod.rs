@@ -6,6 +6,7 @@ mod events;
 mod payments;
 mod profile;
 mod restore;
+mod security;
 
 use axum::{
     Router,
@@ -150,6 +151,12 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/profile", get(profile::profile_page))
         .route("/profile", post(profile::update_profile))
         .route("/profile/password", post(profile::update_password))
+        .route("/profile/security", get(security::security_page))
+        .route("/profile/security/totp/enroll/start", post(security::enroll_start))
+        .route("/profile/security/totp/enroll/confirm", post(security::enroll_confirm))
+        .route("/profile/security/totp/disable", post(security::disable))
+        .route("/profile/security/totp/recovery-codes/regenerate",
+               post(security::regenerate_recovery_codes))
         // API endpoints (HTMX fragments) — for Active members only
         .route("/api/events/upcoming", get(dashboard::upcoming_events))
         .route("/api/events/list", get(events::events_list_api))
