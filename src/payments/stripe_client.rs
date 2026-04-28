@@ -1534,6 +1534,42 @@ impl StripeClient {
     }
 }
 
+/// Test-only access to the per-event handlers that `handle_webhook`
+/// dispatches to. Production code must go through `handle_webhook` so
+/// that signature verification and the event-id idempotency claim
+/// happen first; tests target the handlers directly to focus on the
+/// post-dispatch logic without having to construct signed payloads.
+#[cfg(any(test, feature = "test-utils"))]
+impl StripeClient {
+    pub async fn dispatch_payment_intent_succeeded(
+        &self,
+        intent: stripe::PaymentIntent,
+        billing_service: &BillingService,
+    ) -> Result<()> {
+        self.handle_payment_intent_succeeded(intent, billing_service).await
+    }
+
+    pub async fn dispatch_charge_refunded(&self, charge: stripe::Charge) -> Result<()> {
+        self.handle_charge_refunded(charge).await
+    }
+
+    pub async fn dispatch_subscription_deleted(
+        &self,
+        subscription: stripe::Subscription,
+        billing_service: &BillingService,
+    ) -> Result<()> {
+        self.handle_subscription_deleted(subscription, billing_service).await
+    }
+
+    pub async fn dispatch_checkout_session_completed(
+        &self,
+        session: CheckoutSession,
+        billing_service: &BillingService,
+    ) -> Result<()> {
+        self.handle_successful_payment(session, billing_service).await
+    }
+}
+
 /// Card details retrieved from Stripe
 pub struct CardDetails {
     pub last_four: String,

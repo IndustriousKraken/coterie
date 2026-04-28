@@ -159,10 +159,19 @@ not mandate.
       stripe-rs callsite in `stripe_client.rs` is the static
       `Webhook::construct_event` for signature verification (kept off
       the trait deliberately — see `gateway.rs` doc comment).
-- [ ] Webhook-flow tests: dues-extension idempotency on
-      `payment_intent.succeeded` retry, refund-echo
-      (`charge.refunded` finds row already Refunded), Stripe→Coterie
-      auto-renew migration, public-donation Checkout completion.
+- [x] Webhook-flow tests in `tests/stripe_webhook_test.rs` (7):
+      PI.succeeded retry holds the per-payment dues-extension claim
+      so dues_paid_until doesn't shift on the second run; charge.refunded
+      echo on an already-Refunded row is a no-op (no UPDATE);
+      charge.refunded against a Completed row flips it to Refunded
+      (out-of-band Stripe-dashboard refund); customer.subscription.deleted
+      for a migrated (coterie_managed) member is silent — the handler
+      doesn't clobber billing_mode back to manual; same event for an
+      active stripe_subscription member DOES flip to manual (out-of-band
+      cancel via Stripe portal); checkout.session.completed for a
+      public donation marks the row Completed, doesn't stamp
+      dues_extended_at, and upgrades stripe_payment_id from cs_ → pi_.
+      Plus a sanity test that none of the above touch the gateway.
 - Architecture review flagged that landing the trait unlocks the
   larger refactors (BillingService split, Gateway/Dispatcher
   extraction) with much lower risk.
