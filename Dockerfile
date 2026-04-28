@@ -53,12 +53,12 @@ RUN tailwindcss -i static/input.css -o static/style.css --minify
 # ---------------------------------------------------------------------
 FROM rust:1.83-bookworm AS rust-builder
 
-# pkg-config + libssl-dev cover async-stripe's native-tls path; if a
-# future dep flips to a system openssl link we already have it.
+# Coterie is fully rustls (sqlx, reqwest, lettre, async-stripe all
+# configured to use rustls + ring). No system OpenSSL link, so the
+# build needs nothing beyond what the base image already provides.
+# pkg-config still useful for future deps that probe for system libs.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        pkg-config \
-        libssl-dev \
+    && apt-get install -y --no-install-recommends pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -92,7 +92,6 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
-        libssl3 \
         tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 coterie \

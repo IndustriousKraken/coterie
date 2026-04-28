@@ -4,6 +4,15 @@ Reference for operators running Coterie in production. Covers things
 that aren't obvious from reading the code, with a focus on what breaks
 when you change something.
 
+For first-time setup:
+
+- `DEPLOY-DIGITALOCEAN.md` — fresh DigitalOcean droplet end-to-end (Ubuntu)
+- `DEPLOY-AWS.md` — fresh EC2 + EBS (or Lightsail) end-to-end (Ubuntu)
+- `DEPLOY-ALPINE.md` — Alpine Linux with OpenRC (any provider)
+- `MIGRATION.md` — moving Coterie between hosts (DO ↔ AWS, Ubuntu ↔ Alpine, etc.)
+- `RESTORE.md` — restoring from a backup
+- `SETUP.md` — staging environment with GitHub Actions deploys
+
 ---
 
 ## `session_secret` rotation
@@ -78,17 +87,29 @@ It's used as the key-derivation input for three things:
 
 ## Database backups
 
-Coterie uses a single SQLite file (default `data/coterie.db`). Backup
-strategy is whatever your VPS provider offers for file-level snapshots,
-plus occasional `.dump`s for extra safety:
+Coterie ships a backup script + systemd timer (`deploy/backup.sh`,
+`coterie-backup.{service,timer}`) that:
+
+- Runs `VACUUM INTO` daily at 03:30 (consistent live snapshot, no WAL)
+- Maintains 7 daily + 4 weekly + 12 monthly retention
+- Optionally pushes each daily snapshot to S3-compatible storage
+  (DO Spaces, AWS S3, Backblaze B2, Cloudflare R2, Wasabi)
+
+Install it from a deploy guide (`DEPLOY-*.md` section "Schedule
+backups"). For ad-hoc snapshots:
 
 ```bash
-sudo -u coterie sqlite3 /opt/coterie/data/coterie.db ".backup '/opt/coterie/data/backup-$(date +%F).db'"
+sudo -u coterie sqlite3 /var/lib/coterie/coterie.db \
+    "VACUUM INTO '/var/lib/coterie/backups/manual-$(date +%F).db'"
 ```
 
-The WAL-mode database means the live file is safe to copy as long as
-you also copy `coterie.db-shm` and `coterie.db-wal`. Restoring is just
-replacing all three.
+`VACUUM INTO` produces a single self-contained file — no need to copy
+the WAL/SHM siblings. Restore procedure: see `RESTORE.md`.
+
+**Test your backups.** A backup that's never been restored is a wish,
+not a backup. Once a quarter, restore the latest snapshot onto a
+throwaway droplet and click through the portal. Instructions in
+`RESTORE.md`.
 
 ---
 
@@ -118,19 +139,38 @@ Key log lines to watch for:
 
 ## Upgrading
 
-Migrations are embedded in the binary and run automatically at startup
-(see `sqlx::migrate!` in `src/main.rs`). To upgrade:
+Migrations are embedded in the binary (via `sqlx::migrate!`). Templates
+are also compiled into the binary (askama). The runtime needs only:
 
-1. Deploy the new binary + `templates/` + `static/` + `migrations/`.
-2. Restart the service. Migrations run during startup.
-3. If startup fails, the service doesn't start. Check
-   `journalctl -u coterie` for the migration error; the DB is left in
-   its prior state.
+- the `coterie` binary
+- the `static/` directory (CSS / JS served by ServeDir)
 
-Rollback isn't automated. For a deployed release-candidate that
-introduces problems, restore the prior binary and restore the pre-
-migration database snapshot (from the backup you took before
-upgrading — see above).
+To upgrade in place:
+
+1. **Take a backup first.**
+   ```bash
+   sudo systemctl start coterie-backup.service     # one-shot
+   ```
+2. Deploy the new binary (and `static/` if it changed):
+   ```bash
+   sudo systemctl stop coterie
+   sudo install -m 0755 -o coterie -g coterie \
+       new-coterie /opt/coterie/coterie
+   sudo rsync -a static/ /opt/coterie/static/
+   sudo systemctl start coterie
+   ```
+3. Migrations run during startup. If startup fails, the service stays
+   down and the DB is left in its prior state. Check
+   `journalctl -u coterie -n 100`.
+
+Rollback isn't automated. If a release introduces problems:
+
+1. Restore the previous binary
+2. Restore the pre-upgrade DB snapshot (see `RESTORE.md`)
+3. Restart
+
+Forward-compatible migrations are the norm; rollback is an escape
+hatch, not a routine.
 
 ---
 

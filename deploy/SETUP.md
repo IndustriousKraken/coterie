@@ -1,4 +1,16 @@
-# Staging Deployment Setup
+# Staging Deployment Setup (GitHub Actions)
+
+This document covers the staging deployment specifically — a setup
+that uses GitHub Actions to push builds to a DigitalOcean droplet on
+every push to the `staging` branch.
+
+For first-time production setup, see instead:
+
+- `DEPLOY-DIGITALOCEAN.md` — manual production deploy on DO
+- `DEPLOY-AWS.md` — manual production deploy on AWS
+- `MIGRATION.md` — moving between hosts
+
+The procedure here is the staging-specific shortcut.
 
 ## On the Droplet (one-time)
 
@@ -29,9 +41,12 @@ sudo chmod 440 /etc/sudoers.d/coterie
 
 ### 5. Add Caddy config
 ```bash
-# Edit your Caddyfile (usually /etc/caddy/Caddyfile)
-# Add the contents of Caddyfile.snippet, updating the domain
+# Use deploy/Caddyfile.example as the starting point — copy or include
+# it in /etc/caddy/Caddyfile and update the domain.
 
+sudo cp /opt/coterie/deploy/Caddyfile.example /etc/caddy/Caddyfile
+sudo nano /etc/caddy/Caddyfile
+sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 

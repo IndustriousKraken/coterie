@@ -64,12 +64,9 @@ Items still to do. Completed work lives in git history.
 
 ## Operations
 
-- [ ] Docker containerization
-- [ ] SystemD service files
-- [ ] Caddy configuration examples
-- [ ] Backup scripts
 - [ ] Monitoring and alerting setup
-- [ ] CI/CD pipeline (GitHub Actions)
+- [ ] CI/CD pipeline (GitHub Actions) — staging-only flow exists in
+      `deploy/SETUP.md`; full release pipeline still TBD
 - [ ] Pre-commit hooks
 
 ## Documentation

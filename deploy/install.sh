@@ -47,21 +47,14 @@ else
 fi
 
 # --- 2. Directories ---------------------------------------------------
+# Layout:
+#   /opt/coterie/                — binary, static/, deploy/, .env (read-only at runtime)
+#   /var/lib/coterie/            — auto-detected data dir; DB + uploads live here
+#   /var/lib/coterie/backups/    — managed by deploy/backup.sh
 echo "Ensuring directories exist"
 install -d -m 0755 -o "$USER_NAME" -g "$GROUP_NAME" "$APP_DIR"
 install -d -m 0750 -o "$USER_NAME" -g "$GROUP_NAME" "$DATA_DIR"
-install -d -m 0750 -o "$USER_NAME" -g "$GROUP_NAME" "$DATA_DIR/data"
 install -d -m 0750 -o "$USER_NAME" -g "$GROUP_NAME" "$DATA_DIR/backups"
-
-# Symlink so the systemd unit's working directory layout matches.
-# /opt/coterie/data → /var/lib/coterie/data keeps the binary and its
-# data on the same conceptual mount-point while still allowing data
-# to live on a separate filesystem (block storage, EBS, etc.) if you
-# bind-mount it.
-if [[ ! -e "$APP_DIR/data" ]]; then
-    ln -s "$DATA_DIR/data" "$APP_DIR/data"
-    echo "Linked $APP_DIR/data -> $DATA_DIR/data"
-fi
 
 # --- 3. systemd unit --------------------------------------------------
 if [[ ! -f "$SERVICE_FILE_SRC" ]]; then
@@ -93,8 +86,10 @@ Coterie scaffolding is in place. Remaining steps:
      Generate the session secret with:
        openssl rand -hex 32
 
-  3. Set the data directory in .env:
-       COTERIE__SERVER__DATA_DIR=$DATA_DIR/data
+  3. Confirm data directory in .env (auto-detected to $DATA_DIR
+     because that path now exists, so you don't need to set it
+     explicitly — but it's fine to be explicit):
+       COTERIE__SERVER__DATA_DIR=$DATA_DIR
        COTERIE__DATABASE__URL=sqlite://coterie.db
 
   4. Enable + start:

@@ -172,3 +172,23 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed integration examples.
 - Skills directory, achievement badges, voting/polls
 
 See [TODO.md](TODO.md) for the full open-items list.
+
+## Deployment
+
+Production deployment artifacts and walkthroughs live in
+[`deploy/`](deploy/):
+
+- [`DEPLOY-DIGITALOCEAN.md`](deploy/DEPLOY-DIGITALOCEAN.md) —
+  end-to-end DO droplet (Ubuntu, ~45 min)
+- [`DEPLOY-AWS.md`](deploy/DEPLOY-AWS.md) — EC2 + EBS or Lightsail (Ubuntu)
+- [`DEPLOY-ALPINE.md`](deploy/DEPLOY-ALPINE.md) — Alpine Linux + OpenRC
+- [`MIGRATION.md`](deploy/MIGRATION.md) — moving between hosts
+- [`RESTORE.md`](deploy/RESTORE.md) — restoring from a backup
+- [`OPS.md`](deploy/OPS.md) — operational reference (secret rotation,
+  logs, upgrades, routine maintenance)
+
+A multi-stage [`Dockerfile`](Dockerfile) is provided for container
+deploys; the daily backup script + systemd timer
+([`deploy/backup.sh`](deploy/backup.sh),
+[`coterie-backup.timer`](deploy/coterie-backup.timer)) handles
+SQLite snapshots and optional S3-compatible offsite copies.

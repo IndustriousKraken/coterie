@@ -46,8 +46,12 @@ ProtectHostname=true
 ProtectProc=invisible
 
 # Coterie's only writable path is the data directory (SQLite + uploads).
+# We list both /var/lib/coterie (auto-detect default for new deploys
+# via install.sh and the DEPLOY-*.md guides) and /opt/coterie/data
+# (legacy layout used by the GHA staging flow in deploy/SETUP.md).
+# Whichever path exists on this host wins; the other is harmless.
 # Adjust if you put data elsewhere via COTERIE__SERVER__DATA_DIR.
-ReadWritePaths=/opt/coterie/data
+ReadWritePaths=-/var/lib/coterie -/opt/coterie/data
 
 RestrictNamespaces=true
 RestrictRealtime=true

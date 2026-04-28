@@ -20,7 +20,7 @@
 #
 # Required env (with sensible defaults):
 #   COTERIE_DB              path to the live coterie.db
-#                           default: /var/lib/coterie/data/coterie.db
+#                           default: /var/lib/coterie/coterie.db
 #   COTERIE_BACKUP_DIR      where backups go (created if missing)
 #                           default: /var/lib/coterie/backups
 #
@@ -37,7 +37,7 @@
 
 set -euo pipefail
 
-DB="${COTERIE_DB:-/var/lib/coterie/data/coterie.db}"
+DB="${COTERIE_DB:-/var/lib/coterie/coterie.db}"
 BACKUP_DIR="${COTERIE_BACKUP_DIR:-/var/lib/coterie/backups}"
 S3_URI="${COTERIE_BACKUP_S3_URI:-}"
 

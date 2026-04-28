@@ -16,27 +16,27 @@ Goal: a fresh ops person can stand up a new instance from scratch in
 under an hour by following one document, without ever having to know
 a Coterie internal.
 
-- [ ] `Dockerfile` for the Coterie binary (multi-stage, slim runtime)
-- [ ] `systemd.service` template
-- [ ] `Caddyfile` example with TLS auto, reverse proxy, security
-      headers, gzip
-- [ ] `.env.example` annotated with every required setting and what
+- [x] `Dockerfile` for the Coterie binary (multi-stage, slim runtime)
+- [x] `systemd.service` template (`deploy/coterie.service`)
+- [x] `Caddyfile` example with TLS auto, reverse proxy, security
+      headers, gzip (`deploy/Caddyfile.example`)
+- [x] `.env.example` annotated with every required setting and what
       breaks if it's missing
-- [ ] Deploy guide for **DigitalOcean** (droplet sizing, attached
-      block storage for the SQLite file, snapshot strategy)
-- [ ] Deploy guide for **AWS** (EC2 + EBS or Lightsail, equivalent
-      structure)
-- [ ] Migration runbook: "how to move from DO → AWS or vice versa"
-      (the whole point of having two deploy guides — capture the
-      diff so a future migration is mechanical, not improvisational)
+- [x] Deploy guide for **DigitalOcean** (`deploy/DEPLOY-DIGITALOCEAN.md`)
+- [x] Deploy guide for **AWS** (`deploy/DEPLOY-AWS.md`)
+- [x] Deploy guide for **Alpine Linux** (`deploy/DEPLOY-ALPINE.md` —
+      OpenRC + crond, fully musl-static, no Docker required)
+- [x] Migration runbook: DO ↔ AWS (`deploy/MIGRATION.md`)
 
 ### 1.2 Backup
-- [ ] SQLite `VACUUM INTO` to a timestamped file
-- [ ] Daily cron with retention (suggested: 7 daily + 4 weekly + 12 monthly)
-- [ ] Offsite copy hook with S3-compatible defaults; operator picks
-      the bucket / provider
-- [ ] Documented restore procedure, end-to-end, tested once on a
-      throwaway droplet
+- [x] SQLite `VACUUM INTO` to a timestamped file (`deploy/backup.sh`)
+- [x] Daily cron with retention 7 daily + 4 weekly + 12 monthly
+      (`deploy/coterie-backup.{service,timer}`)
+- [x] Offsite copy hook with S3-compatible defaults; operator picks
+      the bucket / provider (env-driven via `COTERIE_BACKUP_S3_URI`)
+- [x] Documented restore procedure (`deploy/RESTORE.md`) — needs one
+      live test on a throwaway droplet before declaring 1.2 done
+      end-to-end
 
 ### 1.3 Manual e2e pass
 - [ ] (rab) End-to-end click-through of every member/admin/auth flow

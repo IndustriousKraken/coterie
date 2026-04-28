@@ -1,0 +1,66 @@
+#!/sbin/openrc-run
+# OpenRC service definition for Coterie on Alpine Linux.
+#
+# Install:
+#   sudo cp deploy/coterie.openrc /etc/init.d/coterie
+#   sudo chmod +x /etc/init.d/coterie
+#   sudo rc-update add coterie default
+#   sudo rc-service coterie start
+#
+# OpenRC doesn't have an EnvironmentFile= equivalent, so the wrapper
+# at /opt/coterie/run.sh sources /opt/coterie/.env before exec'ing the
+# binary. Don't invoke /opt/coterie/coterie directly here — env vars
+# from .env wouldn't be loaded.
+
+name=$RC_SVCNAME
+description="Coterie member management system"
+
+# supervise-daemon (OpenRC 0.42+) is preferable to start-stop-daemon
+# for long-lived processes — it can restart on crash without spawning
+# a watchdog process tree, and it propagates env from the start_pre
+# block cleanly.
+supervisor=supervise-daemon
+
+command="/opt/coterie/run.sh"
+command_user="coterie:coterie"
+
+# Restart on crash, with backoff. respawn_max=0 means restart forever.
+respawn_max=0
+respawn_delay=5
+respawn_period=60
+
+# Where supervise-daemon writes the pidfile. /run is tmpfs on Alpine,
+# rebuilt every boot, so no stale pidfile issues.
+pidfile="/run/$RC_SVCNAME.pid"
+
+# Captures stdout / stderr from the binary. Coterie writes to these
+# via tracing; logrotate or apk's logrotate package can rotate them.
+output_log="/var/log/$RC_SVCNAME/output.log"
+error_log="/var/log/$RC_SVCNAME/error.log"
+
+depend() {
+    need net localmount
+    after firewall
+    use logger dns
+}
+
+start_pre() {
+    # Make sure the data and log dirs exist with the right ownership.
+    # checkpath is idempotent — safe to run on every start.
+    checkpath --directory --owner coterie:coterie --mode 0750 \
+        /var/lib/coterie
+    checkpath --directory --owner coterie:coterie --mode 0750 \
+        /var/lib/coterie/backups
+    checkpath --directory --owner coterie:coterie --mode 0750 \
+        /var/log/$RC_SVCNAME
+
+    if [ ! -f /opt/coterie/.env ]; then
+        eerror "/opt/coterie/.env is missing; refusing to start."
+        eerror "See deploy/DEPLOY-ALPINE.md for setup."
+        return 1
+    fi
+    if [ ! -x /opt/coterie/coterie ]; then
+        eerror "/opt/coterie/coterie is missing or not executable."
+        return 1
+    fi
+}

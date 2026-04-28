@@ -1,11 +1,11 @@
 [Unit]
 Description=Coterie database backup
 Documentation=man:sqlite3(1)
-# Run only after Coterie itself is up. If Coterie is down the DB file
-# is still readable, but waiting avoids racing the binary's own
-# startup migrations.
+# Order after coterie.service if both happen to start together (boot).
+# We do NOT Requires= it — VACUUM INTO works against a stopped DB
+# just fine, and a backup that fails because the main service is down
+# for maintenance is a worse outcome than a backup that runs anyway.
 After=coterie.service
-Requires=coterie.service
 
 [Service]
 Type=oneshot

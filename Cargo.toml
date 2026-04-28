@@ -63,8 +63,12 @@ validator = { version = "0.20", features = ["derive"] }
 askama = { version = "0.12", features = ["with-axum"] }
 askama_axum = "0.4"
 
-# Payment processing
-stripe = { package = "async-stripe", version = "0.39", default-features = false, features = ["runtime-tokio-hyper", "checkout", "webhook-events", "connect"] }
+# Payment processing.
+# We use the rustls variant rather than the default native-tls / hyper-tls
+# combo so the whole binary links against rustls + ring, with no OpenSSL
+# dependency. This matches reqwest's "rustls-tls" feature and lets us
+# produce a fully static musl binary for Alpine deploys.
+stripe = { package = "async-stripe", version = "0.39", default-features = false, features = ["runtime-tokio-hyper-rustls", "checkout", "webhook-events", "connect"] }
 
 # Data generation for seeding (used by seed binary)
 fake = { version = "2.9", features = ["derive"] }
