@@ -204,9 +204,20 @@ not mandate.
       groupings, exclusions, ordering, and time-window filters.
 
 ### 3.4 API documentation
-- [ ] OpenAPI spec, auto-generated from handlers if feasible
-      (`utoipa` is the obvious choice for Axum)
-- [ ] Swagger / Redoc UI at `/api/docs`
+- [x] OpenAPI spec generated via `utoipa` macros on the public
+      handlers + DTOs. `ApiDoc` lives at `src/api/docs.rs`; the
+      handlers in `src/api/handlers/{root,public,announcements}.rs`
+      carry `#[utoipa::path(...)]` annotations and the response/request
+      types derive `ToSchema`.
+- [x] Swagger UI mounted at `/api/docs` with the raw spec served
+      at `/api/docs/openapi.json` (see `src/api/mod.rs`).
+- [x] Scope is the public API surface only — signup, donations,
+      public event/announcement reads, RSS + iCal feeds, plus the
+      root/health/api metadata endpoints. Authenticated portal and
+      admin routes are intentionally omitted.
+- [x] Smoke test (`tests/openapi_test.rs`, 3 tests) asserts the
+      spec compiles, every documented path is present, and every
+      registered component schema resolves.
 - Primary audience: frontend-site developers consuming public APIs.
 
 ### 3.5 Payment-flow integration tests

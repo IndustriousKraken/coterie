@@ -96,6 +96,12 @@ subtle = "2.6"
 totp-rs = { version = "5", default-features = false, features = ["otpauth"] }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
+# OpenAPI generation + Swagger UI for the public API surface
+# (/api/docs). `utoipa` handlers/DTOs are annotated with macros;
+# `utoipa-swagger-ui` exposes the assets via axum routes.
+utoipa = { version = "5", features = ["uuid", "chrono", "axum_extras"] }
+utoipa-swagger-ui = { version = "8", features = ["axum"] }
+
 # HTTP client for outbound integrations (Discord, future Unifi)
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde_urlencoded = "0.7.1"

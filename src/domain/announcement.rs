@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
 pub struct Announcement {
     pub id: Uuid,
     pub title: String,
@@ -29,7 +30,7 @@ pub struct Announcement {
 /// let type_config = announcement_type_service.get(announcement.announcement_type_id).await?;
 /// let type_name = type_config.name;
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "TEXT")]
 pub enum AnnouncementType {
     News,

@@ -1,3 +1,4 @@
+pub mod docs;
 pub mod handlers;
 pub mod middleware;
 pub mod state;
@@ -13,6 +14,8 @@ use tower_http::{
     trace::TraceLayer,
 };
 use std::sync::Arc;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 use crate::{
     config::Settings,
@@ -34,17 +37,23 @@ pub fn create_app(
         .route("/", get(handlers::root::root))
         .route("/health", get(handlers::root::health_check))
         .route("/api", get(handlers::root::api_info))
-        
+
+        // OpenAPI / Swagger UI for the public API. The UI is served at
+        // /api/docs and the raw spec at /api/docs/openapi.json so frontend
+        // developers can either browse interactively or codegen a client.
+        .merge(SwaggerUi::new("/api/docs")
+            .url("/api/docs/openapi.json", docs::ApiDoc::openapi()))
+
         // Auth routes
         .route("/auth/login", post(handlers::auth::login))
         .route("/auth/logout", post(handlers::auth::logout))
-        
+
         // API routes
         .nest("/api", api_routes(app_state.clone()))
-        
+
         // Public routes (for website integration)
         .nest("/public", public_routes(app_state.clone()))
-        
+
         // Admin routes
         .nest("/admin", admin_routes(app_state.clone()))
         

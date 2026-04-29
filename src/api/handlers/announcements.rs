@@ -6,6 +6,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
@@ -187,13 +188,22 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct PrivateAnnouncementCount {
     pub count: i64,
 }
 
 /// Returns the count of members-only published announcements.
 /// This is a public endpoint to let visitors know there's exclusive content.
+#[utoipa::path(
+    get,
+    path = "/public/announcements/private-count",
+    tag = "public",
+    responses(
+        (status = 200, description = "Count of published members-only announcements",
+            body = PrivateAnnouncementCount),
+    ),
+)]
 pub async fn private_count(
     State(state): State<AppState>,
 ) -> Result<Json<PrivateAnnouncementCount>> {

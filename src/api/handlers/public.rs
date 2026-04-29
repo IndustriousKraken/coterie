@@ -6,6 +6,7 @@ use axum::{
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use crate::{
@@ -14,7 +15,7 @@ use crate::{
     error::{AppError, Result},
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SignupRequest {
     pub email: String,
     pub username: String,
@@ -23,19 +24,33 @@ pub struct SignupRequest {
     pub membership_type: Option<MembershipType>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SignupResponse {
     pub member_id: Uuid,
     pub status: MemberStatus,
     pub message: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct PublicEventsQuery {
+    /// Maximum number of upcoming events to return (default 50).
     pub limit: Option<i64>,
-    pub format: Option<String>, // "json" or "ical"
+    /// Response format: omit or `"json"` for JSON; `"ical"` for an
+    /// iCal/.ics calendar feed.
+    pub format: Option<String>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/public/signup",
+    tag = "public",
+    request_body = SignupRequest,
+    responses(
+        (status = 201, description = "Member created; verification email sent", body = SignupResponse),
+        (status = 400, description = "Invalid email or weak password"),
+        (status = 409, description = "Email or username already in use"),
+    ),
+)]
 pub async fn signup(
     State(state): State<AppState>,
     Json(request): Json<SignupRequest>,
@@ -125,6 +140,17 @@ async fn org_name(state: &AppState) -> String {
         .unwrap_or_else(|| "Coterie".to_string())
 }
 
+#[utoipa::path(
+    get,
+    path = "/public/events",
+    tag = "public",
+    params(PublicEventsQuery),
+    responses(
+        (status = 200, description = "Upcoming public + sanitized members-only events", body = [Event],
+            content_type = "application/json"),
+        (status = 200, description = "iCal feed (when format=ical)", content_type = "text/calendar"),
+    ),
+)]
 pub async fn list_events(
     State(state): State<AppState>,
     Query(params): Query<PublicEventsQuery>,
@@ -169,6 +195,14 @@ pub async fn list_events(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/public/announcements",
+    tag = "public",
+    responses(
+        (status = 200, description = "Published public announcements", body = [Announcement]),
+    ),
+)]
 pub async fn list_announcements(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<Announcement>>> {
@@ -184,6 +218,15 @@ pub async fn list_announcements(
     Ok(Json(published))
 }
 
+#[utoipa::path(
+    get,
+    path = "/public/feed/rss",
+    tag = "public",
+    responses(
+        (status = 200, description = "RSS 2.0 feed of public announcements",
+            content_type = "application/rss+xml"),
+    ),
+)]
 pub async fn rss_feed(
     State(state): State<AppState>,
 ) -> Result<Response> {
@@ -200,6 +243,15 @@ pub async fn rss_feed(
     ).into_response())
 }
 
+#[utoipa::path(
+    get,
+    path = "/public/feed/calendar",
+    tag = "public",
+    responses(
+        (status = 200, description = "iCal feed of all events (private events are sanitized)",
+            content_type = "text/calendar"),
+    ),
+)]
 pub async fn calendar_feed(
     State(state): State<AppState>,
 ) -> Result<Response> {
@@ -224,11 +276,19 @@ pub async fn calendar_feed(
     ).into_response())
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PrivateEventCount {
     pub count: i64,
 }
 
+#[utoipa::path(
+    get,
+    path = "/public/events/private-count",
+    tag = "public",
+    responses(
+        (status = 200, description = "Count of upcoming members-only events", body = PrivateEventCount),
+    ),
+)]
 pub async fn private_event_count(
     State(state): State<AppState>,
 ) -> Result<Json<PrivateEventCount>> {
@@ -330,7 +390,7 @@ fn generate_ical_feed(events: &[Event]) -> String {
 // Public donation API
 // ---------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct PublicDonateRequest {
     pub amount_cents: i64,
     pub email: String,
@@ -341,7 +401,7 @@ pub struct PublicDonateRequest {
     pub campaign_slug: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PublicDonateResponse {
     pub payment_id: Uuid,
     /// Stripe-hosted Checkout URL. The frontend redirects the donor here.
@@ -366,6 +426,19 @@ pub struct PublicDonateResponse {
 /// CORS: same origin policy as other /public/* endpoints. The public
 /// site (e.g. neontemple.net) is expected to be in
 /// COTERIE__SERVER__CORS_ORIGINS.
+#[utoipa::path(
+    post,
+    path = "/public/donate",
+    tag = "public",
+    request_body = PublicDonateRequest,
+    responses(
+        (status = 200, description = "Stripe Checkout session created; redirect donor to checkout_url",
+            body = PublicDonateResponse),
+        (status = 400, description = "Invalid amount, email, name, or campaign"),
+        (status = 429, description = "Rate-limit hit (per-IP money limiter)"),
+        (status = 503, description = "Payment processing not configured"),
+    ),
+)]
 pub async fn donate(
     State(state): State<AppState>,
     headers: HeaderMap,

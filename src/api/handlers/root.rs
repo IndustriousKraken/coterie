@@ -7,9 +7,10 @@ use axum::{
 use axum_extra::extract::CookieJar;
 use serde::Serialize;
 use serde_json::json;
+use utoipa::ToSchema;
 use crate::api::state::AppState;
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct ApiInfo {
     pub name: String,
     pub version: String,
@@ -17,9 +18,25 @@ pub struct ApiInfo {
     pub status: String,
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct HealthStatus {
+    pub status: String,
+    /// RFC 3339 timestamp captured when the request was served.
+    pub timestamp: String,
+}
+
 /// Root endpoint with content negotiation:
 /// - Browsers (Accept: text/html): redirect to dashboard if logged in, else to login
 /// - API clients (Accept: application/json) get API info JSON
+#[utoipa::path(
+    get,
+    path = "/",
+    tag = "meta",
+    responses(
+        (status = 200, description = "API info JSON (when Accept is not text/html)"),
+        (status = 303, description = "Browser redirect to /portal/dashboard or /login"),
+    ),
+)]
 pub async fn root(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -77,13 +94,30 @@ pub async fn root(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "meta",
+    responses(
+        (status = 200, description = "Liveness probe — always 200 if the process is up",
+            body = HealthStatus),
+    ),
+)]
 pub async fn health_check() -> impl IntoResponse {
-    (StatusCode::OK, Json(json!({
-        "status": "healthy",
-        "timestamp": chrono::Utc::now().to_rfc3339()
-    })))
+    (StatusCode::OK, Json(HealthStatus {
+        status: "healthy".to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api",
+    tag = "meta",
+    responses(
+        (status = 200, description = "Static API metadata", body = ApiInfo),
+    ),
+)]
 pub async fn api_info() -> impl IntoResponse {
     Json(ApiInfo {
         name: "Coterie API".to_string(),

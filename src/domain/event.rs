@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
 pub struct Event {
     pub id: Uuid,
     pub title: String,
@@ -60,7 +61,7 @@ pub struct EventSeries {
 /// let type_config = event_type_service.get(event.event_type_id).await?;
 /// let type_name = type_config.name;
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "TEXT")]
 pub enum EventType {
     Meeting,
@@ -71,7 +72,7 @@ pub enum EventType {
     Hackathon,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "TEXT")]
 pub enum EventVisibility {
     Public,

@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::domain::payment_method::BillingMode;
@@ -44,7 +45,7 @@ impl Member {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, PartialEq, ToSchema)]
 #[sqlx(type_name = "TEXT")]
 pub enum MemberStatus {
     Pending,
@@ -65,7 +66,7 @@ pub enum MemberStatus {
 /// let type_config = membership_type_service.get(member.membership_type_id).await?;
 /// let type_name = type_config.name;
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "TEXT")]
 pub enum MembershipType {
     Regular,
