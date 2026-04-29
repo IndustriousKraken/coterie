@@ -273,6 +273,12 @@ pub struct AdminEventDetail {
     pub is_past: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// True when this event is one occurrence of a recurring series.
+    /// Drives the "edit this / edit this and future" radio + the
+    /// "cancel just this / end the series / delete entire series"
+    /// dropdown on the detail page.
+    pub is_series: bool,
+    pub occurrence_index: Option<i32>,
 }
 
 pub async fn admin_event_detail_page(
@@ -332,6 +338,8 @@ pub async fn admin_event_detail_page(
         is_past: event.start_time <= now,
         created_at: event.created_at.format("%b %d, %Y %H:%M").to_string(),
         updated_at: event.updated_at.format("%b %d, %Y %H:%M").to_string(),
+        is_series: event.series_id.is_some(),
+        occurrence_index: event.occurrence_index,
     };
 
     // Fetch active event types for the dropdown
@@ -430,6 +438,15 @@ pub async fn admin_create_event(
     let mut max_attendees: Option<i32> = None;
     let mut rsvp_required = false;
     let mut image_url: Option<String> = None;
+    // Recurrence form fields. `repeat_kind` defaults to "none" so an
+    // unchecked form behaves identically to the pre-recurrence flow.
+    let mut repeat_kind = String::from("none");
+    let mut repeat_interval: u32 = 1;
+    let mut repeat_weekdays: Vec<String> = Vec::new();
+    let mut repeat_day: Option<u32> = None;
+    let mut repeat_weekday = String::from("mon");
+    let mut repeat_ordinal: i32 = 1;
+    let mut repeat_until_str = String::new();
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
@@ -452,6 +469,30 @@ pub async fn admin_create_event(
                 rsvp_required = true;
                 let _ = field.text().await;
             }
+            "repeat_kind" => repeat_kind = field.text().await.unwrap_or_default(),
+            "repeat_interval" => {
+                if let Ok(text) = field.text().await {
+                    if let Ok(n) = text.parse() { repeat_interval = n; }
+                }
+            }
+            "repeat_weekdays" => {
+                // Multipart sends one field per checked box; collect them.
+                if let Ok(text) = field.text().await {
+                    repeat_weekdays.push(text);
+                }
+            }
+            "repeat_day" => {
+                if let Ok(text) = field.text().await {
+                    repeat_day = text.parse().ok();
+                }
+            }
+            "repeat_weekday" => repeat_weekday = field.text().await.unwrap_or_default(),
+            "repeat_ordinal" => {
+                if let Ok(text) = field.text().await {
+                    if let Ok(n) = text.parse() { repeat_ordinal = n; }
+                }
+            }
+            "repeat_until" => repeat_until_str = field.text().await.unwrap_or_default(),
             "image" => {
                 let filename = field.file_name().unwrap_or("").to_string();
                 if !filename.is_empty() {
@@ -514,7 +555,57 @@ pub async fn admin_create_event(
         created_by: current_user.member.id,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
+        series_id: None,
+        occurrence_index: None,
     };
+
+    // If the admin asked for a repeating series, route through the
+    // RecurringEventService so the series row + 12 months of
+    // occurrences materialize in one shot. Otherwise fall through to
+    // the original single-event create path.
+    if repeat_kind != "none" && !repeat_kind.is_empty() {
+        let rule = match build_recurrence(
+            &repeat_kind, repeat_interval, &repeat_weekdays,
+            repeat_day, &repeat_weekday, repeat_ordinal,
+        ) {
+            Ok(r) => r,
+            Err(msg) => return axum::response::Html(format!(
+                "Invalid recurrence: {}", crate::web::escape_html(msg),
+            )).into_response(),
+        };
+        let until = parse_until(&repeat_until_str);
+
+        match state.service_context.recurring_event_service
+            .create_series_with_initial_materialization(
+                rule, event, until, current_user.member.id,
+            ).await
+        {
+            Ok(created) => {
+                let first = &created.occurrences[0];
+                state.service_context.audit_service.log(
+                    Some(current_user.member.id),
+                    "create_event_series",
+                    "event_series",
+                    &created.series.id.to_string(),
+                    None,
+                    Some(&first.title),
+                    None,
+                ).await;
+                // Single Discord notification for the entire series —
+                // we treat it like one announcement, not 52.
+                state.service_context.integration_manager
+                    .handle_event(crate::integrations::IntegrationEvent::EventPublished(first.clone()))
+                    .await;
+                return axum::response::Redirect::to(
+                    &format!("/portal/admin/events/{}", first.id),
+                ).into_response();
+            }
+            Err(e) => return axum::response::Html(format!(
+                "Error creating recurring event: {}",
+                crate::web::escape_html(&e.to_string()),
+            )).into_response(),
+        }
+    }
 
     match state.service_context.event_repo.create(event).await {
         Ok(created) => {
@@ -536,6 +627,61 @@ pub async fn admin_create_event(
         }
         Err(e) => axum::response::Html(format!("Error creating event: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
+}
+
+/// Build a `Recurrence` from form fields. The error returned is the
+/// human-readable message we render back to the admin form.
+fn build_recurrence(
+    kind: &str,
+    interval: u32,
+    weekdays: &[String],
+    day: Option<u32>,
+    weekday: &str,
+    ordinal: i32,
+) -> std::result::Result<crate::domain::Recurrence, &'static str> {
+    use crate::domain::{Recurrence, WeekdayCode};
+
+    fn parse_wd(s: &str) -> std::result::Result<WeekdayCode, &'static str> {
+        match s {
+            "mon" => Ok(WeekdayCode::Mon),
+            "tue" => Ok(WeekdayCode::Tue),
+            "wed" => Ok(WeekdayCode::Wed),
+            "thu" => Ok(WeekdayCode::Thu),
+            "fri" => Ok(WeekdayCode::Fri),
+            "sat" => Ok(WeekdayCode::Sat),
+            "sun" => Ok(WeekdayCode::Sun),
+            _ => Err("invalid weekday"),
+        }
+    }
+
+    let rule = match kind {
+        "weekly" => {
+            let parsed = weekdays.iter()
+                .map(|s| parse_wd(s))
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Recurrence::WeeklyByDay { interval, weekdays: parsed }
+        }
+        "monthly_dom" => {
+            let day = day.ok_or("day-of-month is required")?;
+            Recurrence::MonthlyByDayOfMonth { interval, day }
+        }
+        "monthly_weekday" => {
+            let weekday = parse_wd(weekday)?;
+            Recurrence::MonthlyByWeekdayOrdinal { interval, weekday, ordinal }
+        }
+        _ => return Err("unknown recurrence kind"),
+    };
+    rule.validate()?;
+    Ok(rule)
+}
+
+fn parse_until(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    if s.is_empty() {
+        return None;
+    }
+    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M")
+        .ok()
+        .map(|dt| chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc))
 }
 
 pub async fn admin_update_event(
@@ -573,6 +719,9 @@ pub async fn admin_update_event(
     let mut rsvp_required = false;
     let mut new_image_url: Option<String> = None;
     let mut remove_image = false;
+    // For series occurrences: "this" (default), "this_and_future".
+    // Ignored for one-off events.
+    let mut edit_scope = String::from("this");
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
@@ -595,6 +744,7 @@ pub async fn admin_update_event(
                 rsvp_required = true;
                 let _ = field.text().await;
             }
+            "edit_scope" => edit_scope = field.text().await.unwrap_or_default(),
             "remove_image" => {
                 remove_image = true;
                 let _ = field.text().await;
@@ -674,35 +824,71 @@ pub async fn admin_update_event(
         created_by: existing.created_by,
         created_at: existing.created_at,
         updated_at: chrono::Utc::now(),
+        series_id: existing.series_id,
+        occurrence_index: existing.occurrence_index,
     };
 
-    match state.service_context.event_repo.update(id, updated_event).await {
-        Ok(updated) => {
-            crate::web::uploads::delete_if_upload(
-                &state.settings.server.uploads_path(),
-                image_to_delete.as_deref(),
-            ).await;
-            state.service_context.audit_service.log(
-                Some(current_user.member.id),
-                "update_event",
-                "event",
-                &id.to_string(),
-                None,
-                Some(&updated.title),
-                None,
-            ).await;
-            axum::response::Html(r#"<div class="px-4 py-3 bg-green-100 text-green-800 rounded-md text-sm">Event updated successfully</div>"#.to_string()).into_response()
-        }
+    // Always update THIS row first — the radio defaults to "this" and
+    // even the "this and future" path expects this row to reflect the
+    // form values too.
+    let updated = match state.service_context.event_repo.update(id, updated_event.clone()).await {
+        Ok(u) => u,
         Err(e) => {
-            axum::response::Html(format!(r#"<div class="px-4 py-3 bg-red-100 text-red-800 rounded-md text-sm">Error updating event: {}</div>"#, crate::web::escape_html(&e.to_string()))).into_response()
+            return axum::response::Html(format!(
+                r#"<div class="px-4 py-3 bg-red-100 text-red-800 rounded-md text-sm">Error updating event: {}</div>"#,
+                crate::web::escape_html(&e.to_string()),
+            )).into_response();
+        }
+    };
+    crate::web::uploads::delete_if_upload(
+        &state.settings.server.uploads_path(),
+        image_to_delete.as_deref(),
+    ).await;
+
+    // Series-aware "edit this and all future" path: apply the same
+    // mutable subset to every later occurrence in the series.
+    let mut future_count = 0u64;
+    if edit_scope == "this_and_future" {
+        if let Some(series_id) = updated_event.series_id {
+            match state.service_context.event_repo
+                .update_series_occurrences_from(
+                    series_id, updated_event.start_time, &updated_event,
+                ).await
+            {
+                Ok(n) => future_count = n,
+                Err(e) => tracing::error!(
+                    "edit-this-and-future failed for event {}: {}", id, e,
+                ),
+            }
         }
     }
+
+    state.service_context.audit_service.log(
+        Some(current_user.member.id),
+        if edit_scope == "this_and_future" { "update_event_series_future" } else { "update_event" },
+        "event",
+        &id.to_string(),
+        None,
+        Some(&updated.title),
+        None,
+    ).await;
+
+    let msg = if edit_scope == "this_and_future" {
+        format!("Event updated. {} future occurrences also updated.", future_count.saturating_sub(1))
+    } else {
+        "Event updated successfully".to_string()
+    };
+    axum::response::Html(format!(
+        r#"<div class="px-4 py-3 bg-green-100 text-green-800 rounded-md text-sm">{}</div>"#,
+        crate::web::escape_html(&msg),
+    )).into_response()
 }
 
 pub async fn admin_delete_event(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
     Path(event_id): Path<String>,
+    axum::Form(form): axum::Form<DeleteEventForm>,
 ) -> impl IntoResponse {
     if !is_admin(&current_user.member) {
         return axum::response::Html("Access denied".to_string()).into_response();
@@ -713,11 +899,74 @@ pub async fn admin_delete_event(
         Err(_) => return axum::response::Html("Invalid event ID".to_string()).into_response(),
     };
 
-    // Grab the image_url before deleting so we can clean up the file.
-    let image_to_delete = state.service_context.event_repo
-        .find_by_id(id).await.ok().flatten()
-        .and_then(|e| e.image_url);
+    let event = match state.service_context.event_repo.find_by_id(id).await {
+        Ok(Some(e)) => e,
+        Ok(None) => return axum::response::Html("Event not found".to_string()).into_response(),
+        Err(_) => return axum::response::Html("Error loading event".to_string()).into_response(),
+    };
 
+    // Series-aware delete scope. "this" is the default and behaves
+    // like the pre-recurrence flow (drop one row). The other two
+    // require the event to actually be in a series — if not, fall
+    // through silently to "this" so a misclick can't 500.
+    let scope = form.scope.as_deref().unwrap_or("this");
+    let series_id = event.series_id;
+
+    if (scope == "end_series" || scope == "delete_series") && series_id.is_some() {
+        let sid = series_id.unwrap();
+
+        if scope == "end_series" {
+            // Hard-delete every occurrence after this one, then cap
+            // the series at this row's start_time so the horizon job
+            // doesn't re-materialize them.
+            let cutoff = event.start_time;
+            if let Err(e) = state.service_context.event_repo
+                .delete_series_occurrences_after(sid, cutoff).await
+            {
+                return axum::response::Html(format!(
+                    "Error ending series: {}", crate::web::escape_html(&e.to_string())
+                )).into_response();
+            }
+            if let Err(e) = state.service_context.event_series_repo
+                .set_until_date(sid, cutoff).await
+            {
+                tracing::error!("set_until_date failed for series {}: {}", sid, e);
+            }
+            state.service_context.audit_service.log(
+                Some(current_user.member.id),
+                "end_event_series",
+                "event_series",
+                &sid.to_string(),
+                None,
+                Some(&event.title),
+                None,
+            ).await;
+            return axum::response::Redirect::to(
+                &format!("/portal/admin/events/{}", id),
+            ).into_response();
+        }
+
+        // delete_series: nuke the series row and all occurrences
+        // (FK ON DELETE CASCADE drops every occurrence).
+        if let Err(e) = state.service_context.event_series_repo.delete(sid).await {
+            return axum::response::Html(format!(
+                "Error deleting series: {}", crate::web::escape_html(&e.to_string())
+            )).into_response();
+        }
+        state.service_context.audit_service.log(
+            Some(current_user.member.id),
+            "delete_event_series",
+            "event_series",
+            &sid.to_string(),
+            None,
+            Some(&event.title),
+            None,
+        ).await;
+        return axum::response::Redirect::to("/portal/admin/events").into_response();
+    }
+
+    // Default: delete this single row, scope=="this".
+    let image_to_delete = event.image_url.clone();
     match state.service_context.event_repo.delete(id).await {
         Ok(_) => {
             crate::web::uploads::delete_if_upload(
@@ -737,4 +986,14 @@ pub async fn admin_delete_event(
         }
         Err(e) => axum::response::Html(format!("Error deleting event: {}", crate::web::escape_html(&e.to_string()))).into_response(),
     }
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct DeleteEventForm {
+    /// One of "this" (default), "end_series", "delete_series". The
+    /// last two are no-ops when the event isn't in a series.
+    pub scope: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub csrf_token: String,
 }

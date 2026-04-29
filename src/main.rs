@@ -283,6 +283,35 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Spawn daily recurring-event horizon extension. Each active
+    // series gets its `materialized_through` rolled forward to
+    // (today + 12 months). One-time runs at startup catch any drift
+    // from prolonged downtime; the daily cadence keeps the calendar
+    // perpetually showing a year of meetings without operator action.
+    {
+        let recurring = service_context.recurring_event_service.clone();
+        tokio::spawn(async move {
+            let interval = tokio::time::Duration::from_secs(24 * 60 * 60);
+            // Run once shortly after boot so a fresh deploy with
+            // existing series catches up before the first daily tick.
+            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+            loop {
+                match recurring.extend_horizon_for_active_series().await {
+                    Ok(0) => {
+                        tracing::debug!("Recurring-event horizon extend: nothing to do");
+                    }
+                    Ok(n) => {
+                        tracing::info!("Recurring-event horizon extend: added {} occurrences", n);
+                    }
+                    Err(e) => {
+                        tracing::error!("Recurring-event horizon extend failed: {}", e);
+                    }
+                }
+                tokio::time::sleep(interval).await;
+            }
+        });
+    }
+
     // Initialize Stripe client if configured
     let stripe_client = if settings.stripe.enabled {
         if let (Some(api_key), Some(webhook_secret)) =

@@ -1,6 +1,7 @@
 pub mod audit_service;
 pub mod billing_service;
 pub mod member_service;
+pub mod recurring_event_service;
 pub mod settings_service;
 pub mod event_type_service;
 pub mod announcement_type_service;
@@ -17,12 +18,15 @@ use settings_service::SettingsService;
 use event_type_service::EventTypeService;
 use announcement_type_service::AnnouncementTypeService;
 use membership_type_service::MembershipTypeService;
+use recurring_event_service::RecurringEventService;
 
 pub use membership_type_service::MembershipPricing;
 
 pub struct ServiceContext {
     pub member_repo: Arc<dyn MemberRepository>,
     pub event_repo: Arc<dyn EventRepository>,
+    pub event_series_repo: Arc<dyn EventSeriesRepository>,
+    pub recurring_event_service: Arc<RecurringEventService>,
     pub announcement_repo: Arc<dyn AnnouncementRepository>,
     pub payment_repo: Arc<dyn PaymentRepository>,
     pub saved_card_repo: Arc<dyn SavedCardRepository>,
@@ -57,6 +61,13 @@ impl ServiceContext {
         pending_login_service: Arc<PendingLoginService>,
         db_pool: SqlitePool,
     ) -> Self {
+        let event_series_repo: Arc<dyn EventSeriesRepository> =
+            Arc::new(SqliteEventSeriesRepository::new(db_pool.clone()));
+        let recurring_event_service = Arc::new(RecurringEventService::new(
+            event_repo.clone(),
+            event_series_repo.clone(),
+            db_pool.clone(),
+        ));
         let audit_service = Arc::new(AuditService::new(db_pool.clone()));
 
         // Create type repositories
@@ -77,6 +88,8 @@ impl ServiceContext {
         Self {
             member_repo,
             event_repo,
+            event_series_repo,
+            recurring_event_service,
             announcement_repo,
             payment_repo,
             saved_card_repo,

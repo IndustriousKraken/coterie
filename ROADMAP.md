@@ -146,13 +146,40 @@ not mandate.
       disable-wipe). Plus 8 unit tests in the modules themselves.
 
 ### 3.2 Recurring events
-- [ ] RRULE subset that covers the patterns NT actually uses:
-      weekly-by-day, monthly-by-weekday-ordinal ("2nd Wednesday"),
-      monthly-by-day-of-month
-- [ ] Edit-single-occurrence vs. edit-all-future
-- [ ] Cancel-single-occurrence without dropping the series
-- Skip the long tail of RFC 5545 — full RRULE support is months of
-  work for negligible additional value.
+- [x] **Storage model**: instance-explosion — each occurrence is a
+      real `events` row with `series_id` linking to a new `event_series`
+      table. Existing queries (RSVPs, list pages, iCal, search,
+      Discord) work unchanged because an occurrence is just an event
+      that knows it has siblings.
+- [x] **Rule subset** in `src/domain/recurrence.rs`: `WeeklyByDay`
+      (every Mon, Mon/Wed/Fri, biweekly, etc.), `MonthlyByDayOfMonth`
+      (the 15th — months without that day skip rather than clamp),
+      `MonthlyByWeekdayOrdinal` ("2nd Wednesday", "last Friday";
+      ordinal -1 = last). `until_date` caps the series.
+- [x] **Materialization horizon**: 12 months. `RecurringEventService`
+      materializes that depth at series-create time; a daily
+      background task in main.rs rolls the window forward so the
+      calendar always shows ~a year of meetings without operator
+      action.
+- [x] **Edit semantics** via the detail-page radio: "Edit just this
+      occurrence" (default; updates one row) or "Edit this and all
+      future occurrences" (`update_series_occurrences_from`
+      propagates title/description/type/visibility/location/capacity/
+      RSVP forward; per-row date/time/image stay intact).
+- [x] **Cancel/delete semantics** via the danger-zone radio:
+      "Cancel just this one" (hard-delete the row), "End the series
+      here" (delete future + set `until_date`), or "Delete entire
+      series" (cascade kills the series row + every occurrence).
+- [x] **Discord push** on series creation only — one announcement
+      for "Tuesday Coffee, weekly Tuesdays at 6pm", not 52 separate
+      posts. Edit/cancel are silent (per design choice).
+- [x] **Migration 020** + 14 unit tests (rule generator, including
+      DST/skip-short-month edge cases) + 10 integration tests
+      (materialization, horizon-extension idempotency, until_date
+      capping, edit-this-and-future scoping, end-series, cascade
+      delete).
+- Skipped the long tail of RFC 5545 deliberately — these three rule
+  kinds cover NT's actual use cases.
 
 ### 3.3 Admin billing dashboard
 - [ ] Upcoming scheduled payments (next 30 days)

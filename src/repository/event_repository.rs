@@ -26,6 +26,8 @@ struct EventRow {
     created_by: String,
     created_at: NaiveDateTime,
     updated_at: NaiveDateTime,
+    series_id: Option<String>,
+    occurrence_index: Option<i32>,
 }
 
 pub struct SqliteEventRepository {
@@ -39,6 +41,11 @@ impl SqliteEventRepository {
 
     fn row_to_event(row: EventRow) -> Result<Event> {
         let event_type_id = row.event_type_id
+            .as_ref()
+            .map(|id| Uuid::parse_str(id))
+            .transpose()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let series_id = row.series_id
             .as_ref()
             .map(|id| Uuid::parse_str(id))
             .transpose()
@@ -60,6 +67,8 @@ impl SqliteEventRepository {
             created_by: Uuid::parse_str(&row.created_by).map_err(|e| AppError::Database(e.to_string()))?,
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
             updated_at: DateTime::from_naive_utc_and_offset(row.updated_at, Utc),
+            series_id,
+            occurrence_index: row.occurrence_index,
         })
     }
 
@@ -118,13 +127,16 @@ impl EventRepository for SqliteEventRepository {
         let created_by_str = event.created_by.to_string();
         let now = Utc::now().naive_utc();
 
+        let series_id_str = event.series_id.map(|id| id.to_string());
+
         sqlx::query(
             r#"
             INSERT INTO events (
                 id, title, description, event_type, event_type_id, visibility,
                 start_time, end_time, location, max_attendees, rsvp_required,
-                image_url, created_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                image_url, created_by, created_at, updated_at,
+                series_id, occurrence_index
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#
         )
         .bind(&id_str)
@@ -142,6 +154,8 @@ impl EventRepository for SqliteEventRepository {
         .bind(&created_by_str)
         .bind(now)
         .bind(now)
+        .bind(&series_id_str)
+        .bind(event.occurrence_index)
         .execute(&self.pool)
         .await
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -157,7 +171,8 @@ impl EventRepository for SqliteEventRepository {
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, location, max_attendees, rsvp_required,
-                   image_url, created_by, created_at, updated_at
+                   image_url, created_by, created_at, updated_at,
+                   series_id, occurrence_index
             FROM events
             WHERE id = ?
             "#
@@ -178,7 +193,8 @@ impl EventRepository for SqliteEventRepository {
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, location, max_attendees, rsvp_required,
-                   image_url, created_by, created_at, updated_at
+                   image_url, created_by, created_at, updated_at,
+                   series_id, occurrence_index
             FROM events
             ORDER BY start_time DESC
             LIMIT ? OFFSET ?
@@ -202,7 +218,8 @@ impl EventRepository for SqliteEventRepository {
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, location, max_attendees, rsvp_required,
-                   image_url, created_by, created_at, updated_at
+                   image_url, created_by, created_at, updated_at,
+                   series_id, occurrence_index
             FROM events
             WHERE start_time > ?
             ORDER BY start_time ASC
@@ -227,7 +244,8 @@ impl EventRepository for SqliteEventRepository {
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, location, max_attendees, rsvp_required,
-                   image_url, created_by, created_at, updated_at
+                   image_url, created_by, created_at, updated_at,
+                   series_id, occurrence_index
             FROM events
             WHERE visibility = ?
             ORDER BY start_time DESC
@@ -250,7 +268,8 @@ impl EventRepository for SqliteEventRepository {
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, location, max_attendees, rsvp_required,
-                   image_url, created_by, created_at, updated_at
+                   image_url, created_by, created_at, updated_at,
+                   series_id, occurrence_index
             FROM events
             WHERE visibility = ?
             ORDER BY start_time DESC
@@ -437,7 +456,8 @@ impl EventRepository for SqliteEventRepository {
             r#"
             SELECT e.id, e.title, e.description, e.event_type, e.event_type_id, e.visibility,
                    e.start_time, e.end_time, e.location, e.max_attendees, e.rsvp_required,
-                   e.created_by, e.created_at, e.updated_at
+                   e.image_url, e.created_by, e.created_at, e.updated_at,
+                   e.series_id, e.occurrence_index
             FROM events e
             INNER JOIN event_attendance ea ON e.id = ea.event_id
             WHERE ea.member_id = ? AND ea.status = 'Registered' AND e.start_time > ?
@@ -453,5 +473,78 @@ impl EventRepository for SqliteEventRepository {
         rows.into_iter()
             .map(Self::row_to_event)
             .collect()
+    }
+
+    async fn max_occurrence_index_for_series(&self, series_id: Uuid) -> Result<Option<i32>> {
+        let max: Option<i32> = sqlx::query_scalar(
+            "SELECT MAX(occurrence_index) FROM events WHERE series_id = ?",
+        )
+        .bind(series_id.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(max)
+    }
+
+    async fn delete_series_occurrences_after(
+        &self,
+        series_id: Uuid,
+        after: DateTime<Utc>,
+    ) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM events WHERE series_id = ? AND start_time > ?",
+        )
+        .bind(series_id.to_string())
+        .bind(after.naive_utc())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(result.rows_affected())
+    }
+
+    async fn update_series_occurrences_from(
+        &self,
+        series_id: Uuid,
+        from: DateTime<Utc>,
+        template: &crate::domain::Event,
+    ) -> Result<u64> {
+        // Apply the "edit this and all future" subset. Per-occurrence
+        // start_time/end_time/image_url stay intact — those are
+        // properties of the specific occurrence, not the series.
+        let event_type_str = Self::event_type_to_str(&template.event_type);
+        let visibility_str = Self::visibility_to_str(&template.visibility);
+        let event_type_id_str = template.event_type_id.map(|id| id.to_string());
+        let rsvp_int = if template.rsvp_required { 1i32 } else { 0i32 };
+
+        let result = sqlx::query(
+            r#"
+            UPDATE events
+            SET title = ?,
+                description = ?,
+                event_type = ?,
+                event_type_id = ?,
+                visibility = ?,
+                location = ?,
+                max_attendees = ?,
+                rsvp_required = ?,
+                updated_at = ?
+            WHERE series_id = ? AND start_time >= ?
+            "#,
+        )
+        .bind(&template.title)
+        .bind(&template.description)
+        .bind(event_type_str)
+        .bind(&event_type_id_str)
+        .bind(visibility_str)
+        .bind(&template.location)
+        .bind(template.max_attendees)
+        .bind(rsvp_int)
+        .bind(Utc::now().naive_utc())
+        .bind(series_id.to_string())
+        .bind(from.naive_utc())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(result.rows_affected())
     }
 }

@@ -120,8 +120,10 @@ pub async fn create(
         created_by: user.member.id,
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        series_id: None,
+        occurrence_index: None,
     };
-    
+
     let created_event = state.service_context.event_repo.create(event).await?;
     
     Ok((StatusCode::CREATED, Json(created_event)))

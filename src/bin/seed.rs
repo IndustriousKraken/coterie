@@ -239,6 +239,8 @@ fn make_event(
         created_by,
         created_at: Utc::now() - Duration::days(days_offset.abs() + 7),
         updated_at: Utc::now() - Duration::days(days_offset.abs() + 7),
+        series_id: None,
+        occurrence_index: None,
     }
 }
 

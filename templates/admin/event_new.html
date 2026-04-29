@@ -111,6 +111,97 @@
                     </div>
                 </div>
 
+                <div x-data="{ kind: 'none' }" class="border-t pt-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Repeat</label>
+                    <div class="space-y-2">
+                        <label class="flex items-center gap-2">
+                            <input type="radio" name="repeat_kind" value="none" x-model="kind"
+                                   class="h-4 w-4 text-blue-600 border-gray-300">
+                            <span class="text-sm text-gray-700">Does not repeat</span>
+                        </label>
+                        <label class="flex items-center gap-2">
+                            <input type="radio" name="repeat_kind" value="weekly" x-model="kind"
+                                   class="h-4 w-4 text-blue-600 border-gray-300">
+                            <span class="text-sm text-gray-700">Weekly on selected days</span>
+                        </label>
+                        <label class="flex items-center gap-2">
+                            <input type="radio" name="repeat_kind" value="monthly_dom" x-model="kind"
+                                   class="h-4 w-4 text-blue-600 border-gray-300">
+                            <span class="text-sm text-gray-700">Monthly on a fixed day of the month</span>
+                        </label>
+                        <label class="flex items-center gap-2">
+                            <input type="radio" name="repeat_kind" value="monthly_weekday" x-model="kind"
+                                   class="h-4 w-4 text-blue-600 border-gray-300">
+                            <span class="text-sm text-gray-700">Monthly on the Nth weekday (e.g. 2nd Wednesday)</span>
+                        </label>
+                    </div>
+
+                    <div x-show="kind !== 'none'" class="mt-4 space-y-3 pl-6 border-l-2 border-blue-100">
+                        <div class="flex items-center gap-2">
+                            <label class="text-sm text-gray-700">Every</label>
+                            <input type="number" name="repeat_interval" value="1" min="1" max="52"
+                                   class="w-20 px-2 py-1 border border-gray-300 rounded-md text-sm">
+                            <span class="text-sm text-gray-700" x-show="kind === 'weekly'">week(s)</span>
+                            <span class="text-sm text-gray-700" x-show="kind !== 'weekly'">month(s)</span>
+                        </div>
+
+                        <div x-show="kind === 'weekly'">
+                            <label class="block text-sm text-gray-700 mb-1">On these days</label>
+                            <div class="flex flex-wrap gap-3">
+                                <label class="flex items-center gap-1"><input type="checkbox" name="repeat_weekdays" value="mon" class="h-4 w-4 text-blue-600 rounded border-gray-300"><span class="text-sm">Mon</span></label>
+                                <label class="flex items-center gap-1"><input type="checkbox" name="repeat_weekdays" value="tue" class="h-4 w-4 text-blue-600 rounded border-gray-300"><span class="text-sm">Tue</span></label>
+                                <label class="flex items-center gap-1"><input type="checkbox" name="repeat_weekdays" value="wed" class="h-4 w-4 text-blue-600 rounded border-gray-300"><span class="text-sm">Wed</span></label>
+                                <label class="flex items-center gap-1"><input type="checkbox" name="repeat_weekdays" value="thu" class="h-4 w-4 text-blue-600 rounded border-gray-300"><span class="text-sm">Thu</span></label>
+                                <label class="flex items-center gap-1"><input type="checkbox" name="repeat_weekdays" value="fri" class="h-4 w-4 text-blue-600 rounded border-gray-300"><span class="text-sm">Fri</span></label>
+                                <label class="flex items-center gap-1"><input type="checkbox" name="repeat_weekdays" value="sat" class="h-4 w-4 text-blue-600 rounded border-gray-300"><span class="text-sm">Sat</span></label>
+                                <label class="flex items-center gap-1"><input type="checkbox" name="repeat_weekdays" value="sun" class="h-4 w-4 text-blue-600 rounded border-gray-300"><span class="text-sm">Sun</span></label>
+                            </div>
+                        </div>
+
+                        <div x-show="kind === 'monthly_dom'">
+                            <label class="block text-sm text-gray-700 mb-1">Day of month (1–31)</label>
+                            <input type="number" name="repeat_day" min="1" max="31"
+                                   class="w-24 px-2 py-1 border border-gray-300 rounded-md text-sm">
+                            <p class="text-xs text-gray-500 mt-1">
+                                Months without that day (e.g. Feb 30) are skipped, not clamped.
+                            </p>
+                        </div>
+
+                        <div x-show="kind === 'monthly_weekday'" class="flex items-center gap-2">
+                            <label class="text-sm text-gray-700">The</label>
+                            <select name="repeat_ordinal"
+                                    class="px-2 py-1 border border-gray-300 rounded-md text-sm">
+                                <option value="1">1st</option>
+                                <option value="2">2nd</option>
+                                <option value="3">3rd</option>
+                                <option value="4">4th</option>
+                                <option value="-1">last</option>
+                            </select>
+                            <select name="repeat_weekday"
+                                    class="px-2 py-1 border border-gray-300 rounded-md text-sm">
+                                <option value="mon">Monday</option>
+                                <option value="tue">Tuesday</option>
+                                <option value="wed">Wednesday</option>
+                                <option value="thu">Thursday</option>
+                                <option value="fri">Friday</option>
+                                <option value="sat">Saturday</option>
+                                <option value="sun">Sunday</option>
+                            </select>
+                            <span class="text-sm text-gray-700">of the month</span>
+                        </div>
+
+                        <div>
+                            <label class="block text-sm text-gray-700 mb-1">Until (optional)</label>
+                            <input type="datetime-local" name="repeat_until"
+                                   class="px-2 py-1 border border-gray-300 rounded-md text-sm">
+                            <p class="text-xs text-gray-500 mt-1">
+                                Leave empty for an open-ended series. The calendar always shows ~12 months ahead;
+                                a daily background job rolls the window forward.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Event Image</label>
                     <input type="file"

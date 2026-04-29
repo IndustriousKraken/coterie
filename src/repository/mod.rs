@@ -5,6 +5,7 @@ use crate::error::Result;
 
 pub mod member_repository;
 pub mod event_repository;
+pub mod event_series_repository;
 pub mod announcement_repository;
 pub mod payment_repository;
 pub mod saved_card_repository;
@@ -16,6 +17,7 @@ pub mod membership_type_repository;
 
 pub use member_repository::SqliteMemberRepository;
 pub use event_repository::SqliteEventRepository;
+pub use event_series_repository::{EventSeriesRepository, SqliteEventSeriesRepository};
 pub use announcement_repository::SqliteAnnouncementRepository;
 pub use payment_repository::SqlitePaymentRepository;
 pub use saved_card_repository::SqliteSavedCardRepository;
@@ -77,6 +79,33 @@ pub trait EventRepository: Send + Sync {
     async fn get_attendee_count(&self, event_id: Uuid) -> Result<i64>;
     async fn get_member_attendance_status(&self, event_id: Uuid, member_id: Uuid) -> Result<Option<AttendanceStatus>>;
     async fn get_member_registered_events(&self, member_id: Uuid) -> Result<Vec<Event>>;
+
+    // ---- Recurring-series support -------------------------------------
+
+    /// Highest `occurrence_index` already materialized for this series,
+    /// or `None` if the series has no rows yet. Used by the materializer
+    /// to continue numbering on horizon-extension passes.
+    async fn max_occurrence_index_for_series(&self, series_id: Uuid) -> Result<Option<i32>>;
+    /// Hard-delete every occurrence in the series whose `start_time`
+    /// is strictly greater than `after`. Returns the count deleted.
+    /// Used by "end the series after this date" and by the
+    /// re-materialization safety net.
+    async fn delete_series_occurrences_after(
+        &self,
+        series_id: Uuid,
+        after: chrono::DateTime<chrono::Utc>,
+    ) -> Result<u64>;
+    /// Apply the editable subset of fields (title, description, type,
+    /// visibility, location, max_attendees, rsvp_required) to every
+    /// occurrence in the series whose `start_time >= from`. Used by
+    /// the "edit this and all future" admin action — start_time and
+    /// per-row image_url are deliberately preserved per occurrence.
+    async fn update_series_occurrences_from(
+        &self,
+        series_id: Uuid,
+        from: chrono::DateTime<chrono::Utc>,
+        template: &Event,
+    ) -> Result<u64>;
 }
 
 #[async_trait]

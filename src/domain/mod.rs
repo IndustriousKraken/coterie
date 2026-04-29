@@ -1,5 +1,6 @@
 pub mod member;
 pub mod event;
+pub mod recurrence;
 pub mod announcement;
 pub mod payment;
 pub mod payment_method;
@@ -10,6 +11,7 @@ pub mod configurable_types;
 
 pub use member::*;
 pub use event::*;
+pub use recurrence::{Recurrence, WeekdayCode, generate_occurrences};
 pub use announcement::*;
 pub use payment::*;
 pub use payment_method::*;
