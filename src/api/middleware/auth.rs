@@ -169,6 +169,11 @@ fn redirect_to_login(original_uri: &Uri) -> Response {
 
 /// Like require_admin but redirects non-admins to the member dashboard
 /// instead of returning a 403 JSON response. Used for portal admin routes.
+///
+/// Also enforces the optional `auth.require_totp_for_admins` toggle:
+/// when set, an admin without `totp_enabled_at` is redirected to the
+/// security page rather than the admin route they requested. This
+/// gates admin power without breaking their member-side access.
 pub async fn require_admin_redirect(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -204,6 +209,25 @@ pub async fn require_admin_redirect(
     if !member.is_admin {
         // Authenticated but not admin: bounce to member dashboard
         return Redirect::to("/portal/dashboard").into_response();
+    }
+
+    // Admin-mandatory TOTP enforcement. The setting is read on every
+    // admin-route hit; that's a few extra microseconds per request and
+    // it lets operators flip the toggle without restart. If the
+    // setting lookup fails (e.g. row missing), default to "not
+    // enforced" so a setup hiccup never locks every admin out.
+    let enforce_admin_totp = state.service_context.settings_service
+        .get_setting("auth.require_totp_for_admins").await
+        .ok()
+        .map(|s| s.value == "true")
+        .unwrap_or(false);
+    if enforce_admin_totp {
+        let enrolled = state.service_context.totp_service
+            .is_enabled(member.id).await.unwrap_or(false);
+        if !enrolled {
+            return Redirect::to("/portal/profile/security?reason=admin_totp_required")
+                .into_response();
+        }
     }
 
     request.extensions_mut().insert(CurrentUser { member });

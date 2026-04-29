@@ -9,7 +9,7 @@
 
 use askama::Template;
 use axum::{
-    extract::State,
+    extract::{Query, State},
     response::{Html, IntoResponse, Response},
     Extension,
 };
@@ -33,6 +33,19 @@ pub struct SecurityTemplate {
     pub csrf_token: String,
     pub totp_enabled: bool,
     pub recovery_codes_remaining: usize,
+    /// True when the admin-mandatory toggle is on AND this user is an
+    /// unenrolled admin — drives the "you must enroll" banner. Page
+    /// is reachable in this state because `/portal/profile/security`
+    /// is in the active-only routes (not gated by admin enforcement).
+    pub admin_must_enroll: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SecurityQuery {
+    /// Set to "admin_totp_required" by `require_admin_redirect` when
+    /// the toggle bounced an admin here. We surface a friendly banner
+    /// on top of the standard buttons.
+    pub reason: Option<String>,
 }
 
 #[derive(Template)]
@@ -59,6 +72,7 @@ pub async fn security_page(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
+    Query(query): Query<SecurityQuery>,
 ) -> impl IntoResponse {
     let csrf_token = state.service_context.csrf_service
         .generate_token(&session_info.session_id)
@@ -76,6 +90,21 @@ pub async fn security_page(
             current_user.member.id,
         ).await.unwrap_or(0)
     } else { 0 };
+
+    // Banner conditions: admin, no TOTP, and either the toggle is on
+    // OR the user just got bounced here (?reason=admin_totp_required).
+    // Showing the banner ALSO when the toggle is on (not only after a
+    // bounce) means an admin who navigates here directly can see why
+    // they're being asked to enroll.
+    let enforce = state.service_context.settings_service
+        .get_setting("auth.require_totp_for_admins").await
+        .ok()
+        .map(|s| s.value == "true")
+        .unwrap_or(false);
+    let bounced = query.reason.as_deref() == Some("admin_totp_required");
+    let admin_must_enroll = is_admin(&current_user.member)
+        && !totp_enabled
+        && (enforce || bounced);
 
     let user_info = UserInfo {
         id: current_user.member.id.to_string(),
@@ -101,6 +130,7 @@ pub async fn security_page(
         csrf_token,
         totp_enabled,
         recovery_codes_remaining: remaining,
+        admin_must_enroll,
     })
 }
 

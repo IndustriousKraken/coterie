@@ -15,6 +15,20 @@
         </p>
     </div>
 
+    {% if admin_must_enroll %}
+    <div class="mb-6 p-4 bg-yellow-50 border border-yellow-300 rounded-md">
+        <h2 class="text-sm font-semibold text-yellow-900">
+            Admin two-factor authentication required
+        </h2>
+        <p class="mt-1 text-sm text-yellow-800">
+            This site is configured to require 2FA for admin access. Enroll
+            below to keep your admin permissions — until then, the admin
+            section will redirect you here. Your member-side access is
+            unaffected.
+        </p>
+    </div>
+    {% endif %}
+
     <div class="bg-white rounded-lg shadow-sm p-6">
         <h2 class="text-lg font-semibold mb-2">Two-factor authentication (TOTP)</h2>
 

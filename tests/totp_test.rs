@@ -312,6 +312,45 @@ async fn pending_login_expired_is_swept() {
     assert!(swept >= 1, "cleanup should have removed at least one row");
 }
 
+// --------------------------------------------------------------------
+// Admin-mandatory TOTP toggle
+// --------------------------------------------------------------------
+
+#[tokio::test]
+async fn admin_totp_setting_defaults_off() {
+    // Migration 019 inserts the row at default 'false'. Verify the
+    // setting is readable and the default holds — the middleware
+    // treats anything other than 'true' as off.
+    let pool = fresh_pool().await;
+    let value: String = sqlx::query_scalar(
+        "SELECT value FROM app_settings WHERE key = 'auth.require_totp_for_admins'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("setting present after migration");
+    assert_eq!(value, "false");
+}
+
+#[tokio::test]
+async fn admin_totp_setting_persists_when_flipped() {
+    let pool = fresh_pool().await;
+
+    sqlx::query(
+        "UPDATE app_settings SET value = 'true' WHERE key = 'auth.require_totp_for_admins'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let value: String = sqlx::query_scalar(
+        "SELECT value FROM app_settings WHERE key = 'auth.require_totp_for_admins'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(value, "true");
+}
+
 #[tokio::test]
 async fn pending_login_disable_clears_member_rows() {
     let pool = fresh_pool().await;

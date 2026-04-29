@@ -217,6 +217,7 @@ async fn fetch_settings_by_category(state: &AppState) -> Vec<SettingsCategoryInf
         ("features", "Features", "Enable or disable application features"),
         ("integrations", "Integrations", "Third-party service connections"),
         ("audit", "Audit", "Audit log retention"),
+        ("auth", "Authentication", "Login policy and access controls"),
     ];
 
     let mut result = Vec::new();

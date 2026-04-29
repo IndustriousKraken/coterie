@@ -127,6 +127,14 @@ not mandate.
 - [x] Disable + regenerate-codes both require a current TOTP or
       recovery code — design choice: members already have a session,
       so password-reuse here adds no defense.
+- [x] **Admin-mandatory toggle** (`auth.require_totp_for_admins`,
+      default off, migration 019). When on, `require_admin_redirect`
+      bounces unenrolled admins to `/portal/profile/security?reason=
+      admin_totp_required` with a banner explaining the policy.
+      Member-side access is unaffected; only admin-route gating
+      changes. Operators flip the toggle in the new "Authentication"
+      category on the admin settings page once their team has
+      enrolled.
 - [x] Migration 018: members.totp_secret_encrypted (TEXT, encrypted
       with `SecretCrypto`), totp_enabled_at, totp_recovery_codes;
       pending_logins table.
