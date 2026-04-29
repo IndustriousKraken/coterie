@@ -173,3 +173,215 @@ pub async fn bulk_migrate_stripe_subs(
         },
     ).await
 }
+
+// =====================================================================
+// Billing dashboard — read-only operator overview
+//
+// Three sections: upcoming scheduled (next 30 days), recent failures
+// (last 90 days), revenue by month split into dues vs donations
+// (last 12 months). Every row links to a per-member page where the
+// actual remediation actions live; this page is observation, not
+// action.
+// =====================================================================
+
+#[derive(Template)]
+#[template(path = "admin/billing_dashboard.html")]
+pub struct AdminBillingDashboardTemplate {
+    pub current_user: Option<UserInfo>,
+    pub is_admin: bool,
+    pub csrf_token: String,
+    pub upcoming: Vec<UpcomingScheduledRow>,
+    pub failures: Vec<FailedScheduledRow>,
+    pub months: Vec<MonthlyRevenueRow>,
+    /// 30 / 90 / 12 — surfaced so the section copy stays in sync if
+    /// we ever change the windows. (And so the template doesn't
+    /// hardcode magic numbers separately.)
+    pub upcoming_window_days: i64,
+    pub failure_window_days: i64,
+    pub revenue_window_months: u32,
+}
+
+pub struct UpcomingScheduledRow {
+    pub member_id: String,
+    pub member_name: String,
+    pub due_date: String,
+    pub amount_display: String,
+    pub retry_count: i32,
+    pub status: &'static str,
+}
+
+pub struct FailedScheduledRow {
+    pub member_id: String,
+    pub member_name: String,
+    pub last_attempt_display: String,
+    pub amount_display: String,
+    pub retry_count: i32,
+    pub failure_reason: String,
+}
+
+pub struct MonthlyRevenueRow {
+    /// e.g. "2026-04"
+    pub month_key: String,
+    /// e.g. "April 2026"
+    pub month_label: String,
+    pub dues_dollars: String,
+    pub dues_count: i64,
+    pub donations_dollars: String,
+    pub donations_count: i64,
+    pub total_dollars: String,
+}
+
+const UPCOMING_WINDOW_DAYS: i64 = 30;
+const FAILURE_WINDOW_DAYS: i64 = 90;
+const REVENUE_WINDOW_MONTHS: u32 = 12;
+
+pub async fn billing_dashboard_page(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<CurrentUser>,
+    Extension(session_info): Extension<SessionInfo>,
+) -> Response {
+    if !is_admin(&current_user.member) {
+        return Redirect::to("/portal/dashboard").into_response();
+    }
+
+    let user_info = UserInfo {
+        id: current_user.member.id.to_string(),
+        username: current_user.member.username.clone(),
+        email: current_user.member.email.clone(),
+    };
+    let csrf_token = state.service_context.csrf_service
+        .generate_token(&session_info.session_id).await
+        .unwrap_or_else(|_| String::new());
+
+    // ---- Section 1: upcoming scheduled (next 30 days) ----
+    let now = chrono::Utc::now();
+    let upcoming_cutoff = (now + chrono::Duration::days(UPCOMING_WINDOW_DAYS)).date_naive();
+    let upcoming_raw = state.service_context.scheduled_payment_repo
+        .find_pending_due_before(upcoming_cutoff).await
+        .unwrap_or_default();
+    let mut upcoming = Vec::with_capacity(upcoming_raw.len());
+    for sp in upcoming_raw {
+        let name = lookup_member_name(&state, sp.member_id).await;
+        upcoming.push(UpcomingScheduledRow {
+            member_id: sp.member_id.to_string(),
+            member_name: name,
+            due_date: sp.due_date.format("%b %d, %Y").to_string(),
+            amount_display: format!("${:.2}", sp.amount_cents as f64 / 100.0),
+            retry_count: sp.retry_count,
+            status: match sp.status {
+                crate::domain::ScheduledPaymentStatus::Pending => "Pending",
+                crate::domain::ScheduledPaymentStatus::Processing => "Processing",
+                crate::domain::ScheduledPaymentStatus::Completed => "Completed",
+                crate::domain::ScheduledPaymentStatus::Failed => "Failed",
+                crate::domain::ScheduledPaymentStatus::Canceled => "Canceled",
+            },
+        });
+    }
+
+    // ---- Section 2: recent failures (last 90 days) ----
+    let failure_since = now - chrono::Duration::days(FAILURE_WINDOW_DAYS);
+    let failures_raw = state.service_context.scheduled_payment_repo
+        .list_failures_since(failure_since).await
+        .unwrap_or_default();
+    let mut failures = Vec::with_capacity(failures_raw.len());
+    for sp in failures_raw {
+        let name = lookup_member_name(&state, sp.member_id).await;
+        failures.push(FailedScheduledRow {
+            member_id: sp.member_id.to_string(),
+            member_name: name,
+            last_attempt_display: sp.last_attempt_at
+                .map(|d| d.format("%b %d, %Y %H:%M UTC").to_string())
+                .unwrap_or_else(|| "—".to_string()),
+            amount_display: format!("${:.2}", sp.amount_cents as f64 / 100.0),
+            retry_count: sp.retry_count,
+            failure_reason: sp.failure_reason.unwrap_or_else(|| "—".to_string()),
+        });
+    }
+
+    // ---- Section 3: revenue by month (12 months) ----
+    let buckets = state.service_context.payment_repo
+        .revenue_by_month(REVENUE_WINDOW_MONTHS).await
+        .unwrap_or_default();
+    let months = fold_revenue_buckets(buckets);
+
+    HtmlTemplate(AdminBillingDashboardTemplate {
+        current_user: Some(user_info),
+        is_admin: true,
+        csrf_token,
+        upcoming,
+        failures,
+        months,
+        upcoming_window_days: UPCOMING_WINDOW_DAYS,
+        failure_window_days: FAILURE_WINDOW_DAYS,
+        revenue_window_months: REVENUE_WINDOW_MONTHS,
+    }).into_response()
+}
+
+/// Look up a member's display name. Falls back to the UUID prefix on
+/// missing rows — a deleted member may still have outstanding
+/// scheduled-payment rows referencing them, and the dashboard should
+/// degrade gracefully rather than 500.
+async fn lookup_member_name(state: &AppState, member_id: uuid::Uuid) -> String {
+    state.service_context.member_repo
+        .find_by_id(member_id).await.ok().flatten()
+        .map(|m| m.full_name)
+        .unwrap_or_else(|| format!("(deleted member {})", &member_id.to_string()[..8]))
+}
+
+/// Fold the flat (year, month, type) buckets into one row per month
+/// with separate dues / donations totals. The flat list comes back
+/// already sorted newest-first, so the order survives.
+fn fold_revenue_buckets(buckets: Vec<crate::repository::MonthlyRevenue>) -> Vec<MonthlyRevenueRow> {
+    use crate::domain::PaymentType;
+
+    // Stable insertion-ordered map: BTreeMap keyed on (year, month)
+    // sorted DESC; we'd rather not pull in indexmap for one place.
+    let mut accum: std::collections::BTreeMap<(i32, u32), [i64; 4]> =
+        std::collections::BTreeMap::new();
+    // [dues_cents, dues_count, donations_cents, donations_count]
+    for b in buckets {
+        let entry = accum.entry((b.year, b.month)).or_insert([0; 4]);
+        match b.payment_type {
+            PaymentType::Membership => {
+                entry[0] += b.total_cents;
+                entry[1] += b.payment_count;
+            }
+            PaymentType::Donation => {
+                entry[2] += b.total_cents;
+                entry[3] += b.payment_count;
+            }
+            PaymentType::Other => {
+                // Lump "other" into dues for the purposes of display —
+                // anything that's not a donation is treated as
+                // operating revenue. If "Other" becomes meaningful
+                // (merch, event fees with their own line) split it out.
+                entry[0] += b.total_cents;
+                entry[1] += b.payment_count;
+            }
+        }
+    }
+
+    // Render newest-first. BTreeMap iterates ascending, so reverse.
+    accum.into_iter().rev().map(|((year, month), [dc, dn, oc, on])| {
+        let dollars = |c: i64| format!("${:.2}", c as f64 / 100.0);
+        let total = dc + oc;
+        MonthlyRevenueRow {
+            month_key: format!("{:04}-{:02}", year, month),
+            month_label: format!("{} {}", month_name(month), year),
+            dues_dollars: dollars(dc),
+            dues_count: dn,
+            donations_dollars: dollars(oc),
+            donations_count: on,
+            total_dollars: dollars(total),
+        }
+    }).collect()
+}
+
+fn month_name(m: u32) -> &'static str {
+    match m {
+        1 => "January", 2 => "February", 3 => "March", 4 => "April",
+        5 => "May", 6 => "June", 7 => "July", 8 => "August",
+        9 => "September", 10 => "October", 11 => "November", 12 => "December",
+        _ => "—",
+    }
+}

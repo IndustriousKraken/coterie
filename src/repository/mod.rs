@@ -178,6 +178,26 @@ pub trait PaymentRepository: Send + Sync {
         member_id: Uuid,
         billing_period: crate::domain::configurable_types::BillingPeriod,
     ) -> Result<bool>;
+
+    // ---- Admin billing dashboard support ------------------------------
+
+    /// Sum of completed-payment cents grouped by (year, month,
+    /// payment_type) across the last `months_back` months of `paid_at`.
+    /// Refunded / Pending / Failed rows are excluded — they'd mislead
+    /// "what we actually collected." Ordered newest month first.
+    async fn revenue_by_month(&self, months_back: u32) -> Result<Vec<MonthlyRevenue>>;
+}
+
+/// Single (month, payment_type) bucket for the admin billing dashboard.
+/// Stored as i32s so `serde_json` round-trips work without the
+/// strange-string thing chrono::NaiveDate does in templates.
+#[derive(Debug, Clone)]
+pub struct MonthlyRevenue {
+    pub year: i32,
+    pub month: u32,
+    pub payment_type: PaymentType,
+    pub total_cents: i64,
+    pub payment_count: i64,
 }
 
 #[async_trait]
@@ -199,6 +219,14 @@ pub trait ScheduledPaymentRepository: Send + Sync {
     async fn update_status(&self, id: Uuid, status: ScheduledPaymentStatus, failure_reason: Option<String>) -> Result<ScheduledPayment>;
     async fn increment_retry(&self, id: Uuid) -> Result<ScheduledPayment>;
     async fn link_payment(&self, id: Uuid, payment_id: Uuid) -> Result<ScheduledPayment>;
+    /// Failed scheduled payments whose last attempt landed in
+    /// `[since, now]`. The admin billing dashboard surfaces these
+    /// alongside their retry_count + failure_reason so an operator
+    /// can see "what's piling up." Ordered newest-attempt first.
+    async fn list_failures_since(
+        &self,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<ScheduledPayment>>;
 }
 
 #[async_trait]

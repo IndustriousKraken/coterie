@@ -182,10 +182,26 @@ not mandate.
   kinds cover NT's actual use cases.
 
 ### 3.3 Admin billing dashboard
-- [ ] Upcoming scheduled payments (next 30 days)
-- [ ] Recent failures (last 90 days, with retry status)
-- [ ] Revenue by month, dues vs. donations split
-- All read-only. Actions stay on the per-member page.
+- [x] **Upcoming scheduled payments** (next 30 days) via the existing
+      `find_pending_due_before(today + 30)`. Member name + due date +
+      amount + status + retry count, sorted ascending by due date.
+- [x] **Recent failures** (last 90 days) via new
+      `ScheduledPaymentRepository::list_failures_since`. Filters on
+      `last_attempt_at` so the window matches when the failure
+      actually happened. Shows retry_count + failure_reason.
+- [x] **Revenue by month** (last 12 months, dues vs. donations split)
+      via new `PaymentRepository::revenue_by_month`. Refunded /
+      Pending / Failed rows excluded — what we actually collected.
+      Folds the flat `(year, month, type)` buckets into one row per
+      month with per-bucket counts and totals plus a combined total.
+- [x] **Read-only**: every member-name link goes to that member's
+      admin page where the actual remediation actions live (refund,
+      retry, set dues, edit auto-renew). The dashboard never mutates.
+- [x] Routed at `/portal/admin/billing/dashboard`, linked from the
+      admin nav under Settings → "Billing dashboard" (alongside the
+      existing "Billing" Stripe-migration page).
+- [x] 6 integration tests for the new repo methods covering the
+      groupings, exclusions, ordering, and time-window filters.
 
 ### 3.4 API documentation
 - [ ] OpenAPI spec, auto-generated from handlers if feasible

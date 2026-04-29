@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::{
     domain::{Payment, PaymentStatus, PaymentMethod, PaymentType, configurable_types::BillingPeriod},
     error::{AppError, Result},
-    repository::PaymentRepository,
+    repository::{MonthlyRevenue, PaymentRepository},
 };
 
 #[derive(FromRow)]
@@ -442,5 +442,57 @@ impl PaymentRepository for SqlitePaymentRepository {
         self.find_by_id(id).await?.ok_or_else(|| {
             AppError::Database("Failed to retrieve updated payment".to_string())
         })
+    }
+
+    async fn revenue_by_month(&self, months_back: u32) -> Result<Vec<MonthlyRevenue>> {
+        // SQLite-friendly: strftime extracts year/month; we filter on
+        // paid_at being non-null AND status='Completed' so refunded /
+        // pending / failed rows don't pollute the totals. The cutoff
+        // is `now - months_back months`, computed at the DB level so
+        // all timestamps stay UTC.
+        //
+        // Result is ordered newest-month first; the dashboard
+        // presents months top-down. payment_type comes back as the
+        // raw lowercase string and we map it back into PaymentType
+        // outside the SQL.
+        let cutoff_months = months_back as i64;
+        let rows: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
+            r#"
+            SELECT
+                strftime('%Y', paid_at)        AS year_str,
+                strftime('%m', paid_at)        AS month_str,
+                payment_type                    AS payment_type,
+                SUM(amount_cents)               AS total_cents,
+                COUNT(*)                        AS payment_count
+            FROM payments
+            WHERE status = 'Completed'
+              AND paid_at IS NOT NULL
+              AND paid_at >= datetime('now', ?)
+            GROUP BY year_str, month_str, payment_type
+            ORDER BY year_str DESC, month_str DESC, payment_type ASC
+            "#,
+        )
+        .bind(format!("-{} months", cutoff_months))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for (year_str, month_str, type_str, total, count) in rows {
+            let year: i32 = year_str.parse()
+                .map_err(|e: std::num::ParseIntError| AppError::Database(e.to_string()))?;
+            let month: u32 = month_str.parse()
+                .map_err(|e: std::num::ParseIntError| AppError::Database(e.to_string()))?;
+            let payment_type = PaymentType::from_str(&type_str)
+                .unwrap_or(PaymentType::Other);
+            out.push(MonthlyRevenue {
+                year,
+                month,
+                payment_type,
+                total_cents: total,
+                payment_count: count,
+            });
+        }
+        Ok(out)
     }
 }

@@ -254,4 +254,36 @@ impl ScheduledPaymentRepository for SqliteScheduledPaymentRepository {
             AppError::Database("Failed to retrieve updated scheduled payment".to_string())
         })
     }
+
+    async fn list_failures_since(
+        &self,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<ScheduledPayment>> {
+        // Filter on `last_attempt_at` rather than `updated_at` so the
+        // window matches "when the failure actually happened" — the
+        // billing runner stamps last_attempt_at on every attempt.
+        // Rows whose last_attempt_at is null shouldn't exist with
+        // status='failed' (the runner always stamps before failing),
+        // but we exclude them defensively.
+        let rows = sqlx::query_as::<_, ScheduledPaymentRow>(
+            r#"
+            SELECT id, member_id, membership_type_id, amount_cents, currency,
+                   due_date, status, retry_count, last_attempt_at, payment_id,
+                   failure_reason, created_at, updated_at
+            FROM scheduled_payments
+            WHERE status = 'failed'
+              AND last_attempt_at IS NOT NULL
+              AND last_attempt_at >= ?
+            ORDER BY last_attempt_at DESC
+            "#,
+        )
+        .bind(since.naive_utc())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        rows.into_iter()
+            .map(Self::row_to_scheduled_payment)
+            .collect()
+    }
 }

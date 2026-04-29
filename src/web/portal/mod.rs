@@ -87,6 +87,10 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         // Billing settings (Stripe-sub → Coterie-managed bulk migration)
         .route("/settings/billing", get(admin::billing::billing_settings_page))
         .route("/settings/billing/migrate-stripe-subs", post(admin::billing::bulk_migrate_stripe_subs))
+        // Read-only billing dashboard: upcoming charges, recent
+        // failures, revenue by month. Actions stay on the per-member
+        // page.
+        .route("/billing/dashboard", get(admin::billing::billing_dashboard_page))
         // Audit log viewer + CSV export
         .route("/audit", get(admin::audit::audit_log_page))
         .route("/audit/export", get(admin::audit::audit_log_export))
