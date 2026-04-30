@@ -444,12 +444,9 @@ pub async fn charge_saved_card_api(
         }))));
     }
 
-    // Build BillingService up front — both the dues-extension and the
-    // auto-renew branch below run through it.
-    let billing_service = state.service_context.billing_service(
-        state.stripe_client.clone(),
-        state.settings.server.base_url.clone(),
-    );
+    // Both the dues-extension and the auto-renew branch below run
+    // through the shared BillingService.
+    let billing_service = state.billing_service.as_ref();
 
     // Extend dues first so the new dues_paid_until is what auto-renew
     // schedules off of. This is the source of truth for "when does the
@@ -577,10 +574,7 @@ pub async fn update_auto_renew_api(
         return Err(AppError::TooManyRequests);
     }
 
-    let billing_service = state.service_context.billing_service(
-        state.stripe_client.clone(),
-        state.settings.server.base_url.clone(),
-    );
+    let billing_service = state.billing_service.as_ref();
 
     if request.enable {
         // Need the member's current membership type slug to schedule

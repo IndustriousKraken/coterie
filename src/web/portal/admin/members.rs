@@ -898,10 +898,7 @@ pub async fn admin_record_payment_submit(
         form.description.clone()
     };
 
-    let billing_service = state.service_context.billing_service(
-        state.stripe_client.clone(),
-        state.settings.server.base_url.clone(),
-    );
+    let billing_service = state.billing_service.as_ref();
     let slug_for_dues = if matches!(kind, PaymentKind::Membership) && !form.membership_type_slug.is_empty() {
         Some(form.membership_type_slug.clone())
     } else {

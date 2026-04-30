@@ -9,7 +9,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::{
     config::Settings,
     payments::{StripeClient, WebhookDispatcher},
-    service::ServiceContext,
+    service::{billing_service::BillingService, ServiceContext},
 };
 
 /// Extract client IP from request headers.
@@ -113,6 +113,13 @@ pub struct AppState {
     /// Inbound webhook dispatcher. `Some` exactly when `stripe_client`
     /// is `Some` (both depend on Stripe being configured).
     pub webhook_dispatcher: Option<Arc<WebhookDispatcher>>,
+    /// Billing operations (auto-renew lifecycle, dues extension, the
+    /// scheduled-payment runner). Built once at startup; handlers
+    /// borrow this Arc instead of reconstructing per-request — that
+    /// pattern silently dropped state for any field with its own
+    /// lifecycle, even though today's BillingService has no such
+    /// field.
+    pub billing_service: Arc<BillingService>,
     pub settings: Arc<Settings>,
     /// Rate limiter for login endpoints (5 attempts per 15 minutes per IP).
     pub login_limiter: RateLimiter,
@@ -134,12 +141,14 @@ impl AppState {
         service_context: Arc<ServiceContext>,
         stripe_client: Option<Arc<StripeClient>>,
         webhook_dispatcher: Option<Arc<WebhookDispatcher>>,
+        billing_service: Arc<BillingService>,
         settings: Arc<Settings>,
     ) -> Self {
         Self {
             service_context,
             stripe_client,
             webhook_dispatcher,
+            billing_service,
             settings,
             login_limiter: RateLimiter::new(5, Duration::from_secs(15 * 60)),
             money_limiter: RateLimiter::new(10, Duration::from_secs(60)),

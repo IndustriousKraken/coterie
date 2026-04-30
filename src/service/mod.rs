@@ -121,7 +121,11 @@ impl ServiceContext {
         }
     }
 
-    /// Create a BillingService from this context.
+    /// Build the singleton BillingService for this app instance.
+    /// Called once at startup; the resulting `Arc<BillingService>`
+    /// is stored on `AppState` and shared by every handler. Was a
+    /// per-request factory before — see the BillingService field
+    /// doc on AppState for why.
     pub fn billing_service(
         &self,
         stripe_client: Option<Arc<crate::payments::StripeClient>>,

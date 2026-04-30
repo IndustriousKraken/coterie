@@ -346,13 +346,18 @@ async fn main() -> anyhow::Result<()> {
         (None, None)
     };
 
+    // Build BillingService once so the runner and every request share
+    // the same instance. Reconstructing per-request would silently lose
+    // any per-instance state a future field might carry (rate limiter,
+    // backoff cache, etc.); fixing the pattern now is cheap insurance.
+    let billing_service = Arc::new(service_context.billing_service(
+        stripe_client.clone(),
+        settings.server.base_url.clone(),
+    ));
+
     // Spawn billing runner (runs every hour)
     {
-        let billing_service = Arc::new(service_context.billing_service(
-            stripe_client.clone(),
-            settings.server.base_url.clone(),
-        ));
-        let runner = jobs::BillingRunner::new(billing_service, 60 * 60);
+        let runner = jobs::BillingRunner::new(billing_service.clone(), 60 * 60);
         runner.spawn();
         tracing::info!("Billing runner spawned");
     }
@@ -362,6 +367,7 @@ async fn main() -> anyhow::Result<()> {
         service_context.clone(),
         stripe_client.clone(),
         webhook_dispatcher.clone(),
+        billing_service.clone(),
         Arc::new(settings.clone()),
     );
 
@@ -370,6 +376,7 @@ async fn main() -> anyhow::Result<()> {
         service_context,
         stripe_client,
         webhook_dispatcher,
+        billing_service,
         Arc::new(settings.clone()),
     );
 

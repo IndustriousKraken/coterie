@@ -109,12 +109,7 @@ pub async fn bulk_migrate_stripe_subs(
         ).await;
     }
 
-    let billing_service = state.service_context.billing_service(
-        state.stripe_client.clone(),
-        state.settings.server.base_url.clone(),
-    );
-
-    let summary = billing_service.bulk_migrate_stripe_subscriptions().await;
+    let summary = state.billing_service.bulk_migrate_stripe_subscriptions().await;
 
     state.service_context.audit_service.log(
         Some(current_user.member.id),

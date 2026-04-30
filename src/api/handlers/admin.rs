@@ -35,11 +35,7 @@ pub struct CheckExpiredResponse {
 /// expire members past grace period and email dues reminders. Useful
 /// for admin "run now" actions and for exercising the flow in tests.
 pub async fn check_expired(State(state): State<AppState>) -> Result<Json<CheckExpiredResponse>> {
-    let billing = state.service_context.billing_service(
-        state.stripe_client.clone(),
-        state.settings.server.base_url.clone(),
-    );
-    let expired_count = billing.check_expired_members().await?;
-    let reminders_sent = billing.send_dues_reminders().await?;
+    let expired_count = state.billing_service.check_expired_members().await?;
+    let reminders_sent = state.billing_service.send_dues_reminders().await?;
     Ok(Json(CheckExpiredResponse { expired_count, reminders_sent }))
 }

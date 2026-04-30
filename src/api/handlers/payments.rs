@@ -182,14 +182,11 @@ pub async fn stripe_webhook(
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| AppError::BadRequest("Missing Stripe signature".to_string()))?;
 
-    // Build a BillingService for the webhook handler — it needs to
-    // re-schedule auto-renew charges when an enrolled member pays
-    // early via Checkout (otherwise the queued ScheduledPayment fires
-    // at the wrong time and double-charges them).
-    let billing_service = state.service_context.billing_service(
-        state.stripe_client.clone(),
-        state.settings.server.base_url.clone(),
-    );
+    // The webhook handler needs BillingService to re-schedule auto-renew
+    // charges when an enrolled member pays early via Checkout (otherwise
+    // the queued ScheduledPayment fires at the wrong time and double-
+    // charges them).
+    let billing_service = state.billing_service.as_ref();
 
     // Handle the webhook. On signature failure, dispatch an admin
     // alert before returning the error so an operator gets notified
@@ -260,10 +257,6 @@ pub async fn create_manual(
         ))),
     };
 
-    let billing_service = state.service_context.billing_service(
-        state.stripe_client.clone(),
-        state.settings.server.base_url.clone(),
-    );
     let payment = state.service_context.payment_service.record_manual(
         RecordManualPaymentInput {
             member_id: request.member_id,
@@ -274,7 +267,7 @@ pub async fn create_manual(
             membership_type_slug: request.membership_type_slug,
             actor_id: user.member.id,
         },
-        &billing_service,
+        state.billing_service.as_ref(),
     ).await?;
 
     Ok((StatusCode::CREATED, Json(payment)))
@@ -289,10 +282,6 @@ pub async fn waive(
     // is just a $0 Membership payment with payment_method=Waived;
     // the service handles dues extension + audit + member-existence
     // check identically to create_manual.
-    let billing_service = state.service_context.billing_service(
-        state.stripe_client.clone(),
-        state.settings.server.base_url.clone(),
-    );
     let payment = state.service_context.payment_service.record_manual(
         RecordManualPaymentInput {
             member_id: request.member_id,
@@ -303,7 +292,7 @@ pub async fn waive(
             membership_type_slug: request.membership_type_slug,
             actor_id: user.member.id,
         },
-        &billing_service,
+        state.billing_service.as_ref(),
     ).await?;
 
     Ok((StatusCode::CREATED, Json(payment)))
@@ -419,11 +408,7 @@ pub async fn save_card(
     // save itself — the card IS in Coterie's table either way, and
     // an admin can finish the migration manually if needed.
     if user.member.billing_mode == crate::domain::BillingMode::StripeSubscription {
-        let billing_service = state.service_context.billing_service(
-            state.stripe_client.clone(),
-            state.settings.server.base_url.clone(),
-        );
-        match billing_service.migrate_to_coterie_managed(user.member.id).await {
+        match state.billing_service.migrate_to_coterie_managed(user.member.id).await {
             Ok(true) => {
                 state.service_context.audit_service.log(
                     Some(user.member.id),
