@@ -22,7 +22,6 @@ use crate::{
     service::settings_service::{DbEmailConfig, UpdateEmailConfig},
     web::templates::{HtmlTemplate, UserInfo},
 };
-use crate::web::portal::is_admin;
 
 #[derive(Template)]
 #[template(path = "admin/email_settings.html")]
@@ -66,10 +65,6 @@ async fn render_page(
     flash_success: Option<String>,
     flash_error: Option<String>,
 ) -> Response {
-    if !is_admin(&current_user.member) {
-        return Redirect::to("/portal/dashboard").into_response();
-    }
-
     let user_info = UserInfo {
         id: current_user.member.id.to_string(),
         username: current_user.member.username.clone(),
@@ -148,10 +143,6 @@ pub async fn update_email_settings(
     Extension(session_info): Extension<SessionInfo>,
     Form(form): Form<UpdateEmailForm>,
 ) -> Response {
-    if !is_admin(&current_user.member) {
-        return Redirect::to("/portal/dashboard").into_response();
-    }
-
     // CSRF is also enforced by middleware, but double-check explicitly
     // so admins get a clear error if something went wrong.
     let csrf_valid = state.service_context.csrf_service
@@ -259,11 +250,6 @@ pub async fn send_test_email(
     Extension(current_user): Extension<CurrentUser>,
     Form(form): Form<TestEmailForm>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html(
-            r#"<div class="p-3 bg-red-50 text-red-800 rounded text-sm">Access denied</div>"#.to_string()
-        );
-    }
 
     // Prefer the override, fall back to the admin's own address.
     let admin_email = match form.to.trim() {

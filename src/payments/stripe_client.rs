@@ -5,7 +5,7 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 
 use crate::{
-    domain::{Payment, PaymentMethod, PaymentStatus, PaymentType, configurable_types::BillingPeriod},
+    domain::{BillingMode, Payment, PaymentMethod, PaymentStatus, PaymentType, configurable_types::BillingPeriod},
     error::{AppError, Result},
     integrations::{IntegrationEvent, IntegrationManager},
     payments::gateway::{
@@ -983,24 +983,14 @@ impl StripeClient {
         };
 
         // Find member by stripe_customer_id
-        let member_id: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM members WHERE stripe_customer_id = ?"
-        )
-        .bind(&customer_id)
-        .fetch_optional(&self.db_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
-
-        let member_id = match member_id {
-            Some(id) => id,
+        let member = match self.member_repo.find_by_stripe_customer_id(&customer_id).await? {
+            Some(m) => m,
             None => {
                 tracing::debug!("No member found for Stripe customer {}", customer_id);
                 return Ok(());
             }
         };
-
-        let member_uuid = Uuid::parse_str(&member_id)
-            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let member_uuid = member.id;
 
         let amount_cents = invoice.amount_paid.unwrap_or(0);
 
@@ -1027,17 +1017,11 @@ impl StripeClient {
         self.payment_repo.create(payment).await?;
 
         // Extend dues - look up membership type from member's current type
-        let membership_type_slug: Option<String> = sqlx::query_scalar(
-            r#"
-            SELECT mt.slug FROM members m
-            JOIN membership_types mt ON mt.id = m.membership_type_id
-            WHERE m.id = ?
-            "#
-        )
-        .bind(&member_id)
-        .fetch_optional(&self.db_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+        let membership_type_slug = match member.membership_type_id {
+            Some(mt_id) => self.membership_type_service.get(mt_id).await?
+                .map(|mt| mt.slug),
+            None => None,
+        };
 
         if let Some(slug) = membership_type_slug {
             self.extend_member_dues(payment_id, member_uuid, &slug).await?;
@@ -1052,7 +1036,7 @@ impl StripeClient {
 
         tracing::info!(
             "Subscription invoice paid for member {} (subscription: {})",
-            member_id, subscription_id
+            member_uuid, subscription_id
         );
 
         Ok(())
@@ -1089,16 +1073,8 @@ impl StripeClient {
             .unwrap_or_else(|| "unknown".to_string());
 
         // Find the member behind this Stripe customer.
-        let member_id_str: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM members WHERE stripe_customer_id = ?",
-        )
-        .bind(&customer_id)
-        .fetch_optional(&self.db_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
-
-        let member_id = match member_id_str.and_then(|s| Uuid::parse_str(&s).ok()) {
-            Some(id) => id,
+        let member_id = match self.member_repo.find_by_stripe_customer_id(&customer_id).await? {
+            Some(m) => m.id,
             None => {
                 tracing::warn!(
                     "invoice.payment_failed for unknown Stripe customer {} (subscription: {})",
@@ -1170,16 +1146,8 @@ impl StripeClient {
 
         // Look up state BEFORE writing — we need to distinguish the
         // two cases above by reading billing_mode.
-        let row: Option<(String, String)> = sqlx::query_as(
-            "SELECT id, billing_mode FROM members WHERE stripe_customer_id = ?",
-        )
-        .bind(&customer_id)
-        .fetch_optional(&self.db_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
-
-        let (member_id_str, current_mode) = match row {
-            Some(r) => r,
+        let member = match self.member_repo.find_by_stripe_customer_id(&customer_id).await? {
+            Some(m) => m,
             None => {
                 tracing::debug!(
                     "subscription.deleted for customer {} — no matching member",
@@ -1189,45 +1157,33 @@ impl StripeClient {
             }
         };
 
-        if current_mode != "stripe_subscription" {
+        if member.billing_mode != BillingMode::StripeSubscription {
             // Echo from our own migration; nothing to do.
             tracing::debug!(
-                "subscription.deleted echo for migrated customer {} (mode={}); ignoring",
-                customer_id, current_mode,
+                "subscription.deleted echo for migrated customer {} (mode={:?}); ignoring",
+                customer_id, member.billing_mode,
             );
             return Ok(());
         }
 
         // Real out-of-band cancellation. Flip + notify.
-        sqlx::query(
-            r#"
-            UPDATE members
-            SET stripe_subscription_id = NULL,
-                billing_mode = 'manual',
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            "#,
-        )
-        .bind(&member_id_str)
-        .execute(&self.db_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+        self.member_repo
+            .set_billing_mode(member.id, BillingMode::Manual, None)
+            .await?;
 
         tracing::info!(
             "Subscription cancelled out-of-band for customer {}; switched member to manual",
             customer_id,
         );
 
-        if let Ok(member_id) = Uuid::parse_str(&member_id_str) {
-            if let Err(e) = billing_service
-                .notify_subscription_cancelled(member_id)
-                .await
-            {
-                tracing::error!(
-                    "Switched member {} to manual but notification failed: {}",
-                    member_id, e,
-                );
-            }
+        if let Err(e) = billing_service
+            .notify_subscription_cancelled(member.id)
+            .await
+        {
+            tracing::error!(
+                "Switched member {} to manual but notification failed: {}",
+                member.id, e,
+            );
         }
 
         Ok(())
@@ -1239,20 +1195,15 @@ impl StripeClient {
         let subscription_id = subscription.id.to_string();
         let status = format!("{:?}", subscription.status);
 
-        // Update the subscription ID in case it changed
-        sqlx::query(
-            r#"
-            UPDATE members
-            SET stripe_subscription_id = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE stripe_customer_id = ?
-            "#
-        )
-        .bind(&subscription_id)
-        .bind(&customer_id)
-        .execute(&self.db_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+        // Update the subscription ID in case it changed. No-op if the
+        // customer doesn't map to a Coterie member (we just don't track them).
+        if let Some(member) = self.member_repo
+            .find_by_stripe_customer_id(&customer_id).await?
+        {
+            self.member_repo
+                .set_billing_mode(member.id, member.billing_mode, Some(&subscription_id))
+                .await?;
+        }
 
         tracing::debug!(
             "Subscription {} updated for customer {} (status: {})",
@@ -1270,17 +1221,10 @@ impl StripeClient {
         name: &str,
     ) -> Result<String> {
         // Check if member already has a stripe_customer_id
-        let existing: Option<String> = sqlx::query_scalar(
-            "SELECT stripe_customer_id FROM members WHERE id = ?"
-        )
-            .bind(member_id.to_string())
-            .fetch_optional(&self.db_pool)
-            .await
-            .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?
-            .flatten();
-
-        if let Some(customer_id) = existing {
-            return Ok(customer_id);
+        if let Some(member) = self.member_repo.find_by_id(member_id).await? {
+            if let Some(customer_id) = member.stripe_customer_id {
+                return Ok(customer_id);
+            }
         }
 
         // Create new Stripe Customer
@@ -1294,12 +1238,9 @@ impl StripeClient {
         }).await?;
 
         // Store in member record
-        sqlx::query("UPDATE members SET stripe_customer_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-            .bind(&customer_id)
-            .bind(member_id.to_string())
-            .execute(&self.db_pool)
-            .await
-            .map_err(|e| AppError::Internal(format!("Failed to store customer ID: {}", e)))?;
+        self.member_repo
+            .set_stripe_customer_id(member_id, &customer_id)
+            .await?;
 
         tracing::info!("Created Stripe customer {} for member {}", customer_id, member_id);
         Ok(customer_id)
@@ -1351,16 +1292,8 @@ impl StripeClient {
         payment_id: Uuid,
     ) -> Result<String> {
         // Get the member's stripe_customer_id
-        let customer_id: Option<String> = sqlx::query_scalar(
-            "SELECT stripe_customer_id FROM members WHERE id = ?"
-        )
-            .bind(member_id.to_string())
-            .fetch_optional(&self.db_pool)
-            .await
-            .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?
-            .flatten();
-
-        let customer_id = customer_id
+        let customer_id = self.member_repo.find_by_id(member_id).await?
+            .and_then(|m| m.stripe_customer_id)
             .ok_or_else(|| AppError::BadRequest("Member has no Stripe customer".to_string()))?;
 
         let mut metadata = std::collections::HashMap::new();

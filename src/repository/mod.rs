@@ -60,6 +60,38 @@ pub trait MemberRepository: Send + Sync {
         id: Uuid,
         new_dues_paid_until: chrono::DateTime<chrono::Utc>,
     ) -> Result<()>;
+    /// Stamp `dues_reminder_sent_at = CURRENT_TIMESTAMP`. Called from
+    /// the dues-reminder runner once the email has gone out, so the
+    /// next sweep won't re-send for this dues cycle. Cleared on
+    /// payment via `set_dues_paid_until_with_revival`.
+    async fn set_dues_reminder_sent(&self, id: Uuid) -> Result<()>;
+    /// Update billing mode and subscription id atomically. Pass
+    /// `Some(&id)` to set the Stripe subscription id, `None` to clear
+    /// it (the right move when leaving `StripeSubscription`). Used by
+    /// the auto-renew lifecycle in `BillingService` and by the
+    /// Stripe webhook handler when a subscription gets cancelled
+    /// out-of-band.
+    async fn set_billing_mode(
+        &self,
+        id: Uuid,
+        mode: BillingMode,
+        stripe_subscription_id: Option<&str>,
+    ) -> Result<()>;
+    /// Persist the Stripe customer id for a member. Customer ids are
+    /// created lazily on first charge / SetupIntent so this gets
+    /// called exactly once per member's lifetime.
+    async fn set_stripe_customer_id(&self, id: Uuid, customer_id: &str) -> Result<()>;
+    /// Reverse of `stripe_customer_id` — given the Stripe-side id,
+    /// find the Coterie member. The webhook handlers use this to
+    /// route Stripe events back onto the right row.
+    async fn find_by_stripe_customer_id(&self, customer_id: &str) -> Result<Option<Member>>;
+    /// Count of members currently in a given billing mode. Drives
+    /// the admin "Stripe-sub members remaining" badge.
+    async fn count_by_billing_mode(&self, mode: BillingMode) -> Result<i64>;
+    /// Member ids in a given billing mode. Used by the bulk-migrate
+    /// job that flips every `stripe_subscription` member to
+    /// `coterie_managed`.
+    async fn list_ids_by_billing_mode(&self, mode: BillingMode) -> Result<Vec<Uuid>>;
     async fn delete(&self, id: Uuid) -> Result<()>;
 }
 

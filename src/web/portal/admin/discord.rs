@@ -21,7 +21,6 @@ use crate::{
     service::settings_service::UpdateDiscordConfig,
     web::templates::{HtmlTemplate, UserInfo},
 };
-use crate::web::portal::is_admin;
 
 #[derive(Template)]
 #[template(path = "admin/discord_settings.html")]
@@ -64,10 +63,6 @@ async fn render_page(
     flash_success: Option<String>,
     flash_error: Option<String>,
 ) -> Response {
-    if !is_admin(&current_user.member) {
-        return Redirect::to("/portal/dashboard").into_response();
-    }
-
     let user_info = UserInfo {
         id: current_user.member.id.to_string(),
         username: current_user.member.username.clone(),
@@ -147,10 +142,6 @@ pub async fn update_discord_settings(
     Extension(session_info): Extension<SessionInfo>,
     Form(form): Form<UpdateDiscordForm>,
 ) -> Response {
-    if !is_admin(&current_user.member) {
-        return Redirect::to("/portal/dashboard").into_response();
-    }
-
     // Belt-and-suspenders CSRF (the middleware already validated).
     let csrf_valid = state.service_context.csrf_service
         .validate_token(&session_info.session_id, &form.csrf_token)
@@ -251,11 +242,6 @@ pub async fn test_discord_connection(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html(
-            r#"<div class="p-3 bg-red-50 text-red-800 rounded text-sm">Access denied</div>"#.to_string()
-        );
-    }
 
     let cfg = match state.service_context.settings_service.get_discord_config().await {
         Ok(c) => c,
@@ -317,11 +303,6 @@ pub async fn reconcile_roles(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html(
-            r#"<div class="p-3 bg-red-50 text-red-800 rounded text-sm">Access denied</div>"#.to_string()
-        );
-    }
 
     let cfg = match state.service_context.settings_service.get_discord_config().await {
         Ok(c) => c,

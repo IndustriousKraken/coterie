@@ -14,7 +14,6 @@ use crate::{
     web::templates::{HtmlTemplate, UserInfo},
     web::uploads::save_uploaded_file,
 };
-use crate::web::portal::is_admin;
 
 /// Simple struct for type options in dropdowns
 #[derive(Clone)]
@@ -97,25 +96,6 @@ pub async fn admin_events_page(
     Query(query): Query<AdminEventsQuery>,
 ) -> impl IntoResponse {
     let is_htmx = headers.get("HX-Request").is_some();
-
-    if !is_admin(&current_user.member) {
-        return HtmlTemplate(AdminEventsTemplate {
-            current_user: None,
-            is_admin: false,
-            csrf_token: String::new(),
-            events: vec![],
-            total_events: 0,
-            current_page: 1,
-            per_page: 20,
-            total_pages: 0,
-            search_query: String::new(),
-            type_filter: String::new(),
-            visibility_filter: String::new(),
-            time_filter: "upcoming".to_string(),
-            sort_field: "start_time".to_string(),
-            sort_order: "asc".to_string(),
-        }).into_response();
-    }
 
     let user_info = UserInfo {
         id: current_user.member.id.to_string(),
@@ -287,10 +267,6 @@ pub async fn admin_event_detail_page(
     Extension(session_info): Extension<SessionInfo>,
     Path(event_id): Path<String>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let user_info = UserInfo {
         id: current_user.member.id.to_string(),
         username: current_user.member.username.clone(),
@@ -379,10 +355,6 @@ pub async fn admin_new_event_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let user_info = UserInfo {
         id: current_user.member.id.to_string(),
         username: current_user.member.username.clone(),
@@ -422,10 +394,6 @@ pub async fn admin_create_event(
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     use crate::domain::{Event, EventType, EventVisibility};
-
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
 
     // Parse multipart form
     let mut title = String::new();
@@ -692,10 +660,6 @@ pub async fn admin_update_event(
 ) -> impl IntoResponse {
     use crate::domain::{Event, EventType, EventVisibility};
 
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let id = match uuid::Uuid::parse_str(&event_id) {
         Ok(id) => id,
         Err(_) => return axum::response::Html("Invalid event ID".to_string()).into_response(),
@@ -890,10 +854,6 @@ pub async fn admin_delete_event(
     Path(event_id): Path<String>,
     axum::Form(form): axum::Form<DeleteEventForm>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let id = match uuid::Uuid::parse_str(&event_id) {
         Ok(id) => id,
         Err(_) => return axum::response::Html("Invalid event ID".to_string()).into_response(),

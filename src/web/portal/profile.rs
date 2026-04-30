@@ -174,14 +174,12 @@ pub async fn update_password(
     };
 
     // Update password in database
-    let result = sqlx::query("UPDATE members SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-        .bind(&new_hash)
-        .bind(current_user.member.id.to_string())
-        .execute(&state.service_context.db_pool)
+    let result = state.service_context.member_repo
+        .update_password_hash(current_user.member.id, &new_hash)
         .await;
 
     match result {
-        Ok(_) => axum::response::Html(
+        Ok(()) => axum::response::Html(
             r#"<div class="p-3 bg-green-50 text-green-800 rounded-md text-sm">
                 Password updated successfully!
             </div>"#.to_string()

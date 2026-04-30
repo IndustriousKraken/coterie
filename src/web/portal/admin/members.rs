@@ -13,7 +13,6 @@ use crate::{
     },
     web::templates::{HtmlTemplate, UserInfo},
 };
-use crate::web::portal::is_admin;
 
 #[derive(Template)]
 #[template(path = "admin/members.html")]
@@ -80,24 +79,6 @@ pub async fn admin_members_page(
     Query(query): Query<AdminMembersQuery>,
 ) -> impl IntoResponse {
     let is_htmx = headers.get("HX-Request").is_some();
-
-    if !is_admin(&current_user.member) {
-        return HtmlTemplate(AdminMembersTemplate {
-            current_user: None,
-            is_admin: false,
-            csrf_token: String::new(),
-            members: vec![],
-            total_members: 0,
-            current_page: 1,
-            per_page: 20,
-            total_pages: 0,
-            search_query: String::new(),
-            status_filter: String::new(),
-            type_filter: String::new(),
-            sort_field: "name".to_string(),
-            sort_order: "asc".to_string(),
-        }).into_response();
-    }
 
     let user_info = UserInfo {
         id: current_user.member.id.to_string(),
@@ -497,10 +478,6 @@ pub async fn admin_member_detail_page(
     Extension(session_info): Extension<SessionInfo>,
     Path(member_id): Path<String>,
 ) -> axum::response::Response {
-    if !is_admin(&current_user.member) {
-        return axum::response::Redirect::to("/portal/dashboard").into_response();
-    }
-
     let id = match uuid::Uuid::parse_str(&member_id) {
         Ok(id) => id,
         Err(_) => return axum::response::Redirect::to("/portal/admin/members").into_response(),
@@ -694,11 +671,6 @@ pub async fn admin_refund_payment(
     headers: axum::http::HeaderMap,
     Path(payment_id): Path<String>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html(
-            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Access denied</div>"#.to_string()
-        );
-    }
 
     let ip = crate::api::state::client_ip(&headers, state.settings.server.trust_forwarded_for());
     if !state.money_limiter.check_and_record(ip) {
@@ -895,10 +867,6 @@ pub async fn admin_record_payment_page(
     Extension(session_info): Extension<SessionInfo>,
     Path(member_id): Path<String>,
 ) -> axum::response::Response {
-    if !is_admin(&current_user.member) {
-        return axum::response::Redirect::to("/portal/dashboard").into_response();
-    }
-
     let id = match uuid::Uuid::parse_str(&member_id) {
         Ok(id) => id,
         Err(_) => return axum::response::Redirect::to("/portal/admin/members").into_response(),
@@ -991,10 +959,6 @@ pub async fn admin_record_payment_submit(
     Path(member_id): Path<String>,
     axum::Form(form): axum::Form<RecordPaymentForm>,
 ) -> axum::response::Response {
-    if !is_admin(&current_user.member) {
-        return axum::response::Redirect::to("/portal/dashboard").into_response();
-    }
-
     let id = match uuid::Uuid::parse_str(&member_id) {
         Ok(id) => id,
         Err(_) => return axum::response::Redirect::to("/portal/admin/members").into_response(),
@@ -1554,10 +1518,6 @@ pub async fn admin_new_member_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> axum::response::Response {
-    if !is_admin(&current_user.member) {
-        return axum::response::Redirect::to("/portal/dashboard").into_response();
-    }
-
     let user_info = UserInfo {
         id: current_user.member.id.to_string(),
         username: current_user.member.username.clone(),
@@ -1819,9 +1779,6 @@ pub async fn admin_resend_verification(
         email::{self, templates::{VerifyHtml, VerifyText}},
     };
 
-    if !is_admin(&current_user.member) {
-        return resend_result(false, "Access denied").into_response();
-    }
 
     let id = match uuid::Uuid::parse_str(&member_id) {
         Ok(id) => id,

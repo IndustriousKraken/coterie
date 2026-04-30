@@ -15,7 +15,6 @@ use crate::{
     domain::{AppSetting, UpdateSettingRequest},
     web::templates::{HtmlTemplate, UserInfo},
 };
-use crate::web::portal::is_admin;
 
 // =============================================================================
 // Template Structs
@@ -82,10 +81,6 @@ async fn admin_settings_page_inner(
     success_message: Option<String>,
     error_message: Option<String>,
 ) -> Response {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let user_info = UserInfo {
         id: current_user.member.id.to_string(),
         username: current_user.member.username.clone(),
@@ -115,10 +110,6 @@ pub async fn admin_update_setting(
     Extension(session_info): Extension<SessionInfo>,
     Form(form): Form<UpdateSettingForm>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     // Validate CSRF
     let csrf_valid = state.service_context.csrf_service
         .validate_token(&session_info.session_id, &form.csrf_token)

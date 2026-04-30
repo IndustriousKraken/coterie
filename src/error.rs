@@ -74,8 +74,16 @@ impl IntoResponse for AppError {
             AppError::Validation(ref msg) => (StatusCode::UNPROCESSABLE_ENTITY, msg.as_str()),
             AppError::ServiceUnavailable(ref msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.as_str()),
             AppError::External(ref msg) => {
+                // Inner message often contains raw vendor strings (Stripe
+                // request IDs, "No such customer: cus_…", Discord HTTP
+                // bodies). Log the detail for ops, but return a generic
+                // string to the client — there's nothing actionable for
+                // an end user in the upstream's error text.
                 tracing::error!("External service error: {}", msg);
-                (StatusCode::BAD_GATEWAY, msg.as_str())
+                (
+                    StatusCode::BAD_GATEWAY,
+                    "Upstream service error. Please try again or contact support.",
+                )
             }
             AppError::TooManyRequests => (StatusCode::TOO_MANY_REQUESTS, "Too many requests. Please try again later.")
         };

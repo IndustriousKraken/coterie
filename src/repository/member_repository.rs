@@ -470,6 +470,104 @@ impl MemberRepository for SqliteMemberRepository {
         Ok(())
     }
 
+    async fn set_dues_reminder_sent(&self, id: Uuid) -> Result<()> {
+        sqlx::query(
+            "UPDATE members \
+             SET dues_reminder_sent_at = CURRENT_TIMESTAMP, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn set_billing_mode(
+        &self,
+        id: Uuid,
+        mode: BillingMode,
+        stripe_subscription_id: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE members \
+             SET billing_mode = ?, \
+                 stripe_subscription_id = ?, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?",
+        )
+        .bind(mode.as_str())
+        .bind(stripe_subscription_id)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn set_stripe_customer_id(&self, id: Uuid, customer_id: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE members \
+             SET stripe_customer_id = ?, updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?",
+        )
+        .bind(customer_id)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn find_by_stripe_customer_id(&self, customer_id: &str) -> Result<Option<Member>> {
+        let row = sqlx::query_as::<_, MemberRow>(
+            "SELECT id, email, username, full_name, status, membership_type, \
+                    membership_type_id, joined_at, expires_at, dues_paid_until, \
+                    bypass_dues, is_admin, notes, stripe_customer_id, \
+                    stripe_subscription_id, billing_mode, email_verified_at, \
+                    dues_reminder_sent_at, discord_id, created_at, updated_at \
+             FROM members WHERE stripe_customer_id = ?",
+        )
+        .bind(customer_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        match row {
+            Some(r) => Ok(Some(Self::row_to_member(r)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn count_by_billing_mode(&self, mode: BillingMode) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM members WHERE billing_mode = ?",
+        )
+        .bind(mode.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(count)
+    }
+
+    async fn list_ids_by_billing_mode(&self, mode: BillingMode) -> Result<Vec<Uuid>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT id FROM members WHERE billing_mode = ?",
+        )
+        .bind(mode.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        rows.into_iter()
+            .map(|(id_str,)| {
+                Uuid::parse_str(&id_str)
+                    .map_err(|e| AppError::Database(format!("Invalid uuid {}: {}", id_str, e)))
+            })
+            .collect()
+    }
+
     async fn delete(&self, id: Uuid) -> Result<()> {
         let id_str = id.to_string();
         sqlx::query("DELETE FROM members WHERE id = ?")

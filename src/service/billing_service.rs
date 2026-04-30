@@ -99,21 +99,12 @@ impl BillingService {
             ));
         }
 
-        // Get current dues_paid_until to determine next due date
-        let dues_paid_until: Option<String> = sqlx::query_scalar(
-            "SELECT dues_paid_until FROM members WHERE id = ?",
-        )
-        .bind(member_id.to_string())
-        .fetch_optional(&self.db_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?
-        .flatten();
-
-        let next_due = if let Some(due_str) = dues_paid_until {
-            NaiveDate::parse_from_str(&due_str[..10], "%Y-%m-%d")
-                .unwrap_or_else(|_| Utc::now().date_naive())
-        } else {
-            Utc::now().date_naive()
+        // Get current dues_paid_until to determine next due date.
+        let next_due = match self.member_repo.find_by_id(member_id).await? {
+            Some(m) => m.dues_paid_until
+                .map(|d| d.date_naive())
+                .unwrap_or_else(|| Utc::now().date_naive()),
+            None => Utc::now().date_naive(),
         };
 
         let membership_type_id = membership_type.id;
@@ -245,40 +236,24 @@ impl BillingService {
         // first, the webhook reads coterie_managed and skips its
         // notify path.
         let stashed_sub_id = subscription_id.to_string();
-        sqlx::query(
-            "UPDATE members \
-             SET billing_mode = 'coterie_managed', \
-                 stripe_subscription_id = NULL, \
-                 updated_at = CURRENT_TIMESTAMP \
-             WHERE id = ?",
-        )
-        .bind(member_id.to_string())
-        .execute(&self.db_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to flip billing_mode: {}", e)))?;
+        self.member_repo
+            .set_billing_mode(member_id, BillingMode::CoterieManaged, None)
+            .await?;
 
         // 3. Cancel the Stripe subscription. If this fails, roll
         // back the local flip so the operator can retry — leaving
         // local in coterie_managed while Stripe still bills would
         // be the worst of both worlds.
         if let Err(e) = stripe.cancel_subscription(&stashed_sub_id).await {
-            sqlx::query(
-                "UPDATE members \
-                 SET billing_mode = 'stripe_subscription', \
-                     stripe_subscription_id = ?, \
-                     updated_at = CURRENT_TIMESTAMP \
-                 WHERE id = ?",
-            )
-            .bind(&stashed_sub_id)
-            .bind(member_id.to_string())
-            .execute(&self.db_pool)
-            .await
-            .map_err(|rollback| AppError::Internal(format!(
-                "Stripe cancel failed ({}) AND local rollback failed ({}); \
-                 member {} is in coterie_managed but Stripe is still \
-                 billing them. Manual intervention required.",
-                e, rollback, member_id,
-            )))?;
+            self.member_repo
+                .set_billing_mode(member_id, BillingMode::StripeSubscription, Some(&stashed_sub_id))
+                .await
+                .map_err(|rollback| AppError::Internal(format!(
+                    "Stripe cancel failed ({}) AND local rollback failed ({}); \
+                     member {} is in coterie_managed but Stripe is still \
+                     billing them. Manual intervention required.",
+                    e, rollback, member_id,
+                )))?;
             return Err(e);
         }
 
@@ -319,11 +294,9 @@ impl BillingService {
     pub async fn bulk_migrate_stripe_subscriptions(&self) -> BulkMigrationSummary {
         let mut summary = BulkMigrationSummary::default();
 
-        let rows: Vec<(String,)> = match sqlx::query_as(
-            "SELECT id FROM members WHERE billing_mode = 'stripe_subscription'",
-        )
-        .fetch_all(&self.db_pool)
-        .await
+        let ids = match self.member_repo
+            .list_ids_by_billing_mode(BillingMode::StripeSubscription)
+            .await
         {
             Ok(r) => r,
             Err(e) => {
@@ -333,11 +306,7 @@ impl BillingService {
             }
         };
 
-        for (id_str,) in rows {
-            let member_id = match Uuid::parse_str(&id_str) {
-                Ok(id) => id,
-                Err(_) => continue,
-            };
+        for member_id in ids {
             match self.migrate_to_coterie_managed(member_id).await {
                 Ok(true) => summary.succeeded += 1,
                 Ok(false) => summary.skipped += 1,
@@ -525,15 +494,9 @@ impl BillingService {
     /// (charges happen on Stripe's side, no ScheduledPayment row), so
     /// this returns true only for `coterie_managed`.
     pub async fn is_auto_renew(&self, member_id: Uuid) -> Result<bool> {
-        let mode: Option<String> = sqlx::query_scalar(
-            "SELECT billing_mode FROM members WHERE id = ?",
-        )
-        .bind(member_id.to_string())
-        .fetch_optional(&self.db_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
-
-        Ok(mode.as_deref() == Some("coterie_managed"))
+        let mode = self.member_repo.find_by_id(member_id).await?
+            .map(|m| m.billing_mode);
+        Ok(mode == Some(BillingMode::CoterieManaged))
     }
 
     /// Transition a member onto Coterie-managed auto-renewal.
@@ -562,15 +525,14 @@ impl BillingService {
 
         self.cancel_scheduled_payments(member_id).await?;
 
-        sqlx::query(
-            "UPDATE members \
-             SET billing_mode = 'coterie_managed', updated_at = CURRENT_TIMESTAMP \
-             WHERE id = ?",
-        )
-        .bind(member_id.to_string())
-        .execute(&self.db_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to set billing_mode: {}", e)))?;
+        // Preserve any existing stripe_subscription_id — leaving it
+        // intact is harmless since the mode discriminator gates the
+        // billing pathways. We only clear it on the migrate or
+        // disable paths, which actually cancel the Stripe sub.
+        let prior_sub_id = member.stripe_subscription_id.clone();
+        self.member_repo
+            .set_billing_mode(member_id, BillingMode::CoterieManaged, prior_sub_id.as_deref())
+            .await?;
 
         self.schedule_renewal(member_id, membership_type_slug).await?;
         Ok(())
@@ -631,17 +593,9 @@ impl BillingService {
         let prior_mode = member.billing_mode;
         let prior_sub_id = member.stripe_subscription_id.clone();
 
-        sqlx::query(
-            "UPDATE members \
-             SET billing_mode = 'manual', \
-                 stripe_subscription_id = NULL, \
-                 updated_at = CURRENT_TIMESTAMP \
-             WHERE id = ?",
-        )
-        .bind(member_id.to_string())
-        .execute(&self.db_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to clear billing_mode: {}", e)))?;
+        self.member_repo
+            .set_billing_mode(member_id, BillingMode::Manual, None)
+            .await?;
 
         // Cancel the Stripe subscription if the member had one. On
         // failure, roll back so the operator can retry without us
@@ -651,29 +605,15 @@ impl BillingService {
                 AppError::ServiceUnavailable("Stripe not configured".to_string())
             })?;
             if let Err(e) = stripe.cancel_subscription(&sub_id).await {
-                let prior_mode_str = match prior_mode {
-                    BillingMode::Manual => "manual",
-                    BillingMode::CoterieManaged => "coterie_managed",
-                    BillingMode::StripeSubscription => "stripe_subscription",
-                };
-                sqlx::query(
-                    "UPDATE members \
-                     SET billing_mode = ?, \
-                         stripe_subscription_id = ?, \
-                         updated_at = CURRENT_TIMESTAMP \
-                     WHERE id = ?",
-                )
-                .bind(prior_mode_str)
-                .bind(prior_sub_id.as_deref())
-                .bind(member_id.to_string())
-                .execute(&self.db_pool)
-                .await
-                .map_err(|rollback| AppError::Internal(format!(
-                    "Stripe cancel failed ({}) AND local rollback failed ({}); \
-                     member {} is in 'manual' but Stripe may still bill them. \
-                     Manual intervention required.",
-                    e, rollback, member_id,
-                )))?;
+                self.member_repo
+                    .set_billing_mode(member_id, prior_mode, prior_sub_id.as_deref())
+                    .await
+                    .map_err(|rollback| AppError::Internal(format!(
+                        "Stripe cancel failed ({}) AND local rollback failed ({}); \
+                         member {} is in 'manual' but Stripe may still bill them. \
+                         Manual intervention required.",
+                        e, rollback, member_id,
+                    )))?;
                 return Err(e);
             }
         }
@@ -1261,18 +1201,14 @@ impl BillingService {
                 // went out; the next cycle would resend (annoying but
                 // not catastrophic) — log loudly so an operator can
                 // intervene before the cycle re-runs.
-                if let Err(e) = sqlx::query(
-                    "UPDATE members SET dues_reminder_sent_at = CURRENT_TIMESTAMP WHERE id = ?"
-                )
-                .bind(id_str)
-                .execute(&self.db_pool)
-                .await
-                {
-                    tracing::error!(
-                        "Sent reminder to {} but failed to mark reminder_sent_at — \
-                         next cycle may re-send: {}",
-                        email_addr, e
-                    );
+                if let Ok(member_uuid) = Uuid::parse_str(id_str) {
+                    if let Err(e) = self.member_repo.set_dues_reminder_sent(member_uuid).await {
+                        tracing::error!(
+                            "Sent reminder to {} but failed to mark reminder_sent_at — \
+                             next cycle may re-send: {}",
+                            email_addr, e
+                        );
+                    }
                 }
                 true
             }

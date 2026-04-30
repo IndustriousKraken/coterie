@@ -14,7 +14,6 @@ use crate::{
     web::templates::{HtmlTemplate, UserInfo},
     web::uploads::save_uploaded_file,
 };
-use crate::web::portal::is_admin;
 
 /// Simple struct for type options in dropdowns
 #[derive(Clone)]
@@ -90,24 +89,6 @@ pub async fn admin_announcements_page(
     Query(query): Query<AdminAnnouncementsQuery>,
 ) -> impl IntoResponse {
     let is_htmx = headers.get("HX-Request").is_some();
-
-    if !is_admin(&current_user.member) {
-        return HtmlTemplate(AdminAnnouncementsTemplate {
-            current_user: None,
-            is_admin: false,
-            csrf_token: String::new(),
-            announcements: vec![],
-            total_announcements: 0,
-            current_page: 1,
-            per_page: 20,
-            total_pages: 0,
-            search_query: String::new(),
-            type_filter: String::new(),
-            status_filter: String::new(),
-            sort_field: "created_at".to_string(),
-            sort_order: "desc".to_string(),
-        }).into_response();
-    }
 
     let user_info = UserInfo {
         id: current_user.member.id.to_string(),
@@ -295,10 +276,6 @@ pub async fn admin_announcement_detail_page(
     Extension(session_info): Extension<SessionInfo>,
     Path(announcement_id): Path<String>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let id = match uuid::Uuid::parse_str(&announcement_id) {
         Ok(id) => id,
         Err(_) => return axum::response::Html("Invalid announcement ID".to_string()).into_response(),
@@ -372,10 +349,6 @@ pub async fn admin_new_announcement_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let user_info = UserInfo {
         id: current_user.member.id.to_string(),
         username: current_user.member.username.clone(),
@@ -415,10 +388,6 @@ pub async fn admin_create_announcement(
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     use crate::domain::{Announcement, AnnouncementType};
-
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
 
     // Parse multipart form
     let mut title = String::new();
@@ -530,10 +499,6 @@ pub async fn admin_update_announcement(
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     use crate::domain::{Announcement, AnnouncementType};
-
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
 
     let id = match uuid::Uuid::parse_str(&announcement_id) {
         Ok(id) => id,
@@ -656,10 +621,6 @@ pub async fn admin_delete_announcement(
     Extension(current_user): Extension<CurrentUser>,
     Path(announcement_id): Path<String>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let id = match uuid::Uuid::parse_str(&announcement_id) {
         Ok(id) => id,
         Err(_) => return axum::response::Html("Invalid announcement ID".to_string()).into_response(),
@@ -695,10 +656,6 @@ pub async fn admin_publish_announcement(
     Extension(current_user): Extension<CurrentUser>,
     Path(announcement_id): Path<String>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let id = match uuid::Uuid::parse_str(&announcement_id) {
         Ok(id) => id,
         Err(_) => return axum::response::Html("Invalid announcement ID".to_string()).into_response(),
@@ -737,10 +694,6 @@ pub async fn admin_unpublish_announcement(
     Extension(current_user): Extension<CurrentUser>,
     Path(announcement_id): Path<String>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let id = match uuid::Uuid::parse_str(&announcement_id) {
         Ok(id) => id,
         Err(_) => return axum::response::Html("Invalid announcement ID".to_string()).into_response(),

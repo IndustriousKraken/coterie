@@ -17,7 +17,6 @@ use crate::{
     },
     web::templates::{HtmlTemplate, UserInfo},
 };
-use crate::web::portal::is_admin;
 
 // =============================================================================
 // Type Info Structs for Templates
@@ -72,10 +71,6 @@ pub async fn admin_types_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let user_info = UserInfo {
         id: current_user.member.id.to_string(),
         username: current_user.member.username.clone(),
@@ -121,10 +116,6 @@ pub async fn admin_new_event_type_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let user_info = UserInfo {
         id: current_user.member.id.to_string(),
         username: current_user.member.username.clone(),
@@ -151,10 +142,6 @@ pub async fn admin_edit_event_type_page(
     Extension(session_info): Extension<SessionInfo>,
     Path(type_id): Path<String>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let id = match uuid::Uuid::parse_str(&type_id) {
         Ok(id) => id,
         Err(_) => return axum::response::Html("Invalid type ID".to_string()).into_response(),
@@ -215,10 +202,6 @@ pub async fn admin_create_event_type(
     Extension(current_user): Extension<CurrentUser>,
     axum::Form(form): axum::Form<EventTypeForm>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let request = CreateEventTypeRequest {
         name: form.name,
         slug: form.slug.filter(|s| !s.is_empty()),
@@ -239,10 +222,6 @@ pub async fn admin_update_event_type(
     Path(type_id): Path<String>,
     axum::Form(form): axum::Form<EventTypeForm>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let id = match uuid::Uuid::parse_str(&type_id) {
         Ok(id) => id,
         Err(_) => return axum::response::Html("Invalid type ID".to_string()).into_response(),
@@ -268,10 +247,6 @@ pub async fn admin_delete_event_type(
     Extension(current_user): Extension<CurrentUser>,
     Path(type_id): Path<String>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let id = match uuid::Uuid::parse_str(&type_id) {
         Ok(id) => id,
         Err(_) => return axum::response::Html("Invalid type ID".to_string()).into_response(),
@@ -302,10 +277,6 @@ pub async fn admin_new_announcement_type_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let user_info = UserInfo {
         id: current_user.member.id.to_string(),
         username: current_user.member.username.clone(),
@@ -332,10 +303,6 @@ pub async fn admin_edit_announcement_type_page(
     Extension(session_info): Extension<SessionInfo>,
     Path(type_id): Path<String>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let id = match uuid::Uuid::parse_str(&type_id) {
         Ok(id) => id,
         Err(_) => return axum::response::Html("Invalid type ID".to_string()).into_response(),
@@ -394,10 +361,6 @@ pub async fn admin_create_announcement_type(
     Extension(current_user): Extension<CurrentUser>,
     axum::Form(form): axum::Form<AnnouncementTypeForm>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let request = CreateAnnouncementTypeRequest {
         name: form.name,
         slug: form.slug.filter(|s| !s.is_empty()),
@@ -418,10 +381,6 @@ pub async fn admin_update_announcement_type(
     Path(type_id): Path<String>,
     axum::Form(form): axum::Form<AnnouncementTypeForm>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let id = match uuid::Uuid::parse_str(&type_id) {
         Ok(id) => id,
         Err(_) => return axum::response::Html("Invalid type ID".to_string()).into_response(),
@@ -447,10 +406,6 @@ pub async fn admin_delete_announcement_type(
     Extension(current_user): Extension<CurrentUser>,
     Path(type_id): Path<String>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let id = match uuid::Uuid::parse_str(&type_id) {
         Ok(id) => id,
         Err(_) => return axum::response::Html("Invalid type ID".to_string()).into_response(),
@@ -481,10 +436,6 @@ pub async fn admin_new_membership_type_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let user_info = UserInfo {
         id: current_user.member.id.to_string(),
         username: current_user.member.username.clone(),
@@ -511,10 +462,6 @@ pub async fn admin_edit_membership_type_page(
     Extension(session_info): Extension<SessionInfo>,
     Path(type_id): Path<String>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let id = match uuid::Uuid::parse_str(&type_id) {
         Ok(id) => id,
         Err(_) => return axum::response::Html("Invalid type ID".to_string()).into_response(),
@@ -579,10 +526,6 @@ pub async fn admin_create_membership_type(
     Extension(current_user): Extension<CurrentUser>,
     axum::Form(form): axum::Form<MembershipTypeForm>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     // Parse fee from dollars to cents, with bounds validation
     let fee_cents = match form.fee_dollars.parse::<f64>() {
         Ok(dollars) if dollars.is_finite() && dollars >= 0.0 && dollars <= 999_999.99 => {
@@ -614,10 +557,6 @@ pub async fn admin_update_membership_type(
     Path(type_id): Path<String>,
     axum::Form(form): axum::Form<MembershipTypeForm>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let id = match uuid::Uuid::parse_str(&type_id) {
         Ok(id) => id,
         Err(_) => return axum::response::Html("Invalid type ID".to_string()).into_response(),
@@ -654,10 +593,6 @@ pub async fn admin_delete_membership_type(
     Extension(current_user): Extension<CurrentUser>,
     Path(type_id): Path<String>,
 ) -> impl IntoResponse {
-    if !is_admin(&current_user.member) {
-        return axum::response::Html("Access denied".to_string()).into_response();
-    }
-
     let id = match uuid::Uuid::parse_str(&type_id) {
         Ok(id) => id,
         Err(_) => return axum::response::Html("Invalid type ID".to_string()).into_response(),

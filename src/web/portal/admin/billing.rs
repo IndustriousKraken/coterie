@@ -17,7 +17,6 @@ use crate::{
     },
     web::templates::{HtmlTemplate, UserInfo},
 };
-use crate::web::portal::is_admin;
 
 #[derive(Template)]
 #[template(path = "admin/billing_settings.html")]
@@ -58,10 +57,6 @@ async fn render_page(
     session_info: SessionInfo,
     args: RenderArgs,
 ) -> Response {
-    if !is_admin(&current_user.member) {
-        return Redirect::to("/portal/dashboard").into_response();
-    }
-
     let user_info = UserInfo {
         id: current_user.member.id.to_string(),
         username: current_user.member.username.clone(),
@@ -73,12 +68,10 @@ async fn render_page(
         .await
         .unwrap_or_default();
 
-    let stripe_subscription_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM members WHERE billing_mode = 'stripe_subscription'",
-    )
-    .fetch_one(&state.service_context.db_pool)
-    .await
-    .unwrap_or(0);
+    let stripe_subscription_count = state.service_context.member_repo
+        .count_by_billing_mode(crate::domain::BillingMode::StripeSubscription)
+        .await
+        .unwrap_or(0);
 
     HtmlTemplate(AdminBillingTemplate {
         current_user: Some(user_info),
@@ -104,10 +97,6 @@ pub async fn bulk_migrate_stripe_subs(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> Response {
-    if !is_admin(&current_user.member) {
-        return Redirect::to("/portal/dashboard").into_response();
-    }
-
     if state.stripe_client.is_none() {
         return render_page(
             state, current_user, session_info,
@@ -240,10 +229,6 @@ pub async fn billing_dashboard_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> Response {
-    if !is_admin(&current_user.member) {
-        return Redirect::to("/portal/dashboard").into_response();
-    }
-
     let user_info = UserInfo {
         id: current_user.member.id.to_string(),
         username: current_user.member.username.clone(),

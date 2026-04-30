@@ -16,7 +16,6 @@ use crate::{
     api::{middleware::auth::CurrentUser, state::AppState},
     web::templates::{HtmlTemplate, UserInfo},
 };
-use crate::web::portal::is_admin;
 
 #[derive(Template)]
 #[template(path = "admin/audit_log.html")]
@@ -59,10 +58,6 @@ pub async fn audit_log_page(
     Extension(current_user): Extension<CurrentUser>,
     Query(query): Query<AuditLogQuery>,
 ) -> Response {
-    if !is_admin(&current_user.member) {
-        return Redirect::to("/portal/dashboard").into_response();
-    }
-
     let user_info = UserInfo {
         id: current_user.member.id.to_string(),
         username: current_user.member.username.clone(),
@@ -167,10 +162,6 @@ pub async fn audit_log_export(
     Extension(current_user): Extension<CurrentUser>,
     Query(query): Query<AuditLogQuery>,
 ) -> Response {
-    if !is_admin(&current_user.member) {
-        return (StatusCode::FORBIDDEN, "Access denied").into_response();
-    }
-
     // Export is less bounded than the UI view — default to 5000, cap
     // at 50k. Admins doing an annual compliance dump will want the
     // whole table; anyone needing more can adjust retention or dump
