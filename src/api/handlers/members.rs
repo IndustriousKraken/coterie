@@ -102,9 +102,8 @@ pub async fn create(
     Extension(_user): Extension<CurrentUser>,
     Json(dto): Json<CreateMemberDto>,
 ) -> Result<(StatusCode, Json<MemberDto>)> {
-    // Parse membership type
-    let membership_type = serde_json::from_str(&format!("\"{}\"", dto.membership_type))
-        .map_err(|_| AppError::BadRequest("Invalid membership type".to_string()))?;
+    let membership_type = crate::domain::MembershipType::from_str(&dto.membership_type)
+        .ok_or_else(|| AppError::BadRequest("Invalid membership type".to_string()))?;
     
     // Create member request
     let request = CreateMemberRequest {

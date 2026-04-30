@@ -117,12 +117,12 @@ pub async fn admin_members_page(
                 }
             }
             if !status_filter.is_empty() {
-                if format!("{:?}", m.status) != status_filter {
+                if m.status.as_str() != status_filter {
                     return false;
                 }
             }
             if !type_filter.is_empty() {
-                if format!("{:?}", m.membership_type) != type_filter {
+                if m.membership_type.as_str() != type_filter {
                     return false;
                 }
             }
@@ -140,8 +140,8 @@ pub async fn admin_members_page(
                 a_last.to_lowercase().cmp(&b_last.to_lowercase())
                     .then_with(|| a.full_name.to_lowercase().cmp(&b.full_name.to_lowercase()))
             }
-            "status" => format!("{:?}", a.status).cmp(&format!("{:?}", b.status)),
-            "type" => format!("{:?}", a.membership_type).cmp(&format!("{:?}", b.membership_type)),
+            "status" => a.status.as_str().cmp(b.status.as_str()),
+            "type" => a.membership_type.as_str().cmp(b.membership_type.as_str()),
             "joined" => a.joined_at.cmp(&b.joined_at),
             "dues" => {
                 match (&a.dues_paid_until, &b.dues_paid_until) {
@@ -177,8 +177,8 @@ pub async fn admin_members_page(
                 username: m.username,
                 full_name: m.full_name,
                 initials: if initials.is_empty() { "?".to_string() } else { initials },
-                status: format!("{:?}", m.status),
-                membership_type: format!("{:?}", m.membership_type),
+                status: m.status.as_str().to_string(),
+                membership_type: m.membership_type.as_str().to_string(),
                 joined_at: m.joined_at.format("%b %d, %Y").to_string(),
                 dues_paid_until: m.dues_paid_until.map(|d| d.format("%b %d, %Y").to_string()),
             }
@@ -446,8 +446,8 @@ pub async fn admin_member_detail_page(
         username: member.username,
         full_name: member.full_name,
         initials: if initials.is_empty() { "?".to_string() } else { initials },
-        status: format!("{:?}", member.status),
-        membership_type: format!("{:?}", member.membership_type),
+        status: member.status.as_str().to_string(),
+        membership_type: member.membership_type.as_str().to_string(),
         joined_at: member.joined_at.format("%B %d, %Y").to_string(),
         dues_paid_until: member.dues_paid_until.map(|d| d.format("%B %d, %Y").to_string()),
         dues_expired,
@@ -496,12 +496,9 @@ pub async fn admin_update_member(
         Err(_) => return partials::admin_alert("error", "Invalid member ID", false),
     };
 
-    let membership_type = match form.membership_type.as_str() {
-        "Regular" => MembershipType::Regular,
-        "Student" => MembershipType::Student,
-        "Corporate" => MembershipType::Corporate,
-        "Lifetime" => MembershipType::Lifetime,
-        _ => MembershipType::Regular,
+    let membership_type = match MembershipType::from_str(&form.membership_type) {
+        Some(t) => t,
+        None => return partials::admin_alert("error", "Invalid membership type.", false),
     };
 
     // Snapshot the old member so we can emit a complete MemberUpdated event.
@@ -1351,12 +1348,29 @@ pub async fn admin_create_member(
 ) -> axum::response::Response {
     use crate::domain::{CreateMemberRequest, MembershipType, MemberStatus, UpdateMemberRequest};
 
-    let membership_type = match form.membership_type.as_str() {
-        "Regular" => MembershipType::Regular,
-        "Student" => MembershipType::Student,
-        "Corporate" => MembershipType::Corporate,
-        "Lifetime" => MembershipType::Lifetime,
-        _ => MembershipType::Regular,
+    fn render_error(message: &str) -> axum::response::Response {
+        axum::response::Html(format!(
+            r#"<!DOCTYPE html>
+            <html>
+            <head>
+                <title>Error - Coterie</title>
+                <link rel="stylesheet" href="/static/style.css">
+            </head>
+            <body class="bg-gray-100 min-h-screen flex items-center justify-center">
+                <div class="bg-white p-8 rounded-lg shadow-md max-w-md">
+                    <h1 class="text-xl font-bold text-red-600 mb-4">Error Creating Member</h1>
+                    <p class="text-gray-700 mb-4">{}</p>
+                    <a href="/portal/admin/members/new" class="text-blue-600 hover:underline">Go back and try again</a>
+                </div>
+            </body>
+            </html>"#,
+            crate::web::escape_html(message),
+        )).into_response()
+    }
+
+    let membership_type = match MembershipType::from_str(&form.membership_type) {
+        Some(t) => t,
+        None => return render_error("Invalid membership type."),
     };
 
     let create_request = CreateMemberRequest {
@@ -1369,12 +1383,14 @@ pub async fn admin_create_member(
 
     match state.service_context.member_repo.create(create_request).await {
         Ok(member) => {
+            // Pending is the default already set by `create`, so an
+            // empty / "Pending" form value is a no-op — only override
+            // when the admin picked a different status. Unknown values
+            // (typo, forged form) skip the override rather than silently
+            // landing on a default.
             let status = match form.status.as_str() {
-                "Active" => Some(MemberStatus::Active),
-                "Expired" => Some(MemberStatus::Expired),
-                "Suspended" => Some(MemberStatus::Suspended),
-                "Honorary" => Some(MemberStatus::Honorary),
-                _ => None,
+                "" | "Pending" => None,
+                s => MemberStatus::from_str(s),
             };
 
             if status.is_some() || form.notes.is_some() {
@@ -1408,25 +1424,7 @@ pub async fn admin_create_member(
 
             axum::response::Redirect::to(&format!("/portal/admin/members/{}", member.id)).into_response()
         }
-        Err(e) => {
-            axum::response::Html(format!(
-                r#"<!DOCTYPE html>
-                <html>
-                <head>
-                    <title>Error - Coterie</title>
-                    <link rel="stylesheet" href="/static/style.css">
-                </head>
-                <body class="bg-gray-100 min-h-screen flex items-center justify-center">
-                    <div class="bg-white p-8 rounded-lg shadow-md max-w-md">
-                        <h1 class="text-xl font-bold text-red-600 mb-4">Error Creating Member</h1>
-                        <p class="text-gray-700 mb-4">{}</p>
-                        <a href="/portal/admin/members/new" class="text-blue-600 hover:underline">Go back and try again</a>
-                    </div>
-                </body>
-                </html>"#,
-                crate::web::escape_html(&e.to_string())
-            )).into_response()
-        }
+        Err(e) => render_error(&e.to_string()),
     }
 }
 

@@ -80,43 +80,13 @@ impl SqliteMemberRepository {
     }
 
     fn parse_member_status(s: &str) -> Result<MemberStatus> {
-        match s {
-            "Pending" => Ok(MemberStatus::Pending),
-            "Active" => Ok(MemberStatus::Active),
-            "Expired" => Ok(MemberStatus::Expired),
-            "Suspended" => Ok(MemberStatus::Suspended),
-            "Honorary" => Ok(MemberStatus::Honorary),
-            _ => Err(AppError::Database(format!("Invalid member status: {}", s))),
-        }
-    }
-
-    fn member_status_to_str(status: &MemberStatus) -> &'static str {
-        match status {
-            MemberStatus::Pending => "Pending",
-            MemberStatus::Active => "Active",
-            MemberStatus::Expired => "Expired",
-            MemberStatus::Suspended => "Suspended",
-            MemberStatus::Honorary => "Honorary",
-        }
+        MemberStatus::from_str(s)
+            .ok_or_else(|| AppError::Database(format!("Invalid member status: {}", s)))
     }
 
     fn parse_membership_type(s: &str) -> Result<MembershipType> {
-        match s {
-            "Regular" => Ok(MembershipType::Regular),
-            "Student" => Ok(MembershipType::Student),
-            "Corporate" => Ok(MembershipType::Corporate),
-            "Lifetime" => Ok(MembershipType::Lifetime),
-            _ => Err(AppError::Database(format!("Invalid membership type: {}", s))),
-        }
-    }
-
-    fn membership_type_to_str(membership_type: &MembershipType) -> &'static str {
-        match membership_type {
-            MembershipType::Regular => "Regular",
-            MembershipType::Student => "Student",
-            MembershipType::Corporate => "Corporate",
-            MembershipType::Lifetime => "Lifetime",
-        }
+        MembershipType::from_str(s)
+            .ok_or_else(|| AppError::Database(format!("Invalid membership type: {}", s)))
     }
 }
 
@@ -139,8 +109,8 @@ impl MemberRepository for SqliteMemberRepository {
             .map_err(|e| AppError::Database(e.to_string()))?
             .to_string();
 
-        let status_str = Self::member_status_to_str(&status);
-        let membership_type_str = Self::membership_type_to_str(&request.membership_type);
+        let status_str = status.as_str();
+        let membership_type_str = request.membership_type.as_str();
         let id_str = id.to_string();
         let now_naive = now.naive_utc();
 
@@ -264,7 +234,7 @@ impl MemberRepository for SqliteMemberRepository {
     }
 
     async fn list_active(&self) -> Result<Vec<Member>> {
-        let active_status = Self::member_status_to_str(&MemberStatus::Active);
+        let active_status = MemberStatus::Active.as_str();
 
         let rows = sqlx::query_as::<_, MemberRow>(
             r#"
@@ -309,7 +279,7 @@ impl MemberRepository for SqliteMemberRepository {
     }
 
     async fn list_expired(&self) -> Result<Vec<Member>> {
-        let expired_status = Self::member_status_to_str(&MemberStatus::Expired);
+        let expired_status = MemberStatus::Expired.as_str();
 
         let rows = sqlx::query_as::<_, MemberRow>(
             r#"
@@ -338,17 +308,11 @@ impl MemberRepository for SqliteMemberRepository {
 
         let now = Utc::now();
 
-        let status_str = if let Some(status) = &update.status {
-            Self::member_status_to_str(status)
-        } else {
-            Self::member_status_to_str(&existing.status)
-        };
-
-        let membership_type_str = if let Some(membership_type) = &update.membership_type {
-            Self::membership_type_to_str(membership_type)
-        } else {
-            Self::membership_type_to_str(&existing.membership_type)
-        };
+        let status_str = update.status.as_ref().unwrap_or(&existing.status).as_str();
+        let membership_type_str = update.membership_type
+            .as_ref()
+            .unwrap_or(&existing.membership_type)
+            .as_str();
 
         let id_str = id.to_string();
         let now_naive = now.naive_utc();

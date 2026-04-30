@@ -82,8 +82,8 @@ pub fn member_row_flash(
         full_name: member.full_name.clone(),
         email: member.email.clone(),
         username: member.username.clone(),
-        status: format!("{:?}", member.status),
-        membership_type: format!("{:?}", member.membership_type),
+        status: member.status.as_str().to_string(),
+        membership_type: member.membership_type.as_str().to_string(),
         joined_at: member.joined_at.format("%b %d, %Y").to_string(),
         dues_paid_until: member.dues_paid_until
             .map(|d| d.format("%b %d, %Y").to_string())
