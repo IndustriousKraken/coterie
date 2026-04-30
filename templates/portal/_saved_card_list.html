@@ -1,0 +1,39 @@
+{# Member-side saved-cards list. HTMX swap target on the payment-
+   methods page. The "Set Default" and "Remove" buttons fire
+   `htmx.trigger('#saved-cards', 'refresh')` after the request to
+   re-render this partial in place. #}
+{% if rows.is_empty() %}
+<div class="p-6 text-center text-gray-500">
+    No saved payment methods. Add a card below.
+</div>
+{% else %}
+<div class="divide-y">
+    {% for r in rows %}
+    <div class="px-6 py-4 flex justify-between items-center">
+        <div class="flex items-center">
+            <span class="font-medium text-gray-900">{{ r.display_name }}</span>
+            <span class="ml-4 text-sm text-gray-500">Exp: {{ r.exp_display }}</span>
+            {% if r.is_default %}<span class="ml-2 px-2 py-1 text-xs font-medium rounded bg-blue-100 text-blue-800">Default</span>{% endif %}
+            {% if r.is_expired %}<span class="ml-2 px-2 py-1 text-xs font-medium rounded bg-red-100 text-red-800">Expired</span>{% endif %}
+        </div>
+        <div>
+            {% if !r.is_default %}
+            <button hx-put="/portal/api/payments/cards/{{ r.id }}/default"
+                    hx-swap="none"
+                    hx-on::after-request="htmx.trigger('#saved-cards', 'refresh')"
+                    class="text-blue-600 hover:text-blue-800 text-sm mr-3">
+                Set Default
+            </button>
+            {% endif %}
+            <button hx-delete="/portal/api/payments/cards/{{ r.id }}"
+                    hx-confirm="Are you sure you want to remove this card?"
+                    hx-swap="none"
+                    hx-on::after-request="htmx.trigger('#saved-cards', 'refresh')"
+                    class="text-red-600 hover:text-red-800 text-sm">
+                Remove
+            </button>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}

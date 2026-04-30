@@ -3,6 +3,7 @@ mod announcements;
 mod dashboard;
 mod donations;
 mod events;
+mod partials;
 mod payments;
 mod profile;
 mod restore;

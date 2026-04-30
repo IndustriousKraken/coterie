@@ -5,5 +5,6 @@ pub mod discord;
 pub mod email;
 pub mod events;
 pub mod members;
+pub mod partials;
 pub mod settings;
 pub mod types;

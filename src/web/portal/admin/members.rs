@@ -11,7 +11,7 @@ use crate::{
         middleware::auth::{CurrentUser, SessionInfo},
         state::AppState,
     },
-    web::templates::{HtmlTemplate, UserInfo},
+    web::{portal::admin::partials, templates::{HtmlTemplate, UserInfo}},
 };
 
 #[derive(Template)]
@@ -230,7 +230,7 @@ pub async fn admin_activate_member(
 
     let id = match uuid::Uuid::parse_str(&member_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html("<tr><td colspan='6' class='px-6 py-4 text-red-600'>Invalid member ID</td></tr>".to_string()),
+        Err(_) => return partials::member_row_error("Invalid member ID"),
     };
 
     let update = UpdateMemberRequest {
@@ -278,52 +278,9 @@ pub async fn admin_activate_member(
                 );
             }
 
-            let initials: String = member.full_name
-                .split_whitespace()
-                .filter_map(|word| word.chars().next())
-                .take(2)
-                .collect::<String>()
-                .to_uppercase();
-
-            axum::response::Html(format!(
-                r#"<tr class="hover:bg-gray-50 bg-green-50" x-data="{{ open: false }}">
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        <div class="flex items-center">
-                            <div class="flex-shrink-0 h-10 w-10 bg-gray-200 rounded-full flex items-center justify-center">
-                                <span class="text-gray-600 font-medium text-sm">{}</span>
-                            </div>
-                            <div class="ml-4">
-                                <div class="text-sm font-medium text-gray-900">{}</div>
-                                <div class="text-sm text-gray-500">{}</div>
-                                <div class="text-xs text-gray-400">@{}</div>
-                            </div>
-                        </div>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">Active</span>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{:?}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                        <span class="text-green-600">Activated!</span>
-                    </td>
-                </tr>"#,
-                crate::web::escape_html(&initials),
-                crate::web::escape_html(&member.full_name),
-                crate::web::escape_html(&member.email),
-                crate::web::escape_html(&member.username),
-                member.membership_type,
-                member.joined_at.format("%b %d, %Y"),
-                member.dues_paid_until.map(|d| d.format("%b %d, %Y").to_string()).unwrap_or_else(|| "—".to_string())
-            ))
+            partials::member_row_flash(&member, "active")
         }
-        Err(e) => {
-            axum::response::Html(format!(
-                "<tr><td colspan='6' class='px-6 py-4 text-red-600'>Error: {}</td></tr>",
-                crate::web::escape_html(&e.to_string())
-            ))
-        }
+        Err(e) => partials::member_row_error(&format!("Error: {}", e)),
     }
 }
 
@@ -336,7 +293,7 @@ pub async fn admin_suspend_member(
 
     let id = match uuid::Uuid::parse_str(&member_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html("<tr><td colspan='6' class='px-6 py-4 text-red-600'>Invalid member ID</td></tr>".to_string()),
+        Err(_) => return partials::member_row_error("Invalid member ID"),
     };
 
     // Snapshot the pre-update member so we can dispatch the proper
@@ -383,52 +340,9 @@ pub async fn admin_suspend_member(
                 None,
             ).await;
 
-            let initials: String = member.full_name
-                .split_whitespace()
-                .filter_map(|word| word.chars().next())
-                .take(2)
-                .collect::<String>()
-                .to_uppercase();
-
-            axum::response::Html(format!(
-                r#"<tr class="hover:bg-gray-50 bg-yellow-50" x-data="{{ open: false }}">
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        <div class="flex items-center">
-                            <div class="flex-shrink-0 h-10 w-10 bg-gray-200 rounded-full flex items-center justify-center">
-                                <span class="text-gray-600 font-medium text-sm">{}</span>
-                            </div>
-                            <div class="ml-4">
-                                <div class="text-sm font-medium text-gray-900">{}</div>
-                                <div class="text-sm text-gray-500">{}</div>
-                                <div class="text-xs text-gray-400">@{}</div>
-                            </div>
-                        </div>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-800">Suspended</span>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{:?}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                        <span class="text-yellow-600">Suspended</span>
-                    </td>
-                </tr>"#,
-                crate::web::escape_html(&initials),
-                crate::web::escape_html(&member.full_name),
-                crate::web::escape_html(&member.email),
-                crate::web::escape_html(&member.username),
-                member.membership_type,
-                member.joined_at.format("%b %d, %Y"),
-                member.dues_paid_until.map(|d| d.format("%b %d, %Y").to_string()).unwrap_or_else(|| "—".to_string())
-            ))
+            partials::member_row_flash(&member, "suspended")
         }
-        Err(e) => {
-            axum::response::Html(format!(
-                "<tr><td colspan='6' class='px-6 py-4 text-red-600'>Error: {}</td></tr>",
-                crate::web::escape_html(&e.to_string())
-            ))
-        }
+        Err(e) => partials::member_row_error(&format!("Error: {}", e)),
     }
 }
 
@@ -579,9 +493,7 @@ pub async fn admin_update_member(
 
     let id = match uuid::Uuid::parse_str(&member_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html(
-            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Invalid member ID</div>"#.to_string()
-        ),
+        Err(_) => return partials::admin_alert("error", "Invalid member ID", false),
     };
 
     let membership_type = match form.membership_type.as_str() {
@@ -625,14 +537,9 @@ pub async fn admin_update_member(
                     })
                     .await;
             }
-            axum::response::Html(
-                r#"<div class="p-3 bg-green-50 text-green-800 rounded-md text-sm">Member updated successfully!</div>"#.to_string()
-            )
+            partials::admin_alert("success", "Member updated successfully!", false)
         }
-        Err(e) => axum::response::Html(format!(
-            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Error: {}</div>"#,
-            crate::web::escape_html(&e.to_string())
-        )),
+        Err(e) => partials::admin_alert("error", &format!("Error: {}", e), false),
     }
 }
 
@@ -1198,25 +1105,19 @@ pub async fn admin_extend_dues(
 
     let id = match uuid::Uuid::parse_str(&member_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html(
-            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Invalid member ID</div>"#.to_string()
-        ),
+        Err(_) => return partials::admin_alert("error", "Invalid member ID", false),
     };
 
     let member = match state.service_context.member_repo.find_by_id(id).await {
         Ok(Some(m)) => m,
-        _ => return axum::response::Html(
-            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Member not found</div>"#.to_string()
-        ),
+        _ => return partials::admin_alert("error", "Member not found", false),
     };
 
     // 1..=120 months (10 years). Negative `i32 as u32` would
     // wraparound to ~4.29B and silently no-op via unwrap_or(base_date),
     // masking either a fat-finger or a deliberate audit-log dilution.
     if !(1..=120).contains(&form.months) {
-        return axum::response::Html(
-            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Months must be between 1 and 120.</div>"#.to_string()
-        );
+        return partials::admin_alert("error", "Months must be between 1 and 120.", false);
     }
 
     let now = chrono::Utc::now();
@@ -1245,18 +1146,13 @@ pub async fn admin_extend_dues(
                 Some(&format!("+{} months → {}", form.months, new_dues_date.format("%Y-%m-%d"))),
                 None,
             ).await;
-            axum::response::Html(format!(
-                r#"<div class="p-3 bg-green-50 text-green-800 rounded-md text-sm">
-                    Dues extended! New expiration: {}
-                    <script>setTimeout(() => location.reload(), 1500)</script>
-                </div>"#,
-                new_dues_date.format("%B %d, %Y")
-            ))
+            partials::admin_alert(
+                "success",
+                &format!("Dues extended! New expiration: {}", new_dues_date.format("%B %d, %Y")),
+                true,
+            )
         }
-        Err(e) => axum::response::Html(format!(
-            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Error: {}</div>"#,
-            crate::web::escape_html(&e.to_string())
-        )),
+        Err(e) => partials::admin_alert("error", &format!("Error: {}", e), false),
     }
 }
 
@@ -1277,16 +1173,12 @@ pub async fn admin_set_dues(
 
     let id = match uuid::Uuid::parse_str(&member_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html(
-            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Invalid member ID</div>"#.to_string()
-        ),
+        Err(_) => return partials::admin_alert("error", "Invalid member ID", false),
     };
 
     let naive_date = match NaiveDate::parse_from_str(&form.dues_until, "%Y-%m-%d") {
         Ok(d) => d,
-        Err(_) => return axum::response::Html(
-            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Invalid date format</div>"#.to_string()
-        ),
+        Err(_) => return partials::admin_alert("error", "Invalid date format", false),
     };
 
     let dues_date = naive_date
@@ -1311,18 +1203,13 @@ pub async fn admin_set_dues(
                 Some(&dues_date.format("%Y-%m-%d").to_string()),
                 None,
             ).await;
-            axum::response::Html(format!(
-                r#"<div class="p-3 bg-green-50 text-green-800 rounded-md text-sm">
-                    Dues date set to: {}
-                    <script>setTimeout(() => location.reload(), 1500)</script>
-                </div>"#,
-                dues_date.format("%B %d, %Y")
-            ))
+            partials::admin_alert(
+                "success",
+                &format!("Dues date set to: {}", dues_date.format("%B %d, %Y")),
+                true,
+            )
         }
-        Err(e) => axum::response::Html(format!(
-            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Error: {}</div>"#,
-            crate::web::escape_html(&e.to_string())
-        )),
+        Err(e) => partials::admin_alert("error", &format!("Error: {}", e), false),
     }
 }
 
@@ -1333,9 +1220,7 @@ pub async fn admin_expire_now(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&member_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html(
-            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Invalid member ID</div>"#.to_string()
-        ),
+        Err(_) => return partials::admin_alert("error", "Invalid member ID", false),
     };
 
     let old_member = state.service_context.member_repo.find_by_id(id).await.ok().flatten();
@@ -1391,17 +1276,9 @@ pub async fn admin_expire_now(
                 None,
                 None,
             ).await;
-            axum::response::Html(
-                r#"<div class="p-3 bg-yellow-50 text-yellow-800 rounded-md text-sm">
-                    Member dues have been expired.
-                    <script>setTimeout(() => location.reload(), 1500)</script>
-                </div>"#.to_string()
-            )
+            partials::admin_alert("warning", "Member dues have been expired.", true)
         }
-        Err(e) => axum::response::Html(format!(
-            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">Error: {}</div>"#,
-            crate::web::escape_html(&e.to_string())
-        )),
+        Err(e) => partials::admin_alert("error", &format!("Error: {}", e), false),
     }
 }
 
@@ -1412,9 +1289,7 @@ pub async fn admin_member_payments(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&member_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html(
-            r#"<div class="p-6 text-center text-red-600">Invalid member ID</div>"#.to_string()
-        ),
+        Err(_) => return partials::admin_alert("error", "Invalid member ID", false),
     };
 
     let payments = state.service_context.payment_repo
@@ -1422,85 +1297,8 @@ pub async fn admin_member_payments(
         .await
         .unwrap_or_default();
 
-    if payments.is_empty() {
-        return axum::response::Html(
-            r#"<div class="p-6 text-center text-gray-500">No payment history for this member</div>"#.to_string()
-        );
-    }
-
-    use crate::domain::{PaymentMethod, PaymentStatus};
-    let mut html = String::new();
-
-    for payment in payments {
-        let status_badge = match payment.status {
-            PaymentStatus::Completed => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-green-100 text-green-800">Completed</span>"#,
-            PaymentStatus::Pending => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-yellow-100 text-yellow-800">Pending</span>"#,
-            PaymentStatus::Failed => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-red-100 text-red-800">Failed</span>"#,
-            PaymentStatus::Refunded => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-800">Refunded</span>"#,
-        };
-
-        let description = if payment.description.is_empty() {
-            "Membership dues".to_string()
-        } else {
-            crate::web::escape_html(&payment.description)
-        };
-
-        // Refund button: only for Completed Stripe / Manual rows.
-        // Waived rows are $0 — nothing to give back. Already-refunded
-        // rows obviously get no button.
-        let refund_btn = if payment.status == PaymentStatus::Completed
-            && payment.payment_method != PaymentMethod::Waived
-        {
-            let confirm_msg = match payment.payment_method {
-                PaymentMethod::Stripe => format!(
-                    "Issue a full Stripe refund of ${:.2}? This is irreversible.",
-                    payment.amount_cents as f64 / 100.0,
-                ),
-                _ => format!(
-                    "Mark this ${:.2} payment as Refunded? (No external system will be touched — refund the cash/check yourself.)",
-                    payment.amount_cents as f64 / 100.0,
-                ),
-            };
-            let escaped_confirm = crate::web::escape_html(&confirm_msg);
-            format!(
-                "<button \
-                 hx-post=\"/portal/admin/payments/{0}/refund\" \
-                 hx-target=\"#refund-result-{0}\" \
-                 hx-swap=\"innerHTML\" \
-                 hx-confirm=\"{1}\" \
-                 class=\"mt-1 text-xs text-red-600 hover:text-red-800\">\
-                 Refund\
-                 </button>",
-                payment.id,
-                escaped_confirm,
-            )
-        } else {
-            String::new()
-        };
-
-        html.push_str(&format!(
-            r#"<div class="px-6 py-4 flex justify-between items-start">
-                <div>
-                    <p class="font-medium text-gray-900">{description}</p>
-                    <p class="text-sm text-gray-500">{date}</p>
-                </div>
-                <div class="text-right">
-                    <p class="font-medium text-gray-900">${amount:.2}</p>
-                    <div class="mt-1">{badge}</div>
-                    {refund_btn}
-                    <div id="refund-result-{id}"></div>
-                </div>
-            </div>"#,
-            id = payment.id,
-            description = description,
-            date = payment.created_at.format("%B %d, %Y"),
-            amount = payment.amount_cents as f64 / 100.0,
-            badge = status_badge,
-            refund_btn = refund_btn,
-        ));
-    }
-
-    axum::response::Html(html)
+    let rows = payments.iter().map(partials::admin_payment_row_from).collect();
+    partials::admin_payment_list(rows)
 }
 
 // New Member Page

@@ -1,0 +1,42 @@
+{# Admin member-detail payment-history partial. Rendered as the body
+   of the `#payments-list` HTMX swap target on the member-detail
+   page. The "refresh" trigger fired by `refund_result_html` re-runs
+   /portal/admin/members/:id/payments which re-renders this partial,
+   so the post-refund Refunded badge appears without a full page
+   reload. #}
+{% if rows.is_empty() %}
+<div class="p-6 text-center text-gray-500">No payment history for this member</div>
+{% else %}
+{% for r in rows %}
+<div class="px-6 py-4 flex justify-between items-start">
+    <div>
+        <p class="font-medium text-gray-900">{{ r.description }}</p>
+        <p class="text-sm text-gray-500">{{ r.date }}</p>
+    </div>
+    <div class="text-right">
+        <p class="font-medium text-gray-900">${{ r.amount }}</p>
+        <div class="mt-1">
+            {% if r.status == "Completed" %}
+            <span class="px-2 py-1 text-xs font-medium rounded bg-green-100 text-green-800">Completed</span>
+            {% else if r.status == "Pending" %}
+            <span class="px-2 py-1 text-xs font-medium rounded bg-yellow-100 text-yellow-800">Pending</span>
+            {% else if r.status == "Failed" %}
+            <span class="px-2 py-1 text-xs font-medium rounded bg-red-100 text-red-800">Failed</span>
+            {% else %}
+            <span class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-800">Refunded</span>
+            {% endif %}
+        </div>
+        {% if r.show_refund %}
+        <button hx-post="/portal/admin/payments/{{ r.id }}/refund"
+                hx-target="#refund-result-{{ r.id }}"
+                hx-swap="innerHTML"
+                hx-confirm="{{ r.refund_confirm }}"
+                class="mt-1 text-xs text-red-600 hover:text-red-800">
+            Refund
+        </button>
+        {% endif %}
+        <div id="refund-result-{{ r.id }}"></div>
+    </div>
+</div>
+{% endfor %}
+{% endif %}

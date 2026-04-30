@@ -149,51 +149,10 @@ pub async fn payments_list_api(
         .await
         .unwrap_or_default();
 
-    if payments.is_empty() {
-        return axum::response::Html(
-            r#"<div class="p-6 text-center text-gray-500">
-                No payment history
-            </div>"#.to_string()
-        );
-    }
-
-    let mut html = String::from(r#"<div class="divide-y">"#);
-
-    for payment in payments {
-        let status_badge = match format!("{:?}", payment.status).as_str() {
-            "Completed" => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-green-100 text-green-800">Completed</span>"#,
-            "Pending" => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-yellow-100 text-yellow-800">Pending</span>"#,
-            "Failed" => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-red-100 text-red-800">Failed</span>"#,
-            "Refunded" => r#"<span class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-800">Refunded</span>"#,
-            _ => "",
-        };
-
-        let description = if payment.description.is_empty() {
-            "Membership dues".to_string()
-        } else {
-            crate::web::escape_html(&payment.description)
-        };
-
-        html.push_str(&format!(
-            r#"<div class="px-6 py-4 flex justify-between items-center">
-                <div>
-                    <p class="font-medium text-gray-900">{}</p>
-                    <p class="text-sm text-gray-500">{}</p>
-                </div>
-                <div class="text-right">
-                    <p class="font-medium text-gray-900">${:.2}</p>
-                    <div class="mt-1">{}</div>
-                </div>
-            </div>"#,
-            description,
-            payment.created_at.format("%B %d, %Y"),
-            payment.amount_cents as f64 / 100.0,
-            status_badge
-        ));
-    }
-
-    html.push_str("</div>");
-    axum::response::Html(html)
+    let rows = payments.iter()
+        .map(crate::web::portal::partials::member_payment_row_from)
+        .collect();
+    crate::web::portal::partials::member_payment_list(rows)
 }
 
 // API endpoint for payments summary
@@ -220,17 +179,12 @@ pub async fn payments_summary_api(
 pub async fn dues_status_api(
     Extension(current_user): Extension<CurrentUser>,
 ) -> impl IntoResponse {
-    let status = if let Some(dues_until) = current_user.member.dues_paid_until {
-        if dues_until > chrono::Utc::now() {
-            r#"<span class="text-green-600">Current</span>"#
-        } else {
-            r#"<span class="text-red-600">Expired</span>"#
-        }
+    let status: &'static str = if let Some(dues_until) = current_user.member.dues_paid_until {
+        if dues_until > chrono::Utc::now() { "current" } else { "expired" }
     } else {
-        r#"<span class="text-yellow-600">Unpaid</span>"#
+        "unpaid"
     };
-
-    axum::response::Html(status.to_string())
+    crate::web::portal::partials::dues_status_pill(status)
 }
 
 // API endpoint for next due date
@@ -706,74 +660,10 @@ pub async fn saved_cards_html_api(
         .await
         .unwrap_or_default();
 
-    if cards.is_empty() {
-        return axum::response::Html(
-            r#"<div class="p-6 text-center text-gray-500">
-                No saved payment methods. Add a card below.
-            </div>"#.to_string()
-        );
-    }
-
-    let mut html = String::from(r#"<div class="divide-y">"#);
-
-    for card in cards {
-        let default_badge = if card.is_default {
-            r#"<span class="ml-2 px-2 py-1 text-xs font-medium rounded bg-blue-100 text-blue-800">Default</span>"#
-        } else {
-            ""
-        };
-
-        let expired_badge = if card.is_expired() {
-            r#"<span class="ml-2 px-2 py-1 text-xs font-medium rounded bg-red-100 text-red-800">Expired</span>"#
-        } else {
-            ""
-        };
-
-        let set_default_btn = if !card.is_default {
-            format!(
-                r#"<button
-                    hx-put="/portal/api/payments/cards/{}/default"
-                    hx-swap="none"
-                    hx-on::after-request="htmx.trigger('#saved-cards', 'refresh')"
-                    class="text-blue-600 hover:text-blue-800 text-sm mr-3">
-                    Set Default
-                </button>"#,
-                card.id
-            )
-        } else {
-            String::new()
-        };
-
-        html.push_str(&format!(
-            r#"<div class="px-6 py-4 flex justify-between items-center">
-                <div class="flex items-center">
-                    <span class="font-medium text-gray-900">{}</span>
-                    <span class="ml-4 text-sm text-gray-500">Exp: {}</span>
-                    {}{}
-                </div>
-                <div>
-                    {}
-                    <button
-                        hx-delete="/portal/api/payments/cards/{}"
-                        hx-confirm="Are you sure you want to remove this card?"
-                        hx-swap="none"
-                        hx-on::after-request="htmx.trigger('#saved-cards', 'refresh')"
-                        class="text-red-600 hover:text-red-800 text-sm">
-                        Remove
-                    </button>
-                </div>
-            </div>"#,
-            card.display_name(),
-            card.exp_display(),
-            default_badge,
-            expired_badge,
-            set_default_btn,
-            card.id
-        ));
-    }
-
-    html.push_str("</div>");
-    axum::response::Html(html)
+    let rows = cards.iter()
+        .map(crate::web::portal::partials::saved_card_row_from)
+        .collect();
+    crate::web::portal::partials::saved_card_list(rows)
 }
 
 /// HTMX endpoint - delete a saved card
