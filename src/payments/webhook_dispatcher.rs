@@ -20,7 +20,7 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 
 use crate::{
-    domain::{BillingMode, Payment, PaymentMethod, PaymentStatus, PaymentType, configurable_types::BillingPeriod},
+    domain::{BillingMode, Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus, StripeRef, configurable_types::BillingPeriod},
     error::{AppError, Result},
     integrations::{IntegrationEvent, IntegrationManager},
     payments::gateway::StripeGateway,
@@ -269,31 +269,40 @@ impl WebhookDispatcher {
             .as_ref()
             .and_then(|m| m.get("payment_type"))
             .cloned()
-            .unwrap_or_else(|| payment.payment_type.as_str().to_string());
+            .unwrap_or_else(|| payment.kind.as_str().to_string());
 
         if payment_type_str == "donation" {
+            let (donor_label, campaign_id) = match (&payment.payer, &payment.kind) {
+                (Payer::PublicDonor { email, .. }, PaymentKind::Donation { campaign_id }) => {
+                    (format!("public:{}", email), *campaign_id)
+                }
+                (Payer::Member(_), PaymentKind::Donation { campaign_id }) => {
+                    ("member".to_string(), *campaign_id)
+                }
+                _ => ("?".to_string(), payment.kind.campaign_id()),
+            };
             tracing::info!(
-                "Donation completed: payment={} member={:?} donor={:?} campaign={:?} amount={}",
-                payment.id, payment.member_id, payment.donor_email,
-                payment.donation_campaign_id, payment.amount_cents,
+                "Donation completed: payment={} payer={:?} donor={} campaign={:?} amount={}",
+                payment.id, payment.member_id(), donor_label,
+                campaign_id, payment.amount_cents,
             );
             return Ok(());
         }
 
         // Membership flow. A membership Checkout session was always
         // created with a real member_id (see create_membership_checkout_session)
-        // so the Option here is invariably Some. Bail loudly if not —
+        // so the payer is invariably Member. Bail loudly if not —
         // it's a data-integrity violation and we don't want to silently
         // run the rest of the flow with a fabricated UUID.
-        let member_id = match payment.member_id {
+        let member_id = match payment.member_id() {
             Some(id) => id,
             None => {
                 tracing::error!(
-                    "Membership payment {} has NULL member_id — data integrity violation",
+                    "Membership payment {} has no member payer — data integrity violation",
                     payment.id,
                 );
                 return Err(AppError::Database(
-                    "membership payment without member_id".to_string()
+                    "membership payment without member payer".to_string()
                 ));
             }
         };
@@ -465,15 +474,16 @@ impl WebhookDispatcher {
         // crafted with that row's id but a different member/amount
         // by anyone with Stripe API write access. We refuse if the
         // shape doesn't match: same member, same amount. Public donations
-        // (payment.member_id IS NULL) skip the member equality check —
+        // (Payer::PublicDonor) skip the member equality check —
         // the PI metadata for those carries donor_email instead.
         let metadata_member_id = intent.metadata.get("member_id")
             .and_then(|s| Uuid::parse_str(s).ok());
-        if payment.member_id.is_some() && metadata_member_id != payment.member_id {
+        let row_member_id = payment.member_id();
+        if row_member_id.is_some() && metadata_member_id != row_member_id {
             tracing::warn!(
                 "PI {} payment_id metadata points at payment {} (member {:?}), \
                  but PI's member_id metadata is {:?}; refusing to act",
-                intent.id, payment_id, payment.member_id, metadata_member_id,
+                intent.id, payment_id, row_member_id, metadata_member_id,
             );
             return Ok(());
         }
@@ -498,28 +508,28 @@ impl WebhookDispatcher {
         }
 
         tracing::info!(
-            "Self-healing payment {} via PI.succeeded webhook (member: {:?}, donor: {:?})",
-            payment_id, payment.member_id, payment.donor_email,
+            "Self-healing payment {} via PI.succeeded webhook (payer: {:?})",
+            payment_id, payment.payer,
         );
 
-        // Post-work depends on payment_type. Donations have none —
+        // Post-work depends on payment kind. Donations have none —
         // the row flip is the entire job. Membership payments need
         // dues extended and (if auto-renew enrolled) the next renewal
         // rescheduled. We look up the slug from the member's current
         // membership_type since saved-card charges don't carry it on
         // the Payment row.
-        if payment.payment_type == PaymentType::Membership {
+        if matches!(payment.kind, PaymentKind::Membership) {
             // Membership payments must have a member; data integrity
             // violation otherwise (CHECK constraint should prevent it).
-            let member_id = match payment.member_id {
+            let member_id = match payment.member_id() {
                 Some(id) => id,
                 None => {
                     tracing::error!(
-                        "Membership payment {} has NULL member_id — data integrity violation",
+                        "Membership payment {} has no member payer — data integrity violation",
                         payment_id,
                     );
                     return Err(AppError::Database(
-                        "membership payment without member_id".to_string()
+                        "membership payment without member payer".to_string()
                     ));
                 }
             };
@@ -770,17 +780,14 @@ impl WebhookDispatcher {
         let payment_id = Uuid::new_v4();
         let payment = Payment {
             id: payment_id,
-            member_id: Some(member_uuid),
+            payer: Payer::Member(member_uuid),
             amount_cents,
             currency: invoice.currency.map(|c| c.to_string()).unwrap_or_else(|| "usd".to_string()),
             status: PaymentStatus::Completed,
             payment_method: PaymentMethod::Stripe,
-            stripe_payment_id: Some(invoice.id.to_string()),
+            external_id: Some(StripeRef::Invoice(invoice.id.to_string())),
             description: format!("Subscription payment ({})", subscription_id),
-            payment_type: PaymentType::Membership,
-            donation_campaign_id: None,
-            donor_name: None,
-            donor_email: None,
+            kind: PaymentKind::Membership,
             paid_at: Some(Utc::now()),
             created_at: Utc::now(),
             updated_at: Utc::now(),

@@ -3,7 +3,7 @@ use uuid::Uuid;
 use std::sync::Arc;
 
 use crate::{
-    domain::{Payment, PaymentMethod, PaymentStatus, PaymentType},
+    domain::{Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus, StripeRef},
     error::{AppError, Result},
     payments::gateway::{
         CreateCheckoutInput, CreateCustomerInput, CreatePaymentIntentInput,
@@ -92,17 +92,14 @@ impl StripeClient {
         let payment_id = Uuid::new_v4();
         let payment = Payment {
             id: payment_id,
-            member_id: Some(member_id),
+            payer: Payer::Member(member_id),
             amount_cents,
             currency: "USD".to_string(),
             status: PaymentStatus::Pending,
             payment_method: PaymentMethod::Stripe,
-            stripe_payment_id: Some(session.session_id),
+            external_id: Some(StripeRef::CheckoutSession(session.session_id)),
             description: format!("{} Membership Payment", membership_type_name),
-            payment_type: PaymentType::Membership,
-            donation_campaign_id: None,
-            donor_name: None,
-            donor_email: None,
+            kind: PaymentKind::Membership,
             paid_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -116,9 +113,9 @@ impl StripeClient {
     /// Build a Stripe Checkout session for a one-time donation. The
     /// session metadata includes `payment_type=donation` so the webhook
     /// handler knows NOT to extend dues. A pending Payment row is
-    /// recorded with `payment_type=Donation` and (optionally)
-    /// `donation_campaign_id` so totals attribute correctly even
-    /// before the webhook flips the row to Completed.
+    /// recorded with `kind=Donation { campaign_id }` so totals
+    /// attribute correctly even before the webhook flips the row to
+    /// Completed.
     pub async fn create_donation_checkout_session(
         &self,
         member_id: Uuid,
@@ -157,17 +154,14 @@ impl StripeClient {
         let payment_id = Uuid::new_v4();
         let payment = Payment {
             id: payment_id,
-            member_id: Some(member_id),
+            payer: Payer::Member(member_id),
             amount_cents,
             currency: "USD".to_string(),
             status: PaymentStatus::Pending,
             payment_method: PaymentMethod::Stripe,
-            stripe_payment_id: Some(session.session_id),
+            external_id: Some(StripeRef::CheckoutSession(session.session_id)),
             description: product_name,
-            payment_type: PaymentType::Donation,
-            donation_campaign_id: campaign_id,
-            donor_name: None,
-            donor_email: None,
+            kind: PaymentKind::Donation { campaign_id },
             paid_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -231,17 +225,17 @@ impl StripeClient {
         let payment_id = Uuid::new_v4();
         let payment = Payment {
             id: payment_id,
-            member_id: None,
+            payer: Payer::PublicDonor {
+                name: donor_name.to_string(),
+                email: donor_email.to_string(),
+            },
             amount_cents,
             currency: "USD".to_string(),
             status: PaymentStatus::Pending,
             payment_method: PaymentMethod::Stripe,
-            stripe_payment_id: Some(session.session_id),
+            external_id: Some(StripeRef::CheckoutSession(session.session_id)),
             description: format!("{} — {}", product_name, donor_name),
-            payment_type: PaymentType::Donation,
-            donation_campaign_id: campaign_id,
-            donor_name: Some(donor_name.to_string()),
-            donor_email: Some(donor_email.to_string()),
+            kind: PaymentKind::Donation { campaign_id },
             paid_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),

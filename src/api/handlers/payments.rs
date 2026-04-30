@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     api::{state::AppState, middleware::auth::CurrentUser},
-    domain::{Payment, PaymentMethod, PaymentStatus, PaymentType, SavedCard},
+    domain::{Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus, SavedCard},
     error::{AppError, Result},
 };
 
@@ -125,7 +125,7 @@ pub async fn get(
     // Check if user can view this payment (must be the payer or admin).
     // Public donations (member_id IS NULL) are admin-only — there's no
     // member to authorize as the payer.
-    let is_self = payment.member_id == Some(user.member.id);
+    let is_self = payment.member_id() == Some(user.member.id);
     if !is_self && !is_admin(&user) {
         return Err(AppError::Forbidden);
     }
@@ -244,12 +244,6 @@ pub async fn create_manual(
 ) -> Result<(StatusCode, Json<Payment>)> {
     // Admin auth is enforced by the admin_routes middleware
 
-    let payment_type = PaymentType::from_str(&request.payment_type)
-        .ok_or_else(|| AppError::BadRequest(format!(
-            "Invalid payment_type '{}': expected membership, donation, or other",
-            request.payment_type,
-        )))?;
-
     // Boundary validation. The portal-side admin form enforces these
     // already; mirror them here so the JSON API can't bypass — a
     // compromised admin session (or careless tooling) shouldn't be
@@ -273,40 +267,42 @@ pub async fn create_manual(
         )));
     }
 
-    // Donation payments may target a specific campaign or be a
-    // "general donation" with no campaign (campaign_id=None) —
-    // matches the user-facing donate flow which offers an untargeted
-    // option. If a campaign IS supplied, it must resolve.
-    if payment_type == PaymentType::Donation {
-        if let Some(campaign_id) = request.donation_campaign_id {
-            if state.service_context.donation_campaign_repo
-                .find_by_id(campaign_id).await?
-                .is_none()
-            {
-                return Err(AppError::BadRequest(
-                    "donation_campaign_id doesn't match any campaign".to_string()
-                ));
+    // Build PaymentKind from the wire shape. Donation payments may
+    // target a specific campaign or be a "general donation" with no
+    // campaign — matches the user-facing donate flow which offers an
+    // untargeted option. If a campaign IS supplied, it must resolve.
+    let kind = match request.payment_type.as_str() {
+        "membership" => PaymentKind::Membership,
+        "donation" => {
+            if let Some(campaign_id) = request.donation_campaign_id {
+                if state.service_context.donation_campaign_repo
+                    .find_by_id(campaign_id).await?
+                    .is_none()
+                {
+                    return Err(AppError::BadRequest(
+                        "donation_campaign_id doesn't match any campaign".to_string()
+                    ));
+                }
             }
+            PaymentKind::Donation { campaign_id: request.donation_campaign_id }
         }
-    }
+        "other" => PaymentKind::Other,
+        s => return Err(AppError::BadRequest(format!(
+            "Invalid payment_type '{}': expected membership, donation, or other",
+            s,
+        ))),
+    };
 
     let payment = Payment {
         id: Uuid::new_v4(),
-        member_id: Some(request.member_id),
+        payer: Payer::Member(request.member_id),
         amount_cents: request.amount_cents,
         currency: "USD".to_string(),
         status: PaymentStatus::Completed,
         payment_method: PaymentMethod::Manual,
-        stripe_payment_id: None,
+        external_id: None,
         description: request.description.clone(),
-        payment_type,
-        donation_campaign_id: if payment_type == PaymentType::Donation {
-            request.donation_campaign_id
-        } else {
-            None
-        },
-        donor_name: None,
-        donor_email: None,
+        kind: kind.clone(),
         paid_at: Some(Utc::now()),
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -317,7 +313,7 @@ pub async fn create_manual(
     // Only Membership-type payments touch dues. Donations and Other
     // are recorded without affecting dues_paid_until or auto-renew
     // schedules — that's the whole point of the typed handler.
-    if payment_type == PaymentType::Membership {
+    if matches!(kind, PaymentKind::Membership) {
         if let Some(slug) = &request.membership_type_slug {
             let billing_service = state.service_context.billing_service(
                 state.stripe_client.clone(),
@@ -338,10 +334,10 @@ pub async fn create_manual(
 
     state.service_context.audit_service.log(
         Some(user.member.id),
-        match payment_type {
-            PaymentType::Membership => "manual_payment",
-            PaymentType::Donation => "manual_donation",
-            PaymentType::Other => "manual_other",
+        match kind {
+            PaymentKind::Membership => "manual_payment",
+            PaymentKind::Donation { .. } => "manual_donation",
+            PaymentKind::Other => "manual_other",
         },
         "member",
         &request.member_id.to_string(),
@@ -371,17 +367,14 @@ pub async fn waive(
 
     let payment = Payment {
         id: Uuid::new_v4(),
-        member_id: Some(request.member_id),
+        payer: Payer::Member(request.member_id),
         amount_cents: 0,
         currency: "USD".to_string(),
         status: PaymentStatus::Completed,
         payment_method: PaymentMethod::Waived,
-        stripe_payment_id: None,
+        external_id: None,
         description: request.description.clone(),
-        payment_type: PaymentType::Membership,
-        donation_campaign_id: None,
-        donor_name: None,
-        donor_email: None,
+        kind: PaymentKind::Membership,
         paid_at: Some(Utc::now()),
         created_at: Utc::now(),
         updated_at: Utc::now(),

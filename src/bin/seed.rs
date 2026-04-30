@@ -6,7 +6,7 @@ use coterie::{
         CreateEventTypeRequest, CreateAnnouncementTypeRequest, CreateMembershipTypeRequest,
         Event, EventType, EventVisibility,
         Announcement, AnnouncementType,
-        Payment, PaymentStatus, PaymentMethod, PaymentType,
+        Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus, StripeRef,
     },
     repository::{
         MemberRepository, SqliteMemberRepository,
@@ -184,8 +184,11 @@ fn make_payment(
     days_ago: i64,
 ) -> Payment {
     let created = Utc::now() - Duration::days(days_ago);
-    let stripe_id = if method == PaymentMethod::Stripe {
-        Some(format!("pi_seed_{}", Uuid::new_v4().to_string().chars().take(8).collect::<String>()))
+    let external_id = if method == PaymentMethod::Stripe {
+        Some(StripeRef::PaymentIntent(format!(
+            "pi_seed_{}",
+            Uuid::new_v4().to_string().chars().take(8).collect::<String>(),
+        )))
     } else {
         None
     };
@@ -193,17 +196,14 @@ fn make_payment(
 
     Payment {
         id: Uuid::new_v4(),
-        member_id: Some(member_id),
+        payer: Payer::Member(member_id),
         amount_cents,
         currency: "USD".to_string(),
         status,
         payment_method: method,
-        stripe_payment_id: stripe_id,
+        external_id,
         description: description.to_string(),
-        payment_type: PaymentType::Membership,
-        donation_campaign_id: None,
-        donor_name: None,
-        donor_email: None,
+        kind: PaymentKind::Membership,
         paid_at,
         created_at: created,
         updated_at: created,

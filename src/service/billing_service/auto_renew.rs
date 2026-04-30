@@ -15,8 +15,9 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        configurable_types::BillingPeriod, BillingMode, Payment, PaymentMethod, PaymentStatus,
-        PaymentType, SavedCard, ScheduledPayment, ScheduledPaymentStatus,
+        configurable_types::BillingPeriod, BillingMode, Payer, Payment, PaymentKind,
+        PaymentMethod, PaymentStatus, SavedCard, ScheduledPayment, ScheduledPaymentStatus,
+        StripeRef,
     },
     error::{AppError, Result},
     integrations::{IntegrationEvent, IntegrationManager},
@@ -573,20 +574,19 @@ impl AutoRenew {
             .await
         {
             Ok(stripe_payment_id) => {
-                // Create payment record
+                // Create payment record. `charge_saved_card` always
+                // returns a PaymentIntent id (`pi_…`), so the
+                // PaymentIntent variant is the right shape here.
                 let payment = Payment {
                     id: payment_id,
-                    member_id: Some(sp.member_id),
+                    payer: Payer::Member(sp.member_id),
                     amount_cents: sp.amount_cents,
                     currency: sp.currency.clone(),
                     status: PaymentStatus::Completed,
                     payment_method: PaymentMethod::Stripe,
-                    stripe_payment_id: Some(stripe_payment_id),
+                    external_id: Some(StripeRef::PaymentIntent(stripe_payment_id)),
                     description,
-                    payment_type: PaymentType::Membership,
-                    donation_campaign_id: None,
-                    donor_name: None,
-                    donor_email: None,
+                    kind: PaymentKind::Membership,
                     paid_at: Some(Utc::now()),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),

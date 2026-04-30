@@ -317,29 +317,26 @@ async fn lookup_member_name(state: &AppState, member_id: uuid::Uuid) -> String {
 /// with separate dues / donations totals. The flat list comes back
 /// already sorted newest-first, so the order survives.
 fn fold_revenue_buckets(buckets: Vec<crate::repository::MonthlyRevenue>) -> Vec<MonthlyRevenueRow> {
-    use crate::domain::PaymentType;
-
     // Stable insertion-ordered map: BTreeMap keyed on (year, month)
     // sorted DESC; we'd rather not pull in indexmap for one place.
     let mut accum: std::collections::BTreeMap<(i32, u32), [i64; 4]> =
         std::collections::BTreeMap::new();
     // [dues_cents, dues_count, donations_cents, donations_count]
+    //
+    // `b.payment_type` is the raw DB column string (the values match
+    // `PaymentKind::as_str()`); unknown values are folded into the
+    // dues bucket alongside "other".
     for b in buckets {
         let entry = accum.entry((b.year, b.month)).or_insert([0; 4]);
-        match b.payment_type {
-            PaymentType::Membership => {
-                entry[0] += b.total_cents;
-                entry[1] += b.payment_count;
-            }
-            PaymentType::Donation => {
+        match b.payment_type.as_str() {
+            "donation" => {
                 entry[2] += b.total_cents;
                 entry[3] += b.payment_count;
             }
-            PaymentType::Other => {
-                // Lump "other" into dues for the purposes of display —
-                // anything that's not a donation is treated as
-                // operating revenue. If "Other" becomes meaningful
-                // (merch, event fees with their own line) split it out.
+            // "membership" | "other" | anything else → operating revenue.
+            // If "other" becomes meaningful (merch, event fees with
+            // their own line) split it out here.
+            _ => {
                 entry[0] += b.total_cents;
                 entry[1] += b.payment_count;
             }

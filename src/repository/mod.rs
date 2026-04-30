@@ -221,13 +221,16 @@ pub trait PaymentRepository: Send + Sync {
 }
 
 /// Single (month, payment_type) bucket for the admin billing dashboard.
-/// Stored as i32s so `serde_json` round-trips work without the
-/// strange-string thing chrono::NaiveDate does in templates.
+/// `payment_type` is the raw lowercase DB-column value
+/// (`"membership" | "donation" | "other"`) — this is a SQL aggregation
+/// row, not a real `Payment`, so we don't try to lift it into the
+/// richer `PaymentKind` (Donation needs a campaign id we don't carry
+/// at the bucket level). Callers match on the string.
 #[derive(Debug, Clone)]
 pub struct MonthlyRevenue {
     pub year: i32,
     pub month: u32,
-    pub payment_type: PaymentType,
+    pub payment_type: String,
     pub total_cents: i64,
     pub payment_count: i64,
 }

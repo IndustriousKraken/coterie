@@ -4,7 +4,10 @@ use sqlx::{SqlitePool, FromRow};
 use uuid::Uuid;
 
 use crate::{
-    domain::{Payment, PaymentStatus, PaymentMethod, PaymentType, configurable_types::BillingPeriod},
+    domain::{
+        Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus, StripeRef,
+        configurable_types::BillingPeriod,
+    },
     error::{AppError, Result},
     repository::{MonthlyRevenue, PaymentRepository},
 };
@@ -41,32 +44,59 @@ impl SqlitePaymentRepository {
     }
 
     fn row_to_payment(row: PaymentRow) -> Result<Payment> {
-        // Tolerate unknown payment_type values from older rows by
-        // falling back to Membership (the column default) — that
-        // matches what the row was actually doing pre-migration.
-        let payment_type = PaymentType::from_str(&row.payment_type)
-            .unwrap_or(PaymentType::Membership);
-        let donation_campaign_id = row.donation_campaign_id
-            .as_deref()
-            .and_then(|s| Uuid::parse_str(s).ok());
+        // The DB CHECK constraint guarantees `member_id IS NOT NULL OR
+        // (donor_name AND donor_email)`, so exactly one of the two
+        // identity paths is populated. Construct the right `Payer`
+        // variant; fail-fast if a row somehow violates the invariant
+        // (only possible if the constraint was bypassed by a manual
+        // migration). We don't soft-fall-back here — letting a payment
+        // through with a fabricated payer would be worse than a 500.
         let member_id = row.member_id
             .as_deref()
             .map(Uuid::parse_str)
             .transpose()
             .map_err(|e| AppError::Database(e.to_string()))?;
+        let payer = match (member_id, row.donor_name, row.donor_email) {
+            (Some(id), _, _) => Payer::Member(id),
+            (None, Some(name), Some(email)) => Payer::PublicDonor { name, email },
+            _ => {
+                return Err(AppError::Database(format!(
+                    "Payment {} has neither member_id nor (donor_name, donor_email) — row violates schema CHECK",
+                    row.id,
+                )));
+            }
+        };
+
+        // Tolerate unknown payment_type values from older rows by
+        // falling back to Membership (the column default).
+        let donation_campaign_id = row.donation_campaign_id
+            .as_deref()
+            .and_then(|s| Uuid::parse_str(s).ok());
+        let kind = match row.payment_type.as_str() {
+            "membership" => PaymentKind::Membership,
+            "donation" => PaymentKind::Donation { campaign_id: donation_campaign_id },
+            "other" => PaymentKind::Other,
+            _ => PaymentKind::Membership,
+        };
+
+        // Stripe id: parse the prefix into a typed variant. Unknown
+        // prefixes (or shapes we no longer recognize) are dropped to
+        // `None` rather than panicking — they'll just lose Stripe-
+        // side functionality (refund-via-API) until reconciled.
+        let external_id = row.stripe_payment_id
+            .as_deref()
+            .and_then(StripeRef::from_id);
+
         Ok(Payment {
             id: Uuid::parse_str(&row.id).map_err(|e| AppError::Database(e.to_string()))?,
-            member_id,
+            payer,
             amount_cents: row.amount_cents,
             currency: row.currency,
             status: Self::parse_payment_status(&row.status)?,
             payment_method: Self::parse_payment_method(&row.payment_method)?,
-            stripe_payment_id: row.stripe_payment_id,
+            kind,
+            external_id,
             description: row.description,
-            payment_type,
-            donation_campaign_id,
-            donor_name: row.donor_name,
-            donor_email: row.donor_email,
             paid_at: row.paid_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
             updated_at: DateTime::from_naive_utc_and_offset(row.updated_at, Utc),
@@ -114,15 +144,22 @@ impl SqlitePaymentRepository {
 impl PaymentRepository for SqlitePaymentRepository {
     async fn create(&self, payment: Payment) -> Result<Payment> {
         let id_str = payment.id.to_string();
-        let member_id_str = payment.member_id.map(|id| id.to_string());
         let amount_cents_int = payment.amount_cents;
         let status_str = Self::payment_status_to_str(&payment.status);
         let method_str = Self::payment_method_to_str(&payment.payment_method);
         let paid_at_naive = payment.paid_at.map(|dt| dt.naive_utc());
         let now = Utc::now().naive_utc();
 
-        let payment_type_str = payment.payment_type.as_str();
-        let donation_campaign_id_str = payment.donation_campaign_id.map(|u| u.to_string());
+        // Decompose the typed Payer / PaymentKind / StripeRef back
+        // into the wide DB columns. The schema is unchanged — only
+        // the in-memory shape moved to sum types.
+        let (member_id_str, donor_name, donor_email) = match &payment.payer {
+            Payer::Member(id) => (Some(id.to_string()), None, None),
+            Payer::PublicDonor { name, email } => (None, Some(name.clone()), Some(email.clone())),
+        };
+        let payment_type_str = payment.kind.as_str();
+        let donation_campaign_id_str = payment.kind.campaign_id().map(|u| u.to_string());
+        let stripe_id_str = payment.external_id.as_ref().map(|r| r.as_str().to_string());
 
         sqlx::query(
             r#"
@@ -141,12 +178,12 @@ impl PaymentRepository for SqlitePaymentRepository {
         .bind(&payment.currency)
         .bind(status_str)
         .bind(method_str)
-        .bind(&payment.stripe_payment_id)
+        .bind(&stripe_id_str)
         .bind(&payment.description)
         .bind(payment_type_str)
         .bind(&donation_campaign_id_str)
-        .bind(&payment.donor_name)
-        .bind(&payment.donor_email)
+        .bind(&donor_name)
+        .bind(&donor_email)
         .bind(paid_at_naive)
         .bind(now)
         .bind(now)
@@ -252,12 +289,12 @@ impl PaymentRepository for SqlitePaymentRepository {
             WHERE id = ?
             "#
         )
-        .bind(payment.member_id.map(|id| id.to_string()))
+        .bind(payment.member_id().map(|id| id.to_string()))
         .bind(payment.amount_cents)
         .bind(&payment.currency)
         .bind(status_str)
         .bind(method_str)
-        .bind(&payment.stripe_payment_id)
+        .bind(payment.external_id.as_ref().map(|r| r.as_str().to_string()))
         .bind(&payment.description)
         .bind(paid_at_naive)
         .bind(now)
@@ -453,8 +490,8 @@ impl PaymentRepository for SqlitePaymentRepository {
         //
         // Result is ordered newest-month first; the dashboard
         // presents months top-down. payment_type comes back as the
-        // raw lowercase string and we map it back into PaymentType
-        // outside the SQL.
+        // raw lowercase string and is stored on `MonthlyRevenue`
+        // as-is — see the doc on that struct for why.
         let cutoff_months = months_back as i64;
         let rows: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
             r#"
@@ -483,12 +520,10 @@ impl PaymentRepository for SqlitePaymentRepository {
                 .map_err(|e: std::num::ParseIntError| AppError::Database(e.to_string()))?;
             let month: u32 = month_str.parse()
                 .map_err(|e: std::num::ParseIntError| AppError::Database(e.to_string()))?;
-            let payment_type = PaymentType::from_str(&type_str)
-                .unwrap_or(PaymentType::Other);
             out.push(MonthlyRevenue {
                 year,
                 month,
-                payment_type,
+                payment_type: type_str,
                 total_cents: total,
                 payment_count: count,
             });

@@ -637,8 +637,8 @@ pub async fn admin_refund_payment(
     let stripe_refund_id: Option<String> = match payment.payment_method {
         PaymentMethod::Waived => unreachable!("Waived already short-circuited above"),
         PaymentMethod::Stripe => {
-            let stripe_id = match payment.stripe_payment_id.as_deref() {
-                Some(s) if !s.is_empty() => s.to_string(),
+            let stripe_id = match payment.external_id.as_ref() {
+                Some(r) if !r.as_str().is_empty() => r.as_str().to_string(),
                 _ => {
                     let _ = state.service_context.payment_repo.unclaim_refund(payment.id).await;
                     return refund_result_html(
@@ -701,11 +701,10 @@ pub async fn admin_refund_payment(
         .handle_event(crate::integrations::IntegrationEvent::AdminAlert {
             subject: format!("Payment refunded — ${:.2}", payment.amount_cents as f64 / 100.0),
             body: format!(
-                "Refunded by: {} <{}>\nMember: {:?}\nDonor: {:?}\nMethod: {:?}\nDetail: {}",
+                "Refunded by: {} <{}>\nPayer: {:?}\nMethod: {:?}\nDetail: {}",
                 current_user.member.full_name,
                 current_user.member.email,
-                payment.member_id,
-                payment.donor_email,
+                payment.payer,
                 payment.payment_method,
                 detail,
             ),
@@ -890,55 +889,54 @@ pub async fn admin_record_payment_submit(
         ).await;
     }
 
-    let payment_type = match crate::domain::PaymentType::from_str(&form.payment_type) {
-        Some(t) => t,
-        None => return rerender_with_error(
+    use crate::domain::{Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus};
+    use chrono::Utc;
+
+    let kind = match form.payment_type.as_str() {
+        "membership" => PaymentKind::Membership,
+        "donation" => {
+            let cid_str = form.donation_campaign_id.trim();
+            if cid_str.is_empty() {
+                return rerender_with_error(
+                    state, current_user, session_info, member_id,
+                    "Donation requires a campaign selection.",
+                ).await;
+            }
+            let cid = match uuid::Uuid::parse_str(cid_str) {
+                Ok(cid) => cid,
+                Err(_) => return rerender_with_error(
+                    state, current_user, session_info, member_id,
+                    "Invalid campaign id.",
+                ).await,
+            };
+            // Verify the campaign actually exists. The dropdown only
+            // offers valid campaigns, but a stale/forged form submission
+            // could otherwise create an orphan donation row.
+            let resolved = match state.service_context.donation_campaign_repo.find_by_id(cid).await {
+                Ok(Some(_)) => Some(cid),
+                Ok(None) => return rerender_with_error(
+                    state, current_user, session_info, member_id,
+                    "Selected campaign no longer exists.",
+                ).await,
+                Err(e) => return rerender_with_error(
+                    state, current_user, session_info, member_id,
+                    &format!("Campaign lookup failed: {}", e),
+                ).await,
+            };
+            PaymentKind::Donation { campaign_id: resolved }
+        }
+        "other" => PaymentKind::Other,
+        _ => return rerender_with_error(
             state, current_user, session_info, member_id,
             "Invalid payment type.",
         ).await,
     };
 
-    use crate::domain::{Payment, PaymentMethod, PaymentStatus, PaymentType};
-    use chrono::Utc;
-
-    let donation_campaign_id = if payment_type == PaymentType::Donation {
-        let cid_str = form.donation_campaign_id.trim();
-        if cid_str.is_empty() {
-            return rerender_with_error(
-                state, current_user, session_info, member_id,
-                "Donation requires a campaign selection.",
-            ).await;
-        }
-        let cid = match uuid::Uuid::parse_str(cid_str) {
-            Ok(cid) => cid,
-            Err(_) => return rerender_with_error(
-                state, current_user, session_info, member_id,
-                "Invalid campaign id.",
-            ).await,
-        };
-        // Verify the campaign actually exists. The dropdown only
-        // offers valid campaigns, but a stale/forged form submission
-        // could otherwise create an orphan donation row.
-        match state.service_context.donation_campaign_repo.find_by_id(cid).await {
-            Ok(Some(_)) => Some(cid),
-            Ok(None) => return rerender_with_error(
-                state, current_user, session_info, member_id,
-                "Selected campaign no longer exists.",
-            ).await,
-            Err(e) => return rerender_with_error(
-                state, current_user, session_info, member_id,
-                &format!("Campaign lookup failed: {}", e),
-            ).await,
-        }
-    } else {
-        None
-    };
-
     let description = if form.description.trim().is_empty() {
-        match payment_type {
-            PaymentType::Membership => "Manual membership payment".to_string(),
-            PaymentType::Donation => "Donation".to_string(),
-            PaymentType::Other => "Manual payment".to_string(),
+        match kind {
+            PaymentKind::Membership => "Manual membership payment".to_string(),
+            PaymentKind::Donation { .. } => "Donation".to_string(),
+            PaymentKind::Other => "Manual payment".to_string(),
         }
     } else {
         form.description.clone()
@@ -947,17 +945,14 @@ pub async fn admin_record_payment_submit(
     let payment_id = uuid::Uuid::new_v4();
     let payment = Payment {
         id: payment_id,
-        member_id: Some(id),
+        payer: Payer::Member(id),
         amount_cents,
         currency: "USD".to_string(),
         status: PaymentStatus::Completed,
         payment_method: PaymentMethod::Manual,
-        stripe_payment_id: None,
+        external_id: None,
         description,
-        payment_type,
-        donation_campaign_id,
-        donor_name: None,
-        donor_email: None,
+        kind: kind.clone(),
         paid_at: Some(Utc::now()),
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -971,7 +966,7 @@ pub async fn admin_record_payment_submit(
     }
 
     // Membership-type payments extend dues + refresh schedule.
-    if payment_type == PaymentType::Membership && !form.membership_type_slug.is_empty() {
+    if matches!(kind, PaymentKind::Membership) && !form.membership_type_slug.is_empty() {
         let billing_service = state.service_context.billing_service(
             state.stripe_client.clone(),
             state.settings.server.base_url.clone(),
@@ -992,10 +987,10 @@ pub async fn admin_record_payment_submit(
 
     state.service_context.audit_service.log(
         Some(current_user.member.id),
-        match payment_type {
-            PaymentType::Membership => "manual_payment",
-            PaymentType::Donation => "manual_donation",
-            PaymentType::Other => "manual_other",
+        match kind {
+            PaymentKind::Membership => "manual_payment",
+            PaymentKind::Donation { .. } => "manual_donation",
+            PaymentKind::Other => "manual_other",
         },
         "member",
         &member_id,

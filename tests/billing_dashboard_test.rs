@@ -14,8 +14,8 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use coterie::{
     domain::{
-        CreateMemberRequest, MembershipType, Payment, PaymentMethod,
-        PaymentStatus, PaymentType, ScheduledPayment, ScheduledPaymentStatus,
+        CreateMemberRequest, MembershipType, Payer, Payment, PaymentKind, PaymentMethod,
+        PaymentStatus, ScheduledPayment, ScheduledPaymentStatus, StripeRef,
     },
     repository::{
         MemberRepository, PaymentRepository, ScheduledPaymentRepository,
@@ -65,23 +65,20 @@ async fn insert_completed_payment(
     repo: &Arc<dyn PaymentRepository>,
     member_id: Uuid,
     amount_cents: i64,
-    payment_type: PaymentType,
+    kind: PaymentKind,
     paid_at: DateTime<Utc>,
 ) -> Uuid {
     let id = Uuid::new_v4();
     let payment = Payment {
         id,
-        member_id: Some(member_id),
+        payer: Payer::Member(member_id),
         amount_cents,
         currency: "USD".to_string(),
         status: PaymentStatus::Completed,
         payment_method: PaymentMethod::Stripe,
-        stripe_payment_id: Some(format!("pi_test_{}", id.simple())),
+        external_id: Some(StripeRef::PaymentIntent(format!("pi_test_{}", id.simple()))),
         description: "test".to_string(),
-        payment_type,
-        donation_campaign_id: None,
-        donor_name: None,
-        donor_email: None,
+        kind,
         paid_at: Some(paid_at),
         created_at: paid_at,
         updated_at: paid_at,
@@ -106,15 +103,15 @@ async fn revenue_by_month_groups_dues_and_donations_separately() {
     let m = make_member(&pool).await;
 
     let last_month = Utc::now() - Duration::days(20);
-    insert_completed_payment(&pool, &repo, m, 50_00, PaymentType::Membership, last_month).await;
-    insert_completed_payment(&pool, &repo, m, 25_00, PaymentType::Membership, last_month).await;
-    insert_completed_payment(&pool, &repo, m, 100_00, PaymentType::Donation, last_month).await;
+    insert_completed_payment(&pool, &repo, m, 50_00, PaymentKind::Membership, last_month).await;
+    insert_completed_payment(&pool, &repo, m, 25_00, PaymentKind::Membership, last_month).await;
+    insert_completed_payment(&pool, &repo, m, 100_00, PaymentKind::Donation { campaign_id: None }, last_month).await;
 
     let buckets = repo.revenue_by_month(12).await.unwrap();
     assert_eq!(buckets.len(), 2, "should have two buckets: Membership + Donation");
 
-    let dues = buckets.iter().find(|b| b.payment_type == PaymentType::Membership).unwrap();
-    let donations = buckets.iter().find(|b| b.payment_type == PaymentType::Donation).unwrap();
+    let dues = buckets.iter().find(|b| b.payment_type == "membership").unwrap();
+    let donations = buckets.iter().find(|b| b.payment_type == "donation").unwrap();
 
     assert_eq!(dues.total_cents, 75_00);
     assert_eq!(dues.payment_count, 2);
@@ -129,9 +126,9 @@ async fn revenue_by_month_excludes_refunded_and_pending() {
     let m = make_member(&pool).await;
     let recent = Utc::now() - Duration::days(5);
 
-    let completed = insert_completed_payment(&pool, &repo, m, 50_00, PaymentType::Membership, recent).await;
-    let to_refund = insert_completed_payment(&pool, &repo, m, 75_00, PaymentType::Membership, recent).await;
-    let to_pend = insert_completed_payment(&pool, &repo, m, 99_00, PaymentType::Membership, recent).await;
+    let completed = insert_completed_payment(&pool, &repo, m, 50_00, PaymentKind::Membership, recent).await;
+    let to_refund = insert_completed_payment(&pool, &repo, m, 75_00, PaymentKind::Membership, recent).await;
+    let to_pend = insert_completed_payment(&pool, &repo, m, 99_00, PaymentKind::Membership, recent).await;
 
     // Flip the second one to Refunded and the third one to Pending.
     sqlx::query("UPDATE payments SET status = 'Refunded' WHERE id = ?")
@@ -141,7 +138,7 @@ async fn revenue_by_month_excludes_refunded_and_pending() {
 
     let buckets = repo.revenue_by_month(12).await.unwrap();
     let dues = buckets.iter()
-        .find(|b| b.payment_type == PaymentType::Membership)
+        .find(|b| b.payment_type == "membership")
         .expect("dues bucket present");
 
     // Only the Completed row counts.
@@ -160,8 +157,8 @@ async fn revenue_by_month_orders_newest_first() {
 
     let three_months_ago = Utc::now() - Duration::days(90);
     let one_month_ago = Utc::now() - Duration::days(20);
-    insert_completed_payment(&pool, &repo, m, 10_00, PaymentType::Membership, three_months_ago).await;
-    insert_completed_payment(&pool, &repo, m, 20_00, PaymentType::Membership, one_month_ago).await;
+    insert_completed_payment(&pool, &repo, m, 10_00, PaymentKind::Membership, three_months_ago).await;
+    insert_completed_payment(&pool, &repo, m, 20_00, PaymentKind::Membership, one_month_ago).await;
 
     let buckets = repo.revenue_by_month(12).await.unwrap();
     // Two distinct months, two buckets — newer first.
@@ -183,11 +180,11 @@ async fn revenue_by_month_horizon_drops_old_payments() {
 
     // 14 months ago — outside a 12-month horizon.
     let way_back = Utc::now() - Duration::days(14 * 30);
-    insert_completed_payment(&pool, &repo, m, 999_00, PaymentType::Membership, way_back).await;
+    insert_completed_payment(&pool, &repo, m, 999_00, PaymentKind::Membership, way_back).await;
 
     // Within the horizon.
     let recent = Utc::now() - Duration::days(10);
-    insert_completed_payment(&pool, &repo, m, 50_00, PaymentType::Membership, recent).await;
+    insert_completed_payment(&pool, &repo, m, 50_00, PaymentKind::Membership, recent).await;
 
     let buckets = repo.revenue_by_month(12).await.unwrap();
     let total_cents: i64 = buckets.iter().map(|b| b.total_cents).sum();

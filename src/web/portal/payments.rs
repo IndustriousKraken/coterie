@@ -399,17 +399,14 @@ pub async fn charge_saved_card_api(
     let payment_id = uuid::Uuid::new_v4();
     let pending = crate::domain::Payment {
         id: payment_id,
-        member_id: Some(current_user.member.id),
+        payer: crate::domain::Payer::Member(current_user.member.id),
         amount_cents,
         currency: "USD".to_string(),
         status: crate::domain::PaymentStatus::Pending,
         payment_method: crate::domain::PaymentMethod::Stripe,
-        stripe_payment_id: None,
+        external_id: None,
         description: description.clone(),
-        payment_type: crate::domain::PaymentType::Membership,
-        donation_campaign_id: None,
-        donor_name: None,
-        donor_email: None,
+        kind: crate::domain::PaymentKind::Membership,
         paid_at: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -822,7 +819,7 @@ pub async fn receipts_page(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
 ) -> Result<axum::response::Response, AppError> {
-    use crate::domain::{PaymentStatus, PaymentType};
+    use crate::domain::{PaymentKind, PaymentStatus};
     use std::collections::BTreeMap;
 
     let user_info = UserInfo {
@@ -854,16 +851,16 @@ pub async fn receipts_page(
         let mut dues_cents: i64 = 0;
         let mut donations_cents: i64 = 0;
         let mut lines: Vec<ReceiptLineDisplay> = items.into_iter().map(|p| {
-            let kind_label = match p.payment_type {
-                PaymentType::Membership => {
+            let kind_label = match p.kind {
+                PaymentKind::Membership => {
                     dues_cents += p.amount_cents;
                     "Dues"
                 }
-                PaymentType::Donation => {
+                PaymentKind::Donation { .. } => {
                     donations_cents += p.amount_cents;
                     "Donation"
                 }
-                PaymentType::Other => "Other",
+                PaymentKind::Other => "Other",
             }.to_string();
 
             let when = p.paid_at.unwrap_or(p.created_at);
@@ -908,7 +905,7 @@ pub async fn receipt_page(
     Extension(current_user): Extension<CurrentUser>,
     axum::extract::Path(payment_id): axum::extract::Path<uuid::Uuid>,
 ) -> Result<axum::response::Response, AppError> {
-    use crate::domain::{PaymentMethod, PaymentStatus, PaymentType};
+    use crate::domain::{PaymentKind, PaymentMethod, PaymentStatus};
 
     let payment = state.service_context.payment_repo
         .find_by_id(payment_id)
@@ -916,9 +913,9 @@ pub async fn receipt_page(
         .ok_or(AppError::NotFound("Receipt not found".to_string()))?;
 
     // Ownership check: must be the member's own payment. Public
-    // donations (member_id IS NULL) aren't accessible through the
+    // donations (Payer::PublicDonor) aren't accessible through the
     // portal — those donors have no login.
-    if payment.member_id != Some(current_user.member.id) {
+    if payment.member_id() != Some(current_user.member.id) {
         // Don't leak existence of other members' payments — same code
         // as the absent case.
         return Err(AppError::NotFound("Receipt not found".to_string()));
@@ -936,10 +933,10 @@ pub async fn receipt_page(
     let org_website_url = settings.get_value("org.website_url").await.unwrap_or_default();
     let org_tax_id = settings.get_value("org.tax_id").await.unwrap_or_default();
 
-    let kind_label = match payment.payment_type {
-        PaymentType::Membership => "Dues",
-        PaymentType::Donation => "Donation",
-        PaymentType::Other => "Other",
+    let kind_label = match payment.kind {
+        PaymentKind::Membership => "Dues",
+        PaymentKind::Donation { .. } => "Donation",
+        PaymentKind::Other => "Other",
     }.to_string();
 
     let payment_method_label = match payment.payment_method {
@@ -951,7 +948,7 @@ pub async fn receipt_page(
     let when = payment.paid_at.unwrap_or(payment.created_at);
 
     // Try to resolve campaign name when applicable.
-    let campaign = if let Some(cid) = payment.donation_campaign_id {
+    let campaign = if let Some(cid) = payment.kind.campaign_id() {
         state.service_context.donation_campaign_repo
             .find_by_id(cid)
             .await
