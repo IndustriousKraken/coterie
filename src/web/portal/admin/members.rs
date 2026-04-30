@@ -634,8 +634,8 @@ pub async fn admin_refund_payment(
     let stripe_refund_id: Option<String> = match payment.payment_method {
         PaymentMethod::Waived => unreachable!("Waived already short-circuited above"),
         PaymentMethod::Stripe => {
-            let stripe_id = match payment.external_id.as_ref() {
-                Some(r) if !r.as_str().is_empty() => r.as_str().to_string(),
+            let stripe_ref = match payment.external_id.as_ref() {
+                Some(r) if !r.as_str().is_empty() => r,
                 _ => {
                     let _ = state.service_context.payment_repo.unclaim_refund(payment.id).await;
                     return refund_result_html(
@@ -654,7 +654,7 @@ pub async fn admin_refund_payment(
                     );
                 }
             };
-            match stripe_client.refund_payment(&stripe_id, &payment.id.to_string()).await {
+            match stripe_client.refund_payment(stripe_ref, &payment.id.to_string()).await {
                 Ok(refund_id) => Some(refund_id),
                 Err(e) => {
                     // Stripe rejected — roll the local row back so a
@@ -1100,7 +1100,7 @@ pub async fn admin_extend_dues(
         Err(_) => return partials::admin_alert("error", "Invalid member ID", false),
     };
 
-    let member = match state.service_context.member_repo.find_by_id(id).await {
+    let old_member = match state.service_context.member_repo.find_by_id(id).await {
         Ok(Some(m)) => m,
         _ => return partials::admin_alert("error", "Member not found", false),
     };
@@ -1113,7 +1113,7 @@ pub async fn admin_extend_dues(
     }
 
     let now = chrono::Utc::now();
-    let base_date = member.dues_paid_until
+    let base_date = old_member.dues_paid_until
         .filter(|d| *d > now)
         .unwrap_or(now);
 
@@ -1121,31 +1121,28 @@ pub async fn admin_extend_dues(
         .checked_add_months(Months::new(form.months as u32))
         .unwrap_or(base_date);
 
-    let result = sqlx::query("UPDATE members SET dues_paid_until = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-        .bind(new_dues_date)
-        .bind(&member_id)
-        .execute(&state.service_context.db_pool)
-        .await;
-
-    match result {
-        Ok(_) => {
-            state.service_context.audit_service.log(
-                Some(current_user.member.id),
-                "extend_dues",
-                "member",
-                &member_id,
-                None,
-                Some(&format!("+{} months → {}", form.months, new_dues_date.format("%Y-%m-%d"))),
-                None,
-            ).await;
-            partials::admin_alert(
-                "success",
-                &format!("Dues extended! New expiration: {}", new_dues_date.format("%B %d, %Y")),
-                true,
-            )
-        }
-        Err(e) => partials::admin_alert("error", &format!("Error: {}", e), false),
+    if let Err(e) = state.service_context.member_repo
+        .set_dues_paid_until_with_revival(id, new_dues_date)
+        .await
+    {
+        return partials::admin_alert("error", &format!("Error: {}", e), false);
     }
+
+    state.service_context.audit_service.log(
+        Some(current_user.member.id),
+        "extend_dues",
+        "member",
+        &member_id,
+        None,
+        Some(&format!("+{} months → {}", form.months, new_dues_date.format("%Y-%m-%d"))),
+        None,
+    ).await;
+    dispatch_member_updated(&state, id, old_member).await;
+    partials::admin_alert(
+        "success",
+        &format!("Dues extended! New expiration: {}", new_dues_date.format("%B %d, %Y")),
+        true,
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -1178,31 +1175,32 @@ pub async fn admin_set_dues(
         .unwrap()
         .and_utc();
 
-    let result = sqlx::query("UPDATE members SET dues_paid_until = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-        .bind(dues_date)
-        .bind(id.to_string())
-        .execute(&state.service_context.db_pool)
-        .await;
+    let old_member = state.service_context.member_repo.find_by_id(id).await.ok().flatten();
 
-    match result {
-        Ok(_) => {
-            state.service_context.audit_service.log(
-                Some(current_user.member.id),
-                "set_dues",
-                "member",
-                &id.to_string(),
-                None,
-                Some(&dues_date.format("%Y-%m-%d").to_string()),
-                None,
-            ).await;
-            partials::admin_alert(
-                "success",
-                &format!("Dues date set to: {}", dues_date.format("%B %d, %Y")),
-                true,
-            )
-        }
-        Err(e) => partials::admin_alert("error", &format!("Error: {}", e), false),
+    if let Err(e) = state.service_context.member_repo
+        .set_dues_paid_until_with_revival(id, dues_date)
+        .await
+    {
+        return partials::admin_alert("error", &format!("Error: {}", e), false);
     }
+
+    state.service_context.audit_service.log(
+        Some(current_user.member.id),
+        "set_dues",
+        "member",
+        &id.to_string(),
+        None,
+        Some(&dues_date.format("%Y-%m-%d").to_string()),
+        None,
+    ).await;
+    if let Some(old) = old_member {
+        dispatch_member_updated(&state, id, old).await;
+    }
+    partials::admin_alert(
+        "success",
+        &format!("Dues date set to: {}", dues_date.format("%B %d, %Y")),
+        true,
+    )
 }
 
 pub async fn admin_expire_now(
@@ -1216,61 +1214,57 @@ pub async fn admin_expire_now(
     };
 
     let old_member = state.service_context.member_repo.find_by_id(id).await.ok().flatten();
-    let yesterday = chrono::Utc::now() - chrono::Duration::days(1);
 
-    // Backdate dues AND flip status to Expired so the effect is immediate
-    // (the billing runner would do this anyway on its next tick, but an
-    // admin clicking "expire now" reasonably expects the change to be
-    // live immediately).
-    let result = sqlx::query(
-        "UPDATE members \
-         SET dues_paid_until = ?, \
-             status = CASE WHEN status = 'Active' THEN 'Expired' ELSE status END, \
-             updated_at = CURRENT_TIMESTAMP \
-         WHERE id = ?"
-    )
-        .bind(yesterday)
-        .bind(id.to_string())
-        .execute(&state.service_context.db_pool)
-        .await;
+    if let Err(e) = state.service_context.member_repo.expire_dues_now(id).await {
+        return partials::admin_alert("error", &format!("Error: {}", e), false);
+    }
 
-    match result {
-        Ok(_) => {
-            // Force-logout so the member sees the expiration immediately
-            // instead of on their next page load. Even if this fails,
-            // middleware re-checks status per-request and bounces them
-            // to /portal/restore — but log so operators notice.
-            if let Err(e) = state.service_context.auth_service
-                .invalidate_all_sessions(id)
-                .await
-            {
-                tracing::error!(
-                    "Expired dues for member {} but failed to invalidate sessions: {}",
-                    id, e
-                );
-            }
+    // Force-logout so the member sees the expiration immediately
+    // instead of on their next page load. Even if this fails,
+    // middleware re-checks status per-request and bounces them
+    // to /portal/restore — but log so operators notice.
+    if let Err(e) = state.service_context.auth_service
+        .invalidate_all_sessions(id)
+        .await
+    {
+        tracing::error!(
+            "Expired dues for member {} but failed to invalidate sessions: {}",
+            id, e
+        );
+    }
 
-            // Fire integration event with old/new pair for the diff.
-            if let Some(old) = old_member {
-                if let Ok(Some(new)) = state.service_context.member_repo.find_by_id(id).await {
-                    state.service_context.integration_manager
-                        .handle_event(crate::integrations::IntegrationEvent::MemberUpdated { old, new })
-                        .await;
-                }
-            }
+    if let Some(old) = old_member {
+        dispatch_member_updated(&state, id, old).await;
+    }
 
-            state.service_context.audit_service.log(
-                Some(current_user.member.id),
-                "expire_member_now",
-                "member",
-                &id.to_string(),
-                None,
-                None,
-                None,
-            ).await;
-            partials::admin_alert("warning", "Member dues have been expired.", true)
-        }
-        Err(e) => partials::admin_alert("error", &format!("Error: {}", e), false),
+    state.service_context.audit_service.log(
+        Some(current_user.member.id),
+        "expire_member_now",
+        "member",
+        &id.to_string(),
+        None,
+        None,
+        None,
+    ).await;
+    partials::admin_alert("warning", "Member dues have been expired.", true)
+}
+
+/// Re-fetch the member after an update and fire `MemberUpdated` with
+/// the old/new pair. Centralizes the post-update integration-event
+/// dispatch so handlers don't each re-roll the find_by_id +
+/// integration_manager dance, and so a missed dispatch is one
+/// consistent fix-site instead of N. Silent on lookup failure — the
+/// caller's update already succeeded; we don't want to invent a
+/// rollback path.
+async fn dispatch_member_updated(
+    state: &AppState,
+    id: uuid::Uuid,
+    old: crate::domain::Member,
+) {
+    if let Ok(Some(new)) = state.service_context.member_repo.find_by_id(id).await {
+        state.service_context.integration_manager
+            .handle_event(crate::integrations::IntegrationEvent::MemberUpdated { old, new })
+            .await;
     }
 }
 

@@ -93,14 +93,16 @@ async fn build_harness() -> Harness {
         payment_repo.clone(),
         member_repo.clone(),
     );
+    let processed_events_repo: Arc<dyn coterie::repository::ProcessedEventsRepository> =
+        Arc::new(coterie::repository::SqliteProcessedEventsRepository::new(pool.clone()));
     let dispatcher = WebhookDispatcher::new(
         gw,
         "whsec_test_dummy".to_string(),
         payment_repo.clone(),
         member_repo.clone(),
+        processed_events_repo,
         mt_service.clone(),
         integrations.clone(),
-        pool.clone(),
     );
 
     let billing = BillingService::new(

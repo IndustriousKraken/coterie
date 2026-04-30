@@ -14,6 +14,7 @@ pub mod donation_repository;
 pub mod event_type_repository;
 pub mod announcement_type_repository;
 pub mod membership_type_repository;
+pub mod processed_events_repository;
 
 pub use member_repository::SqliteMemberRepository;
 pub use event_repository::SqliteEventRepository;
@@ -26,6 +27,7 @@ pub use donation_repository::SqliteDonationCampaignRepository;
 pub use event_type_repository::{EventTypeRepository, SqliteEventTypeRepository};
 pub use announcement_type_repository::{AnnouncementTypeRepository, SqliteAnnouncementTypeRepository};
 pub use membership_type_repository::{MembershipTypeRepository, SqliteMembershipTypeRepository};
+pub use processed_events_repository::{ProcessedEventsRepository, SqliteProcessedEventsRepository};
 
 #[async_trait]
 pub trait MemberRepository: Send + Sync {
@@ -60,6 +62,14 @@ pub trait MemberRepository: Send + Sync {
         id: Uuid,
         new_dues_paid_until: chrono::DateTime<chrono::Utc>,
     ) -> Result<()>;
+    /// Inverse of `set_dues_paid_until_with_revival`: backdate
+    /// `dues_paid_until` to yesterday and flip Active→Expired in the
+    /// same UPDATE. Pending/Suspended/Honorary are left alone (same
+    /// asymmetric carve-outs as revival). Used by the admin "expire
+    /// now" action; the billing runner would do this on its next tick
+    /// anyway, but admins reasonably expect the change to be live
+    /// immediately.
+    async fn expire_dues_now(&self, id: Uuid) -> Result<()>;
     /// Stamp `dues_reminder_sent_at = CURRENT_TIMESTAMP`. Called from
     /// the dues-reminder runner once the email has gone out, so the
     /// next sweep won't re-send for this dues cycle. Cleared on
@@ -187,6 +197,11 @@ pub trait PaymentRepository: Send + Sync {
     /// re-claim. Conditional on status='Refunded' so this can't undo
     /// a legitimate completed refund from a different code path.
     async fn unclaim_refund(&self, id: Uuid) -> Result<()>;
+    /// Mark a payment Refunded, unconditionally. Used by the Stripe
+    /// `charge.refunded` webhook handler when the row hasn't already
+    /// been flipped by our own admin-button refund (caller filters
+    /// out `Refunded` echoes). Idempotent under repeat calls.
+    async fn mark_refunded(&self, id: Uuid) -> Result<()>;
     /// Idempotently extend a member's dues for a single Payment.
     ///
     /// Implemented as a transactional claim-then-update: the row's

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use coterie::{
-    domain::{CreateMemberRequest, MembershipType},
+    domain::{CreateMemberRequest, MembershipType, StripeRef},
     error::AppError,
     integrations::IntegrationManager,
     payments::{
@@ -210,8 +210,10 @@ async fn refund_payment_with_pi_id_passes_through() {
     let (client, fake) = build_client_with_fake(pool);
 
     // Default fake response is fine — auto-generated re_test_1
-    let id = client.refund_payment("pi_real_payment", "ikey-pi").await
-        .expect("refund succeeded");
+    let id = client.refund_payment(
+        &StripeRef::PaymentIntent("pi_real_payment".to_string()),
+        "ikey-pi",
+    ).await.expect("refund succeeded");
 
     assert!(id.starts_with("re_test_"), "refund id should be a generated test id, got {}", id);
 
@@ -237,8 +239,10 @@ async fn refund_payment_with_cs_id_resolves_to_pi_first() {
     });
     fake.next_refund(RefundOutput { id: "re_known".to_string() });
 
-    let id = client.refund_payment("cs_test_session", "ikey-cs").await
-        .expect("refund succeeded");
+    let id = client.refund_payment(
+        &StripeRef::CheckoutSession("cs_test_session".to_string()),
+        "ikey-cs",
+    ).await.expect("refund succeeded");
     assert_eq!(id, "re_known");
 
     let calls = fake.calls();
@@ -263,8 +267,10 @@ async fn refund_payment_with_invoice_id_resolves_to_pi_first() {
         payment_intent_id: Some("pi_from_invoice".to_string()),
     });
 
-    let id = client.refund_payment("in_subscription_1", "ikey-in").await
-        .expect("refund succeeded");
+    let id = client.refund_payment(
+        &StripeRef::Invoice("in_subscription_1".to_string()),
+        "ikey-in",
+    ).await.expect("refund succeeded");
     assert!(id.starts_with("re_test_"));
 
     let calls = fake.calls();
@@ -279,17 +285,10 @@ async fn refund_payment_with_invoice_id_resolves_to_pi_first() {
     }
 }
 
-#[tokio::test]
-async fn refund_payment_rejects_unknown_id_format() {
-    let pool = fresh_pool().await;
-    let (client, fake) = build_client_with_fake(pool);
-
-    let err = client.refund_payment("xx_unknown_format", "ikey").await
-        .expect_err("must reject");
-    matches!(err, AppError::BadRequest(_));
-    assert_eq!(fake.calls().len(), 0,
-        "no Stripe calls should be made for an unrecognized prefix");
-}
+// Previously: `refund_payment_rejects_unknown_id_format` exercised the
+// `xx_…` prefix fallback in the old stringly-typed `refund_payment`.
+// Removed — the prefix ladder is gone; `StripeRef` makes the unknown
+// case unrepresentable at the type level.
 
 #[tokio::test]
 async fn refund_payment_when_session_has_no_intent_returns_error() {
@@ -303,8 +302,10 @@ async fn refund_payment_when_session_has_no_intent_returns_error() {
         payment_intent_id: None,
     });
 
-    let err = client.refund_payment("cs_no_intent", "ikey").await
-        .expect_err("must reject session with no PI");
+    let err = client.refund_payment(
+        &StripeRef::CheckoutSession("cs_no_intent".to_string()),
+        "ikey",
+    ).await.expect_err("must reject session with no PI");
     match err {
         AppError::BadRequest(msg) => {
             assert!(msg.to_lowercase().contains("no paymentintent"),
@@ -327,8 +328,10 @@ async fn refund_payment_propagates_stripe_failure() {
 
     fake.next_refund_err(AppError::External("Stripe is on fire".to_string()));
 
-    let err = client.refund_payment("pi_anything", "ikey").await
-        .expect_err("must surface error");
+    let err = client.refund_payment(
+        &StripeRef::PaymentIntent("pi_anything".to_string()),
+        "ikey",
+    ).await.expect_err("must surface error");
     match err {
         AppError::External(msg) => assert!(msg.contains("on fire") || msg.contains("Stripe")),
         other => panic!("expected External, got {:?}", other),

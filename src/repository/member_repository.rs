@@ -434,6 +434,23 @@ impl MemberRepository for SqliteMemberRepository {
         Ok(())
     }
 
+    async fn expire_dues_now(&self, id: Uuid) -> Result<()> {
+        let yesterday = Utc::now() - chrono::Duration::days(1);
+        sqlx::query(
+            "UPDATE members \
+             SET dues_paid_until = ?, \
+                 status = CASE WHEN status = 'Active' THEN 'Expired' ELSE status END, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?",
+        )
+        .bind(yesterday)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     async fn set_dues_reminder_sent(&self, id: Uuid) -> Result<()> {
         sqlx::query(
             "UPDATE members \

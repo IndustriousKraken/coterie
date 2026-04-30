@@ -377,6 +377,18 @@ impl PaymentRepository for SqlitePaymentRepository {
         Ok(())
     }
 
+    async fn mark_refunded(&self, id: Uuid) -> Result<()> {
+        sqlx::query(
+            "UPDATE payments SET status = 'Refunded', updated_at = ? WHERE id = ?",
+        )
+        .bind(Utc::now().naive_utc())
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     async fn extend_dues_for_payment_atomic(
         &self,
         payment_id: Uuid,

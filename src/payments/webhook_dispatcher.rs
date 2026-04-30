@@ -17,14 +17,13 @@ use stripe::{CheckoutSession, EventObject, EventType, Webhook, WebhookError};
 use chrono::Utc;
 use uuid::Uuid;
 use std::sync::Arc;
-use sqlx::SqlitePool;
 
 use crate::{
     domain::{BillingMode, Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus, StripeRef, configurable_types::BillingPeriod},
     error::{AppError, Result},
     integrations::{IntegrationEvent, IntegrationManager},
     payments::gateway::StripeGateway,
-    repository::{MemberRepository, PaymentRepository},
+    repository::{MemberRepository, PaymentRepository, ProcessedEventsRepository},
     service::{billing_service::BillingService, membership_type_service::MembershipTypeService},
 };
 
@@ -37,14 +36,9 @@ pub struct WebhookDispatcher {
     webhook_secret: String,
     payment_repo: Arc<dyn PaymentRepository>,
     member_repo: Arc<dyn MemberRepository>,
+    processed_events_repo: Arc<dyn ProcessedEventsRepository>,
     membership_type_service: Arc<MembershipTypeService>,
     integration_manager: Arc<IntegrationManager>,
-    /// Held for the `processed_stripe_events` idempotency claim and the
-    /// legacy charge.refunded UPDATE on the payments table. Both writes
-    /// are scoped to processed-events / payments tables that don't yet
-    /// have repo methods carved out for them — those would be a small
-    /// follow-up to lift the dispatcher fully off `db_pool`.
-    db_pool: SqlitePool,
 }
 
 impl WebhookDispatcher {
@@ -53,18 +47,18 @@ impl WebhookDispatcher {
         webhook_secret: String,
         payment_repo: Arc<dyn PaymentRepository>,
         member_repo: Arc<dyn MemberRepository>,
+        processed_events_repo: Arc<dyn ProcessedEventsRepository>,
         membership_type_service: Arc<MembershipTypeService>,
         integration_manager: Arc<IntegrationManager>,
-        db_pool: SqlitePool,
     ) -> Self {
         Self {
             gateway,
             webhook_secret,
             payment_repo,
             member_repo,
+            processed_events_repo,
             membership_type_service,
             integration_manager,
-            db_pool,
         }
     }
 
@@ -93,21 +87,13 @@ impl WebhookDispatcher {
         })?;
 
         // Idempotency: claim the event ID atomically. If another worker
-        // or a retry already processed this event, the INSERT affects 0
-        // rows and we bail early. Without this, Stripe's "at-least-once"
-        // delivery would let retries double-extend dues.
+        // or a retry already processed this event, `claim` returns
+        // false and we bail early. Without this, Stripe's "at-least-
+        // once" delivery would let retries double-extend dues.
         let event_id = event.id.to_string();
         let event_type = format!("{:?}", event.type_);
-        let claim = sqlx::query(
-            "INSERT OR IGNORE INTO processed_stripe_events (event_id, event_type) VALUES (?, ?)"
-        )
-        .bind(&event_id)
-        .bind(&event_type)
-        .execute(&self.db_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("Idempotency claim failed: {}", e)))?;
-
-        if claim.rows_affected() == 0 {
+        let claimed = self.processed_events_repo.claim(&event_id, &event_type).await?;
+        if !claimed {
             tracing::info!("Skipping already-processed Stripe event {}", event_id);
             return Ok(());
         }
@@ -196,13 +182,7 @@ impl WebhookDispatcher {
             // DB is in a state where we can't trust further writes
             // anyway, and the original error is the more important
             // signal to surface.
-            if let Err(rollback_err) = sqlx::query(
-                "DELETE FROM processed_stripe_events WHERE event_id = ?",
-            )
-            .bind(&event_id)
-            .execute(&self.db_pool)
-            .await
-            {
+            if let Err(rollback_err) = self.processed_events_repo.release(&event_id).await {
                 tracing::error!(
                     "Idempotency rollback failed for event {}: {}. The event \
                      is permanently claimed; manual intervention may be needed.",
@@ -608,48 +588,38 @@ impl WebhookDispatcher {
 
         // Try to find the Payment row. New checkout flows upgrade
         // stripe_payment_id from cs_ → pi_ on completion (see
-        // handle_successful_payment), so the IN clause covers them
-        // alongside saved-card (pi_) and Stripe-subscription (in_)
+        // handle_successful_payment), so checking pi then invoice
+        // covers saved-card (pi_) and Stripe-subscription (in_)
         // payments. Legacy rows still keyed by cs_ fall through to
         // the Stripe-API lookup below.
         let pi_id = charge.payment_intent.as_ref().map(|e| e.id().to_string());
         let invoice_id = charge.invoice.as_ref().map(|e| e.id().to_string());
 
-        let mut row: Option<(String, String)> = sqlx::query_as(
-            r#"
-            SELECT id, status FROM payments
-            WHERE stripe_payment_id IS NOT NULL
-              AND stripe_payment_id IN (?, ?)
-            LIMIT 1
-            "#,
-        )
-        .bind(pi_id.as_deref().unwrap_or(""))
-        .bind(invoice_id.as_deref().unwrap_or(""))
-        .fetch_optional(&self.db_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+        let mut payment: Option<Payment> = None;
+        if let Some(ref id) = pi_id {
+            payment = self.payment_repo.find_by_stripe_id(id).await?;
+        }
+        if payment.is_none() {
+            if let Some(ref id) = invoice_id {
+                payment = self.payment_repo.find_by_stripe_id(id).await?;
+            }
+        }
 
         // Fallback for legacy cs_ rows: ask Stripe which CheckoutSession
         // owns this PaymentIntent, then match. The list API filters
         // server-side, so this is a single round trip.
-        if row.is_none() {
+        if payment.is_none() {
             if let Some(pi) = pi_id.as_deref() {
                 if let Ok(sessions) = self.gateway.list_checkout_sessions_by_intent(pi).await {
                     if let Some(cs_id) = sessions.first() {
-                        row = sqlx::query_as(
-                            "SELECT id, status FROM payments WHERE stripe_payment_id = ? LIMIT 1",
-                        )
-                        .bind(cs_id)
-                        .fetch_optional(&self.db_pool)
-                        .await
-                        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+                        payment = self.payment_repo.find_by_stripe_id(cs_id).await?;
                     }
                 }
             }
         }
 
-        let (payment_id, current_status) = match row {
-            Some(r) => r,
+        let payment = match payment {
+            Some(p) => p,
             None => {
                 tracing::warn!(
                     "charge.refunded for charge {} — no matching local Payment (pi={:?}, invoice={:?}). \
@@ -664,7 +634,7 @@ impl WebhookDispatcher {
             tracing::warn!(
                 "Partial refund on payment {} (refunded {} of {} cents) — \
                  local row left as-is; flag for an operator.",
-                payment_id, amount_refunded, charge_amount,
+                payment.id, amount_refunded, charge_amount,
             );
             // We don't update the row — partial refunds would muddle
             // dues/campaign accounting. Surface to operators so they
@@ -672,7 +642,7 @@ impl WebhookDispatcher {
             self.integration_manager.handle_event(IntegrationEvent::AdminAlert {
                 subject: format!(
                     "Partial Stripe refund — payment {} (${:.2} of ${:.2})",
-                    payment_id,
+                    payment.id,
                     amount_refunded as f64 / 100.0,
                     charge_amount as f64 / 100.0,
                 ),
@@ -686,31 +656,24 @@ impl WebhookDispatcher {
                      to match. Otherwise investigate who issued the \
                      partial refund in Stripe's dashboard.",
                     charge.id, amount_refunded as f64 / 100.0,
-                    charge_amount as f64 / 100.0, payment_id,
+                    charge_amount as f64 / 100.0, payment.id,
                 ),
             }).await;
             return Ok(());
         }
 
-        if current_status == "Refunded" {
+        if matches!(payment.status, PaymentStatus::Refunded) {
             // Echo from our own admin-button refund. Already handled.
-            tracing::debug!("charge.refunded echo for already-Refunded payment {}", payment_id);
+            tracing::debug!("charge.refunded echo for already-Refunded payment {}", payment.id);
             return Ok(());
         }
 
         // Out-of-band full refund. Flip to Refunded.
-        sqlx::query(
-            "UPDATE payments SET status = 'Refunded', updated_at = ? WHERE id = ?",
-        )
-        .bind(Utc::now().naive_utc())
-        .bind(&payment_id)
-        .execute(&self.db_pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+        self.payment_repo.mark_refunded(payment.id).await?;
 
         tracing::info!(
             "Synced refund from Stripe dashboard: payment {} marked Refunded (charge {})",
-            payment_id, charge.id,
+            payment.id, charge.id,
         );
 
         Ok(())

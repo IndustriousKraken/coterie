@@ -399,18 +399,11 @@ impl StripeClient {
         Ok(out)
     }
 
-    /// Issue a full refund for a stored Stripe payment ID.
-    ///
-    /// We store one of three things in `payments.stripe_payment_id`
-    /// depending on which flow created the payment:
-    ///   - `pi_…`  PaymentIntent (saved-card charges, subscription
-    ///             payments processed by Coterie's billing runner)
-    ///   - `cs_…`  CheckoutSession (one-time membership/donation
-    ///             checkouts)
-    ///   - `in_…`  Invoice (Stripe-managed subscription invoices)
+    /// Issue a full refund for a stored Stripe payment reference.
     ///
     /// Stripe's Refund API takes a PaymentIntent or Charge; this
-    /// method normalizes whichever shape we have to a PaymentIntent.
+    /// method normalizes the three reference shapes Coterie holds
+    /// (see [`StripeRef`]) to a PaymentIntent before calling Stripe.
     /// Full refund only — partial refunds aren't exposed in the
     /// admin UI (would complicate dues / campaign accounting).
     ///
@@ -420,26 +413,23 @@ impl StripeClient {
     /// cause Stripe to issue two refunds.
     pub async fn refund_payment(
         &self,
-        stored_stripe_id: &str,
+        stripe_ref: &StripeRef,
         idempotency_key: &str,
     ) -> Result<String> {
-        let payment_intent_id: String = if stored_stripe_id.starts_with("pi_") {
-            stored_stripe_id.to_string()
-        } else if stored_stripe_id.starts_with("cs_") {
-            let session = self.gateway.retrieve_checkout_session(stored_stripe_id).await?;
-            session.payment_intent_id.ok_or_else(|| AppError::BadRequest(
-                "Checkout session has no PaymentIntent — not a charge that can be refunded".to_string()
-            ))?
-        } else if stored_stripe_id.starts_with("in_") {
-            let invoice = self.gateway.retrieve_invoice(stored_stripe_id).await?;
-            invoice.payment_intent_id.ok_or_else(|| AppError::BadRequest(
-                "Invoice has no PaymentIntent — not a charge that can be refunded".to_string()
-            ))?
-        } else {
-            return Err(AppError::BadRequest(format!(
-                "Unrecognized Stripe ID format '{}': expected pi_, cs_, or in_ prefix",
-                stored_stripe_id,
-            )));
+        let payment_intent_id = match stripe_ref {
+            StripeRef::PaymentIntent(id) => id.clone(),
+            StripeRef::CheckoutSession(id) => {
+                let session = self.gateway.retrieve_checkout_session(id).await?;
+                session.payment_intent_id.ok_or_else(|| AppError::BadRequest(
+                    "Checkout session has no PaymentIntent — not a charge that can be refunded".to_string()
+                ))?
+            }
+            StripeRef::Invoice(id) => {
+                let invoice = self.gateway.retrieve_invoice(id).await?;
+                invoice.payment_intent_id.ok_or_else(|| AppError::BadRequest(
+                    "Invoice has no PaymentIntent — not a charge that can be refunded".to_string()
+                ))?
+            }
         };
 
         let refund = self.gateway.create_refund(CreateRefundInput {
