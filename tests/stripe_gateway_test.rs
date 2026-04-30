@@ -73,15 +73,8 @@ fn build_client_with_fake(
     // The gateway is the fake; every StripeClient method routes through
     // it now, so there's no longer a stripe-rs Client to wire up.
     let gw: Arc<dyn StripeGateway> = fake.clone();
-    let client = StripeClient::with_gateway(
-        gw,
-        "whsec_test_dummy".to_string(),
-        payment_repo,
-        member_repo,
-        mt_service,
-        integration_manager,
-        pool,
-    );
+    let _ = (mt_service, integration_manager, pool);
+    let client = StripeClient::with_gateway(gw, payment_repo, member_repo);
     (client, fake)
 }
 

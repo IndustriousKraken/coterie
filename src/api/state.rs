@@ -8,7 +8,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
     config::Settings,
-    payments::StripeClient,
+    payments::{StripeClient, WebhookDispatcher},
     service::ServiceContext,
 };
 
@@ -110,6 +110,9 @@ impl RateLimiter {
 pub struct AppState {
     pub service_context: Arc<ServiceContext>,
     pub stripe_client: Option<Arc<StripeClient>>,
+    /// Inbound webhook dispatcher. `Some` exactly when `stripe_client`
+    /// is `Some` (both depend on Stripe being configured).
+    pub webhook_dispatcher: Option<Arc<WebhookDispatcher>>,
     pub settings: Arc<Settings>,
     /// Rate limiter for login endpoints (5 attempts per 15 minutes per IP).
     pub login_limiter: RateLimiter,
@@ -130,11 +133,13 @@ impl AppState {
     pub fn new(
         service_context: Arc<ServiceContext>,
         stripe_client: Option<Arc<StripeClient>>,
+        webhook_dispatcher: Option<Arc<WebhookDispatcher>>,
         settings: Arc<Settings>,
     ) -> Self {
         Self {
             service_context,
             stripe_client,
+            webhook_dispatcher,
             settings,
             login_limiter: RateLimiter::new(5, Duration::from_secs(15 * 60)),
             money_limiter: RateLimiter::new(10, Duration::from_secs(60)),

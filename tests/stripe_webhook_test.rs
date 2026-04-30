@@ -21,7 +21,9 @@ use coterie::{
     },
     email::LogSender,
     integrations::IntegrationManager,
-    payments::{fake_gateway::FakeStripeGateway, gateway::StripeGateway, StripeClient},
+    payments::{
+        fake_gateway::FakeStripeGateway, gateway::StripeGateway, StripeClient, WebhookDispatcher,
+    },
     repository::{
         MemberRepository, PaymentRepository, SqliteMemberRepository, SqlitePaymentRepository,
         SqliteSavedCardRepository, SqliteScheduledPaymentRepository,
@@ -57,7 +59,9 @@ async fn fresh_pool() -> SqlitePool {
 }
 
 struct Harness {
+    #[allow(dead_code)]
     client: StripeClient,
+    dispatcher: WebhookDispatcher,
     fake: Arc<FakeStripeGateway>,
     billing: BillingService,
     pool: SqlitePool,
@@ -85,6 +89,11 @@ async fn build_harness() -> Harness {
 
     let gw: Arc<dyn StripeGateway> = fake.clone();
     let client = StripeClient::with_gateway(
+        gw.clone(),
+        payment_repo.clone(),
+        member_repo.clone(),
+    );
+    let dispatcher = WebhookDispatcher::new(
         gw,
         "whsec_test_dummy".to_string(),
         payment_repo.clone(),
@@ -108,7 +117,7 @@ async fn build_harness() -> Harness {
         pool.clone(),
     );
 
-    Harness { client, fake, billing, pool }
+    Harness { client, dispatcher, fake, billing, pool }
 }
 
 /// Insert a member, attach the seeded "member" membership_type so dues
@@ -371,7 +380,7 @@ async fn pi_succeeded_retry_does_not_double_extend_dues() {
     );
 
     // First dispatch: should flip Pending → Completed and extend dues.
-    h.client
+    h.dispatcher
         .dispatch_payment_intent_succeeded(pi.clone(), &h.billing)
         .await
         .expect("first dispatch ok");
@@ -386,7 +395,7 @@ async fn pi_succeeded_retry_does_not_double_extend_dues() {
     // — this is the stripe-retry-after-rollback case where the
     // event-claim layer is bypassed and the inner handler must hold
     // idempotency on its own.
-    h.client
+    h.dispatcher
         .dispatch_payment_intent_succeeded(pi, &h.billing)
         .await
         .expect("second dispatch ok");
@@ -451,7 +460,7 @@ async fn charge_refunded_echo_for_already_refunded_row_is_noop() {
     .expect("updated_at before");
 
     let charge = build_charge("ch_refund_echo", 100_00, 100_00, Some(pi_id));
-    h.client
+    h.dispatcher
         .dispatch_charge_refunded(charge)
         .await
         .expect("dispatch ok");
@@ -509,7 +518,7 @@ async fn charge_refunded_for_completed_row_flips_to_refunded() {
     .await;
 
     let charge = build_charge("ch_dashboard_refund", 100_00, 100_00, Some(pi_id));
-    h.client
+    h.dispatcher
         .dispatch_charge_refunded(charge)
         .await
         .expect("dispatch ok");
@@ -531,7 +540,7 @@ async fn subscription_deleted_for_migrated_member_is_silent_noop() {
     let member_id = insert_member(&h.pool, Some(customer_id), BillingMode::CoterieManaged).await;
 
     let sub = build_subscription("sub_migrated_echo", customer_id);
-    h.client
+    h.dispatcher
         .dispatch_subscription_deleted(sub, &h.billing)
         .await
         .expect("dispatch ok");
@@ -555,7 +564,7 @@ async fn subscription_deleted_for_active_subscription_flips_to_manual() {
         insert_member(&h.pool, Some(customer_id), BillingMode::StripeSubscription).await;
 
     let sub = build_subscription("sub_oob_cancel", customer_id);
-    h.client
+    h.dispatcher
         .dispatch_subscription_deleted(sub, &h.billing)
         .await
         .expect("dispatch ok");
@@ -608,7 +617,7 @@ async fn public_donation_checkout_completion_marks_payment_completed() {
         }),
     );
 
-    h.client
+    h.dispatcher
         .dispatch_checkout_session_completed(session, &h.billing)
         .await
         .expect("dispatch ok");
@@ -673,7 +682,7 @@ async fn webhook_handlers_do_not_call_gateway_unnecessarily() {
     .await;
 
     let charge = build_charge("ch_local_only", 10_00, 10_00, Some(pi_id));
-    h.client
+    h.dispatcher
         .dispatch_charge_refunded(charge)
         .await
         .expect("dispatch ok");

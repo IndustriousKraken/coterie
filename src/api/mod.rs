@@ -19,7 +19,7 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use crate::{
     config::Settings,
-    payments::StripeClient,
+    payments::{StripeClient, WebhookDispatcher},
     service::ServiceContext,
 };
 use state::AppState;
@@ -27,10 +27,11 @@ use state::AppState;
 pub fn create_app(
     service_context: Arc<ServiceContext>,
     stripe_client: Option<Arc<StripeClient>>,
+    webhook_dispatcher: Option<Arc<WebhookDispatcher>>,
     settings: Arc<Settings>,
 ) -> Router {
     let cors_layer = build_cors_layer(&settings);
-    let app_state = AppState::new(service_context, stripe_client, settings);
+    let app_state = AppState::new(service_context, stripe_client, webhook_dispatcher, settings);
 
     Router::new()
         // Root and health endpoints

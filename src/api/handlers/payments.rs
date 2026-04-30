@@ -170,8 +170,8 @@ pub async fn stripe_webhook(
     headers: HeaderMap,
     body: String,
 ) -> Result<impl IntoResponse> {
-    let stripe_client = match state.stripe_client.as_ref() {
-        Some(c) => c,
+    let dispatcher = match state.webhook_dispatcher.as_ref() {
+        Some(d) => d,
         None => return Ok(StatusCode::SERVICE_UNAVAILABLE),
     };
 
@@ -195,7 +195,7 @@ pub async fn stripe_webhook(
     // (in Discord, if configured) — bad signature usually means
     // either Stripe rotated the webhook secret and we still have
     // the old one, OR something is forging requests at our endpoint.
-    if let Err(e) = stripe_client.handle_webhook(&body, stripe_signature, &billing_service).await {
+    if let Err(e) = dispatcher.handle_webhook(&body, stripe_signature, &billing_service).await {
         if matches!(&e, AppError::BadRequest(msg) if msg.contains("Invalid signature")) {
             state.service_context.integration_manager
                 .handle_event(crate::integrations::IntegrationEvent::AdminAlert {

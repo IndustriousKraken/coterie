@@ -493,11 +493,20 @@ pub async fn charge_saved_card_api(
         }))));
     }
 
+    // Build BillingService up front — both the dues-extension and the
+    // auto-renew branch below run through it.
+    let billing_service = state.service_context.billing_service(
+        state.stripe_client.clone(),
+        state.settings.server.base_url.clone(),
+    );
+
     // Extend dues first so the new dues_paid_until is what auto-renew
     // schedules off of. This is the source of truth for "when does the
     // next renewal fire" — if scheduling reads the old date, the queued
     // charge would fire on the previous cycle's day.
-    stripe_client.extend_member_dues(payment_id, current_user.member.id, &membership_type.slug).await?;
+    billing_service
+        .extend_member_dues_by_slug(payment_id, current_user.member.id, &membership_type.slug)
+        .await?;
 
     // Branch on auto-renew intent:
     //   - enable_auto_renew=true: enroll (or re-enroll) and schedule.
@@ -509,10 +518,6 @@ pub async fn charge_saved_card_api(
     // Failures are logged but don't roll back the successful charge —
     // the member's dues are paid; the worst case is they fall off the
     // auto-renew loop and an operator has to re-enroll them.
-    let billing_service = state.service_context.billing_service(
-        state.stripe_client.clone(),
-        state.settings.server.base_url.clone(),
-    );
     let opt_in = request.enable_auto_renew.unwrap_or(false);
     if opt_in {
         if let Err(e) = billing_service

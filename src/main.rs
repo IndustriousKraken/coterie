@@ -312,27 +312,36 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Initialize Stripe client if configured
-    let stripe_client = if settings.stripe.enabled {
+    // Initialize Stripe client + webhook dispatcher if configured.
+    // The two share the same gateway instance (and the same set of
+    // dependencies) but each owns the half it cares about — outbound
+    // calls vs inbound event dispatch.
+    let (stripe_client, webhook_dispatcher) = if settings.stripe.enabled {
         if let (Some(api_key), Some(webhook_secret)) =
             (settings.stripe.secret_key.clone(), settings.stripe.webhook_secret.clone()) {
             tracing::info!("Stripe payment processing enabled");
-            Some(Arc::new(payments::StripeClient::new(
+            let client = Arc::new(payments::StripeClient::new(
                 api_key,
+                payment_repo.clone(),
+                service_context.member_repo.clone(),
+            ));
+            let dispatcher = Arc::new(payments::WebhookDispatcher::new(
+                client.gateway(),
                 webhook_secret,
                 payment_repo,
                 service_context.member_repo.clone(),
                 service_context.membership_type_service.clone(),
                 service_context.integration_manager.clone(),
                 db_pool.clone(),
-            )))
+            ));
+            (Some(client), Some(dispatcher))
         } else {
             tracing::warn!("Stripe enabled but missing configuration");
-            None
+            (None, None)
         }
     } else {
         tracing::info!("Stripe payment processing disabled");
-        None
+        (None, None)
     };
 
     // Spawn billing runner (runs every hour)
@@ -347,12 +356,18 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Create API app
-    let api_app = api::create_app(service_context.clone(), stripe_client.clone(), Arc::new(settings.clone()));
+    let api_app = api::create_app(
+        service_context.clone(),
+        stripe_client.clone(),
+        webhook_dispatcher.clone(),
+        Arc::new(settings.clone()),
+    );
 
     // Create web app state separately
     let web_app_state = api::state::AppState::new(
         service_context,
         stripe_client,
+        webhook_dispatcher,
         Arc::new(settings.clone()),
     );
 
