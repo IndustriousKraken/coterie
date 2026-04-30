@@ -11,7 +11,8 @@ use uuid::Uuid;
 
 use crate::{
     api::{state::AppState, middleware::auth::CurrentUser},
-    domain::{Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus, SavedCard},
+    domain::{Payment, PaymentKind, PaymentMethod, PaymentStatus, SavedCard},
+    service::payment_service::RecordManualPaymentInput,
     error::{AppError, Result},
 };
 
@@ -242,50 +243,16 @@ pub async fn create_manual(
     Extension(user): Extension<CurrentUser>,
     Json(request): Json<ManualPaymentRequest>,
 ) -> Result<(StatusCode, Json<Payment>)> {
-    // Admin auth is enforced by the admin_routes middleware
+    // Admin auth is enforced by the admin_routes middleware. Boundary
+    // validation (amount, member existence, campaign existence) lives
+    // in PaymentService::record_manual so the form-based and JSON
+    // paths can't drift.
 
-    // Boundary validation. The portal-side admin form enforces these
-    // already; mirror them here so the JSON API can't bypass — a
-    // compromised admin session (or careless tooling) shouldn't be
-    // able to record negative amounts, amounts above the cap, or rows
-    // for non-existent members.
-    if request.amount_cents <= 0 {
-        return Err(AppError::BadRequest("amount_cents must be positive".to_string()));
-    }
-    if request.amount_cents > crate::domain::MAX_PAYMENT_CENTS {
-        return Err(AppError::BadRequest(format!(
-            "amount_cents exceeds the ${} cap on a single payment",
-            crate::domain::MAX_PAYMENT_CENTS / 100,
-        )));
-    }
-    if state.service_context.member_repo
-        .find_by_id(request.member_id).await?
-        .is_none()
-    {
-        return Err(AppError::BadRequest(format!(
-            "member {} not found", request.member_id
-        )));
-    }
-
-    // Build PaymentKind from the wire shape. Donation payments may
-    // target a specific campaign or be a "general donation" with no
-    // campaign — matches the user-facing donate flow which offers an
-    // untargeted option. If a campaign IS supplied, it must resolve.
+    // Wire-format → typed kind. The campaign-existence check is the
+    // service's job; here we just convert the string discriminator.
     let kind = match request.payment_type.as_str() {
         "membership" => PaymentKind::Membership,
-        "donation" => {
-            if let Some(campaign_id) = request.donation_campaign_id {
-                if state.service_context.donation_campaign_repo
-                    .find_by_id(campaign_id).await?
-                    .is_none()
-                {
-                    return Err(AppError::BadRequest(
-                        "donation_campaign_id doesn't match any campaign".to_string()
-                    ));
-                }
-            }
-            PaymentKind::Donation { campaign_id: request.donation_campaign_id }
-        }
+        "donation" => PaymentKind::Donation { campaign_id: request.donation_campaign_id },
         "other" => PaymentKind::Other,
         s => return Err(AppError::BadRequest(format!(
             "Invalid payment_type '{}': expected membership, donation, or other",
@@ -293,58 +260,22 @@ pub async fn create_manual(
         ))),
     };
 
-    let payment = Payment {
-        id: Uuid::new_v4(),
-        payer: Payer::Member(request.member_id),
-        amount_cents: request.amount_cents,
-        currency: "USD".to_string(),
-        status: PaymentStatus::Completed,
-        payment_method: PaymentMethod::Manual,
-        external_id: None,
-        description: request.description.clone(),
-        kind: kind.clone(),
-        paid_at: Some(Utc::now()),
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-    };
-
-    let payment = state.service_context.payment_repo.create(payment).await?;
-
-    // Only Membership-type payments touch dues. Donations and Other
-    // are recorded without affecting dues_paid_until or auto-renew
-    // schedules — that's the whole point of the typed handler.
-    if matches!(kind, PaymentKind::Membership) {
-        if let Some(slug) = &request.membership_type_slug {
-            let billing_service = state.service_context.billing_service(
-                state.stripe_client.clone(),
-                state.settings.server.base_url.clone(),
-            );
-            billing_service.extend_member_dues_by_slug(payment.id, request.member_id, slug).await?;
-            if let Err(e) = billing_service
-                .reschedule_after_payment(request.member_id, slug)
-                .await
-            {
-                tracing::error!(
-                    "Recorded manual payment for {} but reschedule failed: {}",
-                    request.member_id, e,
-                );
-            }
-        }
-    }
-
-    state.service_context.audit_service.log(
-        Some(user.member.id),
-        match kind {
-            PaymentKind::Membership => "manual_payment",
-            PaymentKind::Donation { .. } => "manual_donation",
-            PaymentKind::Other => "manual_other",
+    let billing_service = state.service_context.billing_service(
+        state.stripe_client.clone(),
+        state.settings.server.base_url.clone(),
+    );
+    let payment = state.service_context.payment_service.record_manual(
+        RecordManualPaymentInput {
+            member_id: request.member_id,
+            amount_cents: request.amount_cents,
+            kind,
+            description: request.description,
+            payment_method: PaymentMethod::Manual,
+            membership_type_slug: request.membership_type_slug,
+            actor_id: user.member.id,
         },
-        "member",
-        &request.member_id.to_string(),
-        None,
-        Some(&format!("${:.2} — {}", request.amount_cents as f64 / 100.0, request.description)),
-        None,
-    ).await;
+        &billing_service,
+    ).await?;
 
     Ok((StatusCode::CREATED, Json(payment)))
 }
@@ -354,63 +285,26 @@ pub async fn waive(
     Extension(user): Extension<CurrentUser>,
     Json(request): Json<WaivePaymentRequest>,
 ) -> Result<(StatusCode, Json<Payment>)> {
-    // Admin auth is enforced by the admin_routes middleware
-
-    if state.service_context.member_repo
-        .find_by_id(request.member_id).await?
-        .is_none()
-    {
-        return Err(AppError::BadRequest(format!(
-            "member {} not found", request.member_id
-        )));
-    }
-
-    let payment = Payment {
-        id: Uuid::new_v4(),
-        payer: Payer::Member(request.member_id),
-        amount_cents: 0,
-        currency: "USD".to_string(),
-        status: PaymentStatus::Completed,
-        payment_method: PaymentMethod::Waived,
-        external_id: None,
-        description: request.description.clone(),
-        kind: PaymentKind::Membership,
-        paid_at: Some(Utc::now()),
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-    };
-
-    let payment = state.service_context.payment_repo.create(payment).await?;
-
-    // Extend dues + refresh any auto-renew schedule. Same rationale
-    // as create_manual above. Waiving counts as "this cycle is paid"
-    // — Expired members get restored, reminders reset.
-    if let Some(slug) = &request.membership_type_slug {
-        let billing_service = state.service_context.billing_service(
-            state.stripe_client.clone(),
-            state.settings.server.base_url.clone(),
-        );
-        billing_service.extend_member_dues_by_slug(payment.id, request.member_id, slug).await?;
-        if let Err(e) = billing_service
-            .reschedule_after_payment(request.member_id, slug)
-            .await
-        {
-            tracing::error!(
-                "Waived dues for {} but reschedule failed: {}",
-                request.member_id, e,
-            );
-        }
-    }
-
-    state.service_context.audit_service.log(
-        Some(user.member.id),
-        "waive_dues",
-        "member",
-        &request.member_id.to_string(),
-        None,
-        Some(&request.description),
-        None,
-    ).await;
+    // Admin auth is enforced by the admin_routes middleware. Waiving
+    // is just a $0 Membership payment with payment_method=Waived;
+    // the service handles dues extension + audit + member-existence
+    // check identically to create_manual.
+    let billing_service = state.service_context.billing_service(
+        state.stripe_client.clone(),
+        state.settings.server.base_url.clone(),
+    );
+    let payment = state.service_context.payment_service.record_manual(
+        RecordManualPaymentInput {
+            member_id: request.member_id,
+            amount_cents: 0,
+            kind: PaymentKind::Membership,
+            description: request.description,
+            payment_method: PaymentMethod::Waived,
+            membership_type_slug: request.membership_type_slug,
+            actor_id: user.member.id,
+        },
+        &billing_service,
+    ).await?;
 
     Ok((StatusCode::CREATED, Json(payment)))
 }

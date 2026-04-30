@@ -1,6 +1,7 @@
 pub mod audit_service;
 pub mod billing_service;
 pub mod member_service;
+pub mod payment_service;
 pub mod recurring_event_service;
 pub mod settings_service;
 pub mod event_type_service;
@@ -14,6 +15,7 @@ use crate::integrations::IntegrationManager;
 use crate::auth::{AuthService, CsrfService, PendingLoginService, TotpService};
 use crate::email::EmailSender;
 use audit_service::AuditService;
+use payment_service::PaymentService;
 use settings_service::SettingsService;
 use event_type_service::EventTypeService;
 use announcement_type_service::AnnouncementTypeService;
@@ -43,6 +45,7 @@ pub struct ServiceContext {
     pub membership_type_service: Arc<MembershipTypeService>,
     pub email_sender: Arc<dyn EmailSender>,
     pub audit_service: Arc<AuditService>,
+    pub payment_service: Arc<PaymentService>,
     pub db_pool: SqlitePool,
 }
 
@@ -85,6 +88,13 @@ impl ServiceContext {
         let announcement_type_service = Arc::new(AnnouncementTypeService::new(announcement_type_repo));
         let membership_type_service = Arc::new(MembershipTypeService::new(membership_type_repo));
 
+        let payment_service = Arc::new(PaymentService::new(
+            payment_repo.clone(),
+            member_repo.clone(),
+            donation_campaign_repo.clone(),
+            audit_service.clone(),
+        ));
+
         Self {
             member_repo,
             event_repo,
@@ -106,6 +116,7 @@ impl ServiceContext {
             membership_type_service,
             email_sender,
             audit_service,
+            payment_service,
             db_pool,
         }
     }

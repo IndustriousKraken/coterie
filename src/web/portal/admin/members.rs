@@ -95,74 +95,43 @@ pub async fn admin_members_page(
     let per_page: i64 = 20;
     let offset = (page - 1) * per_page;
 
-    let all_members = state.service_context.member_repo
-        .list(1000, 0)
-        .await
-        .unwrap_or_default();
-
-    let search_query = query.q.clone().unwrap_or_default().to_lowercase();
-    let status_filter = query.status.clone().unwrap_or_default();
-    let type_filter = query.member_type.clone().unwrap_or_default();
     let sort_field = query.sort.clone().unwrap_or_else(|| "name".to_string());
     let sort_order = query.order.clone().unwrap_or_else(|| "asc".to_string());
 
-    let mut filtered_members: Vec<_> = all_members.into_iter()
-        .filter(|m| {
-            if !search_query.is_empty() {
-                let matches = m.full_name.to_lowercase().contains(&search_query)
-                    || m.email.to_lowercase().contains(&search_query)
-                    || m.username.to_lowercase().contains(&search_query);
-                if !matches {
-                    return false;
-                }
-            }
-            if !status_filter.is_empty() {
-                if m.status.as_str() != status_filter {
-                    return false;
-                }
-            }
-            if !type_filter.is_empty() {
-                if m.membership_type.as_str() != type_filter {
-                    return false;
-                }
-            }
-            true
-        })
-        .collect();
+    // Parse the wire-shape query into the typed MemberQuery. Unknown
+    // sort/order values fall back to the defaults rather than failing
+    // the request (the dropdown only offers known values; keeping the
+    // page renderable on a stale URL is friendlier). Unknown
+    // status/type filter values resolve to None — matches the prior
+    // "no filter" behavior on a malformed value.
+    use crate::repository::{MemberQuery, MemberSortField, SortOrder};
+    let typed_query = MemberQuery {
+        search: query.q.clone().filter(|s| !s.is_empty()),
+        status: query.status.as_deref().and_then(crate::domain::MemberStatus::from_str),
+        membership_type: query.member_type.as_deref().and_then(crate::domain::MembershipType::from_str),
+        sort: match sort_field.as_str() {
+            "status" => MemberSortField::Status,
+            "type" => MemberSortField::MembershipType,
+            "joined" => MemberSortField::Joined,
+            "dues" => MemberSortField::DuesPaidUntil,
+            _ => MemberSortField::Name,
+        },
+        order: if sort_order == "desc" { SortOrder::Desc } else { SortOrder::Asc },
+        limit: per_page,
+        offset,
+    };
 
-    filtered_members.sort_by(|a, b| {
-        let cmp = match sort_field.as_str() {
-            "name" => {
-                let a_parts: Vec<&str> = a.full_name.split_whitespace().collect();
-                let b_parts: Vec<&str> = b.full_name.split_whitespace().collect();
-                let a_last = a_parts.last().unwrap_or(&"");
-                let b_last = b_parts.last().unwrap_or(&"");
-                a_last.to_lowercase().cmp(&b_last.to_lowercase())
-                    .then_with(|| a.full_name.to_lowercase().cmp(&b.full_name.to_lowercase()))
-            }
-            "status" => a.status.as_str().cmp(b.status.as_str()),
-            "type" => a.membership_type.as_str().cmp(b.membership_type.as_str()),
-            "joined" => a.joined_at.cmp(&b.joined_at),
-            "dues" => {
-                match (&a.dues_paid_until, &b.dues_paid_until) {
-                    (Some(a_date), Some(b_date)) => a_date.cmp(b_date),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => std::cmp::Ordering::Equal,
-                }
-            }
-            _ => a.full_name.to_lowercase().cmp(&b.full_name.to_lowercase()),
-        };
-        if sort_order == "desc" { cmp.reverse() } else { cmp }
-    });
-
-    let total_members = filtered_members.len() as i64;
+    let (members, total_members) = state.service_context.member_repo
+        .search(typed_query)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("admin members search failed: {}", e);
+            (Vec::new(), 0)
+        });
     let total_pages = (total_members + per_page - 1) / per_page;
 
-    let paginated_members: Vec<AdminMemberInfo> = filtered_members
+    let paginated_members: Vec<AdminMemberInfo> = members
         .into_iter()
-        .skip(offset as usize)
-        .take(per_page as usize)
         .map(|m| {
             let initials: String = m.full_name
                 .split_whitespace()
@@ -886,9 +855,13 @@ pub async fn admin_record_payment_submit(
         ).await;
     }
 
-    use crate::domain::{Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus};
-    use chrono::Utc;
+    use crate::domain::{PaymentKind, PaymentMethod};
+    use crate::service::payment_service::RecordManualPaymentInput;
 
+    // Wire-format parsing: the form's `payment_type` string + the
+    // form's separate campaign-id string become a typed `PaymentKind`.
+    // Empty/invalid campaign id is rejected here (form-shape validation);
+    // existence is checked by `PaymentService::record_manual`.
     let kind = match form.payment_type.as_str() {
         "membership" => PaymentKind::Membership,
         "donation" => {
@@ -906,21 +879,7 @@ pub async fn admin_record_payment_submit(
                     "Invalid campaign id.",
                 ).await,
             };
-            // Verify the campaign actually exists. The dropdown only
-            // offers valid campaigns, but a stale/forged form submission
-            // could otherwise create an orphan donation row.
-            let resolved = match state.service_context.donation_campaign_repo.find_by_id(cid).await {
-                Ok(Some(_)) => Some(cid),
-                Ok(None) => return rerender_with_error(
-                    state, current_user, session_info, member_id,
-                    "Selected campaign no longer exists.",
-                ).await,
-                Err(e) => return rerender_with_error(
-                    state, current_user, session_info, member_id,
-                    &format!("Campaign lookup failed: {}", e),
-                ).await,
-            };
-            PaymentKind::Donation { campaign_id: resolved }
+            PaymentKind::Donation { campaign_id: Some(cid) }
         }
         "other" => PaymentKind::Other,
         _ => return rerender_with_error(
@@ -939,64 +898,36 @@ pub async fn admin_record_payment_submit(
         form.description.clone()
     };
 
-    let payment_id = uuid::Uuid::new_v4();
-    let payment = Payment {
-        id: payment_id,
-        payer: Payer::Member(id),
-        amount_cents,
-        currency: "USD".to_string(),
-        status: PaymentStatus::Completed,
-        payment_method: PaymentMethod::Manual,
-        external_id: None,
-        description,
-        kind: kind.clone(),
-        paid_at: Some(Utc::now()),
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
+    let billing_service = state.service_context.billing_service(
+        state.stripe_client.clone(),
+        state.settings.server.base_url.clone(),
+    );
+    let slug_for_dues = if matches!(kind, PaymentKind::Membership) && !form.membership_type_slug.is_empty() {
+        Some(form.membership_type_slug.clone())
+    } else {
+        None
     };
-
-    if let Err(e) = state.service_context.payment_repo.create(payment).await {
+    if let Err(e) = state.service_context.payment_service.record_manual(
+        RecordManualPaymentInput {
+            member_id: id,
+            amount_cents,
+            kind,
+            description,
+            payment_method: PaymentMethod::Manual,
+            membership_type_slug: slug_for_dues,
+            actor_id: current_user.member.id,
+        },
+        &billing_service,
+    ).await {
         return rerender_with_error(
             state, current_user, session_info, member_id,
             &format!("Failed to record payment: {}", e),
         ).await;
     }
 
-    // Membership-type payments extend dues + refresh schedule.
-    if matches!(kind, PaymentKind::Membership) && !form.membership_type_slug.is_empty() {
-        let billing_service = state.service_context.billing_service(
-            state.stripe_client.clone(),
-            state.settings.server.base_url.clone(),
-        );
-        if let Err(e) = billing_service
-            .extend_member_dues_by_slug(payment_id, id, &form.membership_type_slug)
-            .await
-        {
-            tracing::error!("Recorded manual payment but dues extension failed: {}", e);
-        }
-        if let Err(e) = billing_service
-            .reschedule_after_payment(id, &form.membership_type_slug)
-            .await
-        {
-            tracing::error!("Recorded manual payment but reschedule failed: {}", e);
-        }
-    }
-
-    state.service_context.audit_service.log(
-        Some(current_user.member.id),
-        match kind {
-            PaymentKind::Membership => "manual_payment",
-            PaymentKind::Donation { .. } => "manual_donation",
-            PaymentKind::Other => "manual_other",
-        },
-        "member",
-        &member_id,
-        None,
-        Some(&format!("${:.2} — {}", amount_cents as f64 / 100.0, form.description)),
-        None,
-    ).await;
-
-    axum::response::Redirect::to(&format!("/portal/admin/members/{}", member_id)).into_response()
+    // PaymentService emits the audit event itself, so the handler is
+    // done once record_manual returns Ok.
+    axum::response::Redirect::to(&format!("/portal/admin/members/{}", id)).into_response()
 }
 
 /// "100", "100.00", "100.5" → 10000, 10000, 10050. Returns None on

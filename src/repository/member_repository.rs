@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::{
     domain::{Member, MemberStatus, MembershipType, CreateMemberRequest, UpdateMemberRequest, BillingMode},
     error::{AppError, Result},
-    repository::MemberRepository,
+    repository::{MemberQuery, MemberRepository, MemberSortField, SortOrder},
 };
 
 // Database row struct that matches SQLite schema
@@ -558,5 +558,90 @@ impl MemberRepository for SqliteMemberRepository {
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         Ok(())
+    }
+
+    async fn search(&self, query: MemberQuery) -> Result<(Vec<Member>, i64)> {
+        // Build WHERE clause + bound params from the typed query.
+        // Sort field/direction map to constant strings (no injection
+        // risk); user-provided values (search, status, type) bind.
+        let search_pat = query.search
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("%{}%", s.to_lowercase()));
+        let status_str = query.status.as_ref().map(|s| s.as_str().to_string());
+        let mtype_str = query.membership_type.as_ref().map(|t| t.as_str().to_string());
+
+        let mut where_clauses: Vec<&str> = Vec::new();
+        if search_pat.is_some() {
+            where_clauses.push(
+                "(LOWER(full_name) LIKE ? OR LOWER(email) LIKE ? OR LOWER(username) LIKE ?)",
+            );
+        }
+        if status_str.is_some() {
+            where_clauses.push("status = ?");
+        }
+        if mtype_str.is_some() {
+            where_clauses.push("membership_type = ?");
+        }
+        let where_sql = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", where_clauses.join(" AND "))
+        };
+
+        // ORDER BY mapping. NULL dues_paid_until sorts to the bottom
+        // regardless of direction (admins want "set" rows above "not
+        // set" rows when sorting by that column).
+        let order_dir = match query.order {
+            SortOrder::Asc => "ASC",
+            SortOrder::Desc => "DESC",
+        };
+        let order_sql = match query.sort {
+            MemberSortField::Name => format!("LOWER(full_name) {}", order_dir),
+            MemberSortField::Status => format!("status {}", order_dir),
+            MemberSortField::MembershipType => format!("membership_type {}", order_dir),
+            MemberSortField::Joined => format!("joined_at {}", order_dir),
+            MemberSortField::DuesPaidUntil => {
+                format!("dues_paid_until IS NULL, dues_paid_until {}", order_dir)
+            }
+        };
+
+        let select_sql = format!(
+            "SELECT id, email, username, full_name, status, membership_type, membership_type_id, \
+                    joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes, \
+                    stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at, \
+                    dues_reminder_sent_at, discord_id, created_at, updated_at \
+             FROM members{} \
+             ORDER BY {} \
+             LIMIT ? OFFSET ?",
+            where_sql, order_sql,
+        );
+        let count_sql = format!("SELECT COUNT(*) FROM members{}", where_sql);
+
+        // Bind WHERE params first (used by both queries), then LIMIT/OFFSET.
+        let mut rows_q = sqlx::query_as::<_, MemberRow>(&select_sql);
+        let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
+        if let Some(p) = &search_pat {
+            rows_q = rows_q.bind(p).bind(p).bind(p);
+            count_q = count_q.bind(p).bind(p).bind(p);
+        }
+        if let Some(s) = &status_str {
+            rows_q = rows_q.bind(s);
+            count_q = count_q.bind(s);
+        }
+        if let Some(t) = &mtype_str {
+            rows_q = rows_q.bind(t);
+            count_q = count_q.bind(t);
+        }
+        rows_q = rows_q.bind(query.limit).bind(query.offset);
+
+        let rows = rows_q.fetch_all(&self.pool).await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let total: i64 = count_q.fetch_one(&self.pool).await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let members = rows.into_iter().map(Self::row_to_member).collect::<Result<Vec<_>>>()?;
+        Ok((members, total))
     }
 }

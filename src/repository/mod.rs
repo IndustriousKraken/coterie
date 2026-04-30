@@ -29,6 +29,40 @@ pub use announcement_type_repository::{AnnouncementTypeRepository, SqliteAnnounc
 pub use membership_type_repository::{MembershipTypeRepository, SqliteMembershipTypeRepository};
 pub use processed_events_repository::{ProcessedEventsRepository, SqliteProcessedEventsRepository};
 
+/// Inputs for `MemberRepository::search`. Strongly-typed so the
+/// caller can't pass an unknown sort field and the impl can map
+/// `MemberSortField` → column name in one place (no string-debug
+/// sort keys, no SQL injection risk).
+#[derive(Debug, Clone)]
+pub struct MemberQuery {
+    /// Case-insensitive substring match on `full_name`, `email`, and
+    /// `username`. `None` or empty string skips the filter.
+    pub search: Option<String>,
+    /// Filter to exactly one status. `None` skips the filter.
+    pub status: Option<crate::domain::MemberStatus>,
+    /// Filter to exactly one (legacy) membership type. `None` skips.
+    pub membership_type: Option<crate::domain::MembershipType>,
+    pub sort: MemberSortField,
+    pub order: SortOrder,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum MemberSortField {
+    Name,
+    Status,
+    MembershipType,
+    Joined,
+    DuesPaidUntil,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SortOrder {
+    Asc,
+    Desc,
+}
+
 #[async_trait]
 pub trait MemberRepository: Send + Sync {
     async fn create(&self, member: CreateMemberRequest) -> Result<Member>;
@@ -51,6 +85,13 @@ pub trait MemberRepository: Send + Sync {
     /// Validation is the caller's responsibility (see
     /// `integrations::discord::is_valid_snowflake`).
     async fn update_discord_id(&self, id: Uuid, discord_id: Option<&str>) -> Result<()>;
+    /// Filtered, sorted, paginated lookup. Used by the admin members
+    /// page; replaces the previous "list 1000 then filter in Rust"
+    /// shape (which silently dropped rows past 1000 and used
+    /// `format!("{:?}", status)` as a sort key tied to the Debug
+    /// derive). Returns `(rows, total_match_count)` so the caller can
+    /// compute total pages without a second round trip.
+    async fn search(&self, query: MemberQuery) -> Result<(Vec<Member>, i64)>;
     /// Set the member's `dues_paid_until`, revive Expired→Active in
     /// the same UPDATE, and clear the dues-reminder flag so the next
     /// dues cycle can re-fire a reminder. Suspended/Honorary/Pending
