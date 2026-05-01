@@ -1,6 +1,6 @@
 use askama::Template;
 use axum::{
-    extract::{State, Query},
+    extract::State,
     response::IntoResponse,
     Extension,
 };
@@ -10,10 +10,6 @@ use crate::{
     api::{
         middleware::auth::CurrentUser,
         state::AppState,
-        handlers::{
-            events::{ListEventsQuery, list as list_events},
-            payments::{ListPaymentsQuery, list_by_member as list_payments},
-        },
     },
     domain::AttendanceStatus,
     web::templates::{HtmlTemplate, UserInfo},
@@ -127,22 +123,13 @@ pub async fn upcoming_events(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
 ) -> impl IntoResponse {
-    // Use the existing events API to get upcoming events
-    let query = ListEventsQuery {
-        limit: Some(5),
-        public_only: Some(false),
-    };
-
-    let events_result = list_events(
-        State(state.clone()),
-        Query(query),
-        Some(Extension(current_user.clone())),
-    ).await;
-
-    let events = match events_result {
-        Ok(json) => json.0,
-        Err(_) => vec![],
-    };
+    // Authenticated members see both public and members-only events;
+    // visibility filtering is per-event inside the template, not at
+    // the repo layer.
+    let events = state.service_context.event_repo
+        .list_upcoming(5)
+        .await
+        .unwrap_or_default();
 
     // Transform to our summary format, checking attendance for each event
     let member_id = current_user.member.id;
@@ -225,25 +212,12 @@ pub async fn recent_payments(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
 ) -> impl IntoResponse {
-    use axum::extract::Path;
-
-    // Use the existing payments API to get member's payments
-    let query = ListPaymentsQuery {
-        status: None,
-        limit: Some(5),
-    };
-
-    let payments_result = list_payments(
-        State(state.clone()),
-        Path(current_user.member.id),
-        Query(query),
-        Extension(current_user.clone()),
-    ).await;
-
-    let payments = match payments_result {
-        Ok(json) => json.0,
-        Err(_) => vec![],
-    };
+    // Most-recent five payments for this member, regardless of status.
+    let mut payments = state.service_context.payment_repo
+        .find_by_member(current_user.member.id)
+        .await
+        .unwrap_or_default();
+    payments.truncate(5);
 
     // Transform to our summary format
     let recent_payments: Vec<PaymentSummary> = payments.into_iter()

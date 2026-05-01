@@ -1,5 +1,16 @@
+//! JSON payment endpoints. Narrowed to:
+//!   - the inbound Stripe webhook (`stripe_webhook`),
+//!   - the saved-card management endpoints the portal frontend
+//!     `fetch()`-es directly because Stripe.js needs JSON in / JSON out.
+//!
+//! All admin-side payment recording lives in `PaymentService` and is
+//! reachable via the portal admin UI; the previous JSON `create_manual`
+//! / `waive` endpoints were deleted because the portal doesn't use
+//! them and external callers shouldn't either (admin actions belong
+//! inside Coterie).
+
 use axum::{
-    extract::{Path, State, Query},
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     Json,
     Extension,
@@ -11,160 +22,10 @@ use uuid::Uuid;
 
 use crate::{
     api::{state::AppState, middleware::auth::CurrentUser},
-    domain::{Payment, PaymentKind, PaymentMethod, PaymentStatus, SavedCard},
-    service::payment_service::RecordManualPaymentInput,
+    domain::SavedCard,
     error::{AppError, Result},
 };
 
-#[derive(Debug, Deserialize)]
-pub struct CreatePaymentRequest {
-    /// The slug of the membership type (e.g., "regular", "student", "corporate").
-    /// The amount charged is always the server-side fee on the matching
-    /// membership_types row — never a client-supplied value.
-    pub membership_type_slug: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CreatePaymentResponse {
-    pub payment_id: Uuid,
-    pub checkout_url: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ListPaymentsQuery {
-    pub status: Option<PaymentStatus>,
-    pub limit: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ManualPaymentRequest {
-    pub member_id: Uuid,
-    pub amount_cents: i64,
-    /// "membership" | "donation" | "other". Defaults to "membership"
-    /// when absent so older API callers behave the same as before.
-    /// Only "membership" extends dues; the other two record a Payment
-    /// row without touching dues_paid_until.
-    #[serde(default = "default_manual_payment_type")]
-    pub payment_type: String,
-    pub membership_type_slug: Option<String>,
-    /// Required when payment_type="donation"; ignored otherwise.
-    #[serde(default)]
-    pub donation_campaign_id: Option<Uuid>,
-    pub description: String,
-}
-
-fn default_manual_payment_type() -> String { "membership".to_string() }
-
-#[derive(Debug, Deserialize)]
-pub struct WaivePaymentRequest {
-    pub member_id: Uuid,
-    pub membership_type_slug: Option<String>,
-    pub description: String,
-}
-
-fn is_admin(user: &CurrentUser) -> bool {
-    user.member.is_admin
-}
-
-pub async fn create(
-    State(state): State<AppState>,
-    Extension(user): Extension<CurrentUser>,
-    Json(request): Json<CreatePaymentRequest>,
-) -> Result<(StatusCode, Json<CreatePaymentResponse>)> {
-    let stripe_client = state.stripe_client.as_ref()
-        .ok_or_else(|| AppError::ServiceUnavailable(
-            "Payment processing is not configured".to_string()
-        ))?;
-
-    // Look up membership type from database to get pricing
-    let membership_type = state.service_context.membership_type_service
-        .get_by_slug(&request.membership_type_slug)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!(
-            "Membership type '{}' not found",
-            request.membership_type_slug
-        )))?;
-
-    // Check if the membership type is active
-    if !membership_type.is_active {
-        return Err(AppError::BadRequest(format!(
-            "Membership type '{}' is not currently available",
-            membership_type.name
-        )));
-    }
-
-    let amount_cents = membership_type.fee_cents as i64;
-
-    // Create checkout session
-    let (checkout_url, payment_id) = stripe_client.create_membership_checkout_session(
-        user.member.id,
-        &membership_type.name,
-        &membership_type.slug,
-        amount_cents,
-        format!("{}/portal/payments/success", state.settings.server.base_url),
-        format!("{}/portal/payments/cancel", state.settings.server.base_url),
-    ).await?;
-
-    let response = CreatePaymentResponse {
-        payment_id,
-        checkout_url,
-    };
-
-    Ok((StatusCode::CREATED, Json(response)))
-}
-
-pub async fn get(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Extension(user): Extension<CurrentUser>,
-) -> Result<Json<Payment>> {
-    let payment = state.service_context.payment_repo
-        .find_by_id(id)
-        .await?
-        .ok_or(AppError::NotFound("Payment not found".to_string()))?;
-
-    // Check if user can view this payment (must be the payer or admin).
-    // Public donations (member_id IS NULL) are admin-only — there's no
-    // member to authorize as the payer.
-    let is_self = payment.member_id() == Some(user.member.id);
-    if !is_self && !is_admin(&user) {
-        return Err(AppError::Forbidden);
-    }
-
-    Ok(Json(payment))
-}
-
-pub async fn list_by_member(
-    State(state): State<AppState>,
-    Path(member_id): Path<Uuid>,
-    Query(params): Query<ListPaymentsQuery>,
-    Extension(user): Extension<CurrentUser>,
-) -> Result<Json<Vec<Payment>>> {
-    // Check if user can view these payments (must be the member or admin)
-    if member_id != user.member.id && !is_admin(&user) {
-        return Err(AppError::Forbidden);
-    }
-
-    let payments = state.service_context.payment_repo
-        .find_by_member(member_id)
-        .await?;
-
-    // Filter by status if requested
-    let filtered: Vec<Payment> = if let Some(status) = params.status {
-        payments.into_iter()
-            .filter(|p| p.status == status)
-            .collect()
-    } else {
-        payments
-    };
-
-    // Apply limit
-    let limited: Vec<Payment> = filtered.into_iter()
-        .take(params.limit.unwrap_or(50) as usize)
-        .collect();
-
-    Ok(Json(limited))
-}
 
 pub async fn stripe_webhook(
     State(state): State<AppState>,
@@ -235,68 +96,6 @@ pub async fn stripe_webhook(
     Ok(StatusCode::OK)
 }
 
-pub async fn create_manual(
-    State(state): State<AppState>,
-    Extension(user): Extension<CurrentUser>,
-    Json(request): Json<ManualPaymentRequest>,
-) -> Result<(StatusCode, Json<Payment>)> {
-    // Admin auth is enforced by the admin_routes middleware. Boundary
-    // validation (amount, member existence, campaign existence) lives
-    // in PaymentService::record_manual so the form-based and JSON
-    // paths can't drift.
-
-    // Wire-format → typed kind. The campaign-existence check is the
-    // service's job; here we just convert the string discriminator.
-    let kind = match request.payment_type.as_str() {
-        "membership" => PaymentKind::Membership,
-        "donation" => PaymentKind::Donation { campaign_id: request.donation_campaign_id },
-        "other" => PaymentKind::Other,
-        s => return Err(AppError::BadRequest(format!(
-            "Invalid payment_type '{}': expected membership, donation, or other",
-            s,
-        ))),
-    };
-
-    let payment = state.service_context.payment_service.record_manual(
-        RecordManualPaymentInput {
-            member_id: request.member_id,
-            amount_cents: request.amount_cents,
-            kind,
-            description: request.description,
-            payment_method: PaymentMethod::Manual,
-            membership_type_slug: request.membership_type_slug,
-            actor_id: user.member.id,
-        },
-        state.billing_service.as_ref(),
-    ).await?;
-
-    Ok((StatusCode::CREATED, Json(payment)))
-}
-
-pub async fn waive(
-    State(state): State<AppState>,
-    Extension(user): Extension<CurrentUser>,
-    Json(request): Json<WaivePaymentRequest>,
-) -> Result<(StatusCode, Json<Payment>)> {
-    // Admin auth is enforced by the admin_routes middleware. Waiving
-    // is just a $0 Membership payment with payment_method=Waived;
-    // the service handles dues extension + audit + member-existence
-    // check identically to create_manual.
-    let payment = state.service_context.payment_service.record_manual(
-        RecordManualPaymentInput {
-            member_id: request.member_id,
-            amount_cents: 0,
-            kind: PaymentKind::Membership,
-            description: request.description,
-            payment_method: PaymentMethod::Waived,
-            membership_type_slug: request.membership_type_slug,
-            actor_id: user.member.id,
-        },
-        state.billing_service.as_ref(),
-    ).await?;
-
-    Ok((StatusCode::CREATED, Json(payment)))
-}
 
 // ============================================================
 // Saved Card (Payment Method) Handlers

@@ -236,6 +236,34 @@ payoff today; cheap insurance.
 
 ---
 
+## F8-extended — every admin-write JSON endpoint is a half-strength duplicate, not just activate/expire
+
+Same pattern as F8 below, broader scope. The entire `/api/v1/...`
+admin surface (members CRUD, events CRUD, announcements CRUD,
+payments admin manual/waive, plus the whole `/admin/*` mount —
+audit-log, expired-check, settings/*, types/*) was a half-strength
+duplicate of the portal admin actions: skipped audit logs, skipped
+integration events, skipped welcome emails, skipped session
+invalidation. The portal admin pages (`/portal/admin/*`) own the full
+side-effect chain. Outcome: delete everything admin-write that the
+portal doesn't call. Keep:
+
+- `POST /api/payments/webhook/stripe` — Stripe webhook.
+- `/api/payments/cards/*` — saved-card management; the portal
+  frontend `fetch()`-es these directly because Stripe.js needs JSON.
+- `/public/*` — the documented public surface (signup, donate,
+  read-only events / announcements, RSS, iCal).
+- `/auth/login`, `/auth/logout` — login form posts.
+- The portal's own `/portal/api/*` HTMX routes.
+
+Removed handler files entirely: `admin.rs`, `members.rs`, `events.rs`,
+`settings.rs`, `types.rs`. Trimmed `announcements.rs` to just
+`private_count`. Trimmed `payments.rs` to just the webhook + saved-card
+endpoints. Removed `require_admin` middleware (only the deleted JSON
+admin routes used it; portal uses `require_admin_redirect` separately).
+
+---
+
 ## F8 — JSON API `activate` / `expire` is a half-strength duplicate of the portal admin path
 
 **What's wrong.** `api/handlers/members.rs::activate` (line 150) and

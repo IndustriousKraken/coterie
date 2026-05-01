@@ -236,40 +236,10 @@ pub async fn require_admin_redirect(
     next.run(request).await
 }
 
-pub async fn require_admin(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    mut request: Request,
-    next: Next,
-) -> Result<Response, AppError> {
-    let session_cookie = jar
-        .get("session")
-        .ok_or(AppError::Unauthorized)?;
-
-    let auth_service = &state.service_context.auth_service;
-    
-    let session = auth_service
-        .validate_session(session_cookie.value())
-        .await?
-        .ok_or(AppError::Unauthorized)?;
-
-    // Get member from database
-    let member_repo = SqliteMemberRepository::new(state.service_context.db_pool.clone());
-    let member = member_repo
-        .find_by_id(session.member_id)
-        .await?
-        .ok_or(AppError::Unauthorized)?;
-
-    if !member.is_admin {
-        return Err(AppError::Forbidden);
-    }
-
-    // Insert current user and session info into request extensions
-    request.extensions_mut().insert(CurrentUser { member });
-    request.extensions_mut().insert(SessionInfo { session_id: session.id.clone() });
-
-    Ok(next.run(request).await)
-}
+// `require_admin` was a middleware for the JSON `/admin/*` and
+// `/api/*` admin-only routes. Both surfaces were deleted (admin
+// actions live in the portal at `/portal/admin/*`, gated by
+// `require_admin_redirect`); the middleware went with them.
 
 /// CSRF validation middleware. Enforces a valid token on every
 /// state-changing request, in two ways:
