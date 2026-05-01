@@ -290,6 +290,193 @@ if no client uses them, deletion is the right answer.
 
 ---
 
+---
+
+# Round 3 (post-CSRF-lift architecture review)
+
+Reviewer ran a fresh pass on the whole codebase after the round-2 work
+(top-level CSRF, JSON admin deletion, secure-by-default). One critical
+finding that **invalidates the headline guarantee of round 2**, plus a
+handful of follow-ups.
+
+## App summary the reviewer produced (sanity-check on intent)
+
+Coterie is a single-tenant member-management app for clubs / non-profits
+(NeonTemple is the first deployment). Three HTTP surfaces:
+
+- **`/portal/*`** — Askama+HTMX server-rendered admin & member portal.
+  This is the primary admin surface.
+- **`/public/*`** — read-only feeds + the two public POSTs (signup,
+  donate) for the marketing site.
+- **`/api/*`** — narrowly scoped: Stripe webhook + portal-frontend
+  saved-card endpoints (Stripe.js needs a JSON surface).
+
+Layering: handler → service → repository → SQLite. Sum types in
+`domain::payment` make Stripe references unambiguous (Payer /
+PaymentKind / StripeRef). Background tokio tasks for billing runner,
+audit pruning, Discord reconcile. Integration event bus decouples
+auth/payment side effects (email, audit, Discord).
+
+The reviewer's read of the architecture matches the design intent.
+
+## F9 — CRITICAL: top-level CSRF doesn't cover the portal
+
+**Where.** `src/api/mod.rs:89-92` layers `csrf_protect_unless_exempt`
+on `api_app` inside `api::create_app`. Then `src/main.rs:410` does
+`api_app.merge(web_app)` to add the portal/login/signup routes.
+
+**The bug.** In axum 0.7, `Router::layer` applies to routes registered
+on that router *at the time the layer is applied*. Routes added later
+via `.merge()` do **not** inherit the layer. So every state-changing
+route in `/portal/*` (admin CRUD, refunds, settings, audit export,
+profile edits, security/TOTP, login, logout) currently has **no**
+top-level CSRF protection.
+
+**Evidence the author already noticed.** Both `web /logout` and
+`api /auth/logout` carry inline manual `validate_token` calls — the
+hand-patched fix for the two endpoints whose breakage was most visible.
+Everything else relies on the top-level layer that doesn't reach it.
+
+**Why this is bad.** This is exactly the threat round 2 was supposed to
+close. Round-2 deleted the JSON admin surface so admin actions can only
+happen through `/portal/admin/*`, then added a top-level CSRF layer so
+nothing could be accidentally added without protection. The layer
+doesn't cover the routes it was meant to protect.
+
+**What to do.**
+1. Move the CSRF layer to apply to the merged app. Either:
+   - (a) Remove the `.layer(... csrf_protect_unless_exempt)` call from
+     `api::create_app` and add it once in `main.rs` after
+     `api_app.merge(web_app)`, alongside `require_setup`.
+   - (b) Restructure so `create_app` returns the inner router and the
+     CSRF layer is applied where the merge happens.
+   Option (a) is the smallest change.
+2. Fix the multipart hole. `csrf_protect_unless_exempt` rejects any
+   non-`application/x-www-form-urlencoded` body without an
+   `X-CSRF-Token` header (`security.rs:159-162`). The admin
+   announcements/events forms post `enctype="multipart/form-data"` with
+   `csrf_token` as a form field — they'd be rejected. Cleanest fix:
+   change those forms to send the token via `X-CSRF-Token` header
+   (Alpine/HTMX can stamp it from the meta tag) and keep the middleware
+   simple.
+3. Add an integration test: `POST /portal/admin/members/:id/update`
+   without a CSRF token returns 403. Without this, F9 can regress
+   silently again.
+
+**Effort + risk.** ~1 hour for the layer move + multipart fix; the
+test guards against silent regression. Order this before everything
+else in round 3.
+
+## F13 — Inline CSRF checks in logout handlers (tied to F9)
+
+**Where.** `web /logout` and `api /auth/logout` call
+`validate_token` inline, even though `/auth/logout` is also in
+`CSRF_EXEMPT_PATHS`.
+
+**Why it matters.** Once F9 is fixed and the top-level layer covers
+everything, the inline checks become genuinely redundant *and*
+contradict the exempt list (logout would be checked twice on `/api`
+and inconsistently on `/web`). Pick one.
+
+**What to do.** Remove the inline `validate_token` calls; remove
+`POST /auth/logout` from `CSRF_EXEMPT_PATHS`. Logout becomes an
+ordinary CSRF-protected action like everything else.
+
+**Effort + risk.** Tiny. Do alongside F9 since they share context.
+
+## F10 — `AppState` built twice; rate limiters not shared
+
+**Where.** `api::create_app` calls `AppState::new(...)` to build state
+for the API router; `main.rs` then builds *another* `AppState` to pass
+to `create_web_routes` and to the setup-check middleware. The two
+states have separate `login_limiter`, `money_limiter`, `setup_lock`.
+
+**Why it matters.** The login rate limiter on the `/auth/login` route
+(api side) is a different in-memory map than the limiter on the
+`/login` route (web side). An attacker hitting both surfaces gets 2x
+the budget. Same for the money limiter on portal payment endpoints
+vs API payment endpoints.
+
+**What to do.** Build one `Arc<AppState>` in `main.rs`, pass it into
+both `create_app` and `create_web_routes`. The API router's
+`with_state` already takes the state; just hand it the shared one.
+
+**Effort + risk.** Small. Touch points: `api::create_app` signature,
+`main.rs`, `web::create_web_routes`.
+
+## F11 — `MembershipType` enum / `membership_type_id` parallel paths
+
+**Where.** Domain has both `MembershipType` (enum, used by signup) and
+`membership_type_id` (FK to a `membership_types` table, used by
+billing/dues calculation). Migration to the FK was started, never
+finished.
+
+**Why it matters.** Signup writes the enum; billing reads the FK. New
+members get `membership_type_id = NULL` and the billing runner has to
+infer or default. The drift will eventually cause "their dues never
+got extended" tickets.
+
+**What to do.** Either finish the migration (signup writes both, then
+read-side consumers switch to FK, then drop the enum) or punt with a
+tactical fix that populates `membership_type_id` at signup based on
+the enum value. The former is the right answer; the latter is an OK
+holdover if there's no time.
+
+**Effort + risk.** Medium. Touches signup, billing, member repo, a
+migration.
+
+## F12 — Sweep dead code from F8-extended
+
+**Where.** After the JSON admin deletion, several modules and methods
+are now unused:
+
+- `MemberService` — entirely dead (callers were the deleted JSON
+  handlers).
+- `BillingService` — several methods unused.
+- Repos — a few unused methods (`list_all_event_types` etc.).
+- `stripe_client.rs` — unused imports flagged in F4.
+- `IntegrationEvent::MemberCreated` / `MemberDeleted` — emitted only
+  by deleted handlers.
+- `AppError::Payment` variant — no longer constructed.
+- Stale `Redirect` / `Sha256` imports.
+
+**What to do.** Run `cargo clippy --all-targets --all-features` and
+`cargo +nightly udeps` (or equivalent), delete what's truly dead, keep
+anything the portal might still reach. Smallest-change-first.
+
+**Effort + risk.** Small. Mechanical. Low risk if test suite stays
+green.
+
+## F14 — Inline-HTML construction in handlers
+
+**Where.** Several handlers (admin members, payments, donations) build
+HTML fragments via `format!("<div>...</div>")` for HTMX swaps instead
+of using Askama partials.
+
+**Why it matters.** Templates carry escaping; `format!` doesn't. One
+of the inline strings already has a TODO that says exactly this.
+
+**What to do.** Opportunistic refactor — extract partials when you're
+already touching a handler. Don't do a sweep; let it happen organically.
+
+**Effort + risk.** Background. Not blocking.
+
+## F15 — `setup_lock` duplicated (sub-finding of F10)
+
+Same root cause as F10. Two `AppState`s means two `setup_lock`s. The
+practical effect is small (lock is only held during the very first
+boot's setup wizard) but the asymmetry is a smell. Fix falls out of
+F10.
+
+## Suggested order
+
+F9 → F13 (tied) → F10 (subsumes F15) → F12 → F11 → F14.
+
+F9 is the only one that's genuinely urgent. The rest are quality
+improvements.
+
+---
+
 ## What's working well — leave alone
 
 Things the punchlist deliberately doesn't touch, so you don't

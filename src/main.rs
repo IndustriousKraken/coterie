@@ -405,12 +405,29 @@ async fn main() -> anyhow::Result<()> {
 
     let web_app = web::create_web_routes(web_app_state.clone());
 
-    // Combine API and web routes, apply setup check middleware
+    // Combine API and web routes, then apply outermost middleware.
+    //
+    // Layer order matters: `.layer()` wraps inside-out, so the LAST
+    // `.layer(...)` is OUTERMOST and runs FIRST on incoming requests.
+    // CSRF must be applied here (after the merge) — applying it inside
+    // `api::create_app` does not cover routes added via `Router::merge`
+    // in axum 0.7. The portal lives behind `merge`, so applying CSRF
+    // here is what makes the secure-by-default contract real.
+    //
+    // Setup-check sits inside CSRF: state-changing requests are
+    // rejected for missing/invalid tokens before the setup redirect
+    // would otherwise fire, which is the right precedence for both
+    // security (no body parsing on bad CSRF) and UX (GETs still
+    // redirect to the setup wizard during first-boot).
     let app = api_app
         .merge(web_app)
         .layer(axum::middleware::from_fn_with_state(
-            web_app_state,
+            web_app_state.clone(),
             api::middleware::setup::require_setup,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            web_app_state,
+            api::middleware::security::csrf_protect_unless_exempt,
         ));
 
     let listener = tokio::net::TcpListener::bind(

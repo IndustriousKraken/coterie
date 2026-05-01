@@ -76,9 +76,15 @@ pub fn create_app(
 
         // Middleware. Order matters: `.layer()` calls wrap from the
         // inside out, so the LAST `.layer(...)` is OUTERMOST and runs
-        // FIRST on incoming requests. CSRF goes outermost so any
-        // state-changing request is rejected before any handler logic
-        // (including body parsing) runs against it.
+        // FIRST on incoming requests.
+        //
+        // CSRF protection is NOT layered here. It's applied once at the
+        // top of the merged app in `main.rs` so it covers BOTH the API
+        // surface and the portal/web routes that get added via
+        // `Router::merge`. Layers added before a `merge` call do not
+        // propagate to the merged routes in axum 0.7 — applying CSRF
+        // here would leave every state-changing /portal/* route
+        // unprotected.
         .layer(axum::middleware::from_fn_with_state(
             app_state.clone(),
             middleware::security_headers::security_headers,
@@ -86,10 +92,6 @@ pub fn create_app(
         .layer(CompressionLayer::new())
         .layer(cors_layer)
         .layer(TraceLayer::new_for_http())
-        .layer(axum::middleware::from_fn_with_state(
-            app_state,
-            middleware::security::csrf_protect_unless_exempt,
-        ))
 }
 
 /// Build CORS layer from configuration. If `cors_origins` is set, only those

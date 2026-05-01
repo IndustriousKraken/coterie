@@ -150,20 +150,35 @@ pub async fn csrf_protect_unless_exempt(
         return Ok(next.run(request).await);
     }
 
-    // Path 2: form-encoded body. Anything else is rejected.
+    // Path 2: form-encoded body (urlencoded or multipart). Anything
+    // else is rejected — JSON callers must use the header path.
     let content_type = request
         .headers()
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if !content_type.starts_with("application/x-www-form-urlencoded") {
-        // JSON, multipart, missing — all expected to bring the header.
-        return Err(AppError::Forbidden);
-    }
+        .unwrap_or("")
+        .to_string();
 
-    // Buffer the body so we can both peek for csrf_token AND hand the
-    // bytes back to the handler. 1MB cap is way above any form we send
-    // (largest is a few KB of admin notes).
+    if content_type.starts_with("application/x-www-form-urlencoded") {
+        return validate_form_body(state, session_id, request, next).await;
+    }
+    if content_type.starts_with("multipart/form-data") {
+        return validate_multipart_body(state, session_id, &content_type, request, next).await;
+    }
+    // JSON / missing / other — expected to bring the header.
+    Err(AppError::Forbidden)
+}
+
+/// Form-urlencoded body path. Buffer body, deserialize the
+/// `csrf_token` field, validate, then hand bytes back to the handler.
+/// 1MB cap is way above any form we send (largest is a few KB of
+/// admin notes).
+async fn validate_form_body(
+    state: AppState,
+    session_id: String,
+    request: Request,
+    next: Next,
+) -> Result<Response, AppError> {
     let (mut parts, body) = request.into_parts();
     let bytes = to_bytes(body, 1024 * 1024)
         .await
@@ -178,6 +193,60 @@ pub async fn csrf_protect_unless_exempt(
         .service_context
         .csrf_service
         .validate_token(&session_id, &parsed.csrf_token)
+        .await?;
+    if !is_valid {
+        return Err(AppError::Forbidden);
+    }
+
+    parts.extensions.insert(SessionInfo { session_id });
+    let request = Request::from_parts(parts, Body::from(bytes));
+    Ok(next.run(request).await)
+}
+
+/// Multipart body path. The admin event/announcement create+update
+/// forms post `multipart/form-data` because they include image
+/// uploads. Templates emit `csrf_token` as the first field, so we
+/// stream the body through `multer`, stop after we find it, and then
+/// reconstruct the request from the buffered bytes for the handler
+/// to re-parse. Cap matches the per-image size budget (10MB) plus
+/// headroom for other form fields.
+///
+/// Reaching this code path requires a valid session cookie (checked
+/// in the caller), so the buffering DoS surface is admin-only.
+async fn validate_multipart_body(
+    state: AppState,
+    session_id: String,
+    content_type: &str,
+    request: Request,
+    next: Next,
+) -> Result<Response, AppError> {
+    let boundary = multer::parse_boundary(content_type).map_err(|_| AppError::Forbidden)?;
+
+    let (mut parts, body) = request.into_parts();
+    let bytes = to_bytes(body, 12 * 1024 * 1024)
+        .await
+        .map_err(|_| AppError::BadRequest("Request body too large".to_string()))?;
+
+    // Bytes is reference-counted, so cloning to feed `multer` is cheap.
+    let stream_bytes = bytes.clone();
+    let stream = futures_util::stream::once(async move {
+        Ok::<_, std::io::Error>(stream_bytes)
+    });
+    let mut multipart = multer::Multipart::new(stream, boundary);
+
+    let mut token: Option<String> = None;
+    while let Some(field) = multipart.next_field().await.map_err(|_| AppError::Forbidden)? {
+        if field.name() == Some("csrf_token") {
+            token = Some(field.text().await.map_err(|_| AppError::Forbidden)?);
+            break;
+        }
+    }
+    let token = token.ok_or(AppError::Forbidden)?;
+
+    let is_valid = state
+        .service_context
+        .csrf_service
+        .validate_token(&session_id, &token)
         .await?;
     if !is_valid {
         return Err(AppError::Forbidden);
