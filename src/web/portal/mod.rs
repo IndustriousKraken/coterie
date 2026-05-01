@@ -95,13 +95,9 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         // Audit log viewer + CSV export
         .route("/audit", get(admin::audit::audit_log_page))
         .route("/audit/export", get(admin::audit::audit_log_export))
-        // CSRF runs after auth — in axum, the LAST route_layer is applied
-        // OUTERMOST and runs FIRST. So add CSRF first, admin middleware
-        // second, so admin runs first (setting SessionInfo) then CSRF.
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            crate::api::middleware::auth::require_csrf,
-        ))
+        // CSRF is enforced at the top of the application router (see
+        // `middleware::security::csrf_protect_unless_exempt`); only the
+        // admin gate is layered here.
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             crate::api::middleware::auth::require_admin_redirect,
@@ -135,11 +131,8 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/api/payments/cards/:card_id", delete(payments::delete_card_api))
         .route("/api/payments/cards/:card_id/default", put(payments::set_default_card_api))
         .route("/api/payments/auto-renew", post(payments::update_auto_renew_api))
-        // CSRF first, auth second (see admin_routes comment on ordering).
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            crate::api::middleware::auth::require_csrf,
-        ))
+        // CSRF is enforced at the application root; only the auth gate
+        // is layered per-router.
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             crate::api::middleware::auth::require_restorable,
@@ -170,10 +163,8 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/api/announcements/list", get(announcements::announcements_list_api))
         .route("/api/payments/recent", get(dashboard::recent_payments))
         .route("/api/donate", post(donations::donate_api))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            crate::api::middleware::auth::require_csrf,
-        ))
+        // CSRF is enforced at the application root; only the auth gate
+        // is layered per-router.
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             crate::api::middleware::auth::require_auth_redirect,

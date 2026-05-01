@@ -12,18 +12,38 @@ Coterie uses a **dual-frontend architecture** to separate concerns between publi
 
 #### Public APIs (`/public/*`)
 - No authentication required
-- Designed for consumption by static sites
+- Designed for consumption by static sites and the marketing site
 - Endpoints:
   - `POST /public/signup` - New member registration
-  - `GET /public/events` - Public event listings (JSON/iCal)
+  - `POST /public/donate` - One-time donation (creates a Stripe Checkout session)
+  - `GET /public/events` - Public event listings (JSON)
   - `GET /public/announcements` - Public announcements (JSON)
   - `GET /public/feed/rss` - RSS feed of announcements
   - `GET /public/feed/calendar` - iCal calendar feed
 
-#### Protected APIs (`/api/*`)
-- Require authentication via session cookies
-- Member and admin functionality
-- Full CRUD operations on all resources
+The full public surface is documented as an OpenAPI spec at
+`/api/docs/openapi.json` (see `src/api/docs.rs`). Cross-origin POSTs
+from the marketing site are CORS-gated, not CSRF-gated — see
+`CLAUDE.md` for the rationale.
+
+#### Narrow JSON surface (`/api/*`)
+
+`/api/*` is intentionally narrow — **not** a CRUD API. It carries:
+
+- `POST /api/payments/webhook/stripe` — inbound Stripe webhook,
+  authenticated via Stripe's HMAC signature.
+- `/api/payments/cards/*` — saved-card management endpoints called
+  directly by the portal frontend's Stripe.js integration (which
+  needs JSON in / JSON out for the SetupIntent flow).
+
+There is **no** admin CRUD on members / events / announcements /
+payments / settings / types under `/api/*`. Admin actions live
+exclusively in the management portal under `/portal/admin/*`. A
+parallel JSON admin surface used to exist; it was deleted in 2026-04
+because it had drifted into half-strength duplicates that skipped
+audit logs and integration events, and was missing CSRF protection.
+See `CLAUDE.md` for the rule and `ARCHITECTURE-PUNCHLIST.md` for the
+history.
 
 ### 2. Public Website (Static Site)
 **Technology**: Any static site generator (Hugo, Jekyll, Next.js, etc.)  
@@ -84,8 +104,14 @@ Static Site Form → POST /public/signup → Coterie API → Create Pending Memb
 
 ### Admin Member Approval
 ```
-Admin Portal → POST /api/members/:id/activate → Coterie API → Update Member → Integration Webhooks
+Admin Portal → POST /portal/admin/members/:id/activate → Portal Handler
+   → MemberRepository::update + welcome email + audit log + invalidate sessions
+   → Integration Manager dispatch (Discord role re-sync, etc.)
 ```
+
+The portal handler does the full side-effect chain in one place. There
+is no JSON `/api/...` equivalent — admin actions are exclusively
+served by HTML+HTMX handlers under `/portal/admin/*`.
 
 ## Integration Points
 
@@ -134,9 +160,30 @@ https://api.yourorg.com/public/feed/rss
 
 ### Management Portal
 - Session-based authentication
-- Secure cookies (HttpOnly, SameSite, Secure)
-- CSRF protection via token validation on state-changing requests
-- Role-based access control (member vs admin)
+- Secure cookies (HttpOnly, SameSite=Lax, Secure)
+- Role-based access control (member vs admin), declared per-router
+- Rate limiting on login (5 attempts / 15min / IP) and money-moving
+  endpoints (10/min/IP)
+
+### CSRF — top-level, secure-by-default
+
+CSRF protection is enforced at the **top of the router** by
+`csrf_protect_unless_exempt`. Any state-changing method
+(POST/PUT/DELETE/PATCH) on any path is rejected unless it carries a
+valid `X-CSRF-Token` header (or `csrf_token` form field) bound to the
+caller's session. Adding a new route inherits protection
+automatically — there is no way to "forget" CSRF.
+
+The exempt list is small, explicit, and lives in
+`src/api/middleware/security.rs`:
+
+- `POST /api/payments/webhook/stripe` — Stripe HMAC signature.
+- `POST /public/signup`, `POST /public/donate` — cross-origin POSTs
+  from the marketing site, CORS-gated.
+- `POST /auth/login` — no session yet to bind a token to.
+
+Adding to that list requires a clear answer to "why can't this carry
+a CSRF token?"
 
 ### Static Site
 - No secrets or API keys needed

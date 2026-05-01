@@ -74,14 +74,22 @@ pub fn create_app(
         // Add state to the router
         .with_state(app_state.clone())
 
-        // Middleware
+        // Middleware. Order matters: `.layer()` calls wrap from the
+        // inside out, so the LAST `.layer(...)` is OUTERMOST and runs
+        // FIRST on incoming requests. CSRF goes outermost so any
+        // state-changing request is rejected before any handler logic
+        // (including body parsing) runs against it.
         .layer(axum::middleware::from_fn_with_state(
-            app_state,
+            app_state.clone(),
             middleware::security_headers::security_headers,
         ))
         .layer(CompressionLayer::new())
         .layer(cors_layer)
         .layer(TraceLayer::new_for_http())
+        .layer(axum::middleware::from_fn_with_state(
+            app_state,
+            middleware::security::csrf_protect_unless_exempt,
+        ))
 }
 
 /// Build CORS layer from configuration. If `cors_origins` is set, only those
@@ -120,20 +128,16 @@ fn payment_routes(state: AppState) -> Router<AppState> {
         // Saved-card management. The portal frontend POSTs directly
         // to these (`fetch('/api/payments/cards/...')` in
         // payment_methods.html) because Stripe.js needs a JSON
-        // surface, not an HTMX one. CSRF middleware is layered INSIDE
-        // require_auth so it can read SessionInfo populated by the
-        // auth pass; the X-CSRF-Token header is stamped by the
-        // portal's fetch() calls.
+        // surface, not an HTMX one. CSRF is enforced at the
+        // application root by `csrf_protect_unless_exempt`; only the
+        // auth gate is layered here. The portal's fetch() calls stamp
+        // the X-CSRF-Token header from `<meta name="csrf-token">`.
         .nest("/", Router::new()
             .route("/cards", get(handlers::payments::list_saved_cards))
             .route("/cards", post(handlers::payments::save_card))
             .route("/cards/setup-intent", post(handlers::payments::create_setup_intent))
             .route("/cards/:card_id", delete(handlers::payments::delete_saved_card))
             .route("/cards/:card_id/default", put(handlers::payments::set_default_card))
-            .route_layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                middleware::auth::require_csrf,
-            ))
             .route_layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 middleware::auth::require_auth,

@@ -241,106 +241,11 @@ pub async fn require_admin_redirect(
 // actions live in the portal at `/portal/admin/*`, gated by
 // `require_admin_redirect`); the middleware went with them.
 
-/// CSRF validation middleware. Enforces a valid token on every
-/// state-changing request, in two ways:
-///
-///   1. **`X-CSRF-Token` header** — used by HTMX/AJAX. The base
-///      template's htmx:configRequest hook injects this from the
-///      `<meta name="csrf-token">` tag for every htmx request, so
-///      every hx-post on a page with the meta tag is covered.
-///
-///   2. **`csrf_token` form field** — used by plain `<form method=
-///      "POST">` submissions. We buffer the request body, parse for
-///      this field, validate, and rebuild the request so the handler
-///      still gets the body intact.
-///
-/// Anything else (JSON without header, multipart without header, no
-/// body) is rejected. Without this body-side validation, plain form
-/// POSTs are open to cross-origin CSRF: SameSite=Lax cookies still
-/// ride along on top-level form navigation, and an attacker page can
-/// host a `<form action="…" method="POST">` that fires under the
-/// admin's session.
-pub async fn require_csrf(
-    State(state): State<AppState>,
-    request: Request,
-    next: Next,
-) -> Result<Response, AppError> {
-    use axum::body::{to_bytes, Body};
-    use axum::http::{header, Method};
-
-    let method = request.method().clone();
-    if method == Method::GET || method == Method::HEAD || method == Method::OPTIONS {
-        return Ok(next.run(request).await);
-    }
-
-    let session_info = request
-        .extensions()
-        .get::<SessionInfo>()
-        .ok_or(AppError::Forbidden)?
-        .clone();
-
-    // Path 1: header-bearing requests (HTMX, fetch, etc.). Validate
-    // immediately — no need to touch the body.
-    if let Some(token) = request
-        .headers()
-        .get("X-CSRF-Token")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-    {
-        let is_valid = state
-            .service_context
-            .csrf_service
-            .validate_token(&session_info.session_id, &token)
-            .await?;
-        return if is_valid {
-            Ok(next.run(request).await)
-        } else {
-            Err(AppError::Forbidden)
-        };
-    }
-
-    // Path 2: form-encoded body. Anything else is rejected.
-    let content_type = request
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if !content_type.starts_with("application/x-www-form-urlencoded") {
-        // JSON, multipart, missing — all expected to bring the header.
-        return Err(AppError::Forbidden);
-    }
-
-    // Buffer the body so we can both peek for csrf_token AND hand the
-    // bytes back to the handler. 1MB cap is way above any form we send
-    // (the largest is a few KB of admin notes).
-    let (parts, body) = request.into_parts();
-    let bytes = to_bytes(body, 1024 * 1024)
-        .await
-        .map_err(|_| AppError::BadRequest("Request body too large".to_string()))?;
-
-    // Pick out the csrf_token field. We use a permissive struct that
-    // ignores any other fields — the handler does its own form parsing
-    // afterward against the buffered bytes.
-    #[derive(serde::Deserialize)]
-    struct CsrfField {
-        csrf_token: String,
-    }
-    let parsed: CsrfField = serde_urlencoded::from_bytes(&bytes).map_err(|_| AppError::Forbidden)?;
-
-    let is_valid = state
-        .service_context
-        .csrf_service
-        .validate_token(&session_info.session_id, &parsed.csrf_token)
-        .await?;
-    if !is_valid {
-        return Err(AppError::Forbidden);
-    }
-
-    // Rebuild the request with the buffered body so the downstream
-    // handler can still extract Form<...> from it.
-    let request = Request::from_parts(parts, Body::from(bytes));
-    Ok(next.run(request).await)
-}
+// CSRF used to be a per-router middleware here. It now lives at the
+// top of the application router as
+// `middleware::security::csrf_protect_unless_exempt` so adding a new
+// state-changing route can't accidentally skip protection — see
+// CLAUDE.md and ARCHITECTURE.md for the rationale.
 
 /// Middleware that optionally adds session info to requests.
 /// Useful for pages that work differently for logged-in vs logged-out users.
