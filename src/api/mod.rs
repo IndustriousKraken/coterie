@@ -112,14 +112,16 @@ fn api_routes(state: AppState) -> Router<AppState> {
 }
 
 fn member_routes(state: AppState) -> Router<AppState> {
-    // Admin-only operations: listing everyone, creating, mutating, activating, expiring.
+    // Admin-only operations: listing everyone, creating, mutating.
+    // Activation / expiry have no JSON endpoint — those flows live in
+    // the portal admin path (which does the full side-effect chain:
+    // welcome email, audit log, session invalidation) and the billing
+    // runner (which expires members past their grace period).
     let admin_only = Router::new()
         .route("/", get(handlers::members::list))
         .route("/", post(handlers::members::create))
         .route("/:id", put(handlers::members::update))
         .route("/:id", delete(handlers::members::delete))
-        .route("/:id/activate", post(handlers::members::activate))
-        .route("/:id/expire", post(handlers::members::expire))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::auth::require_admin,
