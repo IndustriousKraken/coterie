@@ -1,5 +1,5 @@
 use coterie::{
-    domain::{CreateMemberRequest, MembershipType, MemberStatus},
+    domain::{CreateMemberRequest, MemberStatus},
     repository::{MemberRepository, SqliteMemberRepository},
 };
 use sqlx::SqlitePool;
@@ -8,22 +8,23 @@ use sqlx::SqlitePool;
 async fn test_member_crud() -> anyhow::Result<()> {
     // Create an in-memory SQLite database
     let pool = SqlitePool::connect(":memory:").await?;
-    
+
     // Run migrations
     sqlx::migrate!("./migrations")
         .run(&pool)
         .await?;
-    
+
     // Create repository
     let repo = SqliteMemberRepository::new(pool.clone());
-    
-    // Test Create
+
+    // Test Create. `membership_type_id: None` lets the repo pick the
+    // first active type seeded by migration 001.
     let create_request = CreateMemberRequest {
         email: "test@example.com".to_string(),
         username: "testuser".to_string(),
         full_name: "Test User".to_string(),
         password: "secure_password123".to_string(),
-        membership_type: MembershipType::Regular,
+        membership_type_id: None,
     };
     
     let member = repo.create(create_request).await?;

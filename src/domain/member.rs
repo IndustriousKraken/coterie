@@ -12,8 +12,7 @@ pub struct Member {
     pub username: String,
     pub full_name: String,
     pub status: MemberStatus,
-    pub membership_type: MembershipType,
-    pub membership_type_id: Option<Uuid>,
+    pub membership_type_id: Uuid,
     pub joined_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
     pub dues_paid_until: Option<DateTime<Utc>>,
@@ -87,51 +86,6 @@ impl MemberStatus {
     }
 }
 
-/// Legacy membership type enum - DEPRECATED
-///
-/// This enum is being phased out in favor of database-driven membership types.
-/// Use `membership_type_id` field to reference `MembershipTypeConfig` from the
-/// `membership_types` table instead.
-///
-/// To get the membership type name, look up the type by ID:
-/// ```ignore
-/// let type_config = membership_type_service.get(member.membership_type_id).await?;
-/// let type_name = type_config.name;
-/// ```
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, PartialEq, ToSchema)]
-#[sqlx(type_name = "TEXT")]
-pub enum MembershipType {
-    Regular,
-    Student,
-    Corporate,
-    Lifetime,
-}
-
-impl MembershipType {
-    /// Canonical wire/DB string. Same casing as the `membership_type`
-    /// column. See `MemberStatus::as_str` for why this exists.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            MembershipType::Regular => "Regular",
-            MembershipType::Student => "Student",
-            MembershipType::Corporate => "Corporate",
-            MembershipType::Lifetime => "Lifetime",
-        }
-    }
-
-    /// Parse from the wire/DB string. `None` on unknown — never map to
-    /// a default; bad input should fail loudly at the boundary.
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "Regular" => Some(MembershipType::Regular),
-            "Student" => Some(MembershipType::Student),
-            "Corporate" => Some(MembershipType::Corporate),
-            "Lifetime" => Some(MembershipType::Lifetime),
-            _ => None,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemberProfile {
     pub member_id: Uuid,
@@ -149,14 +103,18 @@ pub struct CreateMemberRequest {
     pub username: String,
     pub full_name: String,
     pub password: String,
-    pub membership_type: MembershipType,
+    /// Caller-supplied FK into `membership_types`. `None` lets the
+    /// repo pick the first `is_active` row by `sort_order` — used by
+    /// public signup (no slug provided), tests, and the seed binary.
+    /// Admin "create member" passes the chosen ID explicitly.
+    pub membership_type_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UpdateMemberRequest {
     pub full_name: Option<String>,
     pub status: Option<MemberStatus>,
-    pub membership_type: Option<MembershipType>,
+    pub membership_type_id: Option<Uuid>,
     pub expires_at: Option<DateTime<Utc>>,
     pub bypass_dues: Option<bool>,
     pub notes: Option<String>,

@@ -532,12 +532,8 @@ pub async fn update_auto_renew_api(
         // Need the member's current membership type slug to schedule
         // a renewal — that's where billing period (monthly/yearly) and
         // amount come from.
-        let mt_id = current_user.member.membership_type_id
-            .ok_or_else(|| AppError::BadRequest(
-                "No membership type assigned. Contact an admin.".to_string()
-            ))?;
         let mt = state.service_context.membership_type_service
-            .get(mt_id).await?
+            .get(current_user.member.membership_type_id).await?
             .ok_or_else(|| AppError::Internal(
                 "Member's membership type was deleted; contact an admin.".to_string()
             ))?;

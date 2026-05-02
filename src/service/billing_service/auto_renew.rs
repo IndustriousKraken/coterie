@@ -264,11 +264,7 @@ impl AutoRenew {
         // shouldn't be any for a stripe_sub member, but better safe).
         self.cancel_scheduled_payments(member_id).await?;
 
-        let mt_id = member.membership_type_id
-            .ok_or_else(|| AppError::Internal(
-                "Member has no membership_type_id; cannot schedule renewal".to_string()
-            ))?;
-        let mt = self.membership_type_service.get(mt_id).await?
+        let mt = self.membership_type_service.get(member.membership_type_id).await?
             .ok_or_else(|| AppError::Internal(
                 "Member's membership type was deleted".to_string()
             ))?;

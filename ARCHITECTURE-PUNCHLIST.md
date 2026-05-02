@@ -404,7 +404,45 @@ both `create_app` and `create_web_routes`. The API router's
 **Effort + risk.** Small. Touch points: `api::create_app` signature,
 `main.rs`, `web::create_web_routes`.
 
-## F11 — `MembershipType` enum / `membership_type_id` parallel paths
+## F11 — `MembershipType` enum / `membership_type_id` parallel paths ✅ DONE 2026-05-02
+
+**Resolution.** Finished the migration. `MembershipType` enum and
+`members.membership_type` column are gone. `members.membership_type_id`
+is the sole source of truth, `NOT NULL`, FK-constrained. Signup
+writes the FK directly; billing reads it without an Optional unwrap.
+
+**Touch points:**
+
+- Migration `021_drop_membership_type_enum.sql`: backfill any NULL
+  `membership_type_id` rows to the first `is_active`
+  `membership_types` row (sort_order ASC), then table-recreate to
+  drop the column and tighten the FK.
+- `domain::Member`: `membership_type` field removed,
+  `membership_type_id: Uuid` (no Option). `MembershipType` enum and
+  its `as_str` / `from_str` deleted.
+- `CreateMemberRequest::membership_type_id: Option<Uuid>` —
+  unset lets the repo pick the org's default.
+- `MemberRepository::create` resolves the FK with a new
+  `resolve_membership_type_id` helper that errors if no active type
+  exists (an org with all types deactivated can't accept signups —
+  loud failure, not a silent default).
+- `MemberQuery::membership_type` → `membership_type_id`. Admin
+  members list filter takes a slug in the URL (`?type=member`),
+  resolves to FK in the handler.
+- Admin member create/edit forms post `membership_type_id` as a
+  UUID; dropdown is rendered from `membership_types` instead of the
+  hardcoded enum names.
+- Public signup API: `membership_type` enum field replaced with
+  `membership_type_slug: Option<String>`. Unknown slug is rejected;
+  omitted falls back to the default.
+- All read sites (profile, dashboard, security, admin partials,
+  admin list/detail) look up the type name via
+  `membership_type_service.get(id)` and put the resolved name in
+  the template DTO.
+- `webhook_dispatcher` and `auto_renew` lost their NULL-fallback
+  branches — `member.membership_type_id` is always present.
+
+**Original write-up below for reference.**
 
 **Where.** Domain has both `MembershipType` (enum, used by signup) and
 `membership_type_id` (FK to a `membership_types` table, used by
@@ -459,19 +497,39 @@ deserialization-only struct fields and intentional API surface like
 `BillingPeriod::as_str` / `PaymentStatus::is_terminal`). Test suite
 stays green (12 test files, ~108 tests passing).
 
-## F14 — Inline-HTML construction in handlers
+## F14 — Inline-HTML construction in handlers ✅ MOSTLY DONE 2026-05-02
 
-**Where.** Several handlers (admin members, payments, donations) build
-HTML fragments via `format!("<div>...</div>")` for HTMX swaps instead
-of using Askama partials.
+**What was converted.** ~20 admin error/success fragments in
+`admin/types.rs`, `admin/announcements.rs`, and `admin/events.rs` —
+all the `Html(format!("Error <verb> <noun>: {}", escape_html(...)))`
+sites — now route through `partials::admin_alert("error" | "success",
+&format!(...), false)`. The template handles escaping; handlers no
+longer have to remember `escape_html` per call site.
 
-**Why it matters.** Templates carry escaping; `format!` doesn't. One
-of the inline strings already has a TODO that says exactly this.
+**What was left in place.**
 
-**What to do.** Opportunistic refactor — extract partials when you're
-already touching a handler. Don't do a sweep; let it happen organically.
+- `web::portal::admin::partials::member_row_error`,
+  `member_row_flash`: already-centralized partial helpers that build
+  table rows / specific HTMX swap targets. Custom shapes (table-row
+  vs alert-div) and they already escape via `escape_html` — moving
+  them into Askama files is pure code-shuffling.
+- `refund_result_html`, `discord_id_result`, `resend_result`,
+  `test_result_html` (discord, email): centralized helpers with
+  custom HTMX target ids and (for discord/email) inline SVG icons.
+  Different shape from the generic alert div. All escape input.
+- `web::portal::security::error_html`: identical markup to
+  `admin_alert` but lives in the member-facing portal. Pulling
+  `admin_alert` out into a generic `partials::alert` is the right
+  long-term move; folded as a follow-up if a third caller needs it.
+- Member-facing RSVP error div in `web/portal/events.rs`: two
+  identical 2-line fragments, already escaped. Not worth a partial.
+- `admin_create_member` full-page render_error in `admin/members.rs`:
+  whole-document HTML, different shape entirely. Could move to a
+  template later.
 
-**Effort + risk.** Background. Not blocking.
+The architect said "opportunistic, not a sweep" — this hit the
+worst-clustered offender (the admin error pattern) and stopped at
+shapes that didn't fit.
 
 ## F15 — `setup_lock` duplicated (sub-finding of F10) ✅ DONE 2026-05-01
 

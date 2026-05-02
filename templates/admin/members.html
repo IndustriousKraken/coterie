@@ -55,10 +55,9 @@
                         name="type"
                         class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
                     <option value="">All Types</option>
-                    <option value="Regular" {% if type_filter == "Regular" %}selected{% endif %}>Regular</option>
-                    <option value="Student" {% if type_filter == "Student" %}selected{% endif %}>Student</option>
-                    <option value="Corporate" {% if type_filter == "Corporate" %}selected{% endif %}>Corporate</option>
-                    <option value="Lifetime" {% if type_filter == "Lifetime" %}selected{% endif %}>Lifetime</option>
+                    {% for opt in type_options %}
+                    <option value="{{ opt.slug }}" {% if type_filter == opt.slug %}selected{% endif %}>{{ opt.name }}</option>
+                    {% endfor %}
                 </select>
             </div>
             <button type="submit"

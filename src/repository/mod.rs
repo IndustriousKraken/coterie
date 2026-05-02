@@ -40,8 +40,8 @@ pub struct MemberQuery {
     pub search: Option<String>,
     /// Filter to exactly one status. `None` skips the filter.
     pub status: Option<crate::domain::MemberStatus>,
-    /// Filter to exactly one (legacy) membership type. `None` skips.
-    pub membership_type: Option<crate::domain::MembershipType>,
+    /// Filter to exactly one membership type by FK. `None` skips.
+    pub membership_type_id: Option<Uuid>,
     pub sort: MemberSortField,
     pub order: SortOrder,
     pub limit: i64,

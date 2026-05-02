@@ -11,6 +11,7 @@ use crate::{
         middleware::auth::{CurrentUser, SessionInfo},
         state::AppState,
     },
+    web::portal::admin::partials,
     web::templates::{BaseContext, HtmlTemplate},
     web::uploads::save_uploaded_file,
 };
@@ -256,13 +257,13 @@ pub async fn admin_event_detail_page(
 
     let id = match uuid::Uuid::parse_str(&event_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html("Invalid event ID".to_string()).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid event ID", false).into_response(),
     };
 
     let event = match state.service_context.event_repo.find_by_id(id).await {
         Ok(Some(e)) => e,
-        Ok(None) => return axum::response::Html("Event not found".to_string()).into_response(),
-        Err(_) => return axum::response::Html("Error loading event".to_string()).into_response(),
+        Ok(None) => return partials::admin_alert("error", "Event not found", false).into_response(),
+        Err(_) => return partials::admin_alert("error", "Error loading event", false).into_response(),
     };
 
     let attendee_count = state.service_context.event_repo
@@ -429,7 +430,7 @@ pub async fn admin_create_event(
                         if !data.is_empty() {
                             match save_uploaded_file(&state.settings.server.uploads_path(), &filename, &data).await {
                                 Ok(path) => image_url = Some(path),
-                                Err(e) => return axum::response::Html(format!("Error uploading image: {}", crate::web::escape_html(&e.to_string()))).into_response(),
+                                Err(e) => return partials::admin_alert("error", &format!("Error uploading image: {}", e), false).into_response(),
                             }
                         }
                     }
@@ -457,7 +458,7 @@ pub async fn admin_create_event(
 
     let start_time = match chrono::NaiveDateTime::parse_from_str(&start_time_str, "%Y-%m-%dT%H:%M") {
         Ok(dt) => chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc),
-        Err(_) => return axum::response::Html("Invalid start time".to_string()).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid start time", false).into_response(),
     };
 
     let end_time = if end_time_str.is_empty() {
@@ -498,9 +499,9 @@ pub async fn admin_create_event(
             repeat_day, &repeat_weekday, repeat_ordinal,
         ) {
             Ok(r) => r,
-            Err(msg) => return axum::response::Html(format!(
-                "Invalid recurrence: {}", crate::web::escape_html(msg),
-            )).into_response(),
+            Err(msg) => return partials::admin_alert(
+                "error", &format!("Invalid recurrence: {}", msg), false,
+            ).into_response(),
         };
         let until = parse_until(&repeat_until_str);
 
@@ -529,10 +530,9 @@ pub async fn admin_create_event(
                     &format!("/portal/admin/events/{}", first.id),
                 ).into_response();
             }
-            Err(e) => return axum::response::Html(format!(
-                "Error creating recurring event: {}",
-                crate::web::escape_html(&e.to_string()),
-            )).into_response(),
+            Err(e) => return partials::admin_alert(
+                "error", &format!("Error creating recurring event: {}", e), false,
+            ).into_response(),
         }
     }
 
@@ -554,7 +554,7 @@ pub async fn admin_create_event(
                 .await;
             axum::response::Redirect::to(&format!("/portal/admin/events/{}", created.id)).into_response()
         }
-        Err(e) => axum::response::Html(format!("Error creating event: {}", crate::web::escape_html(&e.to_string()))).into_response(),
+        Err(e) => partials::admin_alert("error", &format!("Error creating event: {}", e), false).into_response(),
     }
 }
 
@@ -623,13 +623,13 @@ pub async fn admin_update_event(
 
     let id = match uuid::Uuid::parse_str(&event_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html("Invalid event ID".to_string()).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid event ID", false).into_response(),
     };
 
     let existing = match state.service_context.event_repo.find_by_id(id).await {
         Ok(Some(e)) => e,
-        Ok(None) => return axum::response::Html("Event not found".to_string()).into_response(),
-        Err(_) => return axum::response::Html("Error loading event".to_string()).into_response(),
+        Ok(None) => return partials::admin_alert("error", "Event not found", false).into_response(),
+        Err(_) => return partials::admin_alert("error", "Error loading event", false).into_response(),
     };
 
     // Parse multipart form
@@ -681,7 +681,7 @@ pub async fn admin_update_event(
                         if !data.is_empty() {
                             match save_uploaded_file(&state.settings.server.uploads_path(), &filename, &data).await {
                                 Ok(path) => new_image_url = Some(path),
-                                Err(e) => return axum::response::Html(format!(r#"<div class="px-4 py-3 bg-red-100 text-red-800 rounded-md text-sm">Error uploading image: {}</div>"#, crate::web::escape_html(&e.to_string()))).into_response(),
+                                Err(e) => return partials::admin_alert("error", &format!("Error uploading image: {}", e), false).into_response(),
                             }
                         }
                     }
@@ -759,10 +759,9 @@ pub async fn admin_update_event(
     let updated = match state.service_context.event_repo.update(id, updated_event.clone()).await {
         Ok(u) => u,
         Err(e) => {
-            return axum::response::Html(format!(
-                r#"<div class="px-4 py-3 bg-red-100 text-red-800 rounded-md text-sm">Error updating event: {}</div>"#,
-                crate::web::escape_html(&e.to_string()),
-            )).into_response();
+            return partials::admin_alert(
+                "error", &format!("Error updating event: {}", e), false,
+            ).into_response();
         }
     };
     crate::web::uploads::delete_if_upload(
@@ -803,10 +802,7 @@ pub async fn admin_update_event(
     } else {
         "Event updated successfully".to_string()
     };
-    axum::response::Html(format!(
-        r#"<div class="px-4 py-3 bg-green-100 text-green-800 rounded-md text-sm">{}</div>"#,
-        crate::web::escape_html(&msg),
-    )).into_response()
+    partials::admin_alert("success", &msg, false).into_response()
 }
 
 pub async fn admin_delete_event(
@@ -817,13 +813,13 @@ pub async fn admin_delete_event(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&event_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html("Invalid event ID".to_string()).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid event ID", false).into_response(),
     };
 
     let event = match state.service_context.event_repo.find_by_id(id).await {
         Ok(Some(e)) => e,
-        Ok(None) => return axum::response::Html("Event not found".to_string()).into_response(),
-        Err(_) => return axum::response::Html("Error loading event".to_string()).into_response(),
+        Ok(None) => return partials::admin_alert("error", "Event not found", false).into_response(),
+        Err(_) => return partials::admin_alert("error", "Error loading event", false).into_response(),
     };
 
     // Series-aware delete scope. "this" is the default and behaves
@@ -844,9 +840,9 @@ pub async fn admin_delete_event(
             if let Err(e) = state.service_context.event_repo
                 .delete_series_occurrences_after(sid, cutoff).await
             {
-                return axum::response::Html(format!(
-                    "Error ending series: {}", crate::web::escape_html(&e.to_string())
-                )).into_response();
+                return partials::admin_alert(
+                    "error", &format!("Error ending series: {}", e), false,
+                ).into_response();
             }
             if let Err(e) = state.service_context.event_series_repo
                 .set_until_date(sid, cutoff).await
@@ -870,9 +866,9 @@ pub async fn admin_delete_event(
         // delete_series: nuke the series row and all occurrences
         // (FK ON DELETE CASCADE drops every occurrence).
         if let Err(e) = state.service_context.event_series_repo.delete(sid).await {
-            return axum::response::Html(format!(
-                "Error deleting series: {}", crate::web::escape_html(&e.to_string())
-            )).into_response();
+            return partials::admin_alert(
+                "error", &format!("Error deleting series: {}", e), false,
+            ).into_response();
         }
         state.service_context.audit_service.log(
             Some(current_user.member.id),
@@ -905,7 +901,7 @@ pub async fn admin_delete_event(
             ).await;
             axum::response::Redirect::to("/portal/admin/events").into_response()
         }
-        Err(e) => axum::response::Html(format!("Error deleting event: {}", crate::web::escape_html(&e.to_string()))).into_response(),
+        Err(e) => partials::admin_alert("error", &format!("Error deleting event: {}", e), false).into_response(),
     }
 }
 

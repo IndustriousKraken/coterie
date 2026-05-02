@@ -79,7 +79,6 @@ fn openapi_spec_registers_all_dto_schemas() {
         "Announcement",
         "AnnouncementType",
         "MemberStatus",
-        "MembershipType",
     ];
 
     for name in expected_schemas {

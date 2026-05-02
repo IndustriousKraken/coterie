@@ -16,7 +16,7 @@ use std::sync::Arc;
 use coterie::{
     auth::SecretCrypto,
     domain::{
-        BillingMode, CreateMemberRequest, MembershipType, Payer, Payment, PaymentKind,
+        BillingMode, CreateMemberRequest, Payer, Payment, PaymentKind,
         PaymentMethod, PaymentStatus, StripeRef,
     },
     email::LogSender,
@@ -137,7 +137,7 @@ async fn insert_member(
             username: format!("u_{}", Uuid::new_v4().simple()),
             full_name: "Test Member".to_string(),
             password: "p4ssword_long_enough".to_string(),
-            membership_type: MembershipType::Regular,
+            membership_type_id: None,
         })
         .await
         .expect("create member");

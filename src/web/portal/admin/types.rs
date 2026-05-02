@@ -15,7 +15,10 @@ use crate::{
         CreateEventTypeRequest, CreateAnnouncementTypeRequest, CreateMembershipTypeRequest,
         UpdateEventTypeRequest, UpdateAnnouncementTypeRequest, UpdateMembershipTypeRequest,
     },
-    web::templates::{BaseContext, HtmlTemplate},
+    web::{
+        portal::admin::partials,
+        templates::{BaseContext, HtmlTemplate},
+    },
 };
 
 // =============================================================================
@@ -116,13 +119,13 @@ pub async fn admin_edit_event_type_page(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&type_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html("Invalid type ID".to_string()).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid type ID", false).into_response(),
     };
 
     let event_type = match state.service_context.event_type_service.get(id).await {
         Ok(Some(t)) => t,
-        Ok(None) => return axum::response::Html("Event type not found".to_string()).into_response(),
-        Err(_) => return axum::response::Html("Error loading event type".to_string()).into_response(),
+        Ok(None) => return partials::admin_alert("error", "Event type not found", false).into_response(),
+        Err(_) => return partials::admin_alert("error", "Error loading event type", false).into_response(),
     };
 
     let base = BaseContext::for_member(&state, &current_user, &session_info).await;
@@ -173,7 +176,7 @@ pub async fn admin_create_event_type(
 
     match state.service_context.event_type_service.create(request).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => axum::response::Html(format!("Error creating event type: {}", crate::web::escape_html(&e.to_string()))).into_response(),
+        Err(e) => partials::admin_alert("error", &format!("Error creating event type: {}", e), false).into_response(),
     }
 }
 
@@ -185,7 +188,7 @@ pub async fn admin_update_event_type(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&type_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html("Invalid type ID".to_string()).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid type ID", false).into_response(),
     };
 
     let request = UpdateEventTypeRequest {
@@ -199,7 +202,7 @@ pub async fn admin_update_event_type(
 
     match state.service_context.event_type_service.update(id, request).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => axum::response::Html(format!("Error updating event type: {}", crate::web::escape_html(&e.to_string()))).into_response(),
+        Err(e) => partials::admin_alert("error", &format!("Error updating event type: {}", e), false).into_response(),
     }
 }
 
@@ -210,12 +213,12 @@ pub async fn admin_delete_event_type(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&type_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html("Invalid type ID".to_string()).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid type ID", false).into_response(),
     };
 
     match state.service_context.event_type_service.delete(id).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => axum::response::Html(format!("Error deleting event type: {}", crate::web::escape_html(&e.to_string()))).into_response(),
+        Err(e) => partials::admin_alert("error", &format!("Error deleting event type: {}", e), false).into_response(),
     }
 }
 
@@ -251,13 +254,13 @@ pub async fn admin_edit_announcement_type_page(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&type_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html("Invalid type ID".to_string()).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid type ID", false).into_response(),
     };
 
     let announcement_type = match state.service_context.announcement_type_service.get(id).await {
         Ok(Some(t)) => t,
-        Ok(None) => return axum::response::Html("Announcement type not found".to_string()).into_response(),
-        Err(_) => return axum::response::Html("Error loading announcement type".to_string()).into_response(),
+        Ok(None) => return partials::admin_alert("error", "Announcement type not found", false).into_response(),
+        Err(_) => return partials::admin_alert("error", "Error loading announcement type", false).into_response(),
     };
 
     let base = BaseContext::for_member(&state, &current_user, &session_info).await;
@@ -306,7 +309,7 @@ pub async fn admin_create_announcement_type(
 
     match state.service_context.announcement_type_service.create(request).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => axum::response::Html(format!("Error creating announcement type: {}", crate::web::escape_html(&e.to_string()))).into_response(),
+        Err(e) => partials::admin_alert("error", &format!("Error creating announcement type: {}", e), false).into_response(),
     }
 }
 
@@ -318,7 +321,7 @@ pub async fn admin_update_announcement_type(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&type_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html("Invalid type ID".to_string()).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid type ID", false).into_response(),
     };
 
     let request = UpdateAnnouncementTypeRequest {
@@ -332,7 +335,7 @@ pub async fn admin_update_announcement_type(
 
     match state.service_context.announcement_type_service.update(id, request).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => axum::response::Html(format!("Error updating announcement type: {}", crate::web::escape_html(&e.to_string()))).into_response(),
+        Err(e) => partials::admin_alert("error", &format!("Error updating announcement type: {}", e), false).into_response(),
     }
 }
 
@@ -343,12 +346,12 @@ pub async fn admin_delete_announcement_type(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&type_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html("Invalid type ID".to_string()).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid type ID", false).into_response(),
     };
 
     match state.service_context.announcement_type_service.delete(id).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => axum::response::Html(format!("Error deleting announcement type: {}", crate::web::escape_html(&e.to_string()))).into_response(),
+        Err(e) => partials::admin_alert("error", &format!("Error deleting announcement type: {}", e), false).into_response(),
     }
 }
 
@@ -384,13 +387,13 @@ pub async fn admin_edit_membership_type_page(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&type_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html("Invalid type ID".to_string()).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid type ID", false).into_response(),
     };
 
     let membership_type = match state.service_context.membership_type_service.get(id).await {
         Ok(Some(t)) => t,
-        Ok(None) => return axum::response::Html("Membership type not found".to_string()).into_response(),
-        Err(_) => return axum::response::Html("Error loading membership type".to_string()).into_response(),
+        Ok(None) => return partials::admin_alert("error", "Membership type not found", false).into_response(),
+        Err(_) => return partials::admin_alert("error", "Error loading membership type", false).into_response(),
     };
 
     let base = BaseContext::for_member(&state, &current_user, &session_info).await;
@@ -440,8 +443,8 @@ pub async fn admin_create_membership_type(
         Ok(dollars) if dollars.is_finite() && dollars >= 0.0 && dollars <= 999_999.99 => {
             (dollars * 100.0).round() as i32
         }
-        Ok(_) => return axum::response::Html("Fee must be between $0.00 and $999,999.99".to_string()).into_response(),
-        Err(_) => return axum::response::Html("Invalid fee amount".to_string()).into_response(),
+        Ok(_) => return partials::admin_alert("error", "Fee must be between $0.00 and $999,999.99", false).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid fee amount", false).into_response(),
     };
 
     let request = CreateMembershipTypeRequest {
@@ -456,7 +459,7 @@ pub async fn admin_create_membership_type(
 
     match state.service_context.membership_type_service.create(request).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => axum::response::Html(format!("Error creating membership type: {}", crate::web::escape_html(&e.to_string()))).into_response(),
+        Err(e) => partials::admin_alert("error", &format!("Error creating membership type: {}", e), false).into_response(),
     }
 }
 
@@ -468,7 +471,7 @@ pub async fn admin_update_membership_type(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&type_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html("Invalid type ID".to_string()).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid type ID", false).into_response(),
     };
 
     // Parse fee from dollars to cents, with bounds validation
@@ -476,8 +479,8 @@ pub async fn admin_update_membership_type(
         Ok(dollars) if dollars.is_finite() && dollars >= 0.0 && dollars <= 999_999.99 => {
             (dollars * 100.0).round() as i32
         }
-        Ok(_) => return axum::response::Html("Fee must be between $0.00 and $999,999.99".to_string()).into_response(),
-        Err(_) => return axum::response::Html("Invalid fee amount".to_string()).into_response(),
+        Ok(_) => return partials::admin_alert("error", "Fee must be between $0.00 and $999,999.99", false).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid fee amount", false).into_response(),
     };
 
     let request = UpdateMembershipTypeRequest {
@@ -493,7 +496,7 @@ pub async fn admin_update_membership_type(
 
     match state.service_context.membership_type_service.update(id, request).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => axum::response::Html(format!("Error updating membership type: {}", crate::web::escape_html(&e.to_string()))).into_response(),
+        Err(e) => partials::admin_alert("error", &format!("Error updating membership type: {}", e), false).into_response(),
     }
 }
 
@@ -504,12 +507,12 @@ pub async fn admin_delete_membership_type(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&type_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html("Invalid type ID".to_string()).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid type ID", false).into_response(),
     };
 
     match state.service_context.membership_type_service.delete(id).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => axum::response::Html(format!("Error deleting membership type: {}", crate::web::escape_html(&e.to_string()))).into_response(),
+        Err(e) => partials::admin_alert("error", &format!("Error deleting membership type: {}", e), false).into_response(),
     }
 }
 

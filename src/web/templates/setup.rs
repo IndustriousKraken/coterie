@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     api::state::AppState,
-    domain::{CreateMemberRequest, MemberStatus, MembershipType, UpdateMemberRequest},
+    domain::{CreateMemberRequest, MemberStatus, UpdateMemberRequest},
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -102,13 +102,16 @@ pub async fn setup_handler(
         })).into_response();
     }
 
-    // Create the admin member
+    // Create the admin member. Membership type defaults to the first
+    // active row (migration 001 seeds three; an org doing a clean
+    // install with all three deleted would need to add one before
+    // setup, but the wizard runs before any admin tooling exists).
     let create_request = CreateMemberRequest {
         email: request.email.clone(),
         username: request.username.clone(),
         full_name: request.full_name.clone(),
         password: request.password.clone(),
-        membership_type: MembershipType::Lifetime,
+        membership_type_id: None,
     };
 
     let member = match state.service_context.member_repo.create(create_request).await {

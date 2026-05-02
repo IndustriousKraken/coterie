@@ -2,8 +2,9 @@ use clap::Parser;
 use config::{Config, File};
 use coterie::{
     domain::{
-        CreateMemberRequest, MembershipType, MemberStatus, UpdateMemberRequest,
+        CreateMemberRequest, MemberStatus, UpdateMemberRequest,
         CreateEventTypeRequest, CreateAnnouncementTypeRequest, CreateMembershipTypeRequest,
+        MembershipTypeConfig as DbMembershipTypeConfig,
         Event, EventType, EventVisibility,
         Announcement, AnnouncementType,
         Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus, StripeRef,
@@ -149,18 +150,15 @@ struct AnnouncementConfig {
 // Helper Functions
 // ============================================================================
 
-fn parse_membership_type(s: &str) -> MembershipType {
-    match s.to_lowercase().as_str() {
-        "regular" => MembershipType::Regular,
-        "student" => MembershipType::Student,
-        "corporate" => MembershipType::Corporate,
-        "lifetime" => MembershipType::Lifetime,
-        "family" => MembershipType::Regular, // Map family to regular
-        "individual" => MembershipType::Regular, // Map individual to regular
-        "senior" => MembershipType::Regular, // Map senior to regular
-        "founding" => MembershipType::Lifetime, // Map founding to lifetime
-        _ => MembershipType::Regular,
-    }
+/// Look up a membership type's id by slug. Falls back to the first
+/// type in the list when the slug doesn't match — seed data is
+/// generated; matching exactly isn't worth failing over.
+fn slug_to_id(slug: &str, types: &[DbMembershipTypeConfig]) -> Uuid {
+    types
+        .iter()
+        .find(|t| t.slug.eq_ignore_ascii_case(slug))
+        .map(|t| t.id)
+        .unwrap_or_else(|| types[0].id)
 }
 
 fn parse_member_status(s: &str) -> MemberStatus {
@@ -258,52 +256,45 @@ fn make_username(first: &str, last: &str, rng: &mut impl Rng) -> String {
 /// Member generation configuration
 struct MemberGenConfig {
     status: MemberStatus,
-    membership_type: MembershipType,
+    membership_type_id: Uuid,
     months_active: i64,
     bypass_dues: bool,
     notes: Option<String>,
 }
 
-fn generate_member_config(rng: &mut impl Rng) -> MemberGenConfig {
+fn generate_member_config(rng: &mut impl Rng, types: &[DbMembershipTypeConfig]) -> MemberGenConfig {
     let roll: u8 = rng.gen_range(0..100);
+    // Pick a random type across whatever the org configured. Seed
+    // data doesn't care which specific type — variety beats fidelity.
+    let any_type_id = types[rng.gen_range(0..types.len())].id;
 
-    let (status, membership_type, months_active, bypass_dues, notes) = match roll {
-        0..=69 => {
-            let mem_type = match rng.gen_range(0..100) {
-                0..=70 => MembershipType::Regular,
-                71..=90 => MembershipType::Student,
-                91..=98 => MembershipType::Corporate,
-                _ => MembershipType::Lifetime,
-            };
-            let months = rng.gen_range(1..=24);
-            (MemberStatus::Active, mem_type, months, false, None)
-        }
-        70..=79 => {
-            let months = rng.gen_range(3..=12);
-            (MemberStatus::Expired, MembershipType::Regular, months, false, None)
-        }
-        80..=87 => {
-            (MemberStatus::Pending, MembershipType::Regular, 0, false, None)
-        }
-        88..=92 => {
-            let months = rng.gen_range(2..=8);
-            (MemberStatus::Suspended, MembershipType::Regular, months, false,
-             Some("Suspended - under review".to_string()))
-        }
-        93..=97 => {
-            (MemberStatus::Honorary, MembershipType::Regular, 0, true,
-             Some("Honorary member".to_string()))
-        }
-        _ => {
-            let months = rng.gen_range(12..=36);
-            (MemberStatus::Active, MembershipType::Lifetime, months, true,
-             Some("Lifetime member".to_string()))
-        }
+    let (status, months_active, bypass_dues, notes) = match roll {
+        0..=69 => (MemberStatus::Active, rng.gen_range(1..=24), false, None),
+        70..=79 => (MemberStatus::Expired, rng.gen_range(3..=12), false, None),
+        80..=87 => (MemberStatus::Pending, 0, false, None),
+        88..=92 => (
+            MemberStatus::Suspended,
+            rng.gen_range(2..=8),
+            false,
+            Some("Suspended - under review".to_string()),
+        ),
+        93..=97 => (
+            MemberStatus::Honorary,
+            0,
+            true,
+            Some("Honorary member".to_string()),
+        ),
+        _ => (
+            MemberStatus::Active,
+            rng.gen_range(12..=36),
+            true,
+            Some("Lifetime member".to_string()),
+        ),
     };
 
     MemberGenConfig {
         status,
-        membership_type,
+        membership_type_id: any_type_id,
         months_active,
         bypass_dues,
         notes,
@@ -433,13 +424,26 @@ async fn main() -> anyhow::Result<()> {
     let mut used_usernames: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut used_emails: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // Create admin user
+    // Load configured membership types — drives both the admin user
+    // assignment and the random member generator.
+    let active_types = membership_type_repo.list(false).await?;
+    if active_types.is_empty() {
+        anyhow::bail!(
+            "No active membership_types in the database. The seed binary \
+             expects migration 001 to have populated defaults.",
+        );
+    }
+
+    // Create admin user. The "Lifetime" intent (admin doesn't pay
+    // dues) is now expressed by `bypass_dues: true` below — the type
+    // pick just needs to be valid.
+    let admin_type_id = slug_to_id("life-member", &active_types);
     let admin = member_repo.create(CreateMemberRequest {
         email: config.admin.email.clone(),
         username: config.admin.username.clone(),
         full_name: config.admin.full_name.clone(),
         password: config.admin.password.clone(),
-        membership_type: MembershipType::Lifetime,
+        membership_type_id: Some(admin_type_id),
     }).await?;
 
     member_repo.update(admin.id, UpdateMemberRequest {
@@ -456,7 +460,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create test users from config
     for user_config in &config.test_users {
-        let mem_type = parse_membership_type(&user_config.membership_type);
+        let mem_type_id = slug_to_id(&user_config.membership_type, &active_types);
         let status = parse_member_status(&user_config.status);
 
         let member = member_repo.create(CreateMemberRequest {
@@ -464,7 +468,7 @@ async fn main() -> anyhow::Result<()> {
             username: user_config.username.clone(),
             full_name: user_config.full_name.clone(),
             password: user_config.password.clone(),
-            membership_type: mem_type.clone(),
+            membership_type_id: Some(mem_type_id),
         }).await?;
 
         let dues_until = if status == MemberStatus::Active {
@@ -488,7 +492,7 @@ async fn main() -> anyhow::Result<()> {
 
         all_members.push((member.id, MemberGenConfig {
             status: status.clone(),
-            membership_type: mem_type,
+            membership_type_id: mem_type_id,
             months_active: user_config.months_active,
             bypass_dues: user_config.bypass_dues,
             notes: None,
@@ -529,14 +533,14 @@ async fn main() -> anyhow::Result<()> {
             continue;
         }
 
-        let gen_config = generate_member_config(&mut rng);
+        let gen_config = generate_member_config(&mut rng, &active_types);
 
         let member = member_repo.create(CreateMemberRequest {
             email: email.clone(),
             username: username.clone(),
             full_name,
             password: "password123".to_string(),
-            membership_type: gen_config.membership_type.clone(),
+            membership_type_id: Some(gen_config.membership_type_id),
         }).await?;
 
         let months_ago = gen_config.months_active;

@@ -4,7 +4,7 @@ use sqlx::{SqlitePool, FromRow};
 use uuid::Uuid;
 
 use crate::{
-    domain::{Member, MemberStatus, MembershipType, CreateMemberRequest, UpdateMemberRequest, BillingMode},
+    domain::{Member, MemberStatus, CreateMemberRequest, UpdateMemberRequest, BillingMode},
     error::{AppError, Result},
     repository::{MemberQuery, MemberRepository, MemberSortField, SortOrder},
 };
@@ -17,8 +17,7 @@ struct MemberRow {
     username: String,
     full_name: String,
     status: String,
-    membership_type: String,
-    membership_type_id: Option<String>,
+    membership_type_id: String,
     joined_at: NaiveDateTime,
     expires_at: Option<NaiveDateTime>,
     dues_paid_until: Option<NaiveDateTime>,
@@ -45,10 +44,7 @@ impl SqliteMemberRepository {
     }
 
     fn row_to_member(row: MemberRow) -> Result<Member> {
-        let membership_type_id = row.membership_type_id
-            .as_ref()
-            .map(|id| Uuid::parse_str(id))
-            .transpose()
+        let membership_type_id = Uuid::parse_str(&row.membership_type_id)
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         let billing_mode = BillingMode::from_str(&row.billing_mode)
@@ -60,7 +56,6 @@ impl SqliteMemberRepository {
             username: row.username,
             full_name: row.full_name,
             status: Self::parse_member_status(&row.status)?,
-            membership_type: Self::parse_membership_type(&row.membership_type)?,
             membership_type_id,
             joined_at: DateTime::from_naive_utc_and_offset(row.joined_at, Utc),
             expires_at: row.expires_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
@@ -84,9 +79,35 @@ impl SqliteMemberRepository {
             .ok_or_else(|| AppError::Database(format!("Invalid member status: {}", s)))
     }
 
-    fn parse_membership_type(s: &str) -> Result<MembershipType> {
-        MembershipType::from_str(s)
-            .ok_or_else(|| AppError::Database(format!("Invalid membership type: {}", s)))
+    /// Resolve a `CreateMemberRequest`'s membership_type_id, defaulting
+    /// to the first `is_active` row in `membership_types` (sort_order
+    /// ASC, name ASC) when the caller didn't provide one. Errors if no
+    /// active type exists — an org with no active types can't accept
+    /// signups, and silently picking an inactive type would mask the
+    /// misconfiguration.
+    async fn resolve_membership_type_id(&self, supplied: Option<Uuid>) -> Result<Uuid> {
+        if let Some(id) = supplied {
+            return Ok(id);
+        }
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT id FROM membership_types \
+             WHERE is_active = 1 \
+             ORDER BY sort_order ASC, name ASC \
+             LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        match row {
+            Some((id_str,)) => Uuid::parse_str(&id_str)
+                .map_err(|e| AppError::Database(e.to_string())),
+            None => Err(AppError::BadRequest(
+                "No active membership types configured — admin must create one before \
+                 members can be added."
+                    .to_string(),
+            )),
+        }
     }
 }
 
@@ -96,29 +117,30 @@ impl MemberRepository for SqliteMemberRepository {
         let id = Uuid::new_v4();
         let now = Utc::now();
         let status = MemberStatus::Pending;
-        
+        let membership_type_id = self.resolve_membership_type_id(request.membership_type_id).await?;
+
         // Hash the password with argon2
         use argon2::{Argon2, PasswordHasher};
         use argon2::password_hash::{SaltString, rand_core::OsRng};
-        
+
         let salt = SaltString::generate(&mut OsRng);
         let argon2 = Argon2::default();
-        
+
         let password_hash = argon2
             .hash_password(request.password.as_bytes(), &salt)
             .map_err(|e| AppError::Database(e.to_string()))?
             .to_string();
 
         let status_str = status.as_str();
-        let membership_type_str = request.membership_type.as_str();
         let id_str = id.to_string();
+        let mt_id_str = membership_type_id.to_string();
         let now_naive = now.naive_utc();
 
         sqlx::query(
             r#"
             INSERT INTO members (
                 id, email, username, full_name, password_hash,
-                status, membership_type, joined_at, bypass_dues,
+                status, membership_type_id, joined_at, bypass_dues,
                 created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#
@@ -129,7 +151,7 @@ impl MemberRepository for SqliteMemberRepository {
         .bind(&request.full_name)
         .bind(&password_hash)
         .bind(status_str)
-        .bind(membership_type_str)
+        .bind(&mt_id_str)
         .bind(now_naive)
         .bind(0i32)  // bypass_dues as integer (0 = false)
         .bind(now_naive)
@@ -147,7 +169,7 @@ impl MemberRepository for SqliteMemberRepository {
         let id_str = id.to_string();
         let row = sqlx::query_as::<_, MemberRow>(
             r#"
-            SELECT id, email, username, full_name, status, membership_type, membership_type_id,
+            SELECT id, email, username, full_name, status, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
                    stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
                    dues_reminder_sent_at, discord_id, created_at, updated_at
@@ -169,7 +191,7 @@ impl MemberRepository for SqliteMemberRepository {
     async fn find_by_email(&self, email: &str) -> Result<Option<Member>> {
         let row = sqlx::query_as::<_, MemberRow>(
             r#"
-            SELECT id, email, username, full_name, status, membership_type, membership_type_id,
+            SELECT id, email, username, full_name, status, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
                    stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
                    dues_reminder_sent_at, discord_id, created_at, updated_at
@@ -191,7 +213,7 @@ impl MemberRepository for SqliteMemberRepository {
     async fn find_by_username(&self, username: &str) -> Result<Option<Member>> {
         let row = sqlx::query_as::<_, MemberRow>(
             r#"
-            SELECT id, email, username, full_name, status, membership_type, membership_type_id,
+            SELECT id, email, username, full_name, status, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
                    stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
                    dues_reminder_sent_at, discord_id, created_at, updated_at
@@ -213,7 +235,7 @@ impl MemberRepository for SqliteMemberRepository {
     async fn list_with_discord_id(&self) -> Result<Vec<Member>> {
         let rows = sqlx::query_as::<_, MemberRow>(
             r#"
-            SELECT id, email, username, full_name, status, membership_type, membership_type_id,
+            SELECT id, email, username, full_name, status, membership_type_id,
                    joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
                    stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
                    dues_reminder_sent_at, discord_id, created_at, updated_at
@@ -238,10 +260,8 @@ impl MemberRepository for SqliteMemberRepository {
         let now = Utc::now();
 
         let status_str = update.status.as_ref().unwrap_or(&existing.status).as_str();
-        let membership_type_str = update.membership_type
-            .as_ref()
-            .unwrap_or(&existing.membership_type)
-            .as_str();
+        let membership_type_id = update.membership_type_id.unwrap_or(existing.membership_type_id);
+        let mt_id_str = membership_type_id.to_string();
 
         let id_str = id.to_string();
         let now_naive = now.naive_utc();
@@ -253,7 +273,7 @@ impl MemberRepository for SqliteMemberRepository {
             UPDATE members
             SET full_name = COALESCE(?, full_name),
                 status = ?,
-                membership_type = ?,
+                membership_type_id = ?,
                 expires_at = COALESCE(?, expires_at),
                 bypass_dues = COALESCE(?, bypass_dues),
                 notes = COALESCE(?, notes),
@@ -263,7 +283,7 @@ impl MemberRepository for SqliteMemberRepository {
         )
         .bind(&update.full_name)
         .bind(status_str)
-        .bind(membership_type_str)
+        .bind(&mt_id_str)
         .bind(expires_at_naive)
         .bind(bypass_dues_int)
         .bind(&update.notes)
@@ -432,8 +452,8 @@ impl MemberRepository for SqliteMemberRepository {
 
     async fn find_by_stripe_customer_id(&self, customer_id: &str) -> Result<Option<Member>> {
         let row = sqlx::query_as::<_, MemberRow>(
-            "SELECT id, email, username, full_name, status, membership_type, \
-                    membership_type_id, joined_at, expires_at, dues_paid_until, \
+            "SELECT id, email, username, full_name, status, membership_type_id, \
+                    joined_at, expires_at, dues_paid_until, \
                     bypass_dues, is_admin, notes, stripe_customer_id, \
                     stripe_subscription_id, billing_mode, email_verified_at, \
                     dues_reminder_sent_at, discord_id, created_at, updated_at \
@@ -488,7 +508,7 @@ impl MemberRepository for SqliteMemberRepository {
             .filter(|s| !s.is_empty())
             .map(|s| format!("%{}%", s.to_lowercase()));
         let status_str = query.status.as_ref().map(|s| s.as_str().to_string());
-        let mtype_str = query.membership_type.as_ref().map(|t| t.as_str().to_string());
+        let mtype_id_str = query.membership_type_id.map(|id| id.to_string());
 
         let mut where_clauses: Vec<&str> = Vec::new();
         if search_pat.is_some() {
@@ -499,8 +519,8 @@ impl MemberRepository for SqliteMemberRepository {
         if status_str.is_some() {
             where_clauses.push("status = ?");
         }
-        if mtype_str.is_some() {
-            where_clauses.push("membership_type = ?");
+        if mtype_id_str.is_some() {
+            where_clauses.push("membership_type_id = ?");
         }
         let where_sql = if where_clauses.is_empty() {
             String::new()
@@ -518,7 +538,7 @@ impl MemberRepository for SqliteMemberRepository {
         let order_sql = match query.sort {
             MemberSortField::Name => format!("LOWER(full_name) {}", order_dir),
             MemberSortField::Status => format!("status {}", order_dir),
-            MemberSortField::MembershipType => format!("membership_type {}", order_dir),
+            MemberSortField::MembershipType => format!("membership_type_id {}", order_dir),
             MemberSortField::Joined => format!("joined_at {}", order_dir),
             MemberSortField::DuesPaidUntil => {
                 format!("dues_paid_until IS NULL, dues_paid_until {}", order_dir)
@@ -526,7 +546,7 @@ impl MemberRepository for SqliteMemberRepository {
         };
 
         let select_sql = format!(
-            "SELECT id, email, username, full_name, status, membership_type, membership_type_id, \
+            "SELECT id, email, username, full_name, status, membership_type_id, \
                     joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes, \
                     stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at, \
                     dues_reminder_sent_at, discord_id, created_at, updated_at \
@@ -548,7 +568,7 @@ impl MemberRepository for SqliteMemberRepository {
             rows_q = rows_q.bind(s);
             count_q = count_q.bind(s);
         }
-        if let Some(t) = &mtype_str {
+        if let Some(t) = &mtype_id_str {
             rows_q = rows_q.bind(t);
             count_q = count_q.bind(t);
         }

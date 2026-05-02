@@ -64,9 +64,12 @@ pub struct MemberRowFlashTemplate {
     pub dues_paid_until: String,
 }
 
-/// Build a `MemberRowFlashTemplate` from a `Member`.
+/// Build a `MemberRowFlashTemplate` from a `Member`. `membership_type_name`
+/// is the resolved display name (looked up from `membership_types`); the
+/// caller does this lookup so this function stays sync.
 pub fn member_row_flash(
     member: &crate::domain::Member,
+    membership_type_name: String,
     flash: &'static str,
 ) -> Html<String> {
     let initials: String = member.full_name
@@ -83,7 +86,7 @@ pub fn member_row_flash(
         email: member.email.clone(),
         username: member.username.clone(),
         status: member.status.as_str().to_string(),
-        membership_type: member.membership_type.as_str().to_string(),
+        membership_type: membership_type_name,
         joined_at: member.joined_at.format("%b %d, %Y").to_string(),
         dues_paid_until: member.dues_paid_until
             .map(|d| d.format("%b %d, %Y").to_string())

@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     api::state::AppState,
-    domain::{CreateMemberRequest, Event, Announcement, EventVisibility, MemberStatus, MembershipType},
+    domain::{CreateMemberRequest, Event, Announcement, EventVisibility, MemberStatus},
     error::{AppError, Result},
 };
 
@@ -21,7 +21,10 @@ pub struct SignupRequest {
     pub username: String,
     pub full_name: String,
     pub password: String,
-    pub membership_type: Option<MembershipType>,
+    /// Slug of the membership type to assign (e.g. `member`,
+    /// `student`). Omit to take the org's default — the first
+    /// `is_active` row in `membership_types` ordered by `sort_order`.
+    pub membership_type_slug: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -64,14 +67,30 @@ pub async fn signup(
     if let Err(msg) = crate::auth::validate_password(&request.password) {
         return Err(AppError::BadRequest(msg.to_string()));
     }
-    
+
+    // Resolve the requested membership_type slug to an FK. Unknown
+    // slugs fail loudly (BadRequest) — silently mapping to a default
+    // would mask client typos.
+    let membership_type_id = match request.membership_type_slug.as_deref() {
+        Some(slug) => {
+            let mt = state.service_context.membership_type_service
+                .get_by_slug(slug)
+                .await?
+                .ok_or_else(|| AppError::BadRequest(format!(
+                    "Unknown membership type slug: {}", slug,
+                )))?;
+            Some(mt.id)
+        }
+        None => None,
+    };
+
     // Create member with Pending status
     let create_request = CreateMemberRequest {
         email: request.email,
         username: request.username,
         full_name: request.full_name,
         password: request.password,
-        membership_type: request.membership_type.unwrap_or(MembershipType::Regular),
+        membership_type_id,
     };
     
     // Create the member. Use a generic error for UNIQUE violations to

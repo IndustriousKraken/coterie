@@ -14,7 +14,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use coterie::{
     domain::{
-        CreateMemberRequest, MembershipType, Payer, Payment, PaymentKind, PaymentMethod,
+        CreateMemberRequest, Payer, Payment, PaymentKind, PaymentMethod,
         PaymentStatus, ScheduledPayment, ScheduledPaymentStatus, StripeRef,
     },
     repository::{
@@ -50,7 +50,7 @@ async fn make_member(pool: &SqlitePool) -> Uuid {
             username: format!("u_{}", Uuid::new_v4().simple()),
             full_name: "Test".to_string(),
             password: "p4ssword_long_enough".to_string(),
-            membership_type: MembershipType::Regular,
+            membership_type_id: None,
         })
         .await
         .unwrap();

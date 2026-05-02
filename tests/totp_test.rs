@@ -14,7 +14,7 @@ use coterie::{
     auth::{
         recovery_codes, PendingLoginService, SecretCrypto, TotpService,
     },
-    domain::{CreateMemberRequest, MembershipType},
+    domain::{CreateMemberRequest},
     repository::{MemberRepository, SqliteMemberRepository},
 };
 use sqlx::{Executor, SqlitePool};
@@ -53,7 +53,7 @@ async fn make_member(pool: &SqlitePool) -> (Uuid, String) {
             username: format!("user_{}", Uuid::new_v4().simple()),
             full_name: "Test User".to_string(),
             password: "p4ssword_long_enough".to_string(),
-            membership_type: MembershipType::Regular,
+            membership_type_id: None,
         })
         .await
         .expect("create");

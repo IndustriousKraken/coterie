@@ -311,9 +311,8 @@ impl WebhookDispatcher {
                 session_id,
             );
             let member = self.member_repo.find_by_id(member_id).await?;
-            let mt_id = member.as_ref().and_then(|m| m.membership_type_id);
-            match mt_id {
-                Some(id) => self.membership_type_service.get(id).await?.map(|mt| mt.slug),
+            match member {
+                Some(m) => self.membership_type_service.get(m.membership_type_id).await?.map(|mt| mt.slug),
                 None => None,
             }
         };
@@ -523,16 +522,7 @@ impl WebhookDispatcher {
                     return Ok(());
                 }
             };
-            let mt_id = match member.membership_type_id {
-                Some(id) => id,
-                None => {
-                    tracing::warn!(
-                        "Member {} has no membership_type_id; can't extend dues for self-healed payment {}",
-                        member_id, payment_id,
-                    );
-                    return Ok(());
-                }
-            };
+            let mt_id = member.membership_type_id;
             let mt = self.membership_type_service.get(mt_id).await?;
             let slug = match mt {
                 Some(t) => t.slug,
@@ -759,11 +749,10 @@ impl WebhookDispatcher {
         self.payment_repo.create(payment).await?;
 
         // Extend dues - look up membership type from member's current type
-        let membership_type_slug = match member.membership_type_id {
-            Some(mt_id) => self.membership_type_service.get(mt_id).await?
-                .map(|mt| mt.slug),
-            None => None,
-        };
+        let membership_type_slug = self.membership_type_service
+            .get(member.membership_type_id)
+            .await?
+            .map(|mt| mt.slug);
 
         if let Some(slug) = membership_type_slug {
             billing_service

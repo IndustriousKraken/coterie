@@ -11,6 +11,7 @@ use crate::{
         middleware::auth::{CurrentUser, SessionInfo},
         state::AppState,
     },
+    web::portal::admin::partials,
     web::templates::{BaseContext, HtmlTemplate},
     web::uploads::save_uploaded_file,
 };
@@ -263,13 +264,13 @@ pub async fn admin_announcement_detail_page(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&announcement_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html("Invalid announcement ID".to_string()).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid announcement ID", false).into_response(),
     };
 
     let announcement = match state.service_context.announcement_repo.find_by_id(id).await {
         Ok(Some(a)) => a,
-        Ok(None) => return axum::response::Html("Announcement not found".to_string()).into_response(),
-        Err(_) => return axum::response::Html("Error loading announcement".to_string()).into_response(),
+        Ok(None) => return partials::admin_alert("error", "Announcement not found", false).into_response(),
+        Err(_) => return partials::admin_alert("error", "Error loading announcement", false).into_response(),
     };
 
     let base = BaseContext::for_member(&state, &current_user, &session_info).await;
@@ -386,7 +387,7 @@ pub async fn admin_create_announcement(
                         if !data.is_empty() {
                             match save_uploaded_file(&state.settings.server.uploads_path(), &filename, &data).await {
                                 Ok(path) => image_url = Some(path),
-                                Err(e) => return axum::response::Html(format!("Error uploading image: {}", crate::web::escape_html(&e.to_string()))).into_response(),
+                                Err(e) => return partials::admin_alert("error", &format!("Error uploading image: {}", e), false).into_response(),
                             }
                         }
                     }
@@ -449,7 +450,7 @@ pub async fn admin_create_announcement(
             }
             axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", created.id)).into_response()
         }
-        Err(e) => axum::response::Html(format!("Error creating announcement: {}", crate::web::escape_html(&e.to_string()))).into_response(),
+        Err(e) => partials::admin_alert("error", &format!("Error creating announcement: {}", e), false).into_response(),
     }
 }
 
@@ -463,13 +464,13 @@ pub async fn admin_update_announcement(
 
     let id = match uuid::Uuid::parse_str(&announcement_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html("Invalid announcement ID".to_string()).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid announcement ID", false).into_response(),
     };
 
     let existing = match state.service_context.announcement_repo.find_by_id(id).await {
         Ok(Some(a)) => a,
-        Ok(None) => return axum::response::Html("Announcement not found".to_string()).into_response(),
-        Err(_) => return axum::response::Html("Error loading announcement".to_string()).into_response(),
+        Ok(None) => return partials::admin_alert("error", "Announcement not found", false).into_response(),
+        Err(_) => return partials::admin_alert("error", "Error loading announcement", false).into_response(),
     };
 
     // Parse multipart form
@@ -508,7 +509,7 @@ pub async fn admin_update_announcement(
                         if !data.is_empty() {
                             match save_uploaded_file(&state.settings.server.uploads_path(), &filename, &data).await {
                                 Ok(path) => new_image_url = Some(path),
-                                Err(e) => return axum::response::Html(format!(r#"<div class="px-4 py-3 bg-red-100 text-red-800 rounded-md text-sm">Error uploading image: {}</div>"#, crate::web::escape_html(&e.to_string()))).into_response(),
+                                Err(e) => return partials::admin_alert("error", &format!("Error uploading image: {}", e), false).into_response(),
                             }
                         }
                     }
@@ -572,7 +573,7 @@ pub async fn admin_update_announcement(
             axum::response::Html(r#"<div class="px-4 py-3 bg-green-100 text-green-800 rounded-md text-sm">Announcement updated successfully</div>"#.to_string()).into_response()
         }
         Err(e) => {
-            axum::response::Html(format!(r#"<div class="px-4 py-3 bg-red-100 text-red-800 rounded-md text-sm">Error updating announcement: {}</div>"#, crate::web::escape_html(&e.to_string()))).into_response()
+            partials::admin_alert("error", &format!("Error updating announcement: {}", e), false).into_response()
         }
     }
 }
@@ -584,7 +585,7 @@ pub async fn admin_delete_announcement(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&announcement_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html("Invalid announcement ID".to_string()).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid announcement ID", false).into_response(),
     };
 
     let image_to_delete = state.service_context.announcement_repo
@@ -608,7 +609,7 @@ pub async fn admin_delete_announcement(
             ).await;
             axum::response::Redirect::to("/portal/admin/announcements").into_response()
         }
-        Err(e) => axum::response::Html(format!("Error deleting announcement: {}", crate::web::escape_html(&e.to_string()))).into_response(),
+        Err(e) => partials::admin_alert("error", &format!("Error deleting announcement: {}", e), false).into_response(),
     }
 }
 
@@ -619,13 +620,13 @@ pub async fn admin_publish_announcement(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&announcement_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html("Invalid announcement ID".to_string()).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid announcement ID", false).into_response(),
     };
 
     let existing = match state.service_context.announcement_repo.find_by_id(id).await {
         Ok(Some(a)) => a,
-        Ok(None) => return axum::response::Html("Announcement not found".to_string()).into_response(),
-        Err(_) => return axum::response::Html("Error loading announcement".to_string()).into_response(),
+        Ok(None) => return partials::admin_alert("error", "Announcement not found", false).into_response(),
+        Err(_) => return partials::admin_alert("error", "Error loading announcement", false).into_response(),
     };
 
     let was_already_published = existing.published_at.is_some();
@@ -646,7 +647,7 @@ pub async fn admin_publish_announcement(
             }
             axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", id)).into_response()
         }
-        Err(e) => axum::response::Html(format!("Error publishing announcement: {}", crate::web::escape_html(&e.to_string()))).into_response(),
+        Err(e) => partials::admin_alert("error", &format!("Error publishing announcement: {}", e), false).into_response(),
     }
 }
 
@@ -657,13 +658,13 @@ pub async fn admin_unpublish_announcement(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&announcement_id) {
         Ok(id) => id,
-        Err(_) => return axum::response::Html("Invalid announcement ID".to_string()).into_response(),
+        Err(_) => return partials::admin_alert("error", "Invalid announcement ID", false).into_response(),
     };
 
     let existing = match state.service_context.announcement_repo.find_by_id(id).await {
         Ok(Some(a)) => a,
-        Ok(None) => return axum::response::Html("Announcement not found".to_string()).into_response(),
-        Err(_) => return axum::response::Html("Error loading announcement".to_string()).into_response(),
+        Ok(None) => return partials::admin_alert("error", "Announcement not found", false).into_response(),
+        Err(_) => return partials::admin_alert("error", "Error loading announcement", false).into_response(),
     };
 
     let mut updated = existing;
@@ -672,6 +673,6 @@ pub async fn admin_unpublish_announcement(
 
     match state.service_context.announcement_repo.update(id, updated).await {
         Ok(_) => axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", id)).into_response(),
-        Err(e) => axum::response::Html(format!("Error unpublishing announcement: {}", crate::web::escape_html(&e.to_string()))).into_response(),
+        Err(e) => partials::admin_alert("error", &format!("Error unpublishing announcement: {}", e), false).into_response(),
     }
 }

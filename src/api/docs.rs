@@ -50,7 +50,6 @@ use crate::domain;
         domain::Announcement,
         domain::AnnouncementType,
         domain::MemberStatus,
-        domain::MembershipType,
     )),
     tags(
         (name = "public", description = "Public API for website integration"),

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use coterie::{
-    domain::{CreateMemberRequest, MembershipType, StripeRef},
+    domain::{CreateMemberRequest, StripeRef},
     error::AppError,
     integrations::IntegrationManager,
     payments::{
@@ -90,7 +90,7 @@ async fn insert_member_with_customer(
         username: format!("test_{}", Uuid::new_v4().simple()),
         full_name: "Test Member".to_string(),
         password: "p4ssword_long_enough".to_string(),
-        membership_type: MembershipType::Regular,
+        membership_type_id: None,
     }).await.expect("create member");
 
     sqlx::query("UPDATE members SET stripe_customer_id = ? WHERE id = ?")
@@ -183,7 +183,7 @@ async fn charge_saved_card_member_without_customer_bails_before_stripe() {
         username: "no_customer".to_string(),
         full_name: "No Customer".to_string(),
         password: "p4ssword_long_enough".to_string(),
-        membership_type: MembershipType::Regular,
+        membership_type_id: None,
     }).await.unwrap();
 
     let (client, fake) = build_client_with_fake(pool);

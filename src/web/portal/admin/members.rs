@@ -26,6 +26,7 @@ pub struct AdminMembersTemplate {
     pub search_query: String,
     pub status_filter: String,
     pub type_filter: String,
+    pub type_options: Vec<MembershipTypeOption>,
     pub sort_field: String,
     pub sort_order: String,
 }
@@ -43,6 +44,13 @@ pub struct AdminMembersTableTemplate {
     pub type_filter: String,
     pub sort_field: String,
     pub sort_order: String,
+}
+
+#[derive(Clone)]
+pub struct MembershipTypeOption {
+    pub id: String,
+    pub slug: String,
+    pub name: String,
 }
 
 #[derive(Clone)]
@@ -87,6 +95,31 @@ pub async fn admin_members_page(
     let sort_field = query.sort.clone().unwrap_or_else(|| "name".to_string());
     let sort_order = query.order.clone().unwrap_or_else(|| "asc".to_string());
 
+    // Load all membership types up front: drives the filter dropdown,
+    // resolves the URL `?type=<slug>` filter to its FK, and provides
+    // the per-row display name.
+    let all_types = state.service_context.membership_type_service
+        .list(true).await
+        .unwrap_or_else(|e| {
+            tracing::error!("admin members: list membership types failed: {}", e);
+            Vec::new()
+        });
+    let type_filter_id = query.member_type.as_deref()
+        .and_then(|slug| all_types.iter().find(|t| t.slug == slug).map(|t| t.id));
+    let type_name_by_id: std::collections::HashMap<uuid::Uuid, String> = all_types
+        .iter()
+        .map(|t| (t.id, t.name.clone()))
+        .collect();
+    let type_options: Vec<MembershipTypeOption> = all_types
+        .iter()
+        .filter(|t| t.is_active)
+        .map(|t| MembershipTypeOption {
+            id: t.id.to_string(),
+            slug: t.slug.clone(),
+            name: t.name.clone(),
+        })
+        .collect();
+
     // Parse the wire-shape query into the typed MemberQuery. Unknown
     // sort/order values fall back to the defaults rather than failing
     // the request (the dropdown only offers known values; keeping the
@@ -97,7 +130,7 @@ pub async fn admin_members_page(
     let typed_query = MemberQuery {
         search: query.q.clone().filter(|s| !s.is_empty()),
         status: query.status.as_deref().and_then(crate::domain::MemberStatus::from_str),
-        membership_type: query.member_type.as_deref().and_then(crate::domain::MembershipType::from_str),
+        membership_type_id: type_filter_id,
         sort: match sort_field.as_str() {
             "status" => MemberSortField::Status,
             "type" => MemberSortField::MembershipType,
@@ -136,7 +169,10 @@ pub async fn admin_members_page(
                 full_name: m.full_name,
                 initials: if initials.is_empty() { "?".to_string() } else { initials },
                 status: m.status.as_str().to_string(),
-                membership_type: m.membership_type.as_str().to_string(),
+                membership_type: type_name_by_id
+                    .get(&m.membership_type_id)
+                    .cloned()
+                    .unwrap_or_else(|| "(unknown)".to_string()),
                 joined_at: m.joined_at.format("%b %d, %Y").to_string(),
                 dues_paid_until: m.dues_paid_until.map(|d| d.format("%b %d, %Y").to_string()),
             }
@@ -167,6 +203,7 @@ pub async fn admin_members_page(
             total_members,
             current_page: page,
             per_page,
+            type_options,
             total_pages,
             search_query: search_query_val,
             status_filter: status_filter_val,
@@ -234,7 +271,11 @@ pub async fn admin_activate_member(
                 );
             }
 
-            partials::member_row_flash(&member, "active")
+            let mt_name = state.service_context.membership_type_service
+                .get(member.membership_type_id).await.ok().flatten()
+                .map(|mt| mt.name)
+                .unwrap_or_else(|| "(unknown)".to_string());
+            partials::member_row_flash(&member, mt_name, "active")
         }
         Err(e) => partials::member_row_error(&format!("Error: {}", e)),
     }
@@ -296,7 +337,11 @@ pub async fn admin_suspend_member(
                 None,
             ).await;
 
-            partials::member_row_flash(&member, "suspended")
+            let mt_name = state.service_context.membership_type_service
+                .get(member.membership_type_id).await.ok().flatten()
+                .map(|mt| mt.name)
+                .unwrap_or_else(|| "(unknown)".to_string());
+            partials::member_row_flash(&member, mt_name, "suspended")
         }
         Err(e) => partials::member_row_error(&format!("Error: {}", e)),
     }
@@ -309,6 +354,7 @@ pub async fn admin_suspend_member(
 pub struct AdminMemberDetailTemplate {
     pub base: BaseContext,
     pub member: AdminMemberDetailInfo,
+    pub type_options: Vec<MembershipTypeOption>,
 }
 
 pub struct AdminMemberDetailInfo {
@@ -318,7 +364,8 @@ pub struct AdminMemberDetailInfo {
     pub full_name: String,
     pub initials: String,
     pub status: String,
-    pub membership_type: String,
+    pub membership_type_id: String,
+    pub membership_type_name: String,
     pub joined_at: String,
     pub dues_paid_until: Option<String>,
     pub dues_expired: bool,
@@ -385,6 +432,22 @@ pub async fn admin_member_detail_page(
 
     let email_verified = member.email_verified();
 
+    let all_types = state.service_context.membership_type_service
+        .list(true).await.unwrap_or_default();
+    let type_name = all_types.iter()
+        .find(|t| t.id == member.membership_type_id)
+        .map(|t| t.name.clone())
+        .unwrap_or_else(|| "(unknown)".to_string());
+    let type_options: Vec<MembershipTypeOption> = all_types
+        .iter()
+        .filter(|t| t.is_active)
+        .map(|t| MembershipTypeOption {
+            id: t.id.to_string(),
+            slug: t.slug.clone(),
+            name: t.name.clone(),
+        })
+        .collect();
+
     let member_info = AdminMemberDetailInfo {
         id: member.id.to_string(),
         email: member.email.clone(),
@@ -392,7 +455,8 @@ pub async fn admin_member_detail_page(
         full_name: member.full_name,
         initials: if initials.is_empty() { "?".to_string() } else { initials },
         status: member.status.as_str().to_string(),
-        membership_type: member.membership_type.as_str().to_string(),
+        membership_type_id: member.membership_type_id.to_string(),
+        membership_type_name: type_name,
         joined_at: member.joined_at.format("%B %d, %Y").to_string(),
         dues_paid_until: member.dues_paid_until.map(|d| d.format("%B %d, %Y").to_string()),
         dues_expired,
@@ -411,6 +475,7 @@ pub async fn admin_member_detail_page(
     let template = AdminMemberDetailTemplate {
         base,
         member: member_info,
+        type_options,
     };
 
     HtmlTemplate(template).into_response()
@@ -419,7 +484,7 @@ pub async fn admin_member_detail_page(
 #[derive(Debug, Deserialize)]
 pub struct AdminUpdateMemberForm {
     pub full_name: String,
-    pub membership_type: String,
+    pub membership_type_id: String,
     pub notes: Option<String>,
     pub bypass_dues: Option<String>,
     #[allow(dead_code)]
@@ -432,16 +497,16 @@ pub async fn admin_update_member(
     Path(member_id): Path<String>,
     axum::Form(form): axum::Form<AdminUpdateMemberForm>,
 ) -> impl IntoResponse {
-    use crate::domain::{UpdateMemberRequest, MembershipType};
+    use crate::domain::UpdateMemberRequest;
 
     let id = match uuid::Uuid::parse_str(&member_id) {
         Ok(id) => id,
         Err(_) => return partials::admin_alert("error", "Invalid member ID", false),
     };
 
-    let membership_type = match MembershipType::from_str(&form.membership_type) {
-        Some(t) => t,
-        None => return partials::admin_alert("error", "Invalid membership type.", false),
+    let membership_type_id = match uuid::Uuid::parse_str(&form.membership_type_id) {
+        Ok(id) => id,
+        Err(_) => return partials::admin_alert("error", "Invalid membership type.", false),
     };
 
     // Snapshot the old member so we can emit a complete MemberUpdated event.
@@ -453,7 +518,7 @@ pub async fn admin_update_member(
 
     let update = UpdateMemberRequest {
         full_name: Some(form.full_name),
-        membership_type: Some(membership_type),
+        membership_type_id: Some(membership_type_id),
         notes: Some(form.notes.unwrap_or_default()),
         bypass_dues: Some(form.bypass_dues.is_some()),
         ..Default::default()
@@ -748,14 +813,11 @@ pub async fn admin_record_payment_page(
         .collect();
 
     // Resolve current membership type slug for default selection.
-    let current_membership_slug = match member.membership_type_id {
-        Some(mt_id) => state.service_context.membership_type_service
-            .get(mt_id).await
-            .ok().flatten()
-            .map(|mt| mt.slug)
-            .unwrap_or_default(),
-        None => String::new(),
-    };
+    let current_membership_slug = state.service_context.membership_type_service
+        .get(member.membership_type_id).await
+        .ok().flatten()
+        .map(|mt| mt.slug)
+        .unwrap_or_default();
 
     HtmlTemplate(RecordPaymentTemplate {
         base,
@@ -946,12 +1008,9 @@ async fn rerender_with_error(
         .map(|c| RecordPaymentCampaign { id: c.id.to_string(), name: c.name })
         .collect();
 
-    let current_membership_slug = match member.membership_type_id {
-        Some(mt_id) => state.service_context.membership_type_service
-            .get(mt_id).await.ok().flatten()
-            .map(|mt| mt.slug).unwrap_or_default(),
-        None => String::new(),
-    };
+    let current_membership_slug = state.service_context.membership_type_service
+        .get(member.membership_type_id).await.ok().flatten()
+        .map(|mt| mt.slug).unwrap_or_default();
 
     HtmlTemplate(RecordPaymentTemplate {
         base,
@@ -1171,6 +1230,7 @@ pub async fn admin_member_payments(
 #[template(path = "admin/member_new.html")]
 pub struct AdminNewMemberTemplate {
     pub base: BaseContext,
+    pub type_options: Vec<MembershipTypeOption>,
 }
 
 pub async fn admin_new_member_page(
@@ -1178,8 +1238,20 @@ pub async fn admin_new_member_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> axum::response::Response {
+    let type_options: Vec<MembershipTypeOption> = state.service_context.membership_type_service
+        .list(false).await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| MembershipTypeOption {
+            id: t.id.to_string(),
+            slug: t.slug,
+            name: t.name,
+        })
+        .collect();
+
     let template = AdminNewMemberTemplate {
         base: BaseContext::for_member(&state, &current_user, &session_info).await,
+        type_options,
     };
 
     HtmlTemplate(template).into_response()
@@ -1191,7 +1263,7 @@ pub struct AdminCreateMemberForm {
     pub username: String,
     pub full_name: String,
     pub password: String,
-    pub membership_type: String,
+    pub membership_type_id: String,
     pub status: String,
     pub notes: Option<String>,
     #[allow(dead_code)]
@@ -1203,7 +1275,7 @@ pub async fn admin_create_member(
     Extension(current_user): Extension<CurrentUser>,
     axum::Form(form): axum::Form<AdminCreateMemberForm>,
 ) -> axum::response::Response {
-    use crate::domain::{CreateMemberRequest, MembershipType, MemberStatus, UpdateMemberRequest};
+    use crate::domain::{CreateMemberRequest, MemberStatus, UpdateMemberRequest};
 
     fn render_error(message: &str) -> axum::response::Response {
         axum::response::Html(format!(
@@ -1225,9 +1297,9 @@ pub async fn admin_create_member(
         )).into_response()
     }
 
-    let membership_type = match MembershipType::from_str(&form.membership_type) {
-        Some(t) => t,
-        None => return render_error("Invalid membership type."),
+    let membership_type_id = match uuid::Uuid::parse_str(&form.membership_type_id) {
+        Ok(id) => id,
+        Err(_) => return render_error("Invalid membership type."),
     };
 
     let create_request = CreateMemberRequest {
@@ -1235,7 +1307,7 @@ pub async fn admin_create_member(
         username: form.username.clone(),
         full_name: form.full_name.clone(),
         password: form.password,
-        membership_type,
+        membership_type_id: Some(membership_type_id),
     };
 
     match state.service_context.member_repo.create(create_request).await {

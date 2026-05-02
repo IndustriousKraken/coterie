@@ -17,7 +17,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc, Weekday};
 use coterie::{
     domain::{
-        CreateMemberRequest, Event, EventType, EventVisibility, MembershipType,
+        CreateMemberRequest, Event, EventType, EventVisibility,
         Recurrence, WeekdayCode,
     },
     repository::{
@@ -73,7 +73,7 @@ async fn build() -> H {
             username: format!("u_{}", Uuid::new_v4().simple()),
             full_name: "Test Admin".to_string(),
             password: "p4ssword_long_enough".to_string(),
-            membership_type: MembershipType::Regular,
+            membership_type_id: None,
         })
         .await
         .unwrap();
