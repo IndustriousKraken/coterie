@@ -26,11 +26,6 @@ impl AnnouncementTypeService {
         self.repo.find_by_id(id).await
     }
 
-    /// Get an announcement type by slug
-    pub async fn get_by_slug(&self, slug: &str) -> Result<Option<AnnouncementTypeConfig>> {
-        self.repo.find_by_slug(slug).await
-    }
-
     /// Create a new announcement type
     pub async fn create(&self, request: CreateAnnouncementTypeRequest) -> Result<AnnouncementTypeConfig> {
         // Validate color format if provided
@@ -89,13 +84,4 @@ impl AnnouncementTypeService {
         self.repo.delete(id).await
     }
 
-    /// Reorder announcement types
-    pub async fn reorder(&self, ids: &[Uuid]) -> Result<()> {
-        self.repo.reorder(ids).await
-    }
-
-    /// Seed default announcement types
-    pub async fn seed_defaults(&self) -> Result<Vec<AnnouncementTypeConfig>> {
-        self.repo.seed_defaults().await
-    }
 }

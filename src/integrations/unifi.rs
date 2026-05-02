@@ -75,7 +75,7 @@ impl Integration for UnifiIntegration {
             IntegrationEvent::MemberActivated(member) => {
                 self.grant_access(&member.email).await?;
             }
-            IntegrationEvent::MemberExpired(member) | IntegrationEvent::MemberDeleted(member) => {
+            IntegrationEvent::MemberExpired(member) => {
                 self.revoke_access(&member.email).await?;
             }
             IntegrationEvent::MemberUpdated { old: _, new } => {

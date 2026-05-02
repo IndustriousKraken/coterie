@@ -614,7 +614,7 @@ pub async fn admin_delete_announcement(
 
 pub async fn admin_publish_announcement(
     State(state): State<AppState>,
-    Extension(current_user): Extension<CurrentUser>,
+    Extension(_current_user): Extension<CurrentUser>,
     Path(announcement_id): Path<String>,
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&announcement_id) {
@@ -652,7 +652,7 @@ pub async fn admin_publish_announcement(
 
 pub async fn admin_unpublish_announcement(
     State(state): State<AppState>,
-    Extension(current_user): Extension<CurrentUser>,
+    Extension(_current_user): Extension<CurrentUser>,
     Path(announcement_id): Path<String>,
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&announcement_id) {

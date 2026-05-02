@@ -160,7 +160,7 @@ pub struct EventTypeForm {
 
 pub async fn admin_create_event_type(
     State(state): State<AppState>,
-    Extension(current_user): Extension<CurrentUser>,
+    Extension(_current_user): Extension<CurrentUser>,
     axum::Form(form): axum::Form<EventTypeForm>,
 ) -> impl IntoResponse {
     let request = CreateEventTypeRequest {
@@ -179,7 +179,7 @@ pub async fn admin_create_event_type(
 
 pub async fn admin_update_event_type(
     State(state): State<AppState>,
-    Extension(current_user): Extension<CurrentUser>,
+    Extension(_current_user): Extension<CurrentUser>,
     Path(type_id): Path<String>,
     axum::Form(form): axum::Form<EventTypeForm>,
 ) -> impl IntoResponse {
@@ -205,7 +205,7 @@ pub async fn admin_update_event_type(
 
 pub async fn admin_delete_event_type(
     State(state): State<AppState>,
-    Extension(current_user): Extension<CurrentUser>,
+    Extension(_current_user): Extension<CurrentUser>,
     Path(type_id): Path<String>,
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&type_id) {
@@ -293,7 +293,7 @@ pub struct AnnouncementTypeForm {
 
 pub async fn admin_create_announcement_type(
     State(state): State<AppState>,
-    Extension(current_user): Extension<CurrentUser>,
+    Extension(_current_user): Extension<CurrentUser>,
     axum::Form(form): axum::Form<AnnouncementTypeForm>,
 ) -> impl IntoResponse {
     let request = CreateAnnouncementTypeRequest {
@@ -312,7 +312,7 @@ pub async fn admin_create_announcement_type(
 
 pub async fn admin_update_announcement_type(
     State(state): State<AppState>,
-    Extension(current_user): Extension<CurrentUser>,
+    Extension(_current_user): Extension<CurrentUser>,
     Path(type_id): Path<String>,
     axum::Form(form): axum::Form<AnnouncementTypeForm>,
 ) -> impl IntoResponse {
@@ -338,7 +338,7 @@ pub async fn admin_update_announcement_type(
 
 pub async fn admin_delete_announcement_type(
     State(state): State<AppState>,
-    Extension(current_user): Extension<CurrentUser>,
+    Extension(_current_user): Extension<CurrentUser>,
     Path(type_id): Path<String>,
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&type_id) {
@@ -432,7 +432,7 @@ pub struct MembershipTypeForm {
 
 pub async fn admin_create_membership_type(
     State(state): State<AppState>,
-    Extension(current_user): Extension<CurrentUser>,
+    Extension(_current_user): Extension<CurrentUser>,
     axum::Form(form): axum::Form<MembershipTypeForm>,
 ) -> impl IntoResponse {
     // Parse fee from dollars to cents, with bounds validation
@@ -462,7 +462,7 @@ pub async fn admin_create_membership_type(
 
 pub async fn admin_update_membership_type(
     State(state): State<AppState>,
-    Extension(current_user): Extension<CurrentUser>,
+    Extension(_current_user): Extension<CurrentUser>,
     Path(type_id): Path<String>,
     axum::Form(form): axum::Form<MembershipTypeForm>,
 ) -> impl IntoResponse {
@@ -499,7 +499,7 @@ pub async fn admin_update_membership_type(
 
 pub async fn admin_delete_membership_type(
     State(state): State<AppState>,
-    Extension(current_user): Extension<CurrentUser>,
+    Extension(_current_user): Extension<CurrentUser>,
     Path(type_id): Path<String>,
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&type_id) {

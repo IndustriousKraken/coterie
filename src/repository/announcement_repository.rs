@@ -202,25 +202,6 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
             .collect()
     }
 
-    async fn list_featured(&self) -> Result<Vec<Announcement>> {
-        let rows = sqlx::query_as::<_, AnnouncementRow>(
-            r#"
-            SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
-                   image_url, published_at, created_by, created_at, updated_at
-            FROM announcements
-            WHERE featured = 1 AND published_at IS NOT NULL
-            ORDER BY published_at DESC
-            "#
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
-        rows.into_iter()
-            .map(Self::row_to_announcement)
-            .collect()
-    }
-
     async fn count_private_published(&self) -> Result<i64> {
         let count: (i64,) = sqlx::query_as(
             r#"

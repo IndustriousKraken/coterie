@@ -459,40 +459,6 @@ impl PaymentRepository for SqlitePaymentRepository {
         Ok(true)
     }
 
-    async fn update_status(&self, id: Uuid, status: PaymentStatus) -> Result<Payment> {
-        let id_str = id.to_string();
-        let status_str = Self::payment_status_to_str(&status);
-        let now = Utc::now().naive_utc();
-        
-        // If status is completed, also update paid_at
-        let paid_at_naive = if status == PaymentStatus::Completed {
-            Some(now)
-        } else {
-            None
-        };
-
-        sqlx::query(
-            r#"
-            UPDATE payments
-            SET status = ?, 
-                paid_at = COALESCE(?, paid_at),
-                updated_at = ?
-            WHERE id = ?
-            "#
-        )
-        .bind(status_str)
-        .bind(paid_at_naive)
-        .bind(now)
-        .bind(&id_str)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
-        self.find_by_id(id).await?.ok_or_else(|| {
-            AppError::Database("Failed to retrieve updated payment".to_string())
-        })
-    }
-
     async fn revenue_by_month(&self, months_back: u32) -> Result<Vec<MonthlyRevenue>> {
         // SQLite-friendly: strftime extracts year/month; we filter on
         // paid_at being non-null AND status='Completed' so refunded /

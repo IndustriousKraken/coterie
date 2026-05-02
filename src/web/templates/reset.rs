@@ -21,7 +21,6 @@ use crate::{
     api::state::AppState,
     auth::{AuthService, EmailTokenService},
     email::{self, templates::{ResetHtml, ResetText}},
-    repository::MemberRepository,
     web::templates::{BaseContext, HtmlTemplate},
 };
 

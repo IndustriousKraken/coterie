@@ -17,7 +17,6 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
-    domain::ScheduledPayment,
     email::EmailSender,
     error::Result,
     integrations::IntegrationManager,
@@ -82,24 +81,12 @@ impl BillingService {
 
     // ---- Auto-renew lifecycle + charge runner -------------------------
 
-    pub async fn schedule_renewal(
-        &self,
-        member_id: Uuid,
-        membership_type_slug: &str,
-    ) -> Result<ScheduledPayment> {
-        self.auto_renew.schedule_renewal(member_id, membership_type_slug).await
-    }
-
     pub async fn migrate_to_coterie_managed(&self, member_id: Uuid) -> Result<bool> {
         self.auto_renew.migrate_to_coterie_managed(member_id).await
     }
 
     pub async fn bulk_migrate_stripe_subscriptions(&self) -> BulkMigrationSummary {
         self.auto_renew.bulk_migrate_stripe_subscriptions().await
-    }
-
-    pub async fn is_auto_renew(&self, member_id: Uuid) -> Result<bool> {
-        self.auto_renew.is_auto_renew(member_id).await
     }
 
     pub async fn enable_auto_renew(
@@ -122,14 +109,6 @@ impl BillingService {
         self.auto_renew.disable_auto_renew(member_id).await
     }
 
-    pub async fn cancel_scheduled_payments(&self, member_id: Uuid) -> Result<u32> {
-        self.auto_renew.cancel_scheduled_payments(member_id).await
-    }
-
-    pub async fn process_scheduled_payment(&self, id: Uuid) -> Result<()> {
-        self.auto_renew.process_scheduled_payment(id).await
-    }
-
     pub async fn run_billing_cycle(&self) -> Result<(u32, u32)> {
         self.auto_renew.run_billing_cycle().await
     }
@@ -141,15 +120,6 @@ impl BillingService {
         membership_type_slug: &str,
     ) -> Result<()> {
         self.auto_renew.extend_member_dues_by_slug(payment_id, member_id, membership_type_slug).await
-    }
-
-    pub async fn extend_member_dues(
-        &self,
-        payment_id: Uuid,
-        member_id: Uuid,
-        membership_type_id: Uuid,
-    ) -> Result<()> {
-        self.auto_renew.extend_member_dues(payment_id, member_id, membership_type_id).await
     }
 
     // ---- Notifications -----------------------------------------------

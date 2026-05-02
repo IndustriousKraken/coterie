@@ -6,7 +6,7 @@ use sqlx::{SqlitePool, FromRow};
 
 use crate::{
     auth::SecretCrypto,
-    domain::{AppSetting, UpdateSettingRequest, SettingsCategory, PaymentConfig, MembershipConfig, SettingType},
+    domain::{AppSetting, UpdateSettingRequest, SettingsCategory, SettingType},
     error::{AppError, Result},
 };
 
@@ -161,24 +161,6 @@ impl SettingsService {
         }
     }
 
-    pub async fn get_settings_by_category(&self, category: &str) -> Result<Vec<AppSetting>> {
-        let rows = sqlx::query_as::<_, SettingRow>(
-            r#"
-            SELECT 
-                key, value, value_type, category, description,
-                is_sensitive, updated_by, updated_at
-            FROM app_settings
-            WHERE category = ?
-            ORDER BY key
-            "#
-        )
-        .bind(category)
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows.into_iter().map(|r| self.row_to_setting(r)).collect())
-    }
-
     pub async fn get_all_settings(&self) -> Result<Vec<SettingsCategory>> {
         let rows = sqlx::query_as::<_, SettingRow>(
             r#"
@@ -273,16 +255,6 @@ impl SettingsService {
 
         // Return updated setting
         self.get_setting(key).await
-    }
-
-    pub async fn get_payment_config(&self) -> Result<PaymentConfig> {
-        let settings = self.get_settings_by_category("payment").await?;
-        Ok(PaymentConfig::from_settings(&settings))
-    }
-
-    pub async fn get_membership_config(&self) -> Result<MembershipConfig> {
-        let settings = self.get_settings_by_category("membership").await?;
-        Ok(MembershipConfig::from_settings(&settings))
     }
 
     pub async fn get_value(&self, key: &str) -> Result<String> {

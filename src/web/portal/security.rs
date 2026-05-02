@@ -58,7 +58,6 @@ pub struct EnrollQrTemplate {
 #[derive(Template)]
 #[template(path = "portal/security_recovery_codes.html")]
 pub struct RecoveryCodesTemplate {
-    pub csrf_token: String,
     pub codes: Vec<String>,
     /// Headline copy varies between "you just enabled 2FA" and "you
     /// regenerated your codes". Caller passes the right one.
@@ -248,7 +247,6 @@ pub async fn enroll_confirm(
     ).await;
 
     HtmlTemplate(RecoveryCodesTemplate {
-        csrf_token,
         codes,
         heading: "Two-factor authentication enabled".to_string(),
         subheading:
@@ -327,7 +325,6 @@ pub struct RegenerateRequest {
 pub async fn regenerate_recovery_codes(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
-    Extension(session_info): Extension<SessionInfo>,
     axum::Form(form): axum::Form<RegenerateRequest>,
 ) -> Response {
     // Must already be enrolled — regenerate is meaningless otherwise.
@@ -372,11 +369,7 @@ pub async fn regenerate_recovery_codes(
         None, None, None,
     ).await;
 
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id).await
-        .unwrap_or_else(|_| String::new());
     HtmlTemplate(RecoveryCodesTemplate {
-        csrf_token,
         codes,
         heading: "New recovery codes generated".to_string(),
         subheading:

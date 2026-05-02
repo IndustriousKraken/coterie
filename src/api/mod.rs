@@ -13,7 +13,6 @@ use tower_http::{
     cors::{CorsLayer, AllowOrigin},
     trace::TraceLayer,
 };
-use std::sync::Arc;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 

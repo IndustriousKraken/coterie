@@ -30,10 +30,7 @@ pub enum AppError {
     
     #[error("Internal server error: {0}")]
     Internal(String),
-    
-    #[error("Payment error: {0}")]
-    Payment(String),
-    
+
     #[error("Integration error: {0}")]
     Integration(String),
     
@@ -66,7 +63,6 @@ impl IntoResponse for AppError {
                 tracing::error!("Internal error: {}", msg);
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
             }
-            AppError::Payment(ref msg) => (StatusCode::PAYMENT_REQUIRED, msg.as_str()),
             AppError::Integration(ref msg) => {
                 tracing::error!("Integration error: {}", msg);
                 (StatusCode::SERVICE_UNAVAILABLE, msg.as_str())

@@ -319,7 +319,7 @@ auth/payment side effects (email, audit, Discord).
 
 The reviewer's read of the architecture matches the design intent.
 
-## F9 — CRITICAL: top-level CSRF doesn't cover the portal
+## F9 — CRITICAL: top-level CSRF doesn't cover the portal ✅ DONE 2026-05-01
 
 **Where.** `src/api/mod.rs:89-92` layers `csrf_protect_unless_exempt`
 on `api_app` inside `api::create_app`. Then `src/main.rs:410` does
@@ -367,7 +367,7 @@ doesn't cover the routes it was meant to protect.
 test guards against silent regression. Order this before everything
 else in round 3.
 
-## F13 — Inline CSRF checks in logout handlers (tied to F9)
+## F13 — Inline CSRF checks in logout handlers (tied to F9) ✅ DONE 2026-05-01
 
 **Where.** `web /logout` and `api /auth/logout` call
 `validate_token` inline, even though `/auth/logout` is also in
@@ -384,7 +384,7 @@ ordinary CSRF-protected action like everything else.
 
 **Effort + risk.** Tiny. Do alongside F9 since they share context.
 
-## F10 — `AppState` built twice; rate limiters not shared
+## F10 — `AppState` built twice; rate limiters not shared ✅ DONE 2026-05-01 (subsumes F15)
 
 **Where.** `api::create_app` calls `AppState::new(...)` to build state
 for the API router; `main.rs` then builds *another* `AppState` to pass
@@ -425,27 +425,39 @@ holdover if there's no time.
 **Effort + risk.** Medium. Touches signup, billing, member repo, a
 migration.
 
-## F12 — Sweep dead code from F8-extended
+## F12 — Sweep dead code from F8-extended ✅ DONE 2026-05-01
 
-**Where.** After the JSON admin deletion, several modules and methods
-are now unused:
+**What was removed:**
 
-- `MemberService` — entirely dead (callers were the deleted JSON
-  handlers).
-- `BillingService` — several methods unused.
-- Repos — a few unused methods (`list_all_event_types` etc.).
-- `stripe_client.rs` — unused imports flagged in F4.
-- `IntegrationEvent::MemberCreated` / `MemberDeleted` — emitted only
-  by deleted handlers.
-- `AppError::Payment` variant — no longer constructed.
-- Stale `Redirect` / `Sha256` imports.
+- `MemberService` — entire file deleted.
+- `BillingService` methods: `schedule_renewal`, `is_auto_renew`,
+  `cancel_scheduled_payments`, `process_scheduled_payment`,
+  `extend_member_dues`.
+- Type service methods: `get_by_slug`, `reorder`, `seed_defaults`
+  across event/announcement/membership type services; pricing
+  helpers and `MembershipPricing` struct on the membership type
+  service.
+- `SettingsService::{get_settings_by_category, get_payment_config,
+  get_membership_config}` and the `PaymentConfig` /
+  `MembershipConfig` domain structs.
+- Repo methods (trait + impl): `MemberRepository::{list, list_active,
+  list_expired, delete}`,
+  `EventRepository::get_member_registered_events`,
+  `AnnouncementRepository::list_featured`,
+  `PaymentRepository::update_status`,
+  `DonationCampaignRepository::create`, type repo
+  `reorder` / `seed_defaults`.
+- Domain helpers `default_event_types` /
+  `default_announcement_types` / `default_membership_types`.
+- `IntegrationEvent::{MemberCreated, MemberDeleted}` and matching
+  Discord/UniFi handlers.
+- `AppError::Payment` variant + IntoResponse arm.
+- Stale imports across `auth/`, `web/portal/admin/`, `payments/mod.rs`.
 
-**What to do.** Run `cargo clippy --all-targets --all-features` and
-`cargo +nightly udeps` (or equivalent), delete what's truly dead, keep
-anything the portal might still reach. Smallest-change-first.
-
-**Effort + risk.** Small. Mechanical. Low risk if test suite stays
-green.
+Build clean (12 warnings remaining are all pre-existing
+deserialization-only struct fields and intentional API surface like
+`BillingPeriod::as_str` / `PaymentStatus::is_terminal`). Test suite
+stays green (12 test files, ~108 tests passing).
 
 ## F14 — Inline-HTML construction in handlers
 
@@ -461,12 +473,10 @@ already touching a handler. Don't do a sweep; let it happen organically.
 
 **Effort + risk.** Background. Not blocking.
 
-## F15 — `setup_lock` duplicated (sub-finding of F10)
+## F15 — `setup_lock` duplicated (sub-finding of F10) ✅ DONE 2026-05-01
 
-Same root cause as F10. Two `AppState`s means two `setup_lock`s. The
-practical effect is small (lock is only held during the very first
-boot's setup wizard) but the asymmetry is a smell. Fix falls out of
-F10.
+Resolved as part of F10. With a single shared `AppState`, the
+`setup_lock` is no longer duplicated.
 
 ## Suggested order
 

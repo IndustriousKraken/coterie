@@ -12,7 +12,6 @@
 
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use argon2::password_hash::{SaltString, rand_core::OsRng};
-use rand::seq::SliceRandom;
 use rand::RngCore;
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -240,6 +239,7 @@ fn argon2_verify(normalized_code: &str, hash: &str) -> bool {
 /// main API.
 #[cfg(test)]
 fn shuffled<T>(mut v: Vec<T>) -> Vec<T> {
+    use rand::seq::SliceRandom;
     v.shuffle(&mut rand::thread_rng());
     v
 }

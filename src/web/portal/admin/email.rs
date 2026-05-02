@@ -7,7 +7,7 @@
 use askama::Template;
 use axum::{
     extract::State,
-    response::{IntoResponse, Redirect, Response},
+    response::{IntoResponse, Response},
     Extension,
     Form,
 };
@@ -19,7 +19,7 @@ use crate::{
         state::AppState,
     },
     email::{self, templates::{WelcomeHtml, WelcomeText}},
-    service::settings_service::{DbEmailConfig, UpdateEmailConfig},
+    service::settings_service::UpdateEmailConfig,
     web::templates::{BaseContext, HtmlTemplate},
 };
 

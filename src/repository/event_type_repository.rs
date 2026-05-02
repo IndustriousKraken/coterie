@@ -5,8 +5,7 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        CreateEventTypeRequest, EventTypeConfig, UpdateEventTypeRequest,
-        default_event_types, slugify,
+        CreateEventTypeRequest, EventTypeConfig, UpdateEventTypeRequest, slugify,
     },
     error::{AppError, Result},
 };
@@ -35,8 +34,6 @@ pub trait EventTypeRepository: Send + Sync {
     async fn delete(&self, id: Uuid) -> Result<()>;
     async fn count_usage(&self, id: Uuid) -> Result<i64>;
     async fn get_next_sort_order(&self) -> Result<i32>;
-    async fn reorder(&self, ids: &[Uuid]) -> Result<()>;
-    async fn seed_defaults(&self) -> Result<Vec<EventTypeConfig>>;
 }
 
 pub struct SqliteEventTypeRepository {
@@ -247,58 +244,4 @@ impl EventTypeRepository for SqliteEventTypeRepository {
         Ok(row.0.unwrap_or(0) + 1)
     }
 
-    async fn reorder(&self, ids: &[Uuid]) -> Result<()> {
-        for (index, id) in ids.iter().enumerate() {
-            let id_str = id.to_string();
-            sqlx::query("UPDATE event_types SET sort_order = ? WHERE id = ?")
-                .bind(index as i32)
-                .bind(&id_str)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| AppError::Database(e.to_string()))?;
-        }
-        Ok(())
-    }
-
-    async fn seed_defaults(&self) -> Result<Vec<EventTypeConfig>> {
-        let defaults = default_event_types();
-        let mut created = Vec::new();
-
-        for (index, (name, slug, color, icon)) in defaults.into_iter().enumerate() {
-            // Skip if already exists
-            if self.find_by_slug(slug).await?.is_some() {
-                continue;
-            }
-
-            let id = Uuid::new_v4();
-            let id_str = id.to_string();
-            let now = Utc::now().naive_utc();
-
-            sqlx::query(
-                r#"
-                INSERT INTO event_types (
-                    id, name, slug, description, color, icon,
-                    sort_order, is_active, created_at, updated_at
-                ) VALUES (?, ?, ?, NULL, ?, ?, ?, 1, ?, ?)
-                "#,
-            )
-            .bind(&id_str)
-            .bind(name)
-            .bind(slug)
-            .bind(color)
-            .bind(icon)
-            .bind(index as i32)
-            .bind(now)
-            .bind(now)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
-
-            if let Some(config) = self.find_by_id(id).await? {
-                created.push(config);
-            }
-        }
-
-        Ok(created)
-    }
 }

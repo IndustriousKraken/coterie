@@ -191,7 +191,7 @@ fn generate_token() -> String {
 }
 
 fn hash_token(token: &str) -> String {
-    use sha2::{Digest, Sha256};
+    use sha2::Digest;
     let mut hasher = sha2::Sha256::new();
     hasher.update(token.as_bytes());
     hex::encode(hasher.finalize())

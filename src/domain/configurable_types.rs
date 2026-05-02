@@ -181,35 +181,6 @@ pub fn validate_hex_color(color: &str) -> bool {
     (hex.len() == 3 || hex.len() == 6) && hex.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-// =============================================================================
-// Default Types
-// =============================================================================
-
-/// Default event types to seed
-pub fn default_event_types() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
-    vec![
-        ("Member Meeting", "member-meeting", "#2196F3", "users"),
-        ("Social", "social", "#4CAF50", "glass-cheers"),
-    ]
-}
-
-/// Default announcement types to seed
-pub fn default_announcement_types() -> Vec<(&'static str, &'static str, &'static str)> {
-    vec![
-        ("News", "news", "#2196F3"),
-        ("Awards", "awards", "#FFC107"),
-    ]
-}
-
-/// Default membership types to seed (name, slug, color, fee_cents, billing_period)
-pub fn default_membership_types() -> Vec<(&'static str, &'static str, &'static str, i32, &'static str)> {
-    vec![
-        ("Member", "member", "#2196F3", 500, "monthly"),
-        ("Associate", "associate", "#9C27B0", 10000, "monthly"),
-        ("Life Member", "life-member", "#FF9800", 1000000, "lifetime"),
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

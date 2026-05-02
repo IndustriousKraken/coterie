@@ -11,11 +11,9 @@ pub mod unifi;
 
 #[derive(Debug, Clone)]
 pub enum IntegrationEvent {
-    MemberCreated(Member),
     MemberActivated(Member),
     MemberExpired(Member),
     MemberUpdated { old: Member, new: Member },
-    MemberDeleted(Member),
     /// An event was created or made visible. Visibility decides which
     /// Discord channel (if any) the integration routes this to —
     /// AdminOnly events go to the admin-alerts channel, others to the

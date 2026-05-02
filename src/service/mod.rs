@@ -1,6 +1,5 @@
 pub mod audit_service;
 pub mod billing_service;
-pub mod member_service;
 pub mod payment_service;
 pub mod recurring_event_service;
 pub mod settings_service;
@@ -21,8 +20,6 @@ use event_type_service::EventTypeService;
 use announcement_type_service::AnnouncementTypeService;
 use membership_type_service::MembershipTypeService;
 use recurring_event_service::RecurringEventService;
-
-pub use membership_type_service::MembershipPricing;
 
 pub struct ServiceContext {
     pub member_repo: Arc<dyn MemberRepository>,

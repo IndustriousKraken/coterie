@@ -26,11 +26,6 @@ impl EventTypeService {
         self.repo.find_by_id(id).await
     }
 
-    /// Get an event type by slug
-    pub async fn get_by_slug(&self, slug: &str) -> Result<Option<EventTypeConfig>> {
-        self.repo.find_by_slug(slug).await
-    }
-
     /// Create a new event type
     pub async fn create(&self, request: CreateEventTypeRequest) -> Result<EventTypeConfig> {
         // Validate color format if provided
@@ -87,15 +82,5 @@ impl EventTypeService {
         }
 
         self.repo.delete(id).await
-    }
-
-    /// Reorder event types
-    pub async fn reorder(&self, ids: &[Uuid]) -> Result<()> {
-        self.repo.reorder(ids).await
-    }
-
-    /// Seed default event types
-    pub async fn seed_defaults(&self) -> Result<Vec<EventTypeConfig>> {
-        self.repo.seed_defaults().await
     }
 }

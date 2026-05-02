@@ -40,25 +40,16 @@ async fn test_member_crud() -> anyhow::Result<()> {
     let found_by_email = repo.find_by_email("test@example.com").await?;
     assert!(found_by_email.is_some());
     assert_eq!(found_by_email.unwrap().email, "test@example.com");
-    
-    // Test List
-    let members = repo.list(10, 0).await?;
-    assert_eq!(members.len(), 1);
-    
+
     // Test Update
     let update = coterie::domain::UpdateMemberRequest {
         status: Some(MemberStatus::Active),
         ..Default::default()
     };
-    
+
     let updated = repo.update(member.id, update).await?;
     assert_eq!(updated.status, MemberStatus::Active);
-    
-    // Test Delete
-    repo.delete(member.id).await?;
-    let deleted = repo.find_by_id(member.id).await?;
-    assert!(deleted.is_none());
-    
+
     Ok(())
 }
 

@@ -210,53 +210,6 @@ impl MemberRepository for SqliteMemberRepository {
         }
     }
 
-    async fn list(&self, limit: i64, offset: i64) -> Result<Vec<Member>> {
-        let rows = sqlx::query_as::<_, MemberRow>(
-            r#"
-            SELECT id, email, username, full_name, status, membership_type, membership_type_id,
-                   joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
-                   stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
-                   dues_reminder_sent_at, discord_id, created_at, updated_at
-            FROM members
-            ORDER BY created_at DESC
-            LIMIT ? OFFSET ?
-            "#
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
-        rows.into_iter()
-            .map(Self::row_to_member)
-            .collect()
-    }
-
-    async fn list_active(&self) -> Result<Vec<Member>> {
-        let active_status = MemberStatus::Active.as_str();
-
-        let rows = sqlx::query_as::<_, MemberRow>(
-            r#"
-            SELECT id, email, username, full_name, status, membership_type, membership_type_id,
-                   joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
-                   stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
-                   dues_reminder_sent_at, discord_id, created_at, updated_at
-            FROM members
-            WHERE status = ?
-            ORDER BY joined_at DESC
-            "#
-        )
-        .bind(active_status)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
-        rows.into_iter()
-            .map(Self::row_to_member)
-            .collect()
-    }
-
     async fn list_with_discord_id(&self) -> Result<Vec<Member>> {
         let rows = sqlx::query_as::<_, MemberRow>(
             r#"
@@ -269,30 +222,6 @@ impl MemberRepository for SqliteMemberRepository {
             ORDER BY status, joined_at
             "#
         )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
-        rows.into_iter()
-            .map(Self::row_to_member)
-            .collect()
-    }
-
-    async fn list_expired(&self) -> Result<Vec<Member>> {
-        let expired_status = MemberStatus::Expired.as_str();
-
-        let rows = sqlx::query_as::<_, MemberRow>(
-            r#"
-            SELECT id, email, username, full_name, status, membership_type, membership_type_id,
-                   joined_at, expires_at, dues_paid_until, bypass_dues, is_admin, notes,
-                   stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
-                   dues_reminder_sent_at, discord_id, created_at, updated_at
-            FROM members
-            WHERE status = ?
-            ORDER BY expires_at DESC
-            "#
-        )
-        .bind(expired_status)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -547,17 +476,6 @@ impl MemberRepository for SqliteMemberRepository {
                     .map_err(|e| AppError::Database(format!("Invalid uuid {}: {}", id_str, e)))
             })
             .collect()
-    }
-
-    async fn delete(&self, id: Uuid) -> Result<()> {
-        let id_str = id.to_string();
-        sqlx::query("DELETE FROM members WHERE id = ?")
-            .bind(&id_str)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
-
-        Ok(())
     }
 
     async fn search(&self, query: MemberQuery) -> Result<(Vec<Member>, i64)> {

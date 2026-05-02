@@ -6,7 +6,7 @@ use askama::Template;
 use axum::{
     extract::{Query, State},
     http::{header, StatusCode},
-    response::{IntoResponse, Response, Redirect},
+    response::{IntoResponse, Response},
     Extension,
 };
 use chrono::Utc;
@@ -155,7 +155,7 @@ fn build_export_qs(q: &AuditLogQuery) -> String {
 /// Export audit log as CSV. Respects the same filters as the page view.
 pub async fn audit_log_export(
     State(state): State<AppState>,
-    Extension(current_user): Extension<CurrentUser>,
+    Extension(_current_user): Extension<CurrentUser>,
     Query(query): Query<AuditLogQuery>,
 ) -> Response {
     // Export is less bounded than the UI view — default to 5000, cap

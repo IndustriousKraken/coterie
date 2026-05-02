@@ -287,20 +287,12 @@ impl Integration for DiscordIntegration {
 
     async fn handle_event(&self, event: &IntegrationEvent) -> Result<()> {
         match event {
-            IntegrationEvent::MemberCreated(_) => {
-                // Pending member; nothing to do until they're activated.
-                Ok(())
-            }
             IntegrationEvent::MemberActivated(m) => {
                 self.sync_roles(m).await;
                 Ok(())
             }
             IntegrationEvent::MemberExpired(m) => {
                 self.sync_roles(m).await;
-                Ok(())
-            }
-            IntegrationEvent::MemberDeleted(m) => {
-                self.clear_roles(m).await;
                 Ok(())
             }
             IntegrationEvent::MemberUpdated { old, new } => {

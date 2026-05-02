@@ -46,34 +46,6 @@ impl SqliteDonationCampaignRepository {
 
 #[async_trait]
 impl DonationCampaignRepository for SqliteDonationCampaignRepository {
-    async fn create(&self, campaign: DonationCampaign) -> Result<DonationCampaign> {
-        let id_str = campaign.id.to_string();
-        let is_active_int = if campaign.is_active { 1 } else { 0 };
-        let now = Utc::now().naive_utc();
-
-        sqlx::query(
-            r#"
-            INSERT INTO donation_campaigns (id, name, slug, description, goal_cents, is_active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            "#,
-        )
-        .bind(&id_str)
-        .bind(&campaign.name)
-        .bind(&campaign.slug)
-        .bind(&campaign.description)
-        .bind(campaign.goal_cents)
-        .bind(is_active_int)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
-        self.find_by_id(campaign.id).await?.ok_or_else(|| {
-            AppError::Database("Failed to retrieve created campaign".to_string())
-        })
-    }
-
     async fn find_by_id(&self, id: Uuid) -> Result<Option<DonationCampaign>> {
         let row = sqlx::query_as::<_, CampaignRow>(
             "SELECT id, name, slug, description, goal_cents, is_active, created_at, updated_at FROM donation_campaigns WHERE id = ?",

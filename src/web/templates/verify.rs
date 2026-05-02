@@ -12,7 +12,6 @@ use serde::Deserialize;
 use crate::{
     api::state::AppState,
     auth::EmailTokenService,
-    repository::MemberRepository,
     web::templates::{BaseContext, HtmlTemplate},
 };
 

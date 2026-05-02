@@ -69,9 +69,6 @@ pub trait MemberRepository: Send + Sync {
     async fn find_by_id(&self, id: Uuid) -> Result<Option<Member>>;
     async fn find_by_email(&self, email: &str) -> Result<Option<Member>>;
     async fn find_by_username(&self, username: &str) -> Result<Option<Member>>;
-    async fn list(&self, limit: i64, offset: i64) -> Result<Vec<Member>>;
-    async fn list_active(&self) -> Result<Vec<Member>>;
-    async fn list_expired(&self) -> Result<Vec<Member>>;
     /// Every member with a non-empty `discord_id`, regardless of
     /// status. Used by the Discord reconcile sweep so we can catch
     /// drift on Active / Honorary / Expired / Suspended members in
@@ -143,7 +140,6 @@ pub trait MemberRepository: Send + Sync {
     /// job that flips every `stripe_subscription` member to
     /// `coterie_managed`.
     async fn list_ids_by_billing_mode(&self, mode: BillingMode) -> Result<Vec<Uuid>>;
-    async fn delete(&self, id: Uuid) -> Result<()>;
 }
 
 #[async_trait]
@@ -161,7 +157,6 @@ pub trait EventRepository: Send + Sync {
     async fn cancel_attendance(&self, event_id: Uuid, member_id: Uuid) -> Result<()>;
     async fn get_attendee_count(&self, event_id: Uuid) -> Result<i64>;
     async fn get_member_attendance_status(&self, event_id: Uuid, member_id: Uuid) -> Result<Option<AttendanceStatus>>;
-    async fn get_member_registered_events(&self, member_id: Uuid) -> Result<Vec<Event>>;
 
     // ---- Recurring-series support -------------------------------------
 
@@ -198,7 +193,6 @@ pub trait AnnouncementRepository: Send + Sync {
     async fn list(&self, limit: i64, offset: i64) -> Result<Vec<Announcement>>;
     async fn list_recent(&self, limit: i64) -> Result<Vec<Announcement>>;
     async fn list_public(&self) -> Result<Vec<Announcement>>;
-    async fn list_featured(&self) -> Result<Vec<Announcement>>;
     async fn count_private_published(&self) -> Result<i64>;
     async fn update(&self, id: Uuid, announcement: Announcement) -> Result<Announcement>;
     async fn delete(&self, id: Uuid) -> Result<()>;
@@ -211,7 +205,6 @@ pub trait PaymentRepository: Send + Sync {
     async fn find_by_member(&self, member_id: Uuid) -> Result<Vec<Payment>>;
     async fn find_by_stripe_id(&self, stripe_id: &str) -> Result<Option<Payment>>;
     async fn update(&self, id: Uuid, payment: Payment) -> Result<Payment>;
-    async fn update_status(&self, id: Uuid, status: PaymentStatus) -> Result<Payment>;
     /// Atomically flip a Pending payment to Completed and stamp the
     /// Stripe PaymentIntent ID. Returns `true` if the row was actually
     /// flipped (we own the post-payment work — extend dues, schedule
@@ -322,7 +315,6 @@ pub trait ScheduledPaymentRepository: Send + Sync {
 
 #[async_trait]
 pub trait DonationCampaignRepository: Send + Sync {
-    async fn create(&self, campaign: DonationCampaign) -> Result<DonationCampaign>;
     async fn find_by_id(&self, id: Uuid) -> Result<Option<DonationCampaign>>;
     async fn find_by_slug(&self, slug: &str) -> Result<Option<DonationCampaign>>;
     async fn list_active(&self) -> Result<Vec<DonationCampaign>>;

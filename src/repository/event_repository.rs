@@ -448,33 +448,6 @@ impl EventRepository for SqliteEventRepository {
         }
     }
 
-    async fn get_member_registered_events(&self, member_id: Uuid) -> Result<Vec<Event>> {
-        let member_id_str = member_id.to_string();
-        let now = Utc::now().naive_utc();
-
-        let rows = sqlx::query_as::<_, EventRow>(
-            r#"
-            SELECT e.id, e.title, e.description, e.event_type, e.event_type_id, e.visibility,
-                   e.start_time, e.end_time, e.location, e.max_attendees, e.rsvp_required,
-                   e.image_url, e.created_by, e.created_at, e.updated_at,
-                   e.series_id, e.occurrence_index
-            FROM events e
-            INNER JOIN event_attendance ea ON e.id = ea.event_id
-            WHERE ea.member_id = ? AND ea.status = 'Registered' AND e.start_time > ?
-            ORDER BY e.start_time ASC
-            "#
-        )
-        .bind(&member_id_str)
-        .bind(now)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
-        rows.into_iter()
-            .map(Self::row_to_event)
-            .collect()
-    }
-
     async fn max_occurrence_index_for_series(&self, series_id: Uuid) -> Result<Option<i32>> {
         let max: Option<i32> = sqlx::query_scalar(
             "SELECT MAX(occurrence_index) FROM events WHERE series_id = ?",
