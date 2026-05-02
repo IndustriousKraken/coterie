@@ -8,19 +8,18 @@ use serde::Serialize;
 
 use crate::{
     api::{
-        middleware::auth::CurrentUser,
+        middleware::auth::{CurrentUser, SessionInfo},
         state::AppState,
     },
     domain::AttendanceStatus,
-    web::templates::{HtmlTemplate, UserInfo},
+    web::templates::{BaseContext, HtmlTemplate},
 };
-use super::{MemberInfo, is_admin};
+use super::MemberInfo;
 
 #[derive(Template)]
 #[template(path = "dashboard/member.html")]
 pub struct MemberDashboardTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
+    pub base: BaseContext,
     pub member: MemberInfo,
 }
 
@@ -78,14 +77,10 @@ pub async fn dues_warning(
 }
 
 pub async fn member_dashboard(
+    State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
+    Extension(session): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
     let member_info = MemberInfo {
         id: current_user.member.id.to_string(),
         username: current_user.member.username.clone(),
@@ -99,8 +94,7 @@ pub async fn member_dashboard(
     };
 
     let template = MemberDashboardTemplate {
-        current_user: Some(user_info),
-        is_admin: is_admin(&current_user.member),
+        base: BaseContext::for_member(&state, &current_user, &session).await,
         member: member_info,
     };
 

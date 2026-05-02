@@ -14,27 +14,23 @@ use crate::{
         state::AppState,
     },
     error::AppError,
-    web::templates::{HtmlTemplate, UserInfo},
+    web::templates::{BaseContext, HtmlTemplate},
 };
-use super::is_admin;
 
 #[derive(Template)]
 #[template(path = "portal/payments.html")]
 pub struct PaymentsTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
+    pub base: BaseContext,
 }
 
 #[derive(Template)]
 #[template(path = "portal/payment_new.html")]
 pub struct PaymentNewTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
+    pub base: BaseContext,
     pub stripe_enabled: bool,
     pub membership_types: Vec<MembershipTypeDisplay>,
     pub saved_cards: Vec<SavedCardDisplay>,
     pub stripe_publishable_key: String,
-    pub csrf_token: String,
     /// True when the member is already on Coterie-managed auto-renew.
     /// We hide the "Enable auto-renew" checkbox in that case and show
     /// an "already enrolled" badge instead — the saved-card payment
@@ -61,25 +57,21 @@ pub struct MembershipTypeDisplay {
 #[derive(Template)]
 #[template(path = "portal/payment_success.html")]
 pub struct PaymentSuccessTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
+    pub base: BaseContext,
 }
 
 #[derive(Template)]
 #[template(path = "portal/payment_cancel.html")]
 pub struct PaymentCancelTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
+    pub base: BaseContext,
 }
 
 #[derive(Template)]
 #[template(path = "portal/payment_methods.html")]
 pub struct PaymentMethodsTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
+    pub base: BaseContext,
     pub stripe_enabled: bool,
     pub stripe_publishable_key: String,
-    pub csrf_token: String,
     /// True when the member is on Coterie-managed auto-renew. Drives
     /// the "Auto-renew" toggle UI on this page — enrolled members see
     /// a "Turn off" button, unenrolled members see a "Turn on" button
@@ -122,18 +114,12 @@ pub struct ChargeSavedCardRequest {
 }
 
 pub async fn payments_page(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
+    Extension(session): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
     let template = PaymentsTemplate {
-        current_user: Some(user_info),
-        is_admin: is_admin(&current_user.member),
+        base: BaseContext::for_member(&state, &current_user, &session).await,
     };
 
     HtmlTemplate(template)
@@ -201,36 +187,24 @@ pub async fn next_due_api(
 }
 
 pub async fn payment_success_page(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
+    Extension(session): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
     let template = PaymentSuccessTemplate {
-        current_user: Some(user_info),
-        is_admin: is_admin(&current_user.member),
+        base: BaseContext::for_member(&state, &current_user, &session).await,
     };
 
     HtmlTemplate(template)
 }
 
 pub async fn payment_cancel_page(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
+    Extension(session): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
     let template = PaymentCancelTemplate {
-        current_user: Some(user_info),
-        is_admin: is_admin(&current_user.member),
+        base: BaseContext::for_member(&state, &current_user, &session).await,
     };
 
     HtmlTemplate(template)
@@ -241,16 +215,7 @@ pub async fn payment_new_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_default();
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     let stripe_enabled = state.stripe_client.is_some();
     let stripe_publishable_key = state.settings.stripe.publishable_key
@@ -289,13 +254,11 @@ pub async fn payment_new_page(
         == crate::domain::BillingMode::CoterieManaged;
 
     let template = PaymentNewTemplate {
-        current_user: Some(user_info),
-        is_admin: is_admin(&current_user.member),
+        base,
         stripe_enabled,
         membership_types,
         saved_cards,
         stripe_publishable_key,
-        csrf_token,
         is_auto_renew,
     };
 
@@ -508,16 +471,7 @@ pub async fn payment_methods_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_default();
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     let stripe_enabled = state.stripe_client.is_some();
     let stripe_publishable_key = state.settings.stripe.publishable_key
@@ -537,11 +491,9 @@ pub async fn payment_methods_page(
         .is_some();
 
     let template = PaymentMethodsTemplate {
-        current_user: Some(user_info),
-        is_admin: is_admin(&current_user.member),
+        base,
         stripe_enabled,
         stripe_publishable_key,
-        csrf_token,
         is_auto_renew,
         is_stripe_subscription,
         has_default_card,
@@ -759,8 +711,7 @@ pub async fn set_default_card_api(
 #[derive(Template)]
 #[template(path = "portal/receipts.html")]
 pub struct ReceiptsTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
+    pub base: BaseContext,
     pub member_full_name: String,
     pub years: Vec<ReceiptYearDisplay>,
 }
@@ -812,15 +763,10 @@ pub struct ReceiptTemplate {
 pub async fn receipts_page(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
+    Extension(session): Extension<SessionInfo>,
 ) -> Result<axum::response::Response, AppError> {
     use crate::domain::{PaymentKind, PaymentStatus};
     use std::collections::BTreeMap;
-
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
 
     let payments = state.service_context.payment_repo
         .find_by_member(current_user.member.id)
@@ -882,8 +828,7 @@ pub async fn receipts_page(
     years.sort_by(|a, b| b.year.cmp(&a.year));
 
     let template = ReceiptsTemplate {
-        current_user: Some(user_info),
-        is_admin: is_admin(&current_user.member),
+        base: BaseContext::for_member(&state, &current_user, &session).await,
         member_full_name: current_user.member.full_name.clone(),
         years,
     };

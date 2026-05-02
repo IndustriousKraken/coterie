@@ -63,7 +63,7 @@
                 <div class="flex-shrink-0 flex flex-col gap-2">
                     <button
                         hx-post="/portal/admin/settings/discord/test"
-                        hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'
+                        hx-headers='{"X-CSRF-Token": "{{ base.csrf_token }}"}'
                         hx-target="#discord-test-result"
                         hx-swap="outerHTML"
                         class="px-4 py-2 bg-gray-700 text-white rounded-md hover:bg-gray-800 text-sm font-medium">
@@ -71,7 +71,7 @@
                     </button>
                     <button
                         hx-post="/portal/admin/settings/discord/reconcile"
-                        hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'
+                        hx-headers='{"X-CSRF-Token": "{{ base.csrf_token }}"}'
                         hx-target="#discord-test-result"
                         hx-swap="outerHTML"
                         hx-confirm="Re-sync Discord roles for every member with a Discord ID? This may take a few seconds."
@@ -89,7 +89,7 @@
         <!-- Form -->
         <form method="POST" action="/portal/admin/settings/discord"
               class="bg-white rounded-lg shadow-sm divide-y divide-gray-200">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
 
             <!-- Enable + bot identity -->
             <div class="p-6 space-y-4">

@@ -13,15 +13,17 @@ use chrono::Utc;
 use serde::Deserialize;
 
 use crate::{
-    api::{middleware::auth::CurrentUser, state::AppState},
-    web::templates::{HtmlTemplate, UserInfo},
+    api::{
+        middleware::auth::{CurrentUser, SessionInfo},
+        state::AppState,
+    },
+    web::templates::{BaseContext, HtmlTemplate},
 };
 
 #[derive(Template)]
 #[template(path = "admin/audit_log.html")]
 pub struct AuditLogTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
+    pub base: BaseContext,
     pub entries: Vec<AuditEntryDisplay>,
     pub action_filter: String,
     pub actor_filter: String,
@@ -56,21 +58,15 @@ pub struct AuditLogQuery {
 pub async fn audit_log_page(
     State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
+    Extension(session): Extension<SessionInfo>,
     Query(query): Query<AuditLogQuery>,
 ) -> Response {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
     let limit = query.limit.unwrap_or(100).clamp(10, 500);
     let entries = filtered_entries(&state, &query, limit).await;
     let export_qs = build_export_qs(&query);
 
     HtmlTemplate(AuditLogTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
+        base: BaseContext::for_member(&state, &current_user, &session).await,
         entries,
         action_filter: query.action,
         actor_filter: query.actor,

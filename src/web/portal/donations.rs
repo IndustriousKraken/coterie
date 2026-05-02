@@ -16,21 +16,18 @@ use crate::{
     },
     domain::{Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus},
     error::AppError,
-    web::templates::{HtmlTemplate, UserInfo},
+    web::templates::{BaseContext, HtmlTemplate},
 };
-use super::is_admin;
 use super::payments::SavedCardDisplay;
 
 #[derive(Template)]
 #[template(path = "portal/donate.html")]
 pub struct DonateTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
+    pub base: BaseContext,
     pub stripe_enabled: bool,
     pub stripe_publishable_key: String,
     pub campaigns: Vec<CampaignDisplay>,
     pub saved_cards: Vec<SavedCardDisplay>,
-    pub csrf_token: String,
 }
 
 pub struct CampaignDisplay {
@@ -47,16 +44,7 @@ pub async fn donate_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_default();
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     let stripe_enabled = state.stripe_client.is_some();
     let stripe_publishable_key = state.settings.stripe.publishable_key
@@ -107,13 +95,11 @@ pub async fn donate_page(
     }
 
     let template = DonateTemplate {
-        current_user: Some(user_info),
-        is_admin: is_admin(&current_user.member),
+        base,
         stripe_enabled,
         stripe_publishable_key,
         campaigns,
         saved_cards,
-        csrf_token,
     };
 
     HtmlTemplate(template)

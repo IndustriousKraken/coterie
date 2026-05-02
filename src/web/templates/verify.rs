@@ -13,7 +13,7 @@ use crate::{
     api::state::AppState,
     auth::EmailTokenService,
     repository::MemberRepository,
-    web::templates::HtmlTemplate,
+    web::templates::{BaseContext, HtmlTemplate},
 };
 
 #[derive(Debug, Deserialize)]
@@ -24,8 +24,7 @@ pub struct VerifyQuery {
 #[derive(Template)]
 #[template(path = "auth/verify_result.html")]
 pub struct VerifyResultTemplate {
-    pub current_user: Option<super::UserInfo>,
-    pub is_admin: bool,
+    pub base: BaseContext,
     pub success: bool,
     pub message: String,
 }
@@ -65,8 +64,7 @@ pub async fn verify_handler(
     };
 
     HtmlTemplate(VerifyResultTemplate {
-        current_user: None,
-        is_admin: false,
+        base: BaseContext::for_anon(),
         success,
         message,
     }).into_response()

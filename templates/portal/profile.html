@@ -3,7 +3,7 @@
 {% block title %}Profile - Coterie{% endblock %}
 
 {% block head %}
-<meta name="csrf-token" content="{{ csrf_token }}">
+<meta name="csrf-token" content="{{ base.csrf_token }}">
 {% endblock %}
 
 {% block content %}
@@ -23,7 +23,7 @@
                   hx-target="#profile-form-container"
                   id="profile-form-container"
                   class="space-y-4">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
 
                 <div>
                     <label for="full_name" class="block text-sm font-medium text-gray-700">Full Name</label>
@@ -125,7 +125,7 @@
                   hx-swap="innerHTML"
                   hx-target="#password-message"
                   class="space-y-3">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
 
                 <div>
                     <label for="current_password" class="block text-sm font-medium text-gray-700">Current Password</label>

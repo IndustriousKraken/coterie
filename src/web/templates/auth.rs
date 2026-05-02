@@ -9,14 +9,13 @@ use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 use crate::{
     api::state::AppState,
-    web::templates::HtmlTemplate,
+    web::templates::{BaseContext, HtmlTemplate},
 };
 
 #[derive(Template)]
 #[template(path = "auth/login.html")]
 pub struct LoginTemplate {
-    pub current_user: Option<super::UserInfo>,
-    pub is_admin: bool,
+    pub base: BaseContext,
     pub redirect_url: Option<String>,
 }
 
@@ -70,8 +69,7 @@ pub async fn login_page(
     }
 
     let template = LoginTemplate {
-        current_user: None,
-        is_admin: false,
+        base: BaseContext::for_anon(),
         redirect_url: query.redirect,
     };
     HtmlTemplate(template).into_response()
@@ -312,45 +310,23 @@ pub async fn login_handler(
 
 // POST /logout
 //
-// CSRF: SameSite=Lax cookies still ride along on top-level POST
-// navigations, so a cross-origin attacker page could `<form action=
-// "https://coterie.example/logout" method="POST">…</form>` and force-
-// log out a victim. Annoying rather than dangerous, but it lets an
-// attacker push the victim into a re-auth screen they could phish.
-// We require the X-CSRF-Token header (HTMX stamps it from the meta
-// tag) — direct-form-POST CSRF therefore fails fast.
+// CSRF is enforced at the application root by
+// `csrf_protect_unless_exempt`. The base layout renders the meta tag
+// globally and HTMX stamps `X-CSRF-Token` on every state-changing
+// request, so the logout button works from any page. This handler
+// runs only after a valid token has been seen.
 pub async fn logout_handler(
     State(state): State<AppState>,
-    headers_in: HeaderMap,
     jar: CookieJar,
 ) -> impl IntoResponse {
-    // Properly invalidate session and CSRF token
     if let Some(session_cookie) = jar.get("session") {
-        // Get session to find its ID for CSRF token deletion
         if let Ok(Some(session)) = state.service_context.auth_service
             .validate_session(session_cookie.value())
             .await
         {
-            // Verify the CSRF token before doing anything destructive.
-            let token = headers_in
-                .get("X-CSRF-Token")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-            let csrf_ok = state.service_context.csrf_service
-                .validate_token(&session.id, token)
-                .await
-                .unwrap_or(false);
-            if !csrf_ok {
-                let mut headers = HeaderMap::new();
-                headers.insert("HX-Redirect", "/login".parse().unwrap());
-                return (StatusCode::FORBIDDEN, headers);
-            }
-            // Delete CSRF token for this session
             let _ = state.service_context.csrf_service
                 .delete_token(&session.id)
                 .await;
-            // Audit-trail the session lifecycle. Login is logged in
-            // the audit_service; logout was silent until this entry.
             state.service_context.audit_service.log(
                 Some(session.member_id),
                 "logout",
@@ -361,7 +337,6 @@ pub async fn logout_handler(
                 None,
             ).await;
         }
-        // Invalidate the session
         let _ = state.service_context.auth_service
             .invalidate_session(session_cookie.value())
             .await;
@@ -391,8 +366,7 @@ pub async fn logout_handler(
 #[derive(Template)]
 #[template(path = "auth/login_totp.html")]
 pub struct LoginTotpTemplate {
-    pub current_user: Option<super::UserInfo>,
-    pub is_admin: bool,
+    pub base: BaseContext,
     pub redirect_url: Option<String>,
     pub error: Option<String>,
 }
@@ -455,8 +429,7 @@ pub async fn login_totp_page(
     }
 
     let template = LoginTotpTemplate {
-        current_user: None,
-        is_admin: false,
+        base: BaseContext::for_anon(),
         redirect_url: query.redirect,
         error: None,
     };

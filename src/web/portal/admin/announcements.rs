@@ -11,7 +11,7 @@ use crate::{
         middleware::auth::{CurrentUser, SessionInfo},
         state::AppState,
     },
-    web::templates::{HtmlTemplate, UserInfo},
+    web::templates::{BaseContext, HtmlTemplate},
     web::uploads::save_uploaded_file,
 };
 
@@ -27,9 +27,7 @@ pub struct TypeOption {
 #[derive(Template)]
 #[template(path = "admin/announcements.html")]
 pub struct AdminAnnouncementsTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
-    pub csrf_token: String,
+    pub base: BaseContext,
     pub announcements: Vec<AdminAnnouncementInfo>,
     pub total_announcements: i64,
     pub current_page: i64,
@@ -90,16 +88,7 @@ pub async fn admin_announcements_page(
 ) -> impl IntoResponse {
     let is_htmx = headers.get("HX-Request").is_some();
 
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| "error".to_string());
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     let page = query.page.unwrap_or(1).max(1);
     let per_page: i64 = 20;
@@ -229,9 +218,7 @@ pub async fn admin_announcements_page(
         }).into_response()
     } else {
         HtmlTemplate(AdminAnnouncementsTemplate {
-            current_user: Some(user_info),
-            is_admin: true,
-            csrf_token,
+            base,
             announcements: paginated_announcements,
             total_announcements,
             current_page: page,
@@ -249,9 +236,7 @@ pub async fn admin_announcements_page(
 #[derive(Template)]
 #[template(path = "admin/announcement_detail.html")]
 pub struct AdminAnnouncementDetailTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
-    pub csrf_token: String,
+    pub base: BaseContext,
     pub announcement: AdminAnnouncementDetail,
     pub announcement_types: Vec<TypeOption>,
 }
@@ -287,16 +272,7 @@ pub async fn admin_announcement_detail_page(
         Err(_) => return axum::response::Html("Error loading announcement".to_string()).into_response(),
     };
 
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| "error".to_string());
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     let detail = AdminAnnouncementDetail {
         id: announcement.id.to_string(),
@@ -327,9 +303,7 @@ pub async fn admin_announcement_detail_page(
         .collect();
 
     HtmlTemplate(AdminAnnouncementDetailTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base,
         announcement: detail,
         announcement_types,
     }).into_response()
@@ -338,9 +312,7 @@ pub async fn admin_announcement_detail_page(
 #[derive(Template)]
 #[template(path = "admin/announcement_new.html")]
 pub struct AdminNewAnnouncementTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
-    pub csrf_token: String,
+    pub base: BaseContext,
     pub announcement_types: Vec<TypeOption>,
 }
 
@@ -349,16 +321,7 @@ pub async fn admin_new_announcement_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| "error".to_string());
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     // Fetch active announcement types for the dropdown
     let announcement_types = state.service_context.announcement_type_service
@@ -375,9 +338,7 @@ pub async fn admin_new_announcement_page(
         .collect();
 
     HtmlTemplate(AdminNewAnnouncementTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base,
         announcement_types,
     }).into_response()
 }

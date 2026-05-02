@@ -3,7 +3,7 @@
 {% block title %}{{ announcement.title }} - Announcement Details{% endblock %}
 
 {% block head %}
-<meta name="csrf-token" content="{{ csrf_token }}">
+<meta name="csrf-token" content="{{ base.csrf_token }}">
 {% endblock %}
 
 {% block content %}
@@ -43,7 +43,7 @@
                       hx-swap="innerHTML"
                       hx-encoding="multipart/form-data"
                       class="p-6 space-y-4">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
 
                     <div id="update-result"></div>
 
@@ -136,7 +136,7 @@
                     <p class="text-sm text-gray-500">{% if let Some(pub_date) = announcement.published_at.as_ref() %}{{ pub_date }}{% else %}Unknown{% endif %}</p>
                 </div>
                 <form hx-post="/portal/admin/announcements/{{ announcement.id }}/unpublish">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
                     <button type="submit"
                             class="w-full px-3 py-2 text-sm text-yellow-700 border border-yellow-300 rounded-md hover:bg-yellow-50">
                         Unpublish
@@ -148,7 +148,7 @@
                     <p class="text-sm text-gray-500">Not yet published</p>
                 </div>
                 <form hx-post="/portal/admin/announcements/{{ announcement.id }}/publish">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
                     <button type="submit"
                             class="w-full px-3 py-2 text-sm text-white bg-green-600 rounded-md hover:bg-green-700">
                         Publish Now
@@ -189,7 +189,7 @@
                 <h3 class="text-sm font-medium text-red-600 mb-3">Danger Zone</h3>
                 <form hx-post="/portal/admin/announcements/{{ announcement.id }}/delete"
                       hx-confirm="Are you sure you want to delete this announcement? This cannot be undone.">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
                     <button type="submit"
                             class="w-full px-3 py-2 text-sm text-red-600 border border-red-300 rounded-md hover:bg-red-50">
                         Delete Announcement

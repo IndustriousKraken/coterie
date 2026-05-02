@@ -19,7 +19,7 @@
 
         <form method="POST" action="/portal/admin/members/{{ member_id }}/record-payment"
               class="bg-white rounded-lg shadow-sm border divide-y divide-gray-200">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
 
             <!-- Type -->
             <div class="p-6">

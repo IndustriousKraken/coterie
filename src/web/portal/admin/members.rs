@@ -11,15 +11,13 @@ use crate::{
         middleware::auth::{CurrentUser, SessionInfo},
         state::AppState,
     },
-    web::{portal::admin::partials, templates::{HtmlTemplate, UserInfo}},
+    web::{portal::admin::partials, templates::{BaseContext, HtmlTemplate}},
 };
 
 #[derive(Template)]
 #[template(path = "admin/members.html")]
 pub struct AdminMembersTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
-    pub csrf_token: String,
+    pub base: BaseContext,
     pub members: Vec<AdminMemberInfo>,
     pub total_members: i64,
     pub current_page: i64,
@@ -80,16 +78,7 @@ pub async fn admin_members_page(
 ) -> impl IntoResponse {
     let is_htmx = headers.get("HX-Request").is_some();
 
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| "error".to_string());
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     let page = query.page.unwrap_or(1).max(1);
     let per_page: i64 = 20;
@@ -173,9 +162,7 @@ pub async fn admin_members_page(
         }).into_response()
     } else {
         HtmlTemplate(AdminMembersTemplate {
-            current_user: Some(user_info),
-            is_admin: true,
-            csrf_token,
+            base,
             members: paginated_members,
             total_members,
             current_page: page,
@@ -320,9 +307,7 @@ pub async fn admin_suspend_member(
 #[derive(Template)]
 #[template(path = "admin/member_detail.html")]
 pub struct AdminMemberDetailTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
-    pub csrf_token: String,
+    pub base: BaseContext,
     pub member: AdminMemberDetailInfo,
 }
 
@@ -371,16 +356,7 @@ pub async fn admin_member_detail_page(
         _ => return axum::response::Redirect::to("/portal/admin/members").into_response(),
     };
 
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| "error".to_string());
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     let initials: String = member.full_name
         .split_whitespace()
@@ -433,9 +409,7 @@ pub async fn admin_member_detail_page(
     };
 
     let template = AdminMemberDetailTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base,
         member: member_info,
     };
 
@@ -707,9 +681,7 @@ fn refund_result_html(ok: bool, detail: &str) -> axum::response::Html<String> {
 #[derive(askama::Template)]
 #[template(path = "admin/record_payment.html")]
 pub struct RecordPaymentTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
-    pub csrf_token: String,
+    pub base: BaseContext,
     pub member_id: String,
     pub member_name: String,
     pub member_email: String,
@@ -749,16 +721,7 @@ pub async fn admin_record_payment_page(
         _ => return axum::response::Redirect::to("/portal/admin/members").into_response(),
     };
 
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_default();
-
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     let membership_types = state.service_context.membership_type_service
         .list(false)
@@ -795,9 +758,7 @@ pub async fn admin_record_payment_page(
     };
 
     HtmlTemplate(RecordPaymentTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base,
         member_id: member.id.to_string(),
         member_name: member.full_name.clone(),
         member_email: member.email.clone(),
@@ -967,16 +928,7 @@ async fn rerender_with_error(
         _ => return axum::response::Redirect::to("/portal/admin/members").into_response(),
     };
 
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_default();
-
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     let membership_types = state.service_context.membership_type_service
         .list(false).await.unwrap_or_default()
@@ -1002,9 +954,7 @@ async fn rerender_with_error(
     };
 
     HtmlTemplate(RecordPaymentTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base,
         member_id: member.id.to_string(),
         member_name: member.full_name.clone(),
         member_email: member.email.clone(),
@@ -1220,9 +1170,7 @@ pub async fn admin_member_payments(
 #[derive(Template)]
 #[template(path = "admin/member_new.html")]
 pub struct AdminNewMemberTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
-    pub csrf_token: String,
+    pub base: BaseContext,
 }
 
 pub async fn admin_new_member_page(
@@ -1230,21 +1178,8 @@ pub async fn admin_new_member_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> axum::response::Response {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| "error".to_string());
-
     let template = AdminNewMemberTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base: BaseContext::for_member(&state, &current_user, &session_info).await,
     };
 
     HtmlTemplate(template).into_response()

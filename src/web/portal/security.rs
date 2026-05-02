@@ -20,17 +20,15 @@ use crate::{
         middleware::auth::{CurrentUser, SessionInfo},
         state::AppState,
     },
-    web::templates::{HtmlTemplate, UserInfo},
+    web::templates::{BaseContext, HtmlTemplate},
 };
 use super::{MemberInfo, is_admin};
 
 #[derive(Template)]
 #[template(path = "portal/security.html")]
 pub struct SecurityTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
+    pub base: BaseContext,
     pub member: MemberInfo,
-    pub csrf_token: String,
     pub totp_enabled: bool,
     pub recovery_codes_remaining: usize,
     /// True when the admin-mandatory toggle is on AND this user is an
@@ -74,11 +72,6 @@ pub async fn security_page(
     Extension(session_info): Extension<SessionInfo>,
     Query(query): Query<SecurityQuery>,
 ) -> impl IntoResponse {
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| String::new());
-
     let totp_enabled = state.service_context.totp_service
         .is_enabled(current_user.member.id)
         .await
@@ -106,11 +99,6 @@ pub async fn security_page(
         && !totp_enabled
         && (enforce || bounced);
 
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
     let member_info = MemberInfo {
         id: current_user.member.id.to_string(),
         username: current_user.member.username.clone(),
@@ -124,10 +112,8 @@ pub async fn security_page(
     };
 
     HtmlTemplate(SecurityTemplate {
-        current_user: Some(user_info),
-        is_admin: is_admin(&current_user.member),
+        base: BaseContext::for_member(&state, &current_user, &session_info).await,
         member: member_info,
-        csrf_token,
         totp_enabled,
         recovery_codes_remaining: remaining,
         admin_must_enroll,

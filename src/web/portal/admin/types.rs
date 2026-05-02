@@ -15,7 +15,7 @@ use crate::{
         CreateEventTypeRequest, CreateAnnouncementTypeRequest, CreateMembershipTypeRequest,
         UpdateEventTypeRequest, UpdateAnnouncementTypeRequest, UpdateMembershipTypeRequest,
     },
-    web::templates::{HtmlTemplate, UserInfo},
+    web::templates::{BaseContext, HtmlTemplate},
 };
 
 // =============================================================================
@@ -58,9 +58,7 @@ pub struct MembershipTypeInfo {
 #[derive(Template)]
 #[template(path = "admin/types/index.html")]
 pub struct AdminTypesTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
-    pub csrf_token: String,
+    pub base: BaseContext,
     pub event_types: Vec<TypeInfo>,
     pub announcement_types: Vec<TypeInfo>,
     pub membership_types: Vec<MembershipTypeInfo>,
@@ -71,16 +69,7 @@ pub async fn admin_types_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| "error".to_string());
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     // Fetch all types (including inactive for admin view)
     let event_types = fetch_event_types(&state, true).await;
@@ -88,9 +77,7 @@ pub async fn admin_types_page(
     let membership_types = fetch_membership_types(&state, true).await;
 
     HtmlTemplate(AdminTypesTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base,
         event_types,
         announcement_types,
         membership_types,
@@ -104,9 +91,7 @@ pub async fn admin_types_page(
 #[derive(Template)]
 #[template(path = "admin/types/event_type_form.html")]
 pub struct EventTypeFormTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
-    pub csrf_token: String,
+    pub base: BaseContext,
     pub event_type: Option<TypeInfo>,
     pub is_edit: bool,
 }
@@ -116,21 +101,8 @@ pub async fn admin_new_event_type_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| "error".to_string());
-
     HtmlTemplate(EventTypeFormTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base: BaseContext::for_member(&state, &current_user, &session_info).await,
         event_type: None,
         is_edit: false,
     }).into_response()
@@ -153,16 +125,7 @@ pub async fn admin_edit_event_type_page(
         Err(_) => return axum::response::Html("Error loading event type".to_string()).into_response(),
     };
 
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| "error".to_string());
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     let type_info = TypeInfo {
         id: event_type.id.to_string(),
@@ -177,9 +140,7 @@ pub async fn admin_edit_event_type_page(
     };
 
     HtmlTemplate(EventTypeFormTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base,
         event_type: Some(type_info),
         is_edit: true,
     }).into_response()
@@ -265,9 +226,7 @@ pub async fn admin_delete_event_type(
 #[derive(Template)]
 #[template(path = "admin/types/announcement_type_form.html")]
 pub struct AnnouncementTypeFormTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
-    pub csrf_token: String,
+    pub base: BaseContext,
     pub announcement_type: Option<TypeInfo>,
     pub is_edit: bool,
 }
@@ -277,21 +236,8 @@ pub async fn admin_new_announcement_type_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| "error".to_string());
-
     HtmlTemplate(AnnouncementTypeFormTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base: BaseContext::for_member(&state, &current_user, &session_info).await,
         announcement_type: None,
         is_edit: false,
     }).into_response()
@@ -314,16 +260,7 @@ pub async fn admin_edit_announcement_type_page(
         Err(_) => return axum::response::Html("Error loading announcement type".to_string()).into_response(),
     };
 
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| "error".to_string());
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     let type_info = TypeInfo {
         id: announcement_type.id.to_string(),
@@ -338,9 +275,7 @@ pub async fn admin_edit_announcement_type_page(
     };
 
     HtmlTemplate(AnnouncementTypeFormTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base,
         announcement_type: Some(type_info),
         is_edit: true,
     }).into_response()
@@ -424,9 +359,7 @@ pub async fn admin_delete_announcement_type(
 #[derive(Template)]
 #[template(path = "admin/types/membership_type_form.html")]
 pub struct MembershipTypeFormTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
-    pub csrf_token: String,
+    pub base: BaseContext,
     pub membership_type: Option<MembershipTypeInfo>,
     pub is_edit: bool,
 }
@@ -436,21 +369,8 @@ pub async fn admin_new_membership_type_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| "error".to_string());
-
     HtmlTemplate(MembershipTypeFormTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base: BaseContext::for_member(&state, &current_user, &session_info).await,
         membership_type: None,
         is_edit: false,
     }).into_response()
@@ -473,16 +393,7 @@ pub async fn admin_edit_membership_type_page(
         Err(_) => return axum::response::Html("Error loading membership type".to_string()).into_response(),
     };
 
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| "error".to_string());
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     let fee_dollars = membership_type.fee_dollars();
     let type_info = MembershipTypeInfo {
@@ -501,9 +412,7 @@ pub async fn admin_edit_membership_type_page(
     };
 
     HtmlTemplate(MembershipTypeFormTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base,
         membership_type: Some(type_info),
         is_edit: true,
     }).into_response()

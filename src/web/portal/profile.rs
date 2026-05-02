@@ -11,17 +11,15 @@ use crate::{
         middleware::auth::{CurrentUser, SessionInfo},
         state::AppState,
     },
-    web::templates::{HtmlTemplate, UserInfo},
+    web::templates::{BaseContext, HtmlTemplate},
 };
-use super::{MemberInfo, is_admin};
+use super::MemberInfo;
 
 #[derive(Template)]
 #[template(path = "portal/profile.html")]
 pub struct ProfileTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
+    pub base: BaseContext,
     pub member: MemberInfo,
-    pub csrf_token: String,
 }
 
 pub async fn profile_page(
@@ -29,12 +27,6 @@ pub async fn profile_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
     let member_info = MemberInfo {
         id: current_user.member.id.to_string(),
         username: current_user.member.username.clone(),
@@ -47,17 +39,9 @@ pub async fn profile_page(
             .map(|d| d.format("%B %d, %Y").to_string()),
     };
 
-    // Generate CSRF token for this session
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| "error".to_string());
-
     let template = ProfileTemplate {
-        current_user: Some(user_info),
-        is_admin: is_admin(&current_user.member),
+        base: BaseContext::for_member(&state, &current_user, &session_info).await,
         member: member_info,
-        csrf_token,
     };
 
     HtmlTemplate(template)

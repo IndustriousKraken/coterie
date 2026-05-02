@@ -20,15 +20,13 @@ use crate::{
     },
     email::{self, templates::{WelcomeHtml, WelcomeText}},
     service::settings_service::{DbEmailConfig, UpdateEmailConfig},
-    web::templates::{HtmlTemplate, UserInfo},
+    web::templates::{BaseContext, HtmlTemplate},
 };
 
 #[derive(Template)]
 #[template(path = "admin/email_settings.html")]
 pub struct AdminEmailSettingsTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
-    pub csrf_token: String,
+    pub base: BaseContext,
     pub mode: String,
     pub from_address: String,
     pub from_name: String,
@@ -65,16 +63,7 @@ async fn render_page(
     flash_success: Option<String>,
     flash_error: Option<String>,
 ) -> Response {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| String::new());
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     // If the password is undecryptable (session_secret rotated), we
     // still want to show the page — fall back to default config so
@@ -103,9 +92,7 @@ async fn render_page(
     }.to_string();
 
     HtmlTemplate(AdminEmailSettingsTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base,
         mode: cfg.mode,
         from_address: cfg.from_address,
         from_name: cfg.from_name,

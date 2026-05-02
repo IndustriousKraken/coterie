@@ -10,14 +10,13 @@ use serde::{Deserialize, Serialize};
 use crate::{
     api::state::AppState,
     domain::{CreateMemberRequest, MemberStatus, MembershipType, UpdateMemberRequest},
-    web::templates::HtmlTemplate,
+    web::templates::{BaseContext, HtmlTemplate},
 };
 
 #[derive(Template)]
 #[template(path = "auth/setup.html")]
 pub struct SetupTemplate {
-    pub current_user: Option<super::UserInfo>,
-    pub is_admin: bool,
+    pub base: BaseContext,
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,8 +51,7 @@ pub async fn setup_page(
     }
 
     let template = SetupTemplate {
-        current_user: None,
-        is_admin: false,
+        base: BaseContext::for_anon(),
     };
     HtmlTemplate(template).into_response()
 }

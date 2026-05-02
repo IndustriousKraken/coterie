@@ -3,7 +3,7 @@
 {% block title %}{{ event.title }} - Event Details{% endblock %}
 
 {% block head %}
-<meta name="csrf-token" content="{{ csrf_token }}">
+<meta name="csrf-token" content="{{ base.csrf_token }}">
 {% endblock %}
 
 {% block content %}
@@ -41,7 +41,7 @@
                       hx-swap="innerHTML"
                       hx-encoding="multipart/form-data"
                       class="p-6 space-y-4">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
 
                     {% if event.is_series %}
                     <div class="p-3 bg-blue-50 border border-blue-200 rounded-md">
@@ -229,7 +229,7 @@
                 <form hx-post="/portal/admin/events/{{ event.id }}/delete"
                       hx-confirm="This action cannot be undone. Continue?"
                       class="space-y-3">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
                     <div class="space-y-2">
                         <label class="flex items-start gap-2">
                             <input type="radio" name="scope" value="this" checked
@@ -264,7 +264,7 @@
                 {% else %}
                 <form hx-post="/portal/admin/events/{{ event.id }}/delete"
                       hx-confirm="Are you sure you want to delete this event? This cannot be undone.">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
                     <input type="hidden" name="scope" value="this">
                     <button type="submit"
                             class="w-full px-3 py-2 text-sm text-red-600 border border-red-300 rounded-md hover:bg-red-50">

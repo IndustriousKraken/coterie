@@ -19,15 +19,13 @@ use crate::{
     },
     integrations::{discord::DiscordIntegration, discord_client::DiscordClient},
     service::settings_service::UpdateDiscordConfig,
-    web::templates::{HtmlTemplate, UserInfo},
+    web::templates::{BaseContext, HtmlTemplate},
 };
 
 #[derive(Template)]
 #[template(path = "admin/discord_settings.html")]
 pub struct DiscordSettingsTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
-    pub csrf_token: String,
+    pub base: BaseContext,
     pub enabled: bool,
     pub guild_id: String,
     pub member_role_id: String,
@@ -63,16 +61,7 @@ async fn render_page(
     flash_success: Option<String>,
     flash_error: Option<String>,
 ) -> Response {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_default();
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     let token_undecryptable = state.service_context.settings_service
         .discord_token_undecryptable().await;
@@ -97,9 +86,7 @@ async fn render_page(
     }.to_string();
 
     HtmlTemplate(DiscordSettingsTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base,
         enabled: cfg.enabled,
         guild_id: cfg.guild_id,
         member_role_id: cfg.member_role_id,

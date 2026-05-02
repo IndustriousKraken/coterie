@@ -22,7 +22,7 @@ use crate::{
     auth::{AuthService, EmailTokenService},
     email::{self, templates::{ResetHtml, ResetText}},
     repository::MemberRepository,
-    web::templates::HtmlTemplate,
+    web::templates::{BaseContext, HtmlTemplate},
 };
 
 // ----- Forgot password -----
@@ -30,8 +30,7 @@ use crate::{
 #[derive(Template)]
 #[template(path = "auth/forgot_password.html")]
 pub struct ForgotPasswordTemplate {
-    pub current_user: Option<super::UserInfo>,
-    pub is_admin: bool,
+    pub base: BaseContext,
     pub submitted: bool,
 }
 
@@ -44,8 +43,7 @@ pub async fn forgot_password_page(
     State(_state): State<AppState>,
 ) -> Response {
     HtmlTemplate(ForgotPasswordTemplate {
-        current_user: None,
-        is_admin: false,
+        base: BaseContext::for_anon(),
         submitted: false,
     }).into_response()
 }
@@ -118,8 +116,7 @@ pub async fn forgot_password_handler(
     }
 
     HtmlTemplate(ForgotPasswordTemplate {
-        current_user: None,
-        is_admin: false,
+        base: BaseContext::for_anon(),
         submitted: true,
     }).into_response()
 }
@@ -129,8 +126,7 @@ pub async fn forgot_password_handler(
 #[derive(Template)]
 #[template(path = "auth/reset_password.html")]
 pub struct ResetPasswordTemplate {
-    pub current_user: Option<super::UserInfo>,
-    pub is_admin: bool,
+    pub base: BaseContext,
     pub token: String,
     pub error: Option<String>,
 }
@@ -138,8 +134,7 @@ pub struct ResetPasswordTemplate {
 #[derive(Template)]
 #[template(path = "auth/reset_password_result.html")]
 pub struct ResetPasswordResultTemplate {
-    pub current_user: Option<super::UserInfo>,
-    pub is_admin: bool,
+    pub base: BaseContext,
     pub success: bool,
     pub message: String,
 }
@@ -161,8 +156,7 @@ pub async fn reset_password_page(
     Query(query): Query<ResetPasswordQuery>,
 ) -> Response {
     HtmlTemplate(ResetPasswordTemplate {
-        current_user: None,
-        is_admin: false,
+        base: BaseContext::for_anon(),
         token: query.token,
         error: None,
     }).into_response()
@@ -176,16 +170,14 @@ pub async fn reset_password_handler(
     // message, without burning the one-shot token).
     if form.new_password != form.confirm_password {
         return HtmlTemplate(ResetPasswordTemplate {
-            current_user: None,
-            is_admin: false,
+            base: BaseContext::for_anon(),
             token: form.token,
             error: Some("Passwords do not match.".to_string()),
         }).into_response();
     }
     if let Err(msg) = crate::auth::validate_password(&form.new_password) {
         return HtmlTemplate(ResetPasswordTemplate {
-            current_user: None,
-            is_admin: false,
+            base: BaseContext::for_anon(),
             token: form.token,
             error: Some(msg.to_string()),
         }).into_response();
@@ -198,8 +190,7 @@ pub async fn reset_password_handler(
         Ok(Some(c)) => c,
         Ok(None) => {
             return HtmlTemplate(ResetPasswordResultTemplate {
-                current_user: None,
-                is_admin: false,
+                base: BaseContext::for_anon(),
                 success: false,
                 message: "This reset link is invalid or has expired. Request a new one and try again.".to_string(),
             }).into_response();
@@ -207,8 +198,7 @@ pub async fn reset_password_handler(
         Err(e) => {
             tracing::error!("Reset token consume failed: {}", e);
             return HtmlTemplate(ResetPasswordResultTemplate {
-                current_user: None,
-                is_admin: false,
+                base: BaseContext::for_anon(),
                 success: false,
                 message: "Something went wrong. Please try again.".to_string(),
             }).into_response();
@@ -221,8 +211,7 @@ pub async fn reset_password_handler(
         Err(e) => {
             tracing::error!("Password hash failed during reset: {}", e);
             return HtmlTemplate(ResetPasswordResultTemplate {
-                current_user: None,
-                is_admin: false,
+                base: BaseContext::for_anon(),
                 success: false,
                 message: "Something went wrong. Please try again.".to_string(),
             }).into_response();
@@ -234,8 +223,7 @@ pub async fn reset_password_handler(
     {
         tracing::error!("Password update failed: {}", e);
         return HtmlTemplate(ResetPasswordResultTemplate {
-            current_user: None,
-            is_admin: false,
+            base: BaseContext::for_anon(),
             success: false,
             message: "Something went wrong. Please try again.".to_string(),
         }).into_response();
@@ -264,8 +252,7 @@ pub async fn reset_password_handler(
     }
 
     HtmlTemplate(ResetPasswordResultTemplate {
-        current_user: None,
-        is_admin: false,
+        base: BaseContext::for_anon(),
         success: true,
         message: "Your password has been reset. You can now log in with your new password.".to_string(),
     }).into_response()

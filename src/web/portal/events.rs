@@ -9,34 +9,26 @@ use uuid::Uuid;
 
 use crate::{
     api::{
-        middleware::auth::CurrentUser,
+        middleware::auth::{CurrentUser, SessionInfo},
         state::AppState,
     },
     domain::AttendanceStatus,
-    web::templates::{HtmlTemplate, UserInfo},
+    web::templates::{BaseContext, HtmlTemplate},
 };
-use super::is_admin;
 
 #[derive(Template)]
 #[template(path = "portal/events.html")]
 pub struct EventsTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
+    pub base: BaseContext,
 }
 
 pub async fn events_page(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Extension(current_user): Extension<CurrentUser>,
+    Extension(session): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
     let template = EventsTemplate {
-        current_user: Some(user_info),
-        is_admin: is_admin(&current_user.member),
+        base: BaseContext::for_member(&state, &current_user, &session).await,
     };
 
     HtmlTemplate(template)

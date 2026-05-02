@@ -91,30 +91,18 @@ pub async fn login(
     ))
 }
 
+/// CSRF is enforced at the application root by
+/// `csrf_protect_unless_exempt`, so this handler runs only after a
+/// valid token has been seen. We don't re-validate here.
 pub async fn logout(
     State(state): State<AppState>,
-    headers: HeaderMap,
     jar: CookieJar,
 ) -> Result<(CookieJar, StatusCode)> {
-    // CSRF: same rationale as the /logout portal handler. Without
-    // this, SameSite=Lax cookies make cross-origin form-POST logouts
-    // possible. Require X-CSRF-Token; reject if absent or invalid.
     if let Some(session_cookie) = jar.get("session") {
         if let Ok(Some(session)) = state.service_context.auth_service
             .validate_session(session_cookie.value())
             .await
         {
-            let token = headers
-                .get("X-CSRF-Token")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-            let csrf_ok = state.service_context.csrf_service
-                .validate_token(&session.id, token)
-                .await
-                .unwrap_or(false);
-            if !csrf_ok {
-                return Err(AppError::Forbidden);
-            }
             let _ = state.service_context.csrf_service
                 .delete_token(&session.id)
                 .await;
@@ -128,13 +116,11 @@ pub async fn logout(
                 None,
             ).await;
         }
-        // Invalidate session in database
         let _ = state.service_context.auth_service
             .invalidate_session(session_cookie.value())
             .await;
     }
 
-    // Remove cookie
     let jar = jar.add(auth::AuthService::create_logout_cookie());
 
     Ok((jar, StatusCode::NO_CONTENT))

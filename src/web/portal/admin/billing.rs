@@ -15,15 +15,13 @@ use crate::{
         middleware::auth::{CurrentUser, SessionInfo},
         state::AppState,
     },
-    web::templates::{HtmlTemplate, UserInfo},
+    web::templates::{BaseContext, HtmlTemplate},
 };
 
 #[derive(Template)]
 #[template(path = "admin/billing_settings.html")]
 pub struct AdminBillingTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
-    pub csrf_token: String,
+    pub base: BaseContext,
     pub stripe_subscription_count: i64,
     pub stripe_enabled: bool,
     pub flash_success: Option<String>,
@@ -57,16 +55,7 @@ async fn render_page(
     session_info: SessionInfo,
     args: RenderArgs,
 ) -> Response {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_default();
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     let stripe_subscription_count = state.service_context.member_repo
         .count_by_billing_mode(crate::domain::BillingMode::StripeSubscription)
@@ -74,9 +63,7 @@ async fn render_page(
         .unwrap_or(0);
 
     HtmlTemplate(AdminBillingTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base,
         stripe_subscription_count,
         stripe_enabled: state.stripe_client.is_some(),
         flash_success: args.flash_success,
@@ -171,9 +158,7 @@ pub async fn bulk_migrate_stripe_subs(
 #[derive(Template)]
 #[template(path = "admin/billing_dashboard.html")]
 pub struct AdminBillingDashboardTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
-    pub csrf_token: String,
+    pub base: BaseContext,
     pub upcoming: Vec<UpcomingScheduledRow>,
     pub failures: Vec<FailedScheduledRow>,
     pub months: Vec<MonthlyRevenueRow>,
@@ -224,14 +209,7 @@ pub async fn billing_dashboard_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> Response {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id).await
-        .unwrap_or_else(|_| String::new());
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     // ---- Section 1: upcoming scheduled (next 30 days) ----
     let now = chrono::Utc::now();
@@ -285,9 +263,7 @@ pub async fn billing_dashboard_page(
     let months = fold_revenue_buckets(buckets);
 
     HtmlTemplate(AdminBillingDashboardTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base,
         upcoming,
         failures,
         months,

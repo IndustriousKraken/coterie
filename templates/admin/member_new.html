@@ -3,7 +3,7 @@
 {% block title %}Add New Member - Coterie Admin{% endblock %}
 
 {% block head %}
-<meta name="csrf-token" content="{{ csrf_token }}">
+<meta name="csrf-token" content="{{ base.csrf_token }}">
 {% endblock %}
 
 {% block content %}
@@ -22,7 +22,7 @@
     <div class="max-w-2xl">
         <div class="bg-white rounded-lg shadow-sm">
             <form action="/portal/admin/members/new" method="post" class="p-6 space-y-6">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
 
                 <!-- Account Information -->
                 <div>

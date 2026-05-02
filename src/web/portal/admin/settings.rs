@@ -13,7 +13,7 @@ use crate::{
         state::AppState,
     },
     domain::{AppSetting, UpdateSettingRequest},
-    web::templates::{HtmlTemplate, UserInfo},
+    web::templates::{BaseContext, HtmlTemplate},
 };
 
 // =============================================================================
@@ -43,9 +43,7 @@ pub struct SettingsCategoryInfo {
 #[derive(Template)]
 #[template(path = "admin/settings.html")]
 pub struct AdminSettingsTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
-    pub csrf_token: String,
+    pub base: BaseContext,
     pub categories: Vec<SettingsCategoryInfo>,
     pub success_message: Option<String>,
     pub error_message: Option<String>,
@@ -81,23 +79,12 @@ async fn admin_settings_page_inner(
     success_message: Option<String>,
     error_message: Option<String>,
 ) -> Response {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| "error".to_string());
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     let categories = fetch_settings_by_category(&state).await;
 
     HtmlTemplate(AdminSettingsTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base,
         categories,
         success_message,
         error_message,

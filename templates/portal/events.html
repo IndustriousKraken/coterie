@@ -9,7 +9,7 @@
             <h1 class="text-3xl font-bold text-gray-900">Events</h1>
             <p class="mt-2 text-sm text-gray-600">Browse and register for upcoming events</p>
         </div>
-        {% if is_admin %}
+        {% if base.is_admin %}
         <a href="/portal/admin/events/new"
            class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
             Create Event

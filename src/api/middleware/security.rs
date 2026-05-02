@@ -68,16 +68,15 @@ use crate::{
 ///   CSRF" tokens is a future improvement, not part of the
 ///   state-changing-action CSRF contract this layer enforces.
 ///
-/// * **`POST /auth/logout`** — logging out is idempotent and
-///   non-destructive (clears your own session). The cost-benefit of
-///   requiring a CSRF token here is poor; an attacker forcing logout
-///   is at most a minor nuisance.
+/// `POST /auth/logout` and `POST /logout` are NOT exempt — every
+/// authenticated page renders a CSRF meta tag (via `BaseContext`),
+/// HTMX stamps the token on every request, and a forced logout is
+/// the kind of action that's worth protecting end-to-end.
 const CSRF_EXEMPT_PATHS: &[(&str, &str)] = &[
     ("POST", "/api/payments/webhook/stripe"),
     ("POST", "/public/signup"),
     ("POST", "/public/donate"),
     ("POST", "/auth/login"),
-    ("POST", "/auth/logout"),
 ];
 
 fn is_exempt(method: &Method, path: &str) -> bool {

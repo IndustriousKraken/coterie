@@ -52,7 +52,7 @@
                 </p>
                 <form method="POST" action="/portal/admin/settings/billing/migrate-stripe-subs"
                       onsubmit="return confirm('Migrate {{ stripe_subscription_count }} member(s) from Stripe-managed to Coterie-managed auto-renew? Stripe subscriptions will be cancelled and Coterie will own the schedule going forward.');">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
                     <button type="submit"
                             class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
                         Migrate all to Coterie-managed

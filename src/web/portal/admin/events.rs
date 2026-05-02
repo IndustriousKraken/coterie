@@ -11,7 +11,7 @@ use crate::{
         middleware::auth::{CurrentUser, SessionInfo},
         state::AppState,
     },
-    web::templates::{HtmlTemplate, UserInfo},
+    web::templates::{BaseContext, HtmlTemplate},
     web::uploads::save_uploaded_file,
 };
 
@@ -27,9 +27,7 @@ pub struct TypeOption {
 #[derive(Template)]
 #[template(path = "admin/events.html")]
 pub struct AdminEventsTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
-    pub csrf_token: String,
+    pub base: BaseContext,
     pub events: Vec<AdminEventInfo>,
     pub total_events: i64,
     pub current_page: i64,
@@ -97,16 +95,7 @@ pub async fn admin_events_page(
 ) -> impl IntoResponse {
     let is_htmx = headers.get("HX-Request").is_some();
 
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| "error".to_string());
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     let page = query.page.unwrap_or(1).max(1);
     let per_page: i64 = 20;
@@ -207,9 +196,7 @@ pub async fn admin_events_page(
         }).into_response()
     } else {
         HtmlTemplate(AdminEventsTemplate {
-            current_user: Some(user_info),
-            is_admin: true,
-            csrf_token,
+            base,
             events: paginated_events,
             total_events,
             current_page: page,
@@ -228,9 +215,7 @@ pub async fn admin_events_page(
 #[derive(Template)]
 #[template(path = "admin/event_detail.html")]
 pub struct AdminEventDetailTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
-    pub csrf_token: String,
+    pub base: BaseContext,
     pub event: AdminEventDetail,
     pub event_types: Vec<TypeOption>,
 }
@@ -267,16 +252,7 @@ pub async fn admin_event_detail_page(
     Extension(session_info): Extension<SessionInfo>,
     Path(event_id): Path<String>,
 ) -> impl IntoResponse {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| "error".to_string());
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     let id = match uuid::Uuid::parse_str(&event_id) {
         Ok(id) => id,
@@ -333,9 +309,7 @@ pub async fn admin_event_detail_page(
         .collect();
 
     HtmlTemplate(AdminEventDetailTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base,
         event: detail,
         event_types,
     }).into_response()
@@ -344,9 +318,7 @@ pub async fn admin_event_detail_page(
 #[derive(Template)]
 #[template(path = "admin/event_new.html")]
 pub struct AdminNewEventTemplate {
-    pub current_user: Option<UserInfo>,
-    pub is_admin: bool,
-    pub csrf_token: String,
+    pub base: BaseContext,
     pub event_types: Vec<TypeOption>,
 }
 
@@ -355,16 +327,7 @@ pub async fn admin_new_event_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let user_info = UserInfo {
-        id: current_user.member.id.to_string(),
-        username: current_user.member.username.clone(),
-        email: current_user.member.email.clone(),
-    };
-
-    let csrf_token = state.service_context.csrf_service
-        .generate_token(&session_info.session_id)
-        .await
-        .unwrap_or_else(|_| "error".to_string());
+    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
 
     // Fetch active event types for the dropdown
     let event_types = state.service_context.event_type_service
@@ -381,9 +344,7 @@ pub async fn admin_new_event_page(
         .collect();
 
     HtmlTemplate(AdminNewEventTemplate {
-        current_user: Some(user_info),
-        is_admin: true,
-        csrf_token,
+        base,
         event_types,
     }).into_response()
 }

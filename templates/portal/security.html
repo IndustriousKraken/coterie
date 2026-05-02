@@ -3,7 +3,7 @@
 {% block title %}Security - Coterie{% endblock %}
 
 {% block head %}
-<meta name="csrf-token" content="{{ csrf_token }}">
+<meta name="csrf-token" content="{{ base.csrf_token }}">
 {% endblock %}
 
 {% block content %}
@@ -53,7 +53,7 @@
                           hx-post="/portal/profile/security/totp/recovery-codes/regenerate"
                           hx-target="#totp-section"
                           hx-swap="innerHTML">
-                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
                         <p class="text-sm text-gray-600">
                             Enter a current TOTP code (or one of your recovery codes) to invalidate
                             the existing set and generate a fresh one. The new codes will display once.
@@ -79,7 +79,7 @@
                           hx-post="/portal/profile/security/totp/disable"
                           hx-target="#totp-section"
                           hx-swap="innerHTML">
-                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
                         <p class="text-sm text-gray-600">
                             Enter a current TOTP code (or recovery code) to confirm. Disabling
                             also clears your recovery codes — you'll get a fresh set if you
@@ -109,7 +109,7 @@
                         hx-post="/portal/profile/security/totp/enroll/start"
                         hx-target="#totp-section"
                         hx-swap="innerHTML"
-                        hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'
+                        hx-headers='{"X-CSRF-Token": "{{ base.csrf_token }}"}'
                         class="px-4 py-2 text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
                     Enable two-factor authentication
                 </button>
