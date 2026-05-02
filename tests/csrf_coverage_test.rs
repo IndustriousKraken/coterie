@@ -140,22 +140,16 @@ async fn build_app() -> Router {
         settings.server.base_url.clone(),
     ));
 
-    let api_app = coterie::api::create_app(
-        service_context.clone(),
-        None,
-        None,
-        billing_service.clone(),
-        settings.clone(),
-    );
-
-    let web_app_state = coterie::api::state::AppState::new(
+    let app_state = coterie::api::state::AppState::new(
         service_context,
         None,
         None,
         billing_service,
         settings,
     );
-    let web_app = coterie::web::create_web_routes(web_app_state.clone());
+
+    let api_app = coterie::api::create_app(app_state.clone());
+    let web_app = coterie::web::create_web_routes(app_state.clone());
 
     // Mirror main.rs exactly: merge, then layer setup-check, then CSRF
     // (outermost). If F9 ever regresses (CSRF layered before merge),
@@ -164,11 +158,11 @@ async fn build_app() -> Router {
     api_app
         .merge(web_app)
         .layer(axum::middleware::from_fn_with_state(
-            web_app_state.clone(),
+            app_state.clone(),
             coterie::api::middleware::setup::require_setup,
         ))
         .layer(axum::middleware::from_fn_with_state(
-            web_app_state,
+            app_state,
             coterie::api::middleware::security::csrf_protect_unless_exempt,
         ))
 }

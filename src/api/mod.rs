@@ -17,28 +17,21 @@ use std::sync::Arc;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::{
-    config::Settings,
-    payments::{StripeClient, WebhookDispatcher},
-    service::{billing_service::BillingService, ServiceContext},
-};
+use crate::config::Settings;
 use state::AppState;
 
-pub fn create_app(
-    service_context: Arc<ServiceContext>,
-    stripe_client: Option<Arc<StripeClient>>,
-    webhook_dispatcher: Option<Arc<WebhookDispatcher>>,
-    billing_service: Arc<BillingService>,
-    settings: Arc<Settings>,
-) -> Router {
-    let cors_layer = build_cors_layer(&settings);
-    let app_state = AppState::new(
-        service_context,
-        stripe_client,
-        webhook_dispatcher,
-        billing_service,
-        settings,
-    );
+/// Build the API router on top of a caller-owned [`AppState`].
+///
+/// The caller (currently `main.rs`) constructs exactly one `AppState`
+/// for the process and hands the same value to `create_app` and
+/// `create_web_routes`. Sharing the state means the per-IP rate
+/// limiters (`login_limiter`, `money_limiter`) and the first-boot
+/// `setup_lock` are shared across both surfaces — without this an
+/// attacker hitting `/auth/login` on one router and `/login` on the
+/// other would get 2× the budget, and two concurrent setup-wizard
+/// POSTs (web vs api) could both pass the "no admin yet" check.
+pub fn create_app(app_state: AppState) -> Router {
+    let cors_layer = build_cors_layer(app_state.settings.as_ref());
 
     Router::new()
         // Root and health endpoints

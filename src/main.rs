@@ -362,17 +362,12 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Billing runner spawned");
     }
 
-    // Create API app
-    let api_app = api::create_app(
-        service_context.clone(),
-        stripe_client.clone(),
-        webhook_dispatcher.clone(),
-        billing_service.clone(),
-        Arc::new(settings.clone()),
-    );
-
-    // Create web app state separately
-    let web_app_state = api::state::AppState::new(
+    // Build a single AppState shared by both the API router and the web
+    // router. Per-IP rate limiters and the first-boot setup_lock are
+    // fields on AppState; constructing two states would silently halve
+    // their effectiveness (login_limiter on /auth/login and /login would
+    // be different maps).
+    let app_state = api::state::AppState::new(
         service_context,
         stripe_client,
         webhook_dispatcher,
@@ -382,7 +377,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Spawn periodic cleanup for the login rate limiter
     {
-        let limiter = web_app_state.login_limiter.clone();
+        let limiter = app_state.login_limiter.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(15 * 60)).await;
@@ -394,7 +389,7 @@ async fn main() -> anyhow::Result<()> {
     // And for the money-endpoint limiter. Shorter window means we
     // sweep more often to keep the per-IP map small.
     {
-        let limiter = web_app_state.money_limiter.clone();
+        let limiter = app_state.money_limiter.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
@@ -403,7 +398,8 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let web_app = web::create_web_routes(web_app_state.clone());
+    let api_app = api::create_app(app_state.clone());
+    let web_app = web::create_web_routes(app_state.clone());
 
     // Combine API and web routes, then apply outermost middleware.
     //
@@ -422,11 +418,11 @@ async fn main() -> anyhow::Result<()> {
     let app = api_app
         .merge(web_app)
         .layer(axum::middleware::from_fn_with_state(
-            web_app_state.clone(),
+            app_state.clone(),
             api::middleware::setup::require_setup,
         ))
         .layer(axum::middleware::from_fn_with_state(
-            web_app_state,
+            app_state,
             api::middleware::security::csrf_protect_unless_exempt,
         ));
 
