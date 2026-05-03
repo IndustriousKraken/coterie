@@ -7,6 +7,7 @@ use axum::http::HeaderMap;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
+    api::middleware::bot_challenge::BotChallengeVerifier,
     config::Settings,
     payments::{StripeClient, WebhookDispatcher},
     service::{billing_service::BillingService, ServiceContext},
@@ -134,6 +135,11 @@ pub struct AppState {
     /// Serializes first-admin setup to prevent concurrent requests from
     /// both passing the "no admin exists" check and creating two admins.
     pub setup_lock: Arc<AsyncMutex<()>>,
+    /// Bot-challenge verifier. Gates `/public/signup` and
+    /// `/public/donate` — see `api::middleware::bot_challenge`. When
+    /// `bot_challenge.provider = "disabled"` (the default) this is the
+    /// no-op `DisabledVerifier`, so existing dev flows keep working.
+    pub bot_challenge_verifier: Arc<dyn BotChallengeVerifier>,
 }
 
 impl AppState {
@@ -143,6 +149,7 @@ impl AppState {
         webhook_dispatcher: Option<Arc<WebhookDispatcher>>,
         billing_service: Arc<BillingService>,
         settings: Arc<Settings>,
+        bot_challenge_verifier: Arc<dyn BotChallengeVerifier>,
     ) -> Self {
         Self {
             service_context,
@@ -153,6 +160,7 @@ impl AppState {
             login_limiter: RateLimiter::new(5, Duration::from_secs(15 * 60)),
             money_limiter: RateLimiter::new(10, Duration::from_secs(60)),
             setup_lock: Arc::new(AsyncMutex::new(())),
+            bot_challenge_verifier,
         }
     }
 }

@@ -86,6 +86,7 @@ async fn build_app() -> Router {
         stripe: Default::default(),
         integrations: Default::default(),
         seed: Default::default(),
+        bot_challenge: Default::default(),
     };
     let settings = Arc::new(settings);
 
@@ -146,6 +147,7 @@ async fn build_app() -> Router {
         None,
         billing_service,
         settings,
+        std::sync::Arc::new(coterie::api::middleware::bot_challenge::DisabledVerifier),
     );
 
     let api_app = coterie::api::create_app(app_state.clone());

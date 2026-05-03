@@ -12,6 +12,8 @@ pub struct Settings {
     pub integrations: IntegrationConfig,
     #[serde(default)]
     pub seed: SeedConfig,
+    #[serde(default)]
+    pub bot_challenge: BotChallengeConfig,
 }
 
 // Email configuration lives in the database (app_settings table) so
@@ -101,6 +103,60 @@ pub struct AuthConfig {
     pub session_duration_hours: i64,
     pub totp_issuer: String,
 }
+
+/// Bot-challenge config (Cloudflare Turnstile by default).
+///
+/// Public POST endpoints (`/public/signup`, `/public/donate`) are CSRF-
+/// exempt by design (cross-origin posts from the marketing site), and
+/// per-IP rate limiting alone doesn't stop distributed bots from
+/// carding stolen cards or mass-creating fake signups. When `provider`
+/// is anything other than `disabled`, those handlers verify a token
+/// from the configured provider before doing any DB write or Stripe
+/// call.
+///
+/// `disabled` is the default so existing dev/test setups keep working;
+/// production deployments should set `provider = "turnstile"` and supply
+/// `secret_key` from the environment.
+#[derive(Debug, Deserialize, Clone)]
+pub struct BotChallengeConfig {
+    /// `"turnstile"` | `"disabled"`. Default `"disabled"`.
+    #[serde(default = "default_bot_challenge_provider")]
+    pub provider: String,
+    /// Public site key — embedded in the marketing site's challenge widget.
+    #[serde(default)]
+    pub site_key: String,
+    /// Server-side secret key. Source from env (e.g.
+    /// `COTERIE__BOT_CHALLENGE__SECRET_KEY`); never log it.
+    #[serde(default)]
+    pub secret_key: String,
+    /// Provider's `siteverify` endpoint. Defaults to Cloudflare's URL.
+    /// Override for hCaptcha or a self-hosted Turnstile-compatible.
+    #[serde(default = "default_bot_challenge_url")]
+    pub verification_url: String,
+    /// Per-call HTTP timeout. 3s by default — long enough to survive
+    /// transient latency, short enough that a provider outage degrades
+    /// the endpoint loudly instead of stalling browsers.
+    #[serde(default = "default_bot_challenge_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+impl Default for BotChallengeConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_bot_challenge_provider(),
+            site_key: String::new(),
+            secret_key: String::new(),
+            verification_url: default_bot_challenge_url(),
+            timeout_ms: default_bot_challenge_timeout_ms(),
+        }
+    }
+}
+
+fn default_bot_challenge_provider() -> String { "disabled".to_string() }
+fn default_bot_challenge_url() -> String {
+    "https://challenges.cloudflare.com/turnstile/v0/siteverify".to_string()
+}
+fn default_bot_challenge_timeout_ms() -> u64 { 3000 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct StripeConfig {

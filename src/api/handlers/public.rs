@@ -25,6 +25,11 @@ pub struct SignupRequest {
     /// `student`). Omit to take the org's default — the first
     /// `is_active` row in `membership_types` ordered by `sort_order`.
     pub membership_type_slug: Option<String>,
+    /// Bot-challenge token from the marketing site's CAPTCHA widget.
+    /// Required when the org has configured a provider; ignored when
+    /// `bot_challenge.provider = "disabled"`. See `BotChallengeConfig`.
+    #[serde(default)]
+    pub captcha_token: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -56,13 +61,30 @@ pub struct PublicEventsQuery {
 )]
 pub async fn signup(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<SignupRequest>,
 ) -> Result<(StatusCode, Json<SignupResponse>)> {
+    // Bot-challenge verification BEFORE any work. Fail closed: if the
+    // org has configured a provider, every request must carry a token
+    // the provider verifies. The DisabledVerifier is a no-op so dev
+    // setups don't break.
+    let ip = crate::api::state::client_ip(
+        &headers,
+        state.settings.server.trust_forwarded_for(),
+    );
+    if state.bot_challenge_verifier
+        .verify("public/signup", request.captcha_token.as_deref(), Some(ip))
+        .await
+        .is_err()
+    {
+        return Err(AppError::Forbidden);
+    }
+
     // Validate email format
     if !request.email.contains('@') {
         return Err(AppError::BadRequest("Invalid email format".to_string()));
     }
-    
+
     // Validate password strength
     if let Err(msg) = crate::auth::validate_password(&request.password) {
         return Err(AppError::BadRequest(msg.to_string()));
@@ -418,6 +440,11 @@ pub struct PublicDonateRequest {
     /// recorded as a general donation (no campaign attribution).
     #[serde(default)]
     pub campaign_slug: Option<String>,
+    /// Bot-challenge token from the marketing site's CAPTCHA widget.
+    /// Required when the org has configured a provider; ignored when
+    /// `bot_challenge.provider = "disabled"`. See `BotChallengeConfig`.
+    #[serde(default)]
+    pub captcha_token: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -465,13 +492,26 @@ pub async fn donate(
 ) -> Result<(StatusCode, Json<PublicDonateResponse>)> {
     // Rate limit by client IP. Public endpoint with payment side-effects
     // is the prime card-testing target — the limiter caps each IP at
-    // 10 attempts per minute.
+    // 10 attempts per minute. Rate limit BEFORE the bot challenge so
+    // a bursting IP can't burn through the provider's quota.
     let ip = crate::api::state::client_ip(
         &headers,
         state.settings.server.trust_forwarded_for(),
     );
     if !state.money_limiter.check_and_record(ip) {
         return Err(AppError::TooManyRequests);
+    }
+
+    // Bot-challenge verification BEFORE Stripe Checkout. Carding
+    // attacks abuse this endpoint to test stolen cards; the per-IP
+    // limiter stops single-source bursts but distributed bots roll
+    // right past it. Fail closed when a provider is configured.
+    if state.bot_challenge_verifier
+        .verify("public/donate", request.captcha_token.as_deref(), Some(ip))
+        .await
+        .is_err()
+    {
+        return Err(AppError::Forbidden);
     }
 
     // Validation. Bounds match the logged-in donate flow.

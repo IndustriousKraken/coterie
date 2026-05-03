@@ -58,15 +58,25 @@ async fn main() -> anyhow::Result<()> {
         std::fs::create_dir_all(data_dir)?;
     }
 
-    // Foreign keys are off by default in SQLite — every new
-    // connection from the pool needs PRAGMA foreign_keys = ON for
-    // the FK constraints in our migrations to actually fire. Without
-    // this they're decorative; orphan payment / saved_card / etc.
-    // rows can be inserted with member_ids that don't exist.
+    // Per-connection PRAGMAs:
+    //   foreign_keys = ON — FK constraints are off by default in SQLite;
+    //     without this they're decorative and orphan rows can sneak in.
+    //   journal_mode = WAL — many readers + one writer, vs the default
+    //     rollback journal's whole-DB lock on write. Required for the
+    //     read-while-writing workload (admin browsing while the billing
+    //     runner ticks).
+    //   busy_timeout = 5000 — sqlx-sqlite defaults to zero, so any write
+    //     contention surfaces immediately as SQLITE_BUSY. With WAL a 5s
+    //     wait is plenty for a concurrent writer to finish.
+    //   synchronous = NORMAL — the WAL-recommended setting; FULL is for
+    //     rollback journals.
     let db_pool = SqlitePoolOptions::new()
         .max_connections(settings.database.max_connections)
         .after_connect(|conn, _meta| Box::pin(async move {
             conn.execute("PRAGMA foreign_keys = ON").await?;
+            conn.execute("PRAGMA journal_mode = WAL").await?;
+            conn.execute("PRAGMA synchronous = NORMAL").await?;
+            conn.execute("PRAGMA busy_timeout = 5000").await?;
             Ok(())
         }))
         .connect(&database_url)
@@ -362,6 +372,18 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Billing runner spawned");
     }
 
+    // Bot-challenge verifier for /public/signup + /public/donate. Reuses
+    // a fresh reqwest client; reqwest::Client is internally Arc'd so a
+    // dedicated instance keeps its connection pool warm without
+    // entangling with the Stripe / Discord clients' pools.
+    let bot_challenge_verifier = api::middleware::bot_challenge::from_config(
+        &settings.bot_challenge,
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(settings.bot_challenge.timeout_ms))
+            .build()
+            .expect("reqwest client (bot_challenge) construction"),
+    );
+
     // Build a single AppState shared by both the API router and the web
     // router. Per-IP rate limiters and the first-boot setup_lock are
     // fields on AppState; constructing two states would silently halve
@@ -373,6 +395,7 @@ async fn main() -> anyhow::Result<()> {
         webhook_dispatcher,
         billing_service,
         Arc::new(settings.clone()),
+        bot_challenge_verifier,
     );
 
     // Spawn periodic cleanup for the login rate limiter
