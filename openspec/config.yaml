@@ -18,3 +18,30 @@ schema: spec-driven
 #       - Always include a "Non-goals" section
 #     tasks:
 #       - Break tasks into chunks of max 2 hours
+
+context: |
+    Coterie is a single-tenant member-management web app for clubs and
+    non-profits. Rust / Axum / sqlx (SQLite, WAL) / Askama + HTMX +
+    Alpine.js.
+
+    Three HTTP surfaces, each with a distinct job:
+      /portal/* — server-rendered HTML+HTMX. THE ONLY admin surface.
+                  Session-auth + CSRF + admin middleware.
+      /public/* — JSON API the org's marketing site calls cross-origin.
+                  CORS-gated, CSRF-exempt by design. Per-IP rate-limited
+                  on money-moving endpoints. Bot-challenge gates signup
+                  + donate.
+      /api/*    — narrow JSON: Stripe webhook (HMAC-authed) and
+                  saved-card endpoints (Stripe.js calls these directly).
+                  NOT for admin actions. Adding admin shape here is a
+                  load-bearing rule violation — see CLAUDE.md.
+
+    Secure-by-default: CSRF top-level on the merged router, admin
+    middleware per-router, rate limiting on money-moving + login,
+    HttpOnly+SameSite=Lax cookies. Side-effects (audit log,
+    integration events) live in services so handlers can't accidentally
+    skip them.
+
+    Rust style: no comments unless the WHY is non-obvious. Validate at
+    boundaries; trust internal callers. Sum types over nullable fields.
+    Don't add backwards-compat shims when changing internal code.
