@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -135,6 +136,10 @@ pub struct AppState {
     /// Serializes first-admin setup to prevent concurrent requests from
     /// both passing the "no admin exists" check and creating two admins.
     pub setup_lock: Arc<AsyncMutex<()>>,
+    /// Process-local cache for "has any admin been observed in the DB?".
+    /// Set to true on the first positive lookup and never cleared. See
+    /// `require_setup` for the lifecycle rationale.
+    pub admin_exists_observed: Arc<AtomicBool>,
     /// Bot-challenge verifier. Gates `/public/signup` and
     /// `/public/donate` — see `api::middleware::bot_challenge`. When
     /// `bot_challenge.provider = "disabled"` (the default) this is the
@@ -160,6 +165,7 @@ impl AppState {
             login_limiter: RateLimiter::new(5, Duration::from_secs(15 * 60)),
             money_limiter: RateLimiter::new(10, Duration::from_secs(60)),
             setup_lock: Arc::new(AsyncMutex::new(())),
+            admin_exists_observed: Arc::new(AtomicBool::new(false)),
             bot_challenge_verifier,
         }
     }

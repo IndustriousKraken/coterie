@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use askama::Template;
 use axum::{
     extract::State,
@@ -146,6 +148,12 @@ pub async fn setup_handler(
             error: Some("Failed to promote user to admin".to_string()),
         })).into_response();
     }
+
+    // Proactively arm the middleware cache so the very next request
+    // skips the redundant `SELECT 1 FROM members WHERE is_admin = 1`
+    // round-trip. Without this, the middleware would learn this same
+    // fact via its own DB query on the next call.
+    state.admin_exists_observed.store(true, Ordering::Relaxed);
 
     // Persist the org name to the org.name setting so it shows up in
     // emails, banners, and the public site. Soft-fail: setup itself
