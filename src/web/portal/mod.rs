@@ -56,23 +56,21 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/announcements/:id/delete", post(admin::announcements::admin_delete_announcement))
         .route("/announcements/:id/publish", post(admin::announcements::admin_publish_announcement))
         .route("/announcements/:id/unpublish", post(admin::announcements::admin_unpublish_announcement))
-        // Type management
+        // Type management. Membership-type routes are registered first
+        // with static `membership` segments so Axum's static-over-dynamic
+        // matching prefers them; event/announcement types share a single
+        // handler set parameterized by `:kind` ("event" | "announcement").
         .route("/types", get(admin::types::admin_types_page))
-        .route("/types/event/new", get(admin::types::admin_new_event_type_page))
-        .route("/types/event/new", post(admin::types::admin_create_event_type))
-        .route("/types/event/:id", get(admin::types::admin_edit_event_type_page))
-        .route("/types/event/:id", post(admin::types::admin_update_event_type))
-        .route("/types/event/:id/delete", post(admin::types::admin_delete_event_type))
-        .route("/types/announcement/new", get(admin::types::admin_new_announcement_type_page))
-        .route("/types/announcement/new", post(admin::types::admin_create_announcement_type))
-        .route("/types/announcement/:id", get(admin::types::admin_edit_announcement_type_page))
-        .route("/types/announcement/:id", post(admin::types::admin_update_announcement_type))
-        .route("/types/announcement/:id/delete", post(admin::types::admin_delete_announcement_type))
         .route("/types/membership/new", get(admin::types::admin_new_membership_type_page))
         .route("/types/membership/new", post(admin::types::admin_create_membership_type))
         .route("/types/membership/:id", get(admin::types::admin_edit_membership_type_page))
         .route("/types/membership/:id", post(admin::types::admin_update_membership_type))
         .route("/types/membership/:id/delete", post(admin::types::admin_delete_membership_type))
+        .route("/types/:kind/new", get(admin::types::admin_new_basic_type_page))
+        .route("/types/:kind/new", post(admin::types::admin_create_basic_type))
+        .route("/types/:kind/:id", get(admin::types::admin_edit_basic_type_page))
+        .route("/types/:kind/:id", post(admin::types::admin_update_basic_type))
+        .route("/types/:kind/:id/delete", post(admin::types::admin_delete_basic_type))
         // Settings
         .route("/settings", get(admin::settings::admin_settings_page))
         .route("/settings", post(admin::settings::admin_update_setting))

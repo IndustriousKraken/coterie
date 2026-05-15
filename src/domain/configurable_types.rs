@@ -3,11 +3,11 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 // =============================================================================
-// Event Type
+// Basic Type (shared shape for event types and announcement types)
 // =============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct EventTypeConfig {
+pub struct BasicType {
     pub id: Uuid,
     pub name: String,
     pub slug: String,
@@ -20,8 +20,55 @@ pub struct EventTypeConfig {
     pub updated_at: DateTime<Utc>,
 }
 
+// Closed enum — `table()`, `usage_table()`, `usage_fk()`, and `display_name()`
+// return compile-time `&'static str` constants. SQL strings interpolate these
+// safely because they're never user-controlled; do not extend this enum to
+// admit user input.
+#[derive(Debug, Clone, Copy)]
+pub enum BasicTypeKind {
+    Event,
+    Announcement,
+}
+
+impl BasicTypeKind {
+    pub fn table(self) -> &'static str {
+        match self {
+            BasicTypeKind::Event => "event_types",
+            BasicTypeKind::Announcement => "announcement_types",
+        }
+    }
+
+    pub fn usage_table(self) -> &'static str {
+        match self {
+            BasicTypeKind::Event => "events",
+            BasicTypeKind::Announcement => "announcements",
+        }
+    }
+
+    pub fn usage_fk(self) -> &'static str {
+        match self {
+            BasicTypeKind::Event => "event_type_id",
+            BasicTypeKind::Announcement => "announcement_type_id",
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            BasicTypeKind::Event => "event type",
+            BasicTypeKind::Announcement => "announcement type",
+        }
+    }
+
+    pub fn usage_noun_plural(self) -> &'static str {
+        match self {
+            BasicTypeKind::Event => "events",
+            BasicTypeKind::Announcement => "announcements",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateEventTypeRequest {
+pub struct CreateBasicTypeRequest {
     pub name: String,
     pub slug: Option<String>,
     pub description: Option<String>,
@@ -30,7 +77,7 @@ pub struct CreateEventTypeRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct UpdateEventTypeRequest {
+pub struct UpdateBasicTypeRequest {
     pub name: Option<String>,
     pub description: Option<String>,
     pub color: Option<String>,
@@ -39,42 +86,15 @@ pub struct UpdateEventTypeRequest {
     pub is_active: Option<bool>,
 }
 
-// =============================================================================
-// Announcement Type
-// =============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct AnnouncementTypeConfig {
-    pub id: Uuid,
-    pub name: String,
-    pub slug: String,
-    pub description: Option<String>,
-    pub color: Option<String>,
-    pub icon: Option<String>,
-    pub sort_order: i32,
-    pub is_active: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateAnnouncementTypeRequest {
-    pub name: String,
-    pub slug: Option<String>,
-    pub description: Option<String>,
-    pub color: Option<String>,
-    pub icon: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct UpdateAnnouncementTypeRequest {
-    pub name: Option<String>,
-    pub description: Option<String>,
-    pub color: Option<String>,
-    pub icon: Option<String>,
-    pub sort_order: Option<i32>,
-    pub is_active: Option<bool>,
-}
+// Old domain names live on as aliases so the API boundary keeps reading as
+// "event-type-flavored" / "announcement-type-flavored" data. The aliases are
+// in use, not a backwards-compat shim.
+pub type EventTypeConfig = BasicType;
+pub type AnnouncementTypeConfig = BasicType;
+pub type CreateEventTypeRequest = CreateBasicTypeRequest;
+pub type CreateAnnouncementTypeRequest = CreateBasicTypeRequest;
+pub type UpdateEventTypeRequest = UpdateBasicTypeRequest;
+pub type UpdateAnnouncementTypeRequest = UpdateBasicTypeRequest;
 
 // =============================================================================
 // Membership Type
@@ -210,5 +230,18 @@ mod tests {
         assert_eq!(BillingPeriod::from_str("yearly"), Some(BillingPeriod::Yearly));
         assert_eq!(BillingPeriod::from_str("YEARLY"), Some(BillingPeriod::Yearly));
         assert_eq!(BillingPeriod::from_str("invalid"), None);
+    }
+
+    #[test]
+    fn test_basic_type_kind_accessors() {
+        assert_eq!(BasicTypeKind::Event.table(), "event_types");
+        assert_eq!(BasicTypeKind::Event.usage_table(), "events");
+        assert_eq!(BasicTypeKind::Event.usage_fk(), "event_type_id");
+        assert_eq!(BasicTypeKind::Event.display_name(), "event type");
+
+        assert_eq!(BasicTypeKind::Announcement.table(), "announcement_types");
+        assert_eq!(BasicTypeKind::Announcement.usage_table(), "announcements");
+        assert_eq!(BasicTypeKind::Announcement.usage_fk(), "announcement_type_id");
+        assert_eq!(BasicTypeKind::Announcement.display_name(), "announcement type");
     }
 }

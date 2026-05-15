@@ -4,10 +4,11 @@ use uuid::Uuid;
 use crate::{
     domain::{
         BillingPeriod, CreateMembershipTypeRequest, MembershipTypeConfig,
-        UpdateMembershipTypeRequest, validate_hex_color,
+        UpdateMembershipTypeRequest,
     },
     error::{AppError, Result},
     repository::MembershipTypeRepository,
+    service::configurable_types::validate_hex_color_for_request,
 };
 
 pub struct MembershipTypeService {
@@ -36,15 +37,7 @@ impl MembershipTypeService {
 
     /// Create a new membership type
     pub async fn create(&self, request: CreateMembershipTypeRequest) -> Result<MembershipTypeConfig> {
-        // Validate color format if provided
-        if let Some(ref color) = request.color {
-            if !validate_hex_color(color) {
-                return Err(AppError::BadRequest(format!(
-                    "Invalid color format: {}. Expected hex color like #FF0000",
-                    color
-                )));
-            }
-        }
+        validate_hex_color_for_request(request.color.as_deref())?;
 
         // Validate billing period
         if BillingPeriod::from_str(&request.billing_period).is_none() {
@@ -76,15 +69,7 @@ impl MembershipTypeService {
 
     /// Update an existing membership type
     pub async fn update(&self, id: Uuid, request: UpdateMembershipTypeRequest) -> Result<MembershipTypeConfig> {
-        // Validate color format if provided
-        if let Some(ref color) = request.color {
-            if !validate_hex_color(color) {
-                return Err(AppError::BadRequest(format!(
-                    "Invalid color format: {}. Expected hex color like #FF0000",
-                    color
-                )));
-            }
-        }
+        validate_hex_color_for_request(request.color.as_deref())?;
 
         // Validate billing period if provided
         if let Some(ref billing_period) = request.billing_period {
