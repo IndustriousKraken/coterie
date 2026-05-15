@@ -49,10 +49,17 @@
 - [ ] 7.1 `id: Uuid` renders to its hyphenated string via `Display`. `{{ member.id }}` continues to produce the same string. Verify this on the admin member detail page (which renders many `{{ member.id }}` instances inside `hx-post` URLs).
 - [ ] 7.2 If any template needs a non-default representation of the UUID (none expected), add it as a filter.
 
-## 8. Verify rendered output is byte-equivalent
+## 8. Golden-snapshot tests for the migrated templates
 
-- [ ] 8.1 For each migrated page (dashboard, profile, admin members table, admin member detail), capture the rendered HTML before and after the change for a known fixture member; diff. Any diff must be pure whitespace or a deliberate fix.
-- [ ] 8.2 Run `cargo test --features test-utils`. Existing handler-level tests should pass; if any fail, investigate before adjusting the test (a failing test is most likely surfacing a real diff).
+Goal: prove the migrated templates produce byte-equivalent output to today's. Use a golden-snapshot test pattern — the test renders each template with fixture data and compares against a committed `.golden` HTML file. This runs in the autocoder's sandbox without a browser or a running server.
+
+**Important workflow note for the agent**: generate the golden files from the *pre-change* templates first (Section 8.1), commit them, THEN make the field-type changes (Sections 3 and 4) and template migrations (Sections 5–7), THEN re-run the snapshot tests to assert no drift. If the goldens are generated after the change, they capture the new output as the new baseline — which doesn't catch any drift.
+
+- [ ] 8.1 BEFORE making any field-type or template changes, create `tests/member_template_snapshots.rs` that renders each of the seven affected templates (dashboard, profile, security if applicable, admin members.html, admin members_table.html, admin member_detail.html, admin member_new.html if applicable) with a fixed-fixture `MemberInfo` / `AdminMemberInfo` (specific UUID, fixed `joined_at` timestamp, fixed `dues_paid_until`, a representative status for each variant — `Active`, `Pending`, `Expired`, `Suspended`, `Honorary`). Write each rendered output to `tests/snapshots/<template_name>__<status>.golden.html`. Commit these as the baseline.
+- [ ] 8.2 Add a test in the same file that re-renders each template with the same fixture and asserts equality with the corresponding `.golden.html` file. Run `cargo test --features test-utils --test member_template_snapshots` and confirm all snapshots match (they will at this point — same code, same goldens just captured).
+- [ ] 8.3 Now perform the field-type changes (Section 3, 4) and template migrations (Sections 5, 6, 7).
+- [ ] 8.4 Re-run `cargo test --features test-utils --test member_template_snapshots`. Every snapshot SHALL still match — that's the regression net for "rendered HTML is byte-equivalent." Any failure is real drift; fix the change, not the golden.
+- [ ] 8.5 Run the full `cargo test --features test-utils` suite. Existing handler-level tests should pass; if any fail, investigate before adjusting the test (a failing test is most likely surfacing a real diff).
 
 ## 9. Confirm scope boundaries
 

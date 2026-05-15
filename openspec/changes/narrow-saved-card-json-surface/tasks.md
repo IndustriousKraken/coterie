@@ -38,14 +38,18 @@
 - [ ] 5.1 `cargo build --all-targets --features test-utils` — clean. Any errors are stragglers in tests or other consumers; fix.
 - [ ] 5.2 `cargo test --features test-utils` — full suite passes.
 
-## 6. Manual smoke test of the payment-methods page
+## 6. Integration tests for the surviving card flows
 
-- [ ] 6.1 Start the dev server, log in as a member with a Stripe-configured environment.
-- [ ] 6.2 Visit `/portal/payments/methods`. The saved-card list renders (HTML endpoint).
-- [ ] 6.3 Add a new card via the Stripe.js form. Confirm SetupIntent fetch (JSON `setup-intent`) and save fetch (JSON `POST /cards`) succeed; the new card appears in the list.
-- [ ] 6.4 Click "Make default" on a non-default card. HTMX `PUT /portal/api/payments/cards/:id/default` updates the list fragment correctly.
-- [ ] 6.5 Click "Remove" on a card. HTMX `DELETE /portal/api/payments/cards/:id` removes the card and updates the list.
-- [ ] 6.6 Confirm `GET /api/payments/cards` returns 404 (e.g., via curl with a session cookie). The route is gone.
+Goal: prove (without a real browser or real Stripe) that the kept JSON endpoints and the HTML endpoints both work end-to-end, and that the deleted JSON endpoints actually return 404. Use the existing test harness — `FakeStripeGateway` (gated by `--features test-utils`) and an in-memory SQLite pool. Reference patterns: `tests/stripe_gateway_test.rs`, `tests/stripe_webhook_test.rs`.
+
+- [ ] 6.1 Create `tests/saved_card_routes_test.rs` (new file) that boots a `Router` via `coterie::api::create_app(app_state)` + `coterie::web::create_web_routes(app_state)`, wired to an in-memory SQLite pool with migrations applied and a `FakeStripeGateway`-backed `StripeClient`. Use `tower::ServiceExt::oneshot` to drive requests through the router without binding a TCP socket.
+- [ ] 6.2 Test `deleted_json_endpoints_return_404`: send `GET /api/payments/cards`, `DELETE /api/payments/cards/<some-uuid>`, and `PUT /api/payments/cards/<some-uuid>/default` (each with a valid session cookie + CSRF token) and assert each response is `404 NOT_FOUND`. This is the regression net for "did the route actually get unregistered."
+- [ ] 6.3 Test `setup_intent_flow_still_works`: log in as a test member (helper: write a session row directly), POST to `/api/payments/cards/setup-intent` with a valid CSRF token, assert `200 OK` and that the response JSON contains a `client_secret`. Confirm the `FakeStripeGateway` recorded a `CreateSetupIntent` call.
+- [ ] 6.4 Test `save_card_flow_still_works`: with the fake gateway primed to accept an attached payment method, POST to `/api/payments/cards` with a `pm_*` id, assert `201 CREATED` (or whatever the handler returns today — check before writing the assertion) and that a `saved_cards` row exists for the test member.
+- [ ] 6.5 Test `html_list_endpoint_returns_fragment`: GET `/portal/api/payments/cards`, assert `200 OK`, content-type `text/html`, and that the response body contains a known marker from `_saved_card_list.html` (e.g., the `data-card-id` attribute or a class name).
+- [ ] 6.6 Test `html_delete_endpoint_works`: seed a `saved_cards` row, DELETE `/portal/api/payments/cards/<card_id>` with a valid CSRF token, assert `200 OK` (HTML fragment response) and that the row is gone from the DB.
+- [ ] 6.7 Test `html_set_default_endpoint_works`: seed two `saved_cards` rows for one member (only the first marked default), PUT `/portal/api/payments/cards/<other_card_id>/default`, assert `200 OK` and that the DB now shows the other card as default and the original as not-default.
+- [ ] 6.8 Run `cargo test --features test-utils --test saved_card_routes_test` and confirm all subtests pass.
 
 ## 7. Spec sync
 

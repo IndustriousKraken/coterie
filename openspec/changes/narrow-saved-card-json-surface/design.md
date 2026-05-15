@@ -86,5 +86,5 @@ Single-PR removal; no DB changes, no flags.
 3. Migrate or delete tests that exercised the deleted endpoints.
 4. `cargo build --all-targets --features test-utils`.
 5. `cargo test --features test-utils`.
-6. Spot-check the payment-methods page in the portal: list renders (HTML endpoint), delete works (HTML endpoint), set-default works (HTML endpoint), add-card flow works end-to-end (JSON setup-intent + JSON save).
+6. The new `tests/saved_card_routes_test.rs` (see tasks.md Section 6) exercises the kept JSON endpoints, the kept HTML endpoints, and the deleted-endpoint 404s through the router — no browser or real Stripe needed. `FakeStripeGateway` stands in for Stripe; in-memory SQLite stands in for the DB.
 7. Deploy normally. `git revert` is the rollback.

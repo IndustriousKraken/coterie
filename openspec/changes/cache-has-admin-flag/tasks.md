@@ -52,11 +52,14 @@
 - [ ] 4.2 Add a complementary unit test that confirms the negative case (no admin, no cache): construct an `AppState` with an empty `members` table, invoke `require_setup`, assert a redirect to `/setup`, assert `admin_exists_observed` is still `false`.
 - [ ] 4.3 `cargo test --features test-utils` — all pass.
 
-## 5. Verify end-to-end
+## 5. Integration test of the wizard → cache transition
 
-- [ ] 5.1 Start the dev server with an empty `coterie.db`. Confirm the first request redirects to `/setup`.
-- [ ] 5.2 Complete the setup wizard. Confirm subsequent requests forward correctly to the requested page.
-- [ ] 5.3 (Optional, for verification of the cache benefit) Enable sqlx query logging temporarily; observe that after the wizard completes, the `SELECT 1 FROM members WHERE is_admin = 1 LIMIT 1` query no longer appears on subsequent requests.
+Section 4's unit tests already prove the middleware caches a positive lookup and survives a post-cache DB truncation. This section adds one router-level integration test for the wizard-arms-cache path so the spec scenario about proactive store at the end of setup is exercised end-to-end without any manual steps.
+
+- [ ] 5.1 Add a test (in `src/api/middleware/setup.rs` test module or a new `tests/setup_redirect_test.rs`) that boots a `Router` via `coterie::api::create_app` + `coterie::web::create_web_routes` against an in-memory SQLite pool with migrations applied but no admin row.
+- [ ] 5.2 Drive a request to a non-static, non-setup path through `tower::ServiceExt::oneshot`. Assert: response is a redirect to `/setup`, and `state.admin_exists_observed.load(Ordering::Relaxed)` is still `false`.
+- [ ] 5.3 Drive a POST to `/setup` (the wizard handler) with valid form data via `oneshot`. Assert: response is success, and `state.admin_exists_observed.load(Ordering::Relaxed)` is now `true` (this proves the proactive store in `src/web/templates/setup.rs` actually fires).
+- [ ] 5.4 Drive a follow-up request to the same non-static path. Assert: response forwards through (no redirect), and the test asserts via sqlx query logging or a wrapper counter that `check_admin_exists` was NOT invoked on this third request. If counting calls is awkward, settle for asserting the forward response — the unit tests in Section 4 already prove the no-query-when-cached path.
 
 ## 6. Spec sync
 
