@@ -11,8 +11,7 @@ pub mod payment_repository;
 pub mod saved_card_repository;
 pub mod scheduled_payment_repository;
 pub mod donation_repository;
-pub mod event_type_repository;
-pub mod announcement_type_repository;
+pub mod basic_type_repository;
 pub mod membership_type_repository;
 pub mod processed_events_repository;
 
@@ -24,8 +23,7 @@ pub use payment_repository::SqlitePaymentRepository;
 pub use saved_card_repository::SqliteSavedCardRepository;
 pub use scheduled_payment_repository::SqliteScheduledPaymentRepository;
 pub use donation_repository::SqliteDonationCampaignRepository;
-pub use event_type_repository::{EventTypeRepository, SqliteEventTypeRepository};
-pub use announcement_type_repository::{AnnouncementTypeRepository, SqliteAnnouncementTypeRepository};
+pub use basic_type_repository::{BasicTypeRepository, SqliteBasicTypeRepository};
 pub use membership_type_repository::{MembershipTypeRepository, SqliteMembershipTypeRepository};
 pub use processed_events_repository::{ProcessedEventsRepository, SqliteProcessedEventsRepository};
 

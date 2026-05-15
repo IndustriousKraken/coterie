@@ -3,7 +3,7 @@ use config::{Config, File};
 use coterie::{
     domain::{
         CreateMemberRequest, MemberStatus, UpdateMemberRequest,
-        CreateEventTypeRequest, CreateAnnouncementTypeRequest, CreateMembershipTypeRequest,
+        BasicTypeKind, CreateBasicTypeRequest, CreateMembershipTypeRequest,
         MembershipTypeConfig as DbMembershipTypeConfig,
         Event, EventType, EventVisibility,
         Announcement, AnnouncementType,
@@ -14,8 +14,7 @@ use coterie::{
         EventRepository, SqliteEventRepository,
         AnnouncementRepository, SqliteAnnouncementRepository,
         PaymentRepository, SqlitePaymentRepository,
-        EventTypeRepository, SqliteEventTypeRepository,
-        AnnouncementTypeRepository, SqliteAnnouncementTypeRepository,
+        BasicTypeRepository, SqliteBasicTypeRepository,
         MembershipTypeRepository, SqliteMembershipTypeRepository,
     },
 };
@@ -368,8 +367,7 @@ async fn main() -> anyhow::Result<()> {
     let event_repo = SqliteEventRepository::new(db_pool.clone());
     let announcement_repo = SqliteAnnouncementRepository::new(db_pool.clone());
     let payment_repo = SqlitePaymentRepository::new(db_pool.clone());
-    let event_type_repo = SqliteEventTypeRepository::new(db_pool.clone());
-    let announcement_type_repo = SqliteAnnouncementTypeRepository::new(db_pool.clone());
+    let basic_type_repo = SqliteBasicTypeRepository::new(db_pool.clone());
     let membership_type_repo = SqliteMembershipTypeRepository::new(db_pool.clone());
 
     // =========================================================================
@@ -379,7 +377,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Seed event types from config
     for et in &config.event_types {
-        event_type_repo.create(CreateEventTypeRequest {
+        basic_type_repo.create(BasicTypeKind::Event, CreateBasicTypeRequest {
             name: et.name.clone(),
             slug: Some(et.slug.clone()),
             description: None,
@@ -391,7 +389,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Seed announcement types from config
     for at in &config.announcement_types {
-        announcement_type_repo.create(CreateAnnouncementTypeRequest {
+        basic_type_repo.create(BasicTypeKind::Announcement, CreateBasicTypeRequest {
             name: at.name.clone(),
             slug: Some(at.slug.clone()),
             description: None,

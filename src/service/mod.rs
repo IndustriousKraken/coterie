@@ -1,10 +1,10 @@
 pub mod audit_service;
 pub mod billing_service;
+pub mod configurable_types;
+pub mod basic_type_service;
 pub mod payment_service;
 pub mod recurring_event_service;
 pub mod settings_service;
-pub mod event_type_service;
-pub mod announcement_type_service;
 pub mod membership_type_service;
 
 use std::sync::Arc;
@@ -12,12 +12,12 @@ use sqlx::SqlitePool;
 use crate::repository::*;
 use crate::integrations::IntegrationManager;
 use crate::auth::{AuthService, CsrfService, PendingLoginService, TotpService};
+use crate::domain::BasicTypeKind;
 use crate::email::EmailSender;
 use audit_service::AuditService;
 use payment_service::PaymentService;
 use settings_service::SettingsService;
-use event_type_service::EventTypeService;
-use announcement_type_service::AnnouncementTypeService;
+use basic_type_service::BasicTypeService;
 use membership_type_service::MembershipTypeService;
 use recurring_event_service::RecurringEventService;
 
@@ -37,8 +37,8 @@ pub struct ServiceContext {
     pub totp_service: Arc<TotpService>,
     pub pending_login_service: Arc<PendingLoginService>,
     pub settings_service: Arc<SettingsService>,
-    pub event_type_service: Arc<EventTypeService>,
-    pub announcement_type_service: Arc<AnnouncementTypeService>,
+    pub event_type_service: Arc<BasicTypeService>,
+    pub announcement_type_service: Arc<BasicTypeService>,
     pub membership_type_service: Arc<MembershipTypeService>,
     pub email_sender: Arc<dyn EmailSender>,
     pub audit_service: Arc<AuditService>,
@@ -70,9 +70,10 @@ impl ServiceContext {
         ));
         let audit_service = Arc::new(AuditService::new(db_pool.clone()));
 
-        // Create type repositories
-        let event_type_repo = Arc::new(SqliteEventTypeRepository::new(db_pool.clone()));
-        let announcement_type_repo = Arc::new(SqliteAnnouncementTypeRepository::new(db_pool.clone()));
+        // Create type repositories. One basic-type repo serves both event
+        // and announcement kinds; membership types stay separate.
+        let basic_type_repo: Arc<dyn BasicTypeRepository> =
+            Arc::new(SqliteBasicTypeRepository::new(db_pool.clone()));
         let membership_type_repo = Arc::new(SqliteMembershipTypeRepository::new(db_pool.clone()));
 
         // Create saved card and scheduled payment repositories
@@ -80,9 +81,17 @@ impl ServiceContext {
         let scheduled_payment_repo: Arc<dyn ScheduledPaymentRepository> = Arc::new(SqliteScheduledPaymentRepository::new(db_pool.clone()));
         let donation_campaign_repo: Arc<dyn DonationCampaignRepository> = Arc::new(SqliteDonationCampaignRepository::new(db_pool.clone()));
 
-        // Create type services
-        let event_type_service = Arc::new(EventTypeService::new(event_type_repo));
-        let announcement_type_service = Arc::new(AnnouncementTypeService::new(announcement_type_repo));
+        // Create type services. Two BasicTypeService instances share the
+        // basic-type repo Arc; each bakes in its own BasicTypeKind so call
+        // sites stay unchanged.
+        let event_type_service = Arc::new(BasicTypeService::new(
+            basic_type_repo.clone(),
+            BasicTypeKind::Event,
+        ));
+        let announcement_type_service = Arc::new(BasicTypeService::new(
+            basic_type_repo.clone(),
+            BasicTypeKind::Announcement,
+        ));
         let membership_type_service = Arc::new(MembershipTypeService::new(membership_type_repo));
 
         let payment_service = Arc::new(PaymentService::new(
