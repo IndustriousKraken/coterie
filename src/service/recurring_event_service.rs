@@ -175,7 +175,7 @@ impl RecurringEventService {
         .bind(series.id.to_string())
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         let anchor = match first_occurrence_start {
             Some(naive) => DateTime::from_naive_utc_and_offset(naive, Utc),
@@ -268,16 +268,16 @@ impl RecurringEventService {
         .bind(series_id.to_string())
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         let id_str: String = row
             .ok_or_else(|| AppError::NotFound("series has no occurrences".to_string()))?
             .try_get("id")
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
         let id = Uuid::parse_str(&id_str)
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(|e| AppError::Internal(e.to_string()))?;
         self.event_repo.find_by_id(id).await?.ok_or_else(|| {
-            AppError::Database("prototype occurrence vanished".to_string())
+            AppError::Internal("prototype occurrence vanished".to_string())
         })
     }
 

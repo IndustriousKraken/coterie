@@ -34,9 +34,9 @@ impl SqliteSavedCardRepository {
 
     fn row_to_card(row: SavedCardRow) -> Result<SavedCard> {
         Ok(SavedCard {
-            id: Uuid::parse_str(&row.id).map_err(|e| AppError::Database(e.to_string()))?,
+            id: Uuid::parse_str(&row.id).map_err(|e| AppError::Internal(e.to_string()))?,
             member_id: Uuid::parse_str(&row.member_id)
-                .map_err(|e| AppError::Database(e.to_string()))?,
+                .map_err(|e| AppError::Internal(e.to_string()))?,
             stripe_payment_method_id: row.stripe_payment_method_id,
             card_last_four: row.card_last_four,
             card_brand: row.card_brand,
@@ -77,10 +77,10 @@ impl SavedCardRepository for SqliteSavedCardRepository {
         .bind(now)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         self.find_by_id(card.id).await?.ok_or_else(|| {
-            AppError::Database("Failed to retrieve created card".to_string())
+            AppError::Internal("Failed to retrieve created card".to_string())
         })
     }
 
@@ -97,7 +97,7 @@ impl SavedCardRepository for SqliteSavedCardRepository {
         .bind(id_str)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         match row {
             Some(r) => Ok(Some(Self::row_to_card(r)?)),
@@ -119,7 +119,7 @@ impl SavedCardRepository for SqliteSavedCardRepository {
         .bind(member_id_str)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         rows.into_iter().map(Self::row_to_card).collect()
     }
@@ -137,7 +137,7 @@ impl SavedCardRepository for SqliteSavedCardRepository {
         .bind(member_id_str)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         match row {
             Some(r) => Ok(Some(Self::row_to_card(r)?)),
@@ -162,7 +162,7 @@ impl SavedCardRepository for SqliteSavedCardRepository {
         .bind(&member_id_str)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         // Set new default
         sqlx::query(
@@ -177,7 +177,7 @@ impl SavedCardRepository for SqliteSavedCardRepository {
         .bind(&member_id_str)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         Ok(())
     }
@@ -188,7 +188,7 @@ impl SavedCardRepository for SqliteSavedCardRepository {
             .bind(id_str)
             .execute(&self.pool)
             .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
         Ok(())
     }
 }

@@ -72,7 +72,7 @@ pub async fn issue_for_member(
     .bind(member_id.to_string())
     .execute(pool)
     .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
+    .map_err(AppError::Database)?;
     Ok(codes.plaintext)
 }
 
@@ -96,7 +96,7 @@ pub async fn try_consume(
     }
 
     let mut tx = pool.begin().await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
     let json_opt: Option<String> = sqlx::query_scalar(
         "SELECT totp_recovery_codes FROM members WHERE id = ?",
@@ -104,13 +104,13 @@ pub async fn try_consume(
     .bind(member_id.to_string())
     .fetch_optional(&mut *tx)
     .await
-    .map_err(|e| AppError::Database(e.to_string()))?
+    .map_err(AppError::Database)?
     .flatten();
 
     let json = match json_opt {
         Some(s) if !s.is_empty() => s,
         _ => {
-            tx.commit().await.map_err(|e| AppError::Database(e.to_string()))?;
+            tx.commit().await.map_err(AppError::Database)?;
             return Ok(false);
         }
     };
@@ -142,13 +142,13 @@ pub async fn try_consume(
             .bind(member_id.to_string())
             .execute(&mut *tx)
             .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
             true
         }
         None => false,
     };
 
-    tx.commit().await.map_err(|e| AppError::Database(e.to_string()))?;
+    tx.commit().await.map_err(AppError::Database)?;
     Ok(consumed)
 }
 
@@ -161,7 +161,7 @@ pub async fn remaining_count(pool: &SqlitePool, member_id: Uuid) -> Result<usize
     .bind(member_id.to_string())
     .fetch_optional(pool)
     .await
-    .map_err(|e| AppError::Database(e.to_string()))?
+    .map_err(AppError::Database)?
     .flatten();
     let json = match json {
         Some(s) if !s.is_empty() => s,

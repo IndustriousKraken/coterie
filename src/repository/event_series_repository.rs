@@ -55,13 +55,13 @@ impl SeriesRow {
     fn into_domain(self) -> Result<EventSeries> {
         Ok(EventSeries {
             id: Uuid::parse_str(&self.id)
-                .map_err(|e| AppError::Database(e.to_string()))?,
+                .map_err(|e| AppError::Internal(e.to_string()))?,
             rule_kind: self.rule_kind,
             rule_json: self.rule_json,
             until_date: self.until_date.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
             materialized_through: DateTime::from_naive_utc_and_offset(self.materialized_through, Utc),
             created_by: Uuid::parse_str(&self.created_by)
-                .map_err(|e| AppError::Database(e.to_string()))?,
+                .map_err(|e| AppError::Internal(e.to_string()))?,
             created_at: DateTime::from_naive_utc_and_offset(self.created_at, Utc),
             updated_at: DateTime::from_naive_utc_and_offset(self.updated_at, Utc),
         })
@@ -93,10 +93,10 @@ impl EventSeriesRepository for SqliteEventSeriesRepository {
         .bind(now)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         self.find_by_id(series.id).await?.ok_or_else(|| {
-            AppError::Database("event_series row vanished after insert".to_string())
+            AppError::Internal("event_series row vanished after insert".to_string())
         })
     }
 
@@ -109,7 +109,7 @@ impl EventSeriesRepository for SqliteEventSeriesRepository {
         .bind(id.to_string())
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         row.map(SeriesRow::into_domain).transpose()
     }
@@ -125,7 +125,7 @@ impl EventSeriesRepository for SqliteEventSeriesRepository {
         .bind(now.naive_utc())
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         rows.into_iter().map(SeriesRow::into_domain).collect()
     }
@@ -139,7 +139,7 @@ impl EventSeriesRepository for SqliteEventSeriesRepository {
         .bind(id.to_string())
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
         Ok(())
     }
 
@@ -152,7 +152,7 @@ impl EventSeriesRepository for SqliteEventSeriesRepository {
         .bind(id.to_string())
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
         Ok(())
     }
 
@@ -163,7 +163,7 @@ impl EventSeriesRepository for SqliteEventSeriesRepository {
             .bind(id.to_string())
             .execute(&self.pool)
             .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
         Ok(())
     }
 }

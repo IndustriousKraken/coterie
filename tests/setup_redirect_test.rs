@@ -129,6 +129,7 @@ async fn build_app_state(pool: SqlitePool) -> AppState {
         csrf_service,
         totp_service,
         pending_login_service,
+        settings.server.base_url.clone(),
         pool.clone(),
     ));
 

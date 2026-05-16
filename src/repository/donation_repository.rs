@@ -32,7 +32,7 @@ impl SqliteDonationCampaignRepository {
 
     fn row_to_campaign(row: CampaignRow) -> Result<DonationCampaign> {
         Ok(DonationCampaign {
-            id: Uuid::parse_str(&row.id).map_err(|e| AppError::Database(e.to_string()))?,
+            id: Uuid::parse_str(&row.id).map_err(|e| AppError::Internal(e.to_string()))?,
             name: row.name,
             slug: row.slug,
             description: row.description,
@@ -53,7 +53,7 @@ impl DonationCampaignRepository for SqliteDonationCampaignRepository {
         .bind(id.to_string())
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         match row {
             Some(r) => Ok(Some(Self::row_to_campaign(r)?)),
@@ -68,7 +68,7 @@ impl DonationCampaignRepository for SqliteDonationCampaignRepository {
         .bind(slug)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         match row {
             Some(r) => Ok(Some(Self::row_to_campaign(r)?)),
@@ -82,7 +82,7 @@ impl DonationCampaignRepository for SqliteDonationCampaignRepository {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         rows.into_iter().map(Self::row_to_campaign).collect()
     }
@@ -105,7 +105,7 @@ impl DonationCampaignRepository for SqliteDonationCampaignRepository {
         .bind(campaign_id.to_string())
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         Ok(total.unwrap_or(0))
     }

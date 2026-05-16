@@ -11,7 +11,7 @@ pub type Result<T> = std::result::Result<T, AppError>;
 #[derive(Error, Debug)]
 pub enum AppError {
     #[error("Database error: {0}")]
-    Database(String),
+    Database(#[from] sqlx::Error),
     
     #[error("Not found: {0}")]
     NotFound(String),
@@ -50,8 +50,8 @@ pub enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, error_message) = match self {
-            AppError::Database(ref msg) => {
-                tracing::error!("Database error: {}", msg);
+            AppError::Database(ref err) => {
+                tracing::error!("Database error: {}", err.to_string());
                 (StatusCode::INTERNAL_SERVER_ERROR, "Database error occurred")
             }
             AppError::NotFound(ref msg) => (StatusCode::NOT_FOUND, msg.as_str()),
@@ -92,8 +92,3 @@ impl IntoResponse for AppError {
     }
 }
 
-impl From<sqlx::Error> for AppError {
-    fn from(err: sqlx::Error) -> Self {
-        AppError::Database(err.to_string())
-    }
-}

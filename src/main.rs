@@ -198,6 +198,7 @@ async fn main() -> anyhow::Result<()> {
         csrf_service,
         totp_service,
         pending_login_service,
+        settings.server.base_url.clone(),
         db_pool.clone(),
     ));
 

@@ -415,7 +415,7 @@ impl SettingsService {
         .bind(key)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
         Ok(())
     }
 }

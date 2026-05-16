@@ -33,7 +33,7 @@ impl BillingRunner {
 
     async fn run_cycle(&self) {
         // Process due scheduled payments
-        match self.billing_service.run_billing_cycle().await {
+        match self.billing_service.auto_renew.run_billing_cycle().await {
             Ok((succeeded, total)) => {
                 if total > 0 {
                     tracing::info!(
@@ -49,7 +49,7 @@ impl BillingRunner {
         }
 
         // Check for expired members
-        match self.billing_service.check_expired_members().await {
+        match self.billing_service.expiration.check_expired_members().await {
             Ok(count) => {
                 if count > 0 {
                     tracing::info!("Expired {} members past grace period", count);
@@ -63,7 +63,7 @@ impl BillingRunner {
         // Send dues-expiring-soon reminders (idempotent per cycle via
         // dues_reminder_sent_at flag, so running hourly is fine — only
         // newly-eligible members get email).
-        match self.billing_service.send_dues_reminders().await {
+        match self.billing_service.notifications.send_dues_reminders().await {
             Ok(_) => {}
             Err(e) => {
                 tracing::error!("Dues reminder cycle error: {}", e);

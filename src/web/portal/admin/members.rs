@@ -219,62 +219,15 @@ pub async fn admin_activate_member(
     Extension(current_user): Extension<CurrentUser>,
     Path(member_id): Path<String>,
 ) -> impl IntoResponse {
-    use crate::domain::{UpdateMemberRequest, MemberStatus};
-
     let id = match uuid::Uuid::parse_str(&member_id) {
         Ok(id) => id,
         Err(_) => return partials::member_row_error("Invalid member ID"),
     };
 
-    let update = UpdateMemberRequest {
-        status: Some(MemberStatus::Active),
-        ..Default::default()
-    };
-
-    match state.service_context.member_repo.update(id, update).await {
+    match state.service_context.member_service.activate(current_user.member.id, id).await {
         Ok(member) => {
-            // Force re-auth so the member picks up their new status on next request.
-            if let Err(e) = state.service_context.auth_service
-                .invalidate_all_sessions(member.id)
-                .await
-            {
-                tracing::error!(
-                    "Activated member {} but failed to invalidate sessions: {}",
-                    member.id, e
-                );
-            }
-
-            state.service_context.audit_service.log(
-                Some(current_user.member.id),
-                "activate_member",
-                "member",
-                &id.to_string(),
-                None,
-                Some(&member.email),
-                None,
-            ).await;
-
-            // Notify integrations (Discord role sync, future Unifi
-            // access provisioning, etc.). The dispatcher is fire-
-            // and-forget at the integration level — individual
-            // failures are logged inside each impl.
-            state.service_context.integration_manager
-                .handle_event(crate::integrations::IntegrationEvent::MemberActivated(member.clone()))
-                .await;
-
-            // Send welcome email. Soft-fail: activation already succeeded,
-            // and an admin can always resend manually if it didn't arrive.
-            if let Err(e) = send_welcome_email(&state, &member).await {
-                tracing::error!(
-                    "Member {} activated but welcome email failed: {}",
-                    member.id, e
-                );
-            }
-
-            let mt_name = state.service_context.membership_type_service
-                .get(member.membership_type_id).await.ok().flatten()
-                .map(|mt| mt.name)
-                .unwrap_or_else(|| "(unknown)".to_string());
+            let mt_name = state.service_context.member_service
+                .membership_type_name(&member).await;
             partials::member_row_flash(&member, mt_name, "active")
         }
         Err(e) => partials::member_row_error(&format!("Error: {}", e)),
@@ -286,61 +239,15 @@ pub async fn admin_suspend_member(
     Extension(current_user): Extension<CurrentUser>,
     Path(member_id): Path<String>,
 ) -> impl IntoResponse {
-    use crate::domain::{UpdateMemberRequest, MemberStatus};
-
     let id = match uuid::Uuid::parse_str(&member_id) {
         Ok(id) => id,
         Err(_) => return partials::member_row_error("Invalid member ID"),
     };
 
-    // Snapshot the pre-update member so we can dispatch the proper
-    // before/after pair to integrations (Discord uses this to decide
-    // which roles to remove vs add).
-    let old_member = state.service_context.member_repo.find_by_id(id).await.ok().flatten();
-
-    let update = UpdateMemberRequest {
-        status: Some(MemberStatus::Suspended),
-        ..Default::default()
-    };
-
-    match state.service_context.member_repo.update(id, update).await {
+    match state.service_context.member_service.suspend(current_user.member.id, id).await {
         Ok(member) => {
-            // Kick the suspended member out of any active sessions immediately.
-            // If invalidation fails, middleware still rejects Suspended status
-            // on the next request — but log so operators see the failure.
-            if let Err(e) = state.service_context.auth_service
-                .invalidate_all_sessions(member.id)
-                .await
-            {
-                tracing::error!(
-                    "Suspended member {} but failed to invalidate sessions: {}",
-                    member.id, e
-                );
-            }
-
-            // Fire integration event with old/new for status diff.
-            if let Some(old) = old_member {
-                state.service_context.integration_manager
-                    .handle_event(crate::integrations::IntegrationEvent::MemberUpdated {
-                        old, new: member.clone()
-                    })
-                    .await;
-            }
-
-            state.service_context.audit_service.log(
-                Some(current_user.member.id),
-                "suspend_member",
-                "member",
-                &id.to_string(),
-                None,
-                Some(&member.email),
-                None,
-            ).await;
-
-            let mt_name = state.service_context.membership_type_service
-                .get(member.membership_type_id).await.ok().flatten()
-                .map(|mt| mt.name)
-                .unwrap_or_else(|| "(unknown)".to_string());
+            let mt_name = state.service_context.member_service
+                .membership_type_name(&member).await;
             partials::member_row_flash(&member, mt_name, "suspended")
         }
         Err(e) => partials::member_row_error(&format!("Error: {}", e)),
@@ -509,13 +416,6 @@ pub async fn admin_update_member(
         Err(_) => return partials::admin_alert("error", "Invalid membership type.", false),
     };
 
-    // Snapshot the old member so we can emit a complete MemberUpdated event.
-    // Currently this handler doesn't change status — only profile fields —
-    // so integrations like Discord won't act on it. We dispatch anyway so
-    // future fields (e.g., discord_id editable from the same form) are
-    // covered without further wiring.
-    let old_member = state.service_context.member_repo.find_by_id(id).await.ok().flatten();
-
     let update = UpdateMemberRequest {
         full_name: Some(form.full_name),
         membership_type_id: Some(membership_type_id),
@@ -524,26 +424,8 @@ pub async fn admin_update_member(
         ..Default::default()
     };
 
-    match state.service_context.member_repo.update(id, update).await {
-        Ok(new_member) => {
-            state.service_context.audit_service.log(
-                Some(current_user.member.id),
-                "update_member",
-                "member",
-                &id.to_string(),
-                None,
-                None,
-                None,
-            ).await;
-            if let Some(old) = old_member {
-                state.service_context.integration_manager
-                    .handle_event(crate::integrations::IntegrationEvent::MemberUpdated {
-                        old, new: new_member,
-                    })
-                    .await;
-            }
-            partials::admin_alert("success", "Member updated successfully!", false)
-        }
+    match state.service_context.member_service.update(current_user.member.id, id, update).await {
+        Ok(_) => partials::admin_alert("success", "Member updated successfully!", false),
         Err(e) => partials::admin_alert("error", &format!("Error: {}", e), false),
     }
 }
@@ -1030,56 +912,27 @@ pub async fn admin_extend_dues(
     Path(member_id): Path<String>,
     axum::Form(form): axum::Form<ExtendDuesForm>,
 ) -> impl IntoResponse {
-    use chrono::Months;
-
     let id = match uuid::Uuid::parse_str(&member_id) {
         Ok(id) => id,
         Err(_) => return partials::admin_alert("error", "Invalid member ID", false),
     };
 
-    let old_member = match state.service_context.member_repo.find_by_id(id).await {
-        Ok(Some(m)) => m,
-        _ => return partials::admin_alert("error", "Member not found", false),
-    };
-
-    // 1..=120 months (10 years). Negative `i32 as u32` would
-    // wraparound to ~4.29B and silently no-op via unwrap_or(base_date),
-    // masking either a fat-finger or a deliberate audit-log dilution.
-    if !(1..=120).contains(&form.months) {
-        return partials::admin_alert("error", "Months must be between 1 and 120.", false);
-    }
-
-    let now = chrono::Utc::now();
-    let base_date = old_member.dues_paid_until
-        .filter(|d| *d > now)
-        .unwrap_or(now);
-
-    let new_dues_date = base_date
-        .checked_add_months(Months::new(form.months as u32))
-        .unwrap_or(base_date);
-
-    if let Err(e) = state.service_context.member_repo
-        .set_dues_paid_until_with_revival(id, new_dues_date)
+    match state.service_context.member_service
+        .extend_dues(current_user.member.id, id, form.months)
         .await
     {
-        return partials::admin_alert("error", &format!("Error: {}", e), false);
+        Ok(member) => {
+            let new_dues = member.dues_paid_until
+                .map(|d| d.format("%B %d, %Y").to_string())
+                .unwrap_or_else(|| "—".to_string());
+            partials::admin_alert(
+                "success",
+                &format!("Dues extended! New expiration: {}", new_dues),
+                true,
+            )
+        }
+        Err(e) => partials::admin_alert("error", &format!("Error: {}", e), false),
     }
-
-    state.service_context.audit_service.log(
-        Some(current_user.member.id),
-        "extend_dues",
-        "member",
-        &member_id,
-        None,
-        Some(&format!("+{} months → {}", form.months, new_dues_date.format("%Y-%m-%d"))),
-        None,
-    ).await;
-    dispatch_member_updated(&state, id, old_member).await;
-    partials::admin_alert(
-        "success",
-        &format!("Dues extended! New expiration: {}", new_dues_date.format("%B %d, %Y")),
-        true,
-    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -1107,37 +960,22 @@ pub async fn admin_set_dues(
         Err(_) => return partials::admin_alert("error", "Invalid date format", false),
     };
 
-    let dues_date = naive_date
-        .and_hms_opt(23, 59, 59)
-        .unwrap()
-        .and_utc();
-
-    let old_member = state.service_context.member_repo.find_by_id(id).await.ok().flatten();
-
-    if let Err(e) = state.service_context.member_repo
-        .set_dues_paid_until_with_revival(id, dues_date)
+    match state.service_context.member_service
+        .set_dues(current_user.member.id, id, naive_date)
         .await
     {
-        return partials::admin_alert("error", &format!("Error: {}", e), false);
+        Ok(member) => {
+            let dues = member.dues_paid_until
+                .map(|d| d.format("%B %d, %Y").to_string())
+                .unwrap_or_else(|| "—".to_string());
+            partials::admin_alert(
+                "success",
+                &format!("Dues date set to: {}", dues),
+                true,
+            )
+        }
+        Err(e) => partials::admin_alert("error", &format!("Error: {}", e), false),
     }
-
-    state.service_context.audit_service.log(
-        Some(current_user.member.id),
-        "set_dues",
-        "member",
-        &id.to_string(),
-        None,
-        Some(&dues_date.format("%Y-%m-%d").to_string()),
-        None,
-    ).await;
-    if let Some(old) = old_member {
-        dispatch_member_updated(&state, id, old).await;
-    }
-    partials::admin_alert(
-        "success",
-        &format!("Dues date set to: {}", dues_date.format("%B %d, %Y")),
-        true,
-    )
 }
 
 pub async fn admin_expire_now(
@@ -1150,58 +988,12 @@ pub async fn admin_expire_now(
         Err(_) => return partials::admin_alert("error", "Invalid member ID", false),
     };
 
-    let old_member = state.service_context.member_repo.find_by_id(id).await.ok().flatten();
-
-    if let Err(e) = state.service_context.member_repo.expire_dues_now(id).await {
-        return partials::admin_alert("error", &format!("Error: {}", e), false);
-    }
-
-    // Force-logout so the member sees the expiration immediately
-    // instead of on their next page load. Even if this fails,
-    // middleware re-checks status per-request and bounces them
-    // to /portal/restore — but log so operators notice.
-    if let Err(e) = state.service_context.auth_service
-        .invalidate_all_sessions(id)
+    match state.service_context.member_service
+        .expire_now(current_user.member.id, id)
         .await
     {
-        tracing::error!(
-            "Expired dues for member {} but failed to invalidate sessions: {}",
-            id, e
-        );
-    }
-
-    if let Some(old) = old_member {
-        dispatch_member_updated(&state, id, old).await;
-    }
-
-    state.service_context.audit_service.log(
-        Some(current_user.member.id),
-        "expire_member_now",
-        "member",
-        &id.to_string(),
-        None,
-        None,
-        None,
-    ).await;
-    partials::admin_alert("warning", "Member dues have been expired.", true)
-}
-
-/// Re-fetch the member after an update and fire `MemberUpdated` with
-/// the old/new pair. Centralizes the post-update integration-event
-/// dispatch so handlers don't each re-roll the find_by_id +
-/// integration_manager dance, and so a missed dispatch is one
-/// consistent fix-site instead of N. Silent on lookup failure — the
-/// caller's update already succeeded; we don't want to invent a
-/// rollback path.
-async fn dispatch_member_updated(
-    state: &AppState,
-    id: uuid::Uuid,
-    old: crate::domain::Member,
-) {
-    if let Ok(Some(new)) = state.service_context.member_repo.find_by_id(id).await {
-        state.service_context.integration_manager
-            .handle_event(crate::integrations::IntegrationEvent::MemberUpdated { old, new })
-            .await;
+        Ok(_) => partials::admin_alert("warning", "Member dues have been expired.", true),
+        Err(e) => partials::admin_alert("error", &format!("Error: {}", e), false),
     }
 }
 
@@ -1310,7 +1102,7 @@ pub async fn admin_create_member(
         membership_type_id: Some(membership_type_id),
     };
 
-    match state.service_context.member_repo.create(create_request).await {
+    match state.service_context.member_service.create(current_user.member.id, create_request).await {
         Ok(member) => {
             // Pending is the default already set by `create`, so an
             // empty / "Pending" form value is a no-op — only override
@@ -1328,7 +1120,9 @@ pub async fn admin_create_member(
                     notes: form.notes,
                     ..Default::default()
                 };
-                if let Err(e) = state.service_context.member_repo.update(member.id, update).await {
+                if let Err(e) = state.service_context.member_service
+                    .update(current_user.member.id, member.id, update).await
+                {
                     // Member was created but the status/notes follow-up
                     // failed. The admin will see the detail page with
                     // the original (Pending, no notes) state — not
@@ -1341,68 +1135,10 @@ pub async fn admin_create_member(
                 }
             }
 
-            state.service_context.audit_service.log(
-                Some(current_user.member.id),
-                "create_member",
-                "member",
-                &member.id.to_string(),
-                None,
-                Some(&member.email),
-                None,
-            ).await;
-
             axum::response::Redirect::to(&format!("/portal/admin/members/{}", member.id)).into_response()
         }
         Err(e) => render_error(&e.to_string()),
     }
-}
-
-/// Send the welcome email after an admin activates a member.
-async fn send_welcome_email(
-    state: &AppState,
-    member: &crate::domain::Member,
-) -> crate::error::Result<()> {
-    use crate::email::{self, templates::{WelcomeHtml, WelcomeText}};
-
-    let portal_url = format!(
-        "{}/portal/dashboard",
-        state.settings.server.base_url.trim_end_matches('/'),
-    );
-    let org_name = state.service_context.settings_service
-        .get_value("org.name")
-        .await
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "Coterie".to_string());
-
-    // Pull the Discord invite URL from settings if the operator has
-    // configured one. None → the welcome email omits the Discord
-    // section entirely. Empty string is treated the same as None.
-    let discord_invite = state.service_context.settings_service
-        .get_value("discord.invite_url")
-        .await
-        .ok()
-        .filter(|s| !s.is_empty());
-
-    let html = WelcomeHtml {
-        full_name: &member.full_name,
-        org_name: &org_name,
-        portal_url: &portal_url,
-        discord_invite: discord_invite.as_deref(),
-    };
-    let text = WelcomeText {
-        full_name: &member.full_name,
-        org_name: &org_name,
-        portal_url: &portal_url,
-        discord_invite: discord_invite.as_deref(),
-    };
-    let message = email::message_from_templates(
-        member.email.clone(),
-        format!("Welcome to {}", org_name),
-        &html,
-        &text,
-    )?;
-    state.service_context.email_sender.send(&message).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -1423,57 +1159,30 @@ pub async fn admin_update_discord_id(
     Path(member_id): Path<String>,
     axum::Form(form): axum::Form<UpdateDiscordIdForm>,
 ) -> impl IntoResponse {
-    use crate::integrations::discord::is_valid_snowflake;
-
     let id = match uuid::Uuid::parse_str(&member_id) {
         Ok(id) => id,
         Err(_) => return discord_id_result(false, "Invalid member ID"),
     };
 
-    let trimmed = form.discord_id.trim();
-    let new_value: Option<&str> = if trimmed.is_empty() {
+    let new_value = if form.discord_id.trim().is_empty() {
         None
-    } else if !is_valid_snowflake(trimmed) {
-        return discord_id_result(
-            false,
-            "Discord ID must be 17–20 digits (snowflake format). Right-click the user in Discord with Developer Mode on → Copy User ID.",
-        );
     } else {
-        Some(trimmed)
+        Some(form.discord_id.clone())
     };
 
-    // Snapshot the old member so the integration sees the diff
-    // (it'll strip roles from the old discord_id, apply to the new).
-    let old_member = state.service_context.member_repo.find_by_id(id).await.ok().flatten();
-
-    if let Err(e) = state.service_context.member_repo.update_discord_id(id, new_value).await {
-        return discord_id_result(false, &format!("Failed to save: {}", e));
+    match state.service_context.member_service
+        .update_discord_id(current_user.member.id, id, new_value)
+        .await
+    {
+        Ok(member) => {
+            let msg = match &member.discord_id {
+                Some(v) => format!("Discord ID set to {} (role sync triggered).", v),
+                None => "Discord ID cleared.".to_string(),
+            };
+            discord_id_result(true, &msg)
+        }
+        Err(e) => discord_id_result(false, &format!("Failed to save: {}", e)),
     }
-
-    state.service_context.audit_service.log(
-        Some(current_user.member.id),
-        "update_discord_id",
-        "member",
-        &id.to_string(),
-        old_member.as_ref().and_then(|m| m.discord_id.as_deref()),
-        new_value,
-        None,
-    ).await;
-
-    if let (Some(old), Ok(Some(new))) = (
-        old_member,
-        state.service_context.member_repo.find_by_id(id).await,
-    ) {
-        state.service_context.integration_manager
-            .handle_event(crate::integrations::IntegrationEvent::MemberUpdated { old, new })
-            .await;
-    }
-
-    let msg = match new_value {
-        Some(v) => format!("Discord ID set to {} (role sync triggered).", v),
-        None => "Discord ID cleared.".to_string(),
-    };
-    discord_id_result(true, &msg)
 }
 
 fn discord_id_result(ok: bool, detail: &str) -> axum::response::Response {
@@ -1494,80 +1203,26 @@ pub async fn admin_resend_verification(
     Extension(current_user): Extension<CurrentUser>,
     Path(member_id): Path<String>,
 ) -> axum::response::Response {
-    use crate::{
-        auth::EmailTokenService,
-        email::{self, templates::{VerifyHtml, VerifyText}},
-    };
-
-
     let id = match uuid::Uuid::parse_str(&member_id) {
         Ok(id) => id,
         Err(_) => return resend_result(false, "Invalid member ID").into_response(),
     };
 
-    let member = match state.service_context.member_repo.find_by_id(id).await {
-        Ok(Some(m)) => m,
+    // The service refetches the member to render the success message;
+    // for the resend flow we need the member's email for the success
+    // string, so re-fetch here too. The service-level audit fires on
+    // success of the email send.
+    let email = match state.service_context.member_repo.find_by_id(id).await {
+        Ok(Some(m)) => m.email,
         Ok(None) => return resend_result(false, "Member not found").into_response(),
         Err(e) => return resend_result(false, &format!("DB error: {}", e)).into_response(),
     };
 
-    if member.email_verified() {
-        return resend_result(false, "Member's email is already verified").into_response();
-    }
-
-    let service = EmailTokenService::verification(state.service_context.db_pool.clone());
-
-    // Invalidate any existing unconsumed tokens so only the newest link works.
-    // If invalidation fails, the new token is still valid and works — but
-    // any older tokens out in flight (e.g. in the member's spam folder
-    // from a previous send) might still work too. Worth logging.
-    if let Err(e) = service.invalidate_for_member(id).await {
-        tracing::warn!(
-            "Resending verification for {} but couldn't invalidate previous tokens: {}",
-            id, e
-        );
-    }
-
-    let created = match service.create(id, chrono::Duration::hours(24)).await {
-        Ok(c) => c,
-        Err(e) => return resend_result(false, &format!("Token create failed: {}", e)).into_response(),
-    };
-
-    let org_name = state.service_context.settings_service
-        .get_value("org.name").await
-        .ok().filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "Coterie".to_string());
-    let verify_url = format!(
-        "{}/verify?token={}",
-        state.settings.server.base_url.trim_end_matches('/'),
-        created.token,
-    );
-    let html = VerifyHtml { full_name: &member.full_name, org_name: &org_name, verify_url: &verify_url };
-    let text = VerifyText { full_name: &member.full_name, org_name: &org_name, verify_url: &verify_url };
-
-    let message = match email::message_from_templates(
-        member.email.clone(),
-        format!("Verify your email for {}", org_name),
-        &html,
-        &text,
-    ) {
-        Ok(m) => m,
-        Err(e) => return resend_result(false, &format!("Render failed: {}", e)).into_response(),
-    };
-
-    match state.service_context.email_sender.send(&message).await {
-        Ok(()) => {
-            state.service_context.audit_service.log(
-                Some(current_user.member.id),
-                "resend_verification",
-                "member",
-                &id.to_string(),
-                None,
-                Some(&member.email),
-                None,
-            ).await;
-            resend_result(true, &format!("Verification email resent to {}.", member.email)).into_response()
-        }
+    match state.service_context.member_service
+        .resend_verification(current_user.member.id, id)
+        .await
+    {
+        Ok(()) => resend_result(true, &format!("Verification email resent to {}.", email)).into_response(),
         Err(e) => resend_result(false, &format!("Send failed: {}", e)).into_response(),
     }
 }

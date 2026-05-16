@@ -61,7 +61,7 @@ impl PendingLoginService {
         .bind(expires_at)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         Ok(token)
     }
@@ -85,12 +85,12 @@ impl PendingLoginService {
         .bind(now)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         Ok(match row {
             Some((member_id_str, remember_me, expires_at)) => {
                 let member_id = Uuid::parse_str(&member_id_str)
-                    .map_err(|e| AppError::Database(e.to_string()))?;
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
                 Some(PendingLogin {
                     member_id,
                     remember_me: remember_me != 0,
@@ -118,12 +118,12 @@ impl PendingLoginService {
         .bind(now)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         Ok(match row {
             Some((member_id_str, remember_me, expires_at)) => {
                 let member_id = Uuid::parse_str(&member_id_str)
-                    .map_err(|e| AppError::Database(e.to_string()))?;
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
                 Some(PendingLogin {
                     member_id,
                     remember_me: remember_me != 0,
@@ -142,7 +142,7 @@ impl PendingLoginService {
             .bind(member_id.to_string())
             .execute(&self.pool)
             .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
         Ok(())
     }
 
@@ -154,7 +154,7 @@ impl PendingLoginService {
             .bind(Utc::now().naive_utc())
             .execute(&self.pool)
             .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
         Ok(result.rows_affected())
     }
 }

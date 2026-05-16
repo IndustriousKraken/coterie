@@ -132,6 +132,7 @@ impl PaymentService {
         if matches!(input.kind, PaymentKind::Membership) {
             if let Some(slug) = &input.membership_type_slug {
                 if let Err(e) = billing_service
+                    .auto_renew
                     .extend_member_dues_by_slug(payment.id, input.member_id, slug)
                     .await
                 {
@@ -141,6 +142,7 @@ impl PaymentService {
                     );
                 }
                 if let Err(e) = billing_service
+                    .auto_renew
                     .reschedule_after_payment(input.member_id, slug)
                     .await
                 {

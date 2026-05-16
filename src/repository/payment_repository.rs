@@ -55,12 +55,12 @@ impl SqlitePaymentRepository {
             .as_deref()
             .map(Uuid::parse_str)
             .transpose()
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(|e| AppError::Internal(e.to_string()))?;
         let payer = match (member_id, row.donor_name, row.donor_email) {
             (Some(id), _, _) => Payer::Member(id),
             (None, Some(name), Some(email)) => Payer::PublicDonor { name, email },
             _ => {
-                return Err(AppError::Database(format!(
+                return Err(AppError::Internal(format!(
                     "Payment {} has neither member_id nor (donor_name, donor_email) — row violates schema CHECK",
                     row.id,
                 )));
@@ -88,7 +88,7 @@ impl SqlitePaymentRepository {
             .and_then(StripeRef::from_id);
 
         Ok(Payment {
-            id: Uuid::parse_str(&row.id).map_err(|e| AppError::Database(e.to_string()))?,
+            id: Uuid::parse_str(&row.id).map_err(|e| AppError::Internal(e.to_string()))?,
             payer,
             amount_cents: row.amount_cents,
             currency: row.currency,
@@ -109,7 +109,7 @@ impl SqlitePaymentRepository {
             "Completed" => Ok(PaymentStatus::Completed),
             "Failed" => Ok(PaymentStatus::Failed),
             "Refunded" => Ok(PaymentStatus::Refunded),
-            _ => Err(AppError::Database(format!("Invalid payment status: {}", s))),
+            _ => Err(AppError::Internal(format!("Invalid payment status: {}", s))),
         }
     }
 
@@ -127,7 +127,7 @@ impl SqlitePaymentRepository {
             "Stripe" => Ok(PaymentMethod::Stripe),
             "Manual" => Ok(PaymentMethod::Manual),
             "Waived" => Ok(PaymentMethod::Waived),
-            _ => Err(AppError::Database(format!("Invalid payment method: {}", s))),
+            _ => Err(AppError::Internal(format!("Invalid payment method: {}", s))),
         }
     }
 
@@ -189,10 +189,10 @@ impl PaymentRepository for SqlitePaymentRepository {
         .bind(now)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         self.find_by_id(payment.id).await?.ok_or_else(|| {
-            AppError::Database("Failed to retrieve created payment".to_string())
+            AppError::Internal("Failed to retrieve created payment".to_string())
         })
     }
 
@@ -212,7 +212,7 @@ impl PaymentRepository for SqlitePaymentRepository {
         .bind(id_str)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         match row {
             Some(r) => Ok(Some(Self::row_to_payment(r)?)),
@@ -237,7 +237,7 @@ impl PaymentRepository for SqlitePaymentRepository {
         .bind(member_id_str)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         rows.into_iter()
             .map(Self::row_to_payment)
@@ -259,7 +259,7 @@ impl PaymentRepository for SqlitePaymentRepository {
         .bind(stripe_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         match row {
             Some(r) => Ok(Some(Self::row_to_payment(r)?)),
@@ -301,10 +301,10 @@ impl PaymentRepository for SqlitePaymentRepository {
         .bind(&id_str)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         self.find_by_id(id).await?.ok_or_else(|| {
-            AppError::Database("Failed to retrieve updated payment".to_string())
+            AppError::Internal("Failed to retrieve updated payment".to_string())
         })
     }
 
@@ -328,7 +328,7 @@ impl PaymentRepository for SqlitePaymentRepository {
         .bind(id.to_string())
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
         Ok(res.rows_affected() == 1)
     }
 
@@ -343,7 +343,7 @@ impl PaymentRepository for SqlitePaymentRepository {
         .bind(id.to_string())
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
         Ok(res.rows_affected() == 1)
     }
 
@@ -358,7 +358,7 @@ impl PaymentRepository for SqlitePaymentRepository {
         .bind(id.to_string())
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
         Ok(res.rows_affected() == 1)
     }
 
@@ -373,7 +373,7 @@ impl PaymentRepository for SqlitePaymentRepository {
         .bind(id.to_string())
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
         Ok(())
     }
 
@@ -385,7 +385,7 @@ impl PaymentRepository for SqlitePaymentRepository {
         .bind(id.to_string())
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
         Ok(())
     }
 
@@ -398,7 +398,7 @@ impl PaymentRepository for SqlitePaymentRepository {
         use chrono::Months;
 
         let mut tx = self.pool.begin().await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
 
         // Atomic claim. dues_extended_at is the per-payment idempotency
         // anchor: only the first caller for this payment_id sees
@@ -413,10 +413,10 @@ impl PaymentRepository for SqlitePaymentRepository {
         .bind(payment_id.to_string())
         .execute(&mut *tx)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         if claim.rows_affected() == 0 {
-            tx.commit().await.map_err(|e| AppError::Database(e.to_string()))?;
+            tx.commit().await.map_err(AppError::Database)?;
             return Ok(false);
         }
 
@@ -430,7 +430,7 @@ impl PaymentRepository for SqlitePaymentRepository {
         .bind(member_id.to_string())
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?
+        .map_err(AppError::Database)?
         .flatten();
 
         let now_utc = Utc::now();
@@ -453,9 +453,9 @@ impl PaymentRepository for SqlitePaymentRepository {
         .bind(member_id.to_string())
         .execute(&mut *tx)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
-        tx.commit().await.map_err(|e| AppError::Database(e.to_string()))?;
+        tx.commit().await.map_err(AppError::Database)?;
         Ok(true)
     }
 
@@ -490,14 +490,14 @@ impl PaymentRepository for SqlitePaymentRepository {
         .bind(format!("-{} months", cutoff_months))
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         let mut out = Vec::with_capacity(rows.len());
         for (year_str, month_str, type_str, total, count) in rows {
             let year: i32 = year_str.parse()
-                .map_err(|e: std::num::ParseIntError| AppError::Database(e.to_string()))?;
+                .map_err(|e: std::num::ParseIntError| AppError::Internal(e.to_string()))?;
             let month: u32 = month_str.parse()
-                .map_err(|e: std::num::ParseIntError| AppError::Database(e.to_string()))?;
+                .map_err(|e: std::num::ParseIntError| AppError::Internal(e.to_string()))?;
             out.push(MonthlyRevenue {
                 year,
                 month,
