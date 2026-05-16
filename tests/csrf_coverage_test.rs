@@ -133,6 +133,7 @@ async fn build_app() -> Router {
         csrf_service,
         totp_service,
         pending_login_service,
+        settings.server.base_url.clone(),
         pool.clone(),
     ));
 

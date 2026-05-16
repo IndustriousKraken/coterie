@@ -2,6 +2,7 @@ pub mod audit_service;
 pub mod billing_service;
 pub mod configurable_types;
 pub mod basic_type_service;
+pub mod member_service;
 pub mod payment_service;
 pub mod recurring_event_service;
 pub mod settings_service;
@@ -11,10 +12,11 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 use crate::repository::*;
 use crate::integrations::IntegrationManager;
-use crate::auth::{AuthService, CsrfService, PendingLoginService, TotpService};
+use crate::auth::{AuthService, CsrfService, EmailTokenService, PendingLoginService, TotpService};
 use crate::domain::BasicTypeKind;
 use crate::email::EmailSender;
 use audit_service::AuditService;
+use member_service::MemberService;
 use payment_service::PaymentService;
 use settings_service::SettingsService;
 use basic_type_service::BasicTypeService;
@@ -43,6 +45,7 @@ pub struct ServiceContext {
     pub email_sender: Arc<dyn EmailSender>,
     pub audit_service: Arc<AuditService>,
     pub payment_service: Arc<PaymentService>,
+    pub member_service: Arc<MemberService>,
     pub db_pool: SqlitePool,
 }
 
@@ -59,6 +62,7 @@ impl ServiceContext {
         csrf_service: Arc<CsrfService>,
         totp_service: Arc<TotpService>,
         pending_login_service: Arc<PendingLoginService>,
+        base_url: String,
         db_pool: SqlitePool,
     ) -> Self {
         let event_series_repo: Arc<dyn EventSeriesRepository> =
@@ -101,6 +105,19 @@ impl ServiceContext {
             audit_service.clone(),
         ));
 
+        let email_token_service = Arc::new(EmailTokenService::verification(db_pool.clone()));
+        let member_service = Arc::new(MemberService::new(
+            member_repo.clone(),
+            auth_service.clone(),
+            audit_service.clone(),
+            integration_manager.clone(),
+            email_sender.clone(),
+            membership_type_service.clone(),
+            settings_service.clone(),
+            email_token_service,
+            base_url,
+        ));
+
         Self {
             member_repo,
             event_repo,
@@ -123,6 +140,7 @@ impl ServiceContext {
             email_sender,
             audit_service,
             payment_service,
+            member_service,
             db_pool,
         }
     }
