@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="">
+    <title>Security - Coterie</title>
+    
+    <!-- HTMX (pinned + SRI) -->
+    <script nonce="__CSP_NONCE__"
+            src="https://unpkg.com/htmx.org@1.9.10"
+            integrity="sha384-YwQSRkoBOUtKKVfHQ8C2zCPslUZHuxiPHts6X/xQCuGHipTtRXd7ImqS1VTLlpiT"
+            crossorigin="anonymous"></script>
+    <script nonce="__CSP_NONCE__"
+            src="https://unpkg.com/htmx.org@1.9.10/dist/ext/json-enc.js"
+            integrity="sha384-nRnAvEUI7N/XvvowiMiq7oEI04gOXMCqD3Bidvedw+YNbj7zTQACPlRI3Jt3vYM4"
+            crossorigin="anonymous"></script>
+
+    <!-- Alpine.js (CSP build — no `Function()` so works without 'unsafe-eval') -->
+    <script nonce="__CSP_NONCE__"
+            defer
+            src="https://unpkg.com/alpinejs@3.13.5/dist/cdn.csp.min.js"
+            integrity="sha384-qZ7VE99GohFZdSLmj9//6HiHLNWo5eOEs1RrcdDXTygxJB4VAuCIBei06IJemclm"
+            crossorigin="anonymous"></script>
+
+    <!-- Tailwind CSS (locally built) -->
+    <link rel="stylesheet" href="/static/style.css">
+
+    <!-- Custom styles -->
+    <style>
+        [x-cloak] { display: none !important; }
+
+        .htmx-indicator {
+            display: none;
+        }
+        .htmx-request .htmx-indicator {
+            display: inline-block;
+        }
+        .htmx-request.htmx-indicator {
+            display: inline-block;
+        }
+    </style>
+    
+    
+<meta name="csrf-token" content="">
+
+</head>
+<body class="bg-gray-50">
+    <!-- Navigation -->
+    <nav class="bg-white shadow-sm border-b">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <a href="/" class="text-xl font-semibold text-gray-900">
+                        Coterie
+                    </a>
+                    
+                    
+                </div>
+                
+                <div class="flex items-center">
+                    
+                    <a href="/login" class="text-sm text-gray-700 hover:text-gray-900">
+                        Login
+                    </a>
+                    
+                </div>
+            </div>
+        </div>
+    </nav>
+    
+    <!-- Toast notifications -->
+    <div id="toast-container" class="fixed top-4 right-4 z-50"></div>
+
+    
+
+    <!-- Main content -->
+    <main class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+        
+<div class="px-4 py-6 max-w-3xl">
+    <div class="mb-8">
+        <h1 class="text-3xl font-bold text-gray-900">Account security</h1>
+        <p class="mt-2 text-sm text-gray-600">
+            Manage two-factor authentication for your account.
+        </p>
+    </div>
+
+    
+
+    <div class="bg-white rounded-lg shadow-sm p-6">
+        <h2 class="text-lg font-semibold mb-2">Two-factor authentication (TOTP)</h2>
+
+        
+            <p class="text-sm text-gray-700 mb-4">
+                Add an authenticator app (1Password, Authy, Google Authenticator, etc.) for
+                a second factor at sign-in. Recommended for admins.
+            </p>
+
+            <div id="totp-section">
+                <button type="button"
+                        hx-post="/portal/profile/security/totp/enroll/start"
+                        hx-target="#totp-section"
+                        hx-swap="innerHTML"
+                        hx-headers='{"X-CSRF-Token": ""}'
+                        class="px-4 py-2 text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                    Enable two-factor authentication
+                </button>
+            </div>
+        
+    </div>
+</div>
+
+    </main>
+    
+    <!-- Loading indicator -->
+    <div class="htmx-indicator fixed top-0 left-0 right-0 h-1 bg-blue-600"></div>
+    
+    <!-- Global scripts -->
+    <script nonce="__CSP_NONCE__">
+        // HTMX configuration
+        document.body.addEventListener('htmx:configRequest', (event) => {
+            event.detail.headers['X-Requested-With'] = 'XMLHttpRequest';
+
+            // Add CSRF token from meta tag if present
+            const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+            if (csrfMeta) {
+                event.detail.headers['X-CSRF-Token'] = csrfMeta.content;
+            }
+        });
+        
+        // Handle HTMX errors
+        document.body.addEventListener('htmx:responseError', (event) => {
+            console.error('HTMX error:', event.detail);
+            showToast('An error occurred. Please try again.', 'error');
+        });
+        
+        // Toast notifications
+        function showToast(message, type = 'info') {
+            const colors = {
+                'info': 'bg-blue-500',
+                'success': 'bg-green-500',
+                'error': 'bg-red-500',
+                'warning': 'bg-yellow-500'
+            };
+            
+            const toast = document.createElement('div');
+            toast.className = `${colors[type]} text-white px-6 py-3 rounded-lg shadow-lg mb-2`;
+            toast.textContent = message;
+            
+            document.getElementById('toast-container').appendChild(toast);
+            
+            setTimeout(() => {
+                toast.remove();
+            }, 5000);
+        }
+        
+        // Listen for server-sent events for notifications
+        document.body.addEventListener('htmx:afterSwap', (event) => {
+            if (event.detail.xhr.getResponseHeader('X-Toast')) {
+                const toast = JSON.parse(event.detail.xhr.getResponseHeader('X-Toast'));
+                showToast(toast.message, toast.type);
+            }
+        });
+    </script>
+    
+    
+</body>
+</html>

@@ -6,7 +6,7 @@
 <div class="px-4 py-6">
     <div class="mb-8">
         <h1 class="text-3xl font-bold text-gray-900">Welcome, {{ member.full_name }}!</h1>
-        <p class="mt-2 text-sm text-gray-600">Member since {{ member.joined_at }}</p>
+        <p class="mt-2 text-sm text-gray-600">Member since {{ member.joined_at|fmt_long_date }}</p>
     </div>
 
     <!-- Member Status Card -->
@@ -16,14 +16,14 @@
             <div>
                 <p class="text-sm text-gray-600">Status</p>
                 <p class="text-lg font-medium">
-                    {% if member.status == "Active" %}
+                    {% if member.status.is_active() %}
                         <span class="text-green-600">● Active</span>
-                    {% else if member.status == "Pending" %}
+                    {% else if member.status.is_pending() %}
                         <span class="text-yellow-600">● Pending</span>
-                    {% else if member.status == "Expired" %}
+                    {% else if member.status.is_expired() %}
                         <span class="text-red-600">● Expired</span>
                     {% else %}
-                        <span class="text-gray-600">● {{ member.status }}</span>
+                        <span class="text-gray-600">● {{ member.status.as_str() }}</span>
                     {% endif %}
                 </p>
             </div>
@@ -35,7 +35,7 @@
                 <p class="text-sm text-gray-600">Dues Paid Until</p>
                 <p class="text-lg font-medium">
                     {% if let Some(dues_date) = member.dues_paid_until.as_ref() %}
-                        {{ dues_date }}
+                        {{ dues_date|fmt_long_date }}
                     {% else %}
                         <span class="text-gray-400">Not paid</span>
                     {% endif %}
@@ -43,7 +43,7 @@
             </div>
         </div>
         
-        {% if member.status == "Expired" || member.dues_paid_until.is_none() %}
+        {% if member.status.is_expired() || member.dues_paid_until.is_none() %}
         <div class="mt-4 p-4 bg-yellow-50 rounded-md">
             <p class="text-sm text-yellow-800">
                 Your membership has expired or payment is pending. 

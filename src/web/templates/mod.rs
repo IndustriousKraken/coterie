@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod filters;
 pub mod reset;
 pub mod setup;
 pub mod verify;
