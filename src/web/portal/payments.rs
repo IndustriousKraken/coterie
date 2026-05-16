@@ -416,6 +416,7 @@ pub async fn charge_saved_card_api(
     // next renewal fire" — if scheduling reads the old date, the queued
     // charge would fire on the previous cycle's day.
     billing_service
+        .auto_renew
         .extend_member_dues_by_slug(payment_id, current_user.member.id, &membership_type.slug)
         .await?;
 
@@ -432,6 +433,7 @@ pub async fn charge_saved_card_api(
     let opt_in = request.enable_auto_renew.unwrap_or(false);
     if opt_in {
         if let Err(e) = billing_service
+            .auto_renew
             .enable_auto_renew(current_user.member.id, &request.membership_type_slug)
             .await
         {
@@ -451,6 +453,7 @@ pub async fn charge_saved_card_api(
             ).await;
         }
     } else if let Err(e) = billing_service
+        .auto_renew
         .reschedule_after_payment(current_user.member.id, &request.membership_type_slug)
         .await
     {
@@ -556,6 +559,7 @@ pub async fn update_auto_renew_api(
         }
 
         billing_service
+            .auto_renew
             .enable_auto_renew(current_user.member.id, &mt.slug)
             .await?;
 
@@ -570,6 +574,7 @@ pub async fn update_auto_renew_api(
         ).await;
     } else {
         billing_service
+            .auto_renew
             .disable_auto_renew(current_user.member.id)
             .await?;
 

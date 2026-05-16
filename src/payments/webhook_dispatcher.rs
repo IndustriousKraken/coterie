@@ -319,10 +319,12 @@ impl WebhookDispatcher {
 
         if let Some(slug) = &resolved_slug {
             billing_service
+                .auto_renew
                 .extend_member_dues_by_slug(payment.id, member_id, slug)
                 .await?;
 
             if let Err(e) = billing_service
+                .auto_renew
                 .reschedule_after_payment(member_id, slug)
                 .await
             {
@@ -535,9 +537,11 @@ impl WebhookDispatcher {
                 }
             };
             billing_service
+                .auto_renew
                 .extend_member_dues_by_slug(payment_id, member_id, &slug)
                 .await?;
             if let Err(e) = billing_service
+                .auto_renew
                 .reschedule_after_payment(member_id, &slug)
                 .await
             {
@@ -756,6 +760,7 @@ impl WebhookDispatcher {
 
         if let Some(slug) = membership_type_slug {
             billing_service
+                .auto_renew
                 .extend_member_dues_by_slug(payment_id, member_uuid, &slug)
                 .await?;
         } else {
@@ -844,6 +849,7 @@ impl WebhookDispatcher {
         };
 
         if let Err(e) = billing_service
+            .notifications
             .notify_subscription_payment_failed(member_id, amount_display, is_final)
             .await
         {
@@ -910,6 +916,7 @@ impl WebhookDispatcher {
         );
 
         if let Err(e) = billing_service
+            .notifications
             .notify_subscription_cancelled(member.id)
             .await
         {

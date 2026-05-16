@@ -1,24 +1,22 @@
-//! Thin facade over three independently-testable sub-services:
+//! Container over three independently-testable sub-services:
 //! [`auto_renew::AutoRenew`], [`notifications::Notifications`], and
 //! [`expiration::Expiration`]. Splitting the original 1300-line
 //! `BillingService` along these lines means each sub-module has a
 //! single concern and a small, obviously-correct dependency set.
 //!
-//! The facade exists so callers don't have to know about the split —
-//! every method on the original `BillingService` still resolves at
-//! the same path.
+//! Callers reach sub-service methods via direct field access
+//! (`billing_service.auto_renew.run_billing_cycle()`), so the
+//! structural grouping is legible at every call site.
 
-mod auto_renew;
-mod expiration;
-mod notifications;
+pub mod auto_renew;
+pub mod expiration;
+pub mod notifications;
 
 use sqlx::SqlitePool;
 use std::sync::Arc;
-use uuid::Uuid;
 
 use crate::{
     email::EmailSender,
-    error::Result,
     integrations::IntegrationManager,
     payments::StripeClient,
     repository::{
@@ -30,9 +28,9 @@ use crate::{
 pub use auto_renew::BulkMigrationSummary;
 
 pub struct BillingService {
-    auto_renew: auto_renew::AutoRenew,
-    notifications: notifications::Notifications,
-    expiration: expiration::Expiration,
+    pub auto_renew: auto_renew::AutoRenew,
+    pub notifications: notifications::Notifications,
+    pub expiration: expiration::Expiration,
 }
 
 impl BillingService {
@@ -77,73 +75,5 @@ impl BillingService {
             db_pool,
         );
         Self { auto_renew, notifications, expiration }
-    }
-
-    // ---- Auto-renew lifecycle + charge runner -------------------------
-
-    pub async fn migrate_to_coterie_managed(&self, member_id: Uuid) -> Result<bool> {
-        self.auto_renew.migrate_to_coterie_managed(member_id).await
-    }
-
-    pub async fn bulk_migrate_stripe_subscriptions(&self) -> BulkMigrationSummary {
-        self.auto_renew.bulk_migrate_stripe_subscriptions().await
-    }
-
-    pub async fn enable_auto_renew(
-        &self,
-        member_id: Uuid,
-        membership_type_slug: &str,
-    ) -> Result<()> {
-        self.auto_renew.enable_auto_renew(member_id, membership_type_slug).await
-    }
-
-    pub async fn reschedule_after_payment(
-        &self,
-        member_id: Uuid,
-        membership_type_slug: &str,
-    ) -> Result<()> {
-        self.auto_renew.reschedule_after_payment(member_id, membership_type_slug).await
-    }
-
-    pub async fn disable_auto_renew(&self, member_id: Uuid) -> Result<()> {
-        self.auto_renew.disable_auto_renew(member_id).await
-    }
-
-    pub async fn run_billing_cycle(&self) -> Result<(u32, u32)> {
-        self.auto_renew.run_billing_cycle().await
-    }
-
-    pub async fn extend_member_dues_by_slug(
-        &self,
-        payment_id: Uuid,
-        member_id: Uuid,
-        membership_type_slug: &str,
-    ) -> Result<()> {
-        self.auto_renew.extend_member_dues_by_slug(payment_id, member_id, membership_type_slug).await
-    }
-
-    // ---- Notifications -----------------------------------------------
-
-    pub async fn notify_subscription_cancelled(&self, member_id: Uuid) -> Result<()> {
-        self.notifications.notify_subscription_cancelled(member_id).await
-    }
-
-    pub async fn notify_subscription_payment_failed(
-        &self,
-        member_id: Uuid,
-        amount_display: Option<String>,
-        is_final: bool,
-    ) -> Result<()> {
-        self.notifications.notify_subscription_payment_failed(member_id, amount_display, is_final).await
-    }
-
-    pub async fn send_dues_reminders(&self) -> Result<u32> {
-        self.notifications.send_dues_reminders().await
-    }
-
-    // ---- Expiration sweep --------------------------------------------
-
-    pub async fn check_expired_members(&self) -> Result<u32> {
-        self.expiration.check_expired_members().await
     }
 }

@@ -207,7 +207,7 @@ pub async fn save_card(
     // save itself — the card IS in Coterie's table either way, and
     // an admin can finish the migration manually if needed.
     if user.member.billing_mode == crate::domain::BillingMode::StripeSubscription {
-        match state.billing_service.migrate_to_coterie_managed(user.member.id).await {
+        match state.billing_service.auto_renew.migrate_to_coterie_managed(user.member.id).await {
             Ok(true) => {
                 state.service_context.audit_service.log(
                     Some(user.member.id),

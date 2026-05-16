@@ -96,7 +96,7 @@ pub async fn bulk_migrate_stripe_subs(
         ).await;
     }
 
-    let summary = state.billing_service.bulk_migrate_stripe_subscriptions().await;
+    let summary = state.billing_service.auto_renew.bulk_migrate_stripe_subscriptions().await;
 
     state.service_context.audit_service.log(
         Some(current_user.member.id),
