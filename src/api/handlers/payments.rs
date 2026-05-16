@@ -1,7 +1,13 @@
 //! JSON payment endpoints. Narrowed to:
 //!   - the inbound Stripe webhook (`stripe_webhook`),
-//!   - the saved-card management endpoints the portal frontend
-//!     `fetch()`-es directly because Stripe.js needs JSON in / JSON out.
+//!   - the two Stripe.js entry points (`create_setup_intent`,
+//!     `save_card`) that the portal frontend `fetch()`-es directly
+//!     because Stripe.js needs JSON in / JSON out.
+//!
+//! Listing, deleting, and default-flag-setting flows live under
+//! `/portal/api/payments/cards/*` as HTML fragments for HTMX; the
+//! previously-parallel JSON versions of those flows were deleted as
+//! vestigial (no frontend caller).
 //!
 //! All admin-side payment recording lives in `PaymentService` and is
 //! reachable via the portal admin UI; the previous JSON `create_manual`
@@ -10,7 +16,7 @@
 //! inside Coterie).
 
 use axum::{
-    extract::{Path, State},
+    extract::State,
     http::{HeaderMap, StatusCode},
     Json,
     Extension,
@@ -232,63 +238,3 @@ pub async fn save_card(
     Ok((StatusCode::CREATED, Json(card.into())))
 }
 
-/// List all saved cards for the current user
-pub async fn list_saved_cards(
-    State(state): State<AppState>,
-    Extension(user): Extension<CurrentUser>,
-) -> Result<Json<Vec<SavedCardResponse>>> {
-    let cards = state.service_context.saved_card_repo.find_by_member(user.member.id).await?;
-    let responses: Vec<SavedCardResponse> = cards.into_iter().map(Into::into).collect();
-    Ok(Json(responses))
-}
-
-/// Delete a saved card
-pub async fn delete_saved_card(
-    State(state): State<AppState>,
-    Extension(user): Extension<CurrentUser>,
-    Path(card_id): Path<Uuid>,
-) -> Result<StatusCode> {
-    // Verify the card belongs to this user
-    let card = state.service_context.saved_card_repo.find_by_id(card_id).await?
-        .ok_or(AppError::NotFound("Card not found".to_string()))?;
-
-    if card.member_id != user.member.id {
-        return Err(AppError::Forbidden);
-    }
-
-    state.service_context.saved_card_repo.delete(card_id).await?;
-
-    // Also detach on Stripe's side. Local delete makes the row
-    // invisible to Coterie, but without detach the PaymentMethod
-    // continues to exist on the Stripe Customer indefinitely. Best-
-    // effort — a Stripe failure shouldn't fail the user-visible
-    // delete, but we log it loudly so operators can clean up.
-    if let Some(stripe) = state.stripe_client.as_ref() {
-        if let Err(e) = stripe.detach_payment_method(&card.stripe_payment_method_id).await {
-            tracing::error!(
-                "Locally deleted card {} (pm={}) but Stripe detach failed: {}",
-                card_id, card.stripe_payment_method_id, e,
-            );
-        }
-    }
-
-    Ok(StatusCode::NO_CONTENT)
-}
-
-/// Set a card as the default payment method
-pub async fn set_default_card(
-    State(state): State<AppState>,
-    Extension(user): Extension<CurrentUser>,
-    Path(card_id): Path<Uuid>,
-) -> Result<StatusCode> {
-    // Verify the card belongs to this user
-    let card = state.service_context.saved_card_repo.find_by_id(card_id).await?
-        .ok_or(AppError::NotFound("Card not found".to_string()))?;
-
-    if card.member_id != user.member.id {
-        return Err(AppError::Forbidden);
-    }
-
-    state.service_context.saved_card_repo.set_default(user.member.id, card_id).await?;
-    Ok(StatusCode::OK)
-}

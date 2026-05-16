@@ -19,7 +19,7 @@ These two endpoints SHALL be the *only* saved-card endpoints under `/api/*`. The
 
 These three endpoints SHALL be gated by `require_restorable` (Active, Honorary, Expired members; Expired access is part of the dues-restoration flow). CSRF SHALL be enforced via the top-level layer; HTMX stamps the token on every `hx-*` request.
 
-A `GET /api/payments/cards`, `DELETE /api/payments/cards/:id`, or `PUT /api/payments/cards/:id/default` endpoint SHALL NOT exist. Any request to those paths SHALL return 404 (no matching route).
+A `GET /api/payments/cards`, `DELETE /api/payments/cards/:id`, or `PUT /api/payments/cards/:id/default` handler SHALL NOT exist. `DELETE /api/payments/cards/:id` and `PUT /api/payments/cards/:id/default` SHALL return 404 (no route matches the path). `GET /api/payments/cards` SHALL return 405 Method Not Allowed (the path is occupied by the `POST` save-card handler; no GET handler is registered for it). In both cases the semantic is the same: the deleted endpoints reach no handler.
 
 #### Scenario: Anonymous request to setup-intent returns 401
 
@@ -44,7 +44,17 @@ A `GET /api/payments/cards`, `DELETE /api/payments/cards/:id`, or `PUT /api/paym
 #### Scenario: GET /api/payments/cards is gone
 
 - **WHEN** any caller (script, ops tool, browser request) hits `GET /api/payments/cards`
-- **THEN** the response SHALL be 404; no handler exists for that route
+- **THEN** the response SHALL be 405 Method Not Allowed (the path is registered for `POST` only; no GET handler exists)
+
+#### Scenario: DELETE /api/payments/cards/:id is gone
+
+- **WHEN** any caller hits `DELETE /api/payments/cards/<some-uuid>`
+- **THEN** the response SHALL be 404 (no route matches that path pattern)
+
+#### Scenario: PUT /api/payments/cards/:id/default is gone
+
+- **WHEN** any caller hits `PUT /api/payments/cards/<some-uuid>/default`
+- **THEN** the response SHALL be 404 (no route matches that path pattern)
 
 #### Scenario: Member sees only their own cards via the HTML endpoint
 

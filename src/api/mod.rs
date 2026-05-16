@@ -6,7 +6,7 @@ pub mod state;
 use axum::{
     Router,
     http::{header, Method},
-    routing::{get, post, put, delete},
+    routing::{get, post},
 };
 use tower_http::{
     compression::CompressionLayer,
@@ -119,19 +119,20 @@ fn payment_routes(state: AppState) -> Router<AppState> {
     Router::new()
         // Public webhook endpoint (no auth)
         .route("/webhook/stripe", post(handlers::payments::stripe_webhook))
-        // Saved-card management. The portal frontend POSTs directly
-        // to these (`fetch('/api/payments/cards/...')` in
-        // payment_methods.html) because Stripe.js needs a JSON
-        // surface, not an HTMX one. CSRF is enforced at the
-        // application root by `csrf_protect_unless_exempt`; only the
-        // auth gate is layered here. The portal's fetch() calls stamp
-        // the X-CSRF-Token header from `<meta name="csrf-token">`.
+        // Saved-card Stripe.js entry points. These are the only two
+        // endpoints under /api/payments/cards/*: the SetupIntent
+        // creation and the post-confirmation record-pm save. The
+        // portal frontend `fetch()`-es them directly from
+        // payment_methods.html because Stripe.js requires JSON in /
+        // JSON out. List, delete, and set-default flows live under
+        // /portal/api/payments/cards/* as HTML fragments for HTMX.
+        // CSRF is enforced at the application root by
+        // `csrf_protect_unless_exempt`; only the auth gate is layered
+        // here. The portal's fetch() calls stamp the X-CSRF-Token
+        // header from `<meta name="csrf-token">`.
         .nest("/", Router::new()
-            .route("/cards", get(handlers::payments::list_saved_cards))
             .route("/cards", post(handlers::payments::save_card))
             .route("/cards/setup-intent", post(handlers::payments::create_setup_intent))
-            .route("/cards/:card_id", delete(handlers::payments::delete_saved_card))
-            .route("/cards/:card_id/default", put(handlers::payments::set_default_card))
             .route_layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 middleware::auth::require_auth,
