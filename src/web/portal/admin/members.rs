@@ -11,7 +11,7 @@ use crate::{
         middleware::auth::{CurrentUser, SessionInfo},
         state::AppState,
     },
-    web::{portal::admin::partials, templates::{BaseContext, HtmlTemplate}},
+    web::{portal::admin::partials, templates::{BaseContext, HtmlTemplate, filters}},
 };
 
 #[derive(Template)]
@@ -55,15 +55,15 @@ pub struct MembershipTypeOption {
 
 #[derive(Clone)]
 pub struct AdminMemberInfo {
-    pub id: String,
+    pub id: uuid::Uuid,
     pub email: String,
     pub username: String,
     pub full_name: String,
     pub initials: String,
-    pub status: String,
+    pub status: crate::domain::MemberStatus,
     pub membership_type: String,
-    pub joined_at: String,
-    pub dues_paid_until: Option<String>,
+    pub joined_at: chrono::DateTime<chrono::Utc>,
+    pub dues_paid_until: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,18 +163,18 @@ pub async fn admin_members_page(
                 .to_uppercase();
 
             AdminMemberInfo {
-                id: m.id.to_string(),
+                id: m.id,
                 email: m.email,
                 username: m.username,
                 full_name: m.full_name,
                 initials: if initials.is_empty() { "?".to_string() } else { initials },
-                status: m.status.as_str().to_string(),
+                status: m.status,
                 membership_type: type_name_by_id
                     .get(&m.membership_type_id)
                     .cloned()
                     .unwrap_or_else(|| "(unknown)".to_string()),
-                joined_at: m.joined_at.format("%b %d, %Y").to_string(),
-                dues_paid_until: m.dues_paid_until.map(|d| d.format("%b %d, %Y").to_string()),
+                joined_at: m.joined_at,
+                dues_paid_until: m.dues_paid_until,
             }
         })
         .collect();
@@ -265,16 +265,16 @@ pub struct AdminMemberDetailTemplate {
 }
 
 pub struct AdminMemberDetailInfo {
-    pub id: String,
+    pub id: uuid::Uuid,
     pub email: String,
     pub username: String,
     pub full_name: String,
     pub initials: String,
-    pub status: String,
+    pub status: crate::domain::MemberStatus,
     pub membership_type_id: String,
     pub membership_type_name: String,
-    pub joined_at: String,
-    pub dues_paid_until: Option<String>,
+    pub joined_at: chrono::DateTime<chrono::Utc>,
+    pub dues_paid_until: Option<chrono::DateTime<chrono::Utc>>,
     pub dues_expired: bool,
     pub bypass_dues: bool,
     pub email_verified: bool,
@@ -356,16 +356,16 @@ pub async fn admin_member_detail_page(
         .collect();
 
     let member_info = AdminMemberDetailInfo {
-        id: member.id.to_string(),
+        id: member.id,
         email: member.email.clone(),
         username: member.username,
         full_name: member.full_name,
         initials: if initials.is_empty() { "?".to_string() } else { initials },
-        status: member.status.as_str().to_string(),
+        status: member.status,
         membership_type_id: member.membership_type_id.to_string(),
         membership_type_name: type_name,
-        joined_at: member.joined_at.format("%B %d, %Y").to_string(),
-        dues_paid_until: member.dues_paid_until.map(|d| d.format("%B %d, %Y").to_string()),
+        joined_at: member.joined_at,
+        dues_paid_until: member.dues_paid_until,
         dues_expired,
         bypass_dues: member.bypass_dues,
         email_verified,

@@ -20,7 +20,7 @@ use crate::{
         middleware::auth::{CurrentUser, SessionInfo},
         state::AppState,
     },
-    web::templates::{BaseContext, HtmlTemplate},
+    web::templates::{BaseContext, HtmlTemplate, filters},
 };
 use super::{MemberInfo, is_admin};
 
@@ -105,15 +105,14 @@ pub async fn security_page(
         .unwrap_or_else(|| "(unknown)".to_string());
 
     let member_info = MemberInfo {
-        id: current_user.member.id.to_string(),
+        id: current_user.member.id,
         username: current_user.member.username.clone(),
         full_name: current_user.member.full_name.clone(),
         email: current_user.member.email.clone(),
-        status: current_user.member.status.as_str().to_string(),
+        status: current_user.member.status,
         membership_type: membership_type_name,
-        joined_at: current_user.member.joined_at.format("%B %d, %Y").to_string(),
-        dues_paid_until: current_user.member.dues_paid_until
-            .map(|d| d.format("%B %d, %Y").to_string()),
+        joined_at: current_user.member.joined_at,
+        dues_paid_until: current_user.member.dues_paid_until,
     };
 
     HtmlTemplate(SecurityTemplate {

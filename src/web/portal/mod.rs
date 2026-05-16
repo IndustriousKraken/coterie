@@ -1,13 +1,13 @@
-mod admin;
+pub mod admin;
 mod announcements;
-mod dashboard;
+pub mod dashboard;
 mod donations;
 mod events;
 mod partials;
 mod payments;
-mod profile;
+pub mod profile;
 mod restore;
-mod security;
+pub mod security;
 
 use axum::{
     Router,
@@ -176,14 +176,14 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
 
 // Shared types used across portal modules
 pub struct MemberInfo {
-    pub id: String,
+    pub id: uuid::Uuid,
     pub username: String,
     pub full_name: String,
     pub email: String,
-    pub status: String,
+    pub status: crate::domain::MemberStatus,
     pub membership_type: String,
-    pub joined_at: String,
-    pub dues_paid_until: Option<String>,
+    pub joined_at: chrono::DateTime<chrono::Utc>,
+    pub dues_paid_until: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 pub fn is_admin(member: &crate::domain::Member) -> bool {

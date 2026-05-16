@@ -44,7 +44,7 @@ impl Member {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, PartialEq, ToSchema)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq, ToSchema)]
 #[sqlx(type_name = "TEXT")]
 pub enum MemberStatus {
     Pending,
@@ -83,6 +83,62 @@ impl MemberStatus {
             "Honorary" => Some(MemberStatus::Honorary),
             _ => None,
         }
+    }
+
+    pub fn is_active(self) -> bool { matches!(self, MemberStatus::Active) }
+    pub fn is_pending(self) -> bool { matches!(self, MemberStatus::Pending) }
+    pub fn is_expired(self) -> bool { matches!(self, MemberStatus::Expired) }
+    pub fn is_suspended(self) -> bool { matches!(self, MemberStatus::Suspended) }
+    pub fn is_honorary(self) -> bool { matches!(self, MemberStatus::Honorary) }
+}
+
+#[cfg(test)]
+mod member_status_predicate_tests {
+    use super::MemberStatus;
+
+    #[test]
+    fn is_active_returns_true_for_active_only() {
+        assert!(MemberStatus::Active.is_active());
+        assert!(!MemberStatus::Pending.is_active());
+        assert!(!MemberStatus::Expired.is_active());
+        assert!(!MemberStatus::Suspended.is_active());
+        assert!(!MemberStatus::Honorary.is_active());
+    }
+
+    #[test]
+    fn is_pending_returns_true_for_pending_only() {
+        assert!(MemberStatus::Pending.is_pending());
+        assert!(!MemberStatus::Active.is_pending());
+        assert!(!MemberStatus::Expired.is_pending());
+        assert!(!MemberStatus::Suspended.is_pending());
+        assert!(!MemberStatus::Honorary.is_pending());
+    }
+
+    #[test]
+    fn is_expired_returns_true_for_expired_only() {
+        assert!(MemberStatus::Expired.is_expired());
+        assert!(!MemberStatus::Active.is_expired());
+        assert!(!MemberStatus::Pending.is_expired());
+        assert!(!MemberStatus::Suspended.is_expired());
+        assert!(!MemberStatus::Honorary.is_expired());
+    }
+
+    #[test]
+    fn is_suspended_returns_true_for_suspended_only() {
+        assert!(MemberStatus::Suspended.is_suspended());
+        assert!(!MemberStatus::Active.is_suspended());
+        assert!(!MemberStatus::Pending.is_suspended());
+        assert!(!MemberStatus::Expired.is_suspended());
+        assert!(!MemberStatus::Honorary.is_suspended());
+    }
+
+    #[test]
+    fn is_honorary_returns_true_for_honorary_only() {
+        assert!(MemberStatus::Honorary.is_honorary());
+        assert!(!MemberStatus::Active.is_honorary());
+        assert!(!MemberStatus::Pending.is_honorary());
+        assert!(!MemberStatus::Expired.is_honorary());
+        assert!(!MemberStatus::Suspended.is_honorary());
     }
 }
 

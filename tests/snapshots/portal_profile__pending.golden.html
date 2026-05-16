@@ -1,12 +1,82 @@
-{% extends "layouts/base.html" %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="">
+    <title>Profile - Coterie</title>
+    
+    <!-- HTMX (pinned + SRI) -->
+    <script nonce="__CSP_NONCE__"
+            src="https://unpkg.com/htmx.org@1.9.10"
+            integrity="sha384-YwQSRkoBOUtKKVfHQ8C2zCPslUZHuxiPHts6X/xQCuGHipTtRXd7ImqS1VTLlpiT"
+            crossorigin="anonymous"></script>
+    <script nonce="__CSP_NONCE__"
+            src="https://unpkg.com/htmx.org@1.9.10/dist/ext/json-enc.js"
+            integrity="sha384-nRnAvEUI7N/XvvowiMiq7oEI04gOXMCqD3Bidvedw+YNbj7zTQACPlRI3Jt3vYM4"
+            crossorigin="anonymous"></script>
 
-{% block title %}Profile - Coterie{% endblock %}
+    <!-- Alpine.js (CSP build — no `Function()` so works without 'unsafe-eval') -->
+    <script nonce="__CSP_NONCE__"
+            defer
+            src="https://unpkg.com/alpinejs@3.13.5/dist/cdn.csp.min.js"
+            integrity="sha384-qZ7VE99GohFZdSLmj9//6HiHLNWo5eOEs1RrcdDXTygxJB4VAuCIBei06IJemclm"
+            crossorigin="anonymous"></script>
 
-{% block head %}
-<meta name="csrf-token" content="{{ base.csrf_token }}">
-{% endblock %}
+    <!-- Tailwind CSS (locally built) -->
+    <link rel="stylesheet" href="/static/style.css">
 
-{% block content %}
+    <!-- Custom styles -->
+    <style>
+        [x-cloak] { display: none !important; }
+
+        .htmx-indicator {
+            display: none;
+        }
+        .htmx-request .htmx-indicator {
+            display: inline-block;
+        }
+        .htmx-request.htmx-indicator {
+            display: inline-block;
+        }
+    </style>
+    
+    
+<meta name="csrf-token" content="">
+
+</head>
+<body class="bg-gray-50">
+    <!-- Navigation -->
+    <nav class="bg-white shadow-sm border-b">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <a href="/" class="text-xl font-semibold text-gray-900">
+                        Coterie
+                    </a>
+                    
+                    
+                </div>
+                
+                <div class="flex items-center">
+                    
+                    <a href="/login" class="text-sm text-gray-700 hover:text-gray-900">
+                        Login
+                    </a>
+                    
+                </div>
+            </div>
+        </div>
+    </nav>
+    
+    <!-- Toast notifications -->
+    <div id="toast-container" class="fixed top-4 right-4 z-50"></div>
+
+    
+
+    <!-- Main content -->
+    <main class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+        
 <div class="px-4 py-6">
     <div class="mb-8">
         <h1 class="text-3xl font-bold text-gray-900">Your Profile</h1>
@@ -23,14 +93,14 @@
                   hx-target="#profile-form-container"
                   id="profile-form-container"
                   class="space-y-4">
-                <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+                <input type="hidden" name="csrf_token" value="">
 
                 <div>
                     <label for="full_name" class="block text-sm font-medium text-gray-700">Full Name</label>
                     <input type="text"
                            id="full_name"
                            name="full_name"
-                           value="{{ member.full_name }}"
+                           value="Jane Doe"
                            class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
                 </div>
 
@@ -39,7 +109,7 @@
                     <input type="email"
                            id="email"
                            name="email"
-                           value="{{ member.email }}"
+                           value="jane@example.com"
                            disabled
                            class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm bg-gray-50 text-gray-500 sm:text-sm">
                     <p class="mt-1 text-xs text-gray-500">Contact an admin to change your email address</p>
@@ -50,7 +120,7 @@
                     <input type="text"
                            id="username"
                            name="username"
-                           value="{{ member.username }}"
+                           value="jdoe"
                            disabled
                            class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm bg-gray-50 text-gray-500 sm:text-sm">
                     <p class="mt-1 text-xs text-gray-500">Username cannot be changed</p>
@@ -75,36 +145,28 @@
                 <div>
                     <dt class="text-sm text-gray-600">Status</dt>
                     <dd class="text-sm font-medium">
-                        {% if member.status.is_active() %}
-                            <span class="text-green-600">Active</span>
-                        {% else if member.status.is_pending() %}
+                        
                             <span class="text-yellow-600">Pending</span>
-                        {% else if member.status.is_expired() %}
-                            <span class="text-red-600">Expired</span>
-                        {% else %}
-                            <span class="text-gray-600">{{ member.status.as_str() }}</span>
-                        {% endif %}
+                        
                     </dd>
                 </div>
 
                 <div>
                     <dt class="text-sm text-gray-600">Membership Type</dt>
-                    <dd class="text-sm font-medium">{{ member.membership_type }}</dd>
+                    <dd class="text-sm font-medium">Regular</dd>
                 </div>
 
                 <div>
                     <dt class="text-sm text-gray-600">Member Since</dt>
-                    <dd class="text-sm font-medium">{{ member.joined_at|fmt_long_date }}</dd>
+                    <dd class="text-sm font-medium">September 12, 2025</dd>
                 </div>
 
                 <div>
                     <dt class="text-sm text-gray-600">Dues Paid Until</dt>
                     <dd class="text-sm font-medium">
-                        {% if let Some(dues_date) = member.dues_paid_until.as_ref() %}
-                            {{ dues_date|fmt_long_date }}
-                        {% else %}
-                            <span class="text-gray-400">Not paid</span>
-                        {% endif %}
+                        
+                            March 01, 2026
+                        
                     </dd>
                 </div>
             </dl>
@@ -125,7 +187,7 @@
                   hx-swap="innerHTML"
                   hx-target="#password-message"
                   class="space-y-3">
-                <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+                <input type="hidden" name="csrf_token" value="">
 
                 <div>
                     <label for="current_password" class="block text-sm font-medium text-gray-700">Current Password</label>
@@ -166,4 +228,60 @@
         </div>
     </div>
 </div>
-{% endblock %}
+
+    </main>
+    
+    <!-- Loading indicator -->
+    <div class="htmx-indicator fixed top-0 left-0 right-0 h-1 bg-blue-600"></div>
+    
+    <!-- Global scripts -->
+    <script nonce="__CSP_NONCE__">
+        // HTMX configuration
+        document.body.addEventListener('htmx:configRequest', (event) => {
+            event.detail.headers['X-Requested-With'] = 'XMLHttpRequest';
+
+            // Add CSRF token from meta tag if present
+            const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+            if (csrfMeta) {
+                event.detail.headers['X-CSRF-Token'] = csrfMeta.content;
+            }
+        });
+        
+        // Handle HTMX errors
+        document.body.addEventListener('htmx:responseError', (event) => {
+            console.error('HTMX error:', event.detail);
+            showToast('An error occurred. Please try again.', 'error');
+        });
+        
+        // Toast notifications
+        function showToast(message, type = 'info') {
+            const colors = {
+                'info': 'bg-blue-500',
+                'success': 'bg-green-500',
+                'error': 'bg-red-500',
+                'warning': 'bg-yellow-500'
+            };
+            
+            const toast = document.createElement('div');
+            toast.className = `${colors[type]} text-white px-6 py-3 rounded-lg shadow-lg mb-2`;
+            toast.textContent = message;
+            
+            document.getElementById('toast-container').appendChild(toast);
+            
+            setTimeout(() => {
+                toast.remove();
+            }, 5000);
+        }
+        
+        // Listen for server-sent events for notifications
+        document.body.addEventListener('htmx:afterSwap', (event) => {
+            if (event.detail.xhr.getResponseHeader('X-Toast')) {
+                const toast = JSON.parse(event.detail.xhr.getResponseHeader('X-Toast'));
+                showToast(toast.message, toast.type);
+            }
+        });
+    </script>
+    
+    
+</body>
+</html>
