@@ -45,13 +45,13 @@ impl SqliteMemberRepository {
 
     fn row_to_member(row: MemberRow) -> Result<Member> {
         let membership_type_id = Uuid::parse_str(&row.membership_type_id)
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(|e| AppError::Internal(e.to_string()))?;
 
         let billing_mode = BillingMode::from_str(&row.billing_mode)
             .unwrap_or(BillingMode::Manual);
 
         Ok(Member {
-            id: Uuid::parse_str(&row.id).map_err(|e| AppError::Database(e.to_string()))?,
+            id: Uuid::parse_str(&row.id).map_err(|e| AppError::Internal(e.to_string()))?,
             email: row.email,
             username: row.username,
             full_name: row.full_name,
@@ -76,7 +76,7 @@ impl SqliteMemberRepository {
 
     fn parse_member_status(s: &str) -> Result<MemberStatus> {
         MemberStatus::from_str(s)
-            .ok_or_else(|| AppError::Database(format!("Invalid member status: {}", s)))
+            .ok_or_else(|| AppError::Internal(format!("Invalid member status: {}", s)))
     }
 
     /// Resolve a `CreateMemberRequest`'s membership_type_id, defaulting
@@ -97,11 +97,11 @@ impl SqliteMemberRepository {
         )
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         match row {
             Some((id_str,)) => Uuid::parse_str(&id_str)
-                .map_err(|e| AppError::Database(e.to_string())),
+                .map_err(|e| AppError::Internal(e.to_string())),
             None => Err(AppError::BadRequest(
                 "No active membership types configured — admin must create one before \
                  members can be added."
@@ -128,7 +128,7 @@ impl MemberRepository for SqliteMemberRepository {
 
         let password_hash = argon2
             .hash_password(request.password.as_bytes(), &salt)
-            .map_err(|e| AppError::Database(e.to_string()))?
+            .map_err(|e| AppError::Internal(e.to_string()))?
             .to_string();
 
         let status_str = status.as_str();
@@ -158,10 +158,10 @@ impl MemberRepository for SqliteMemberRepository {
         .bind(now_naive)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         self.find_by_id(id).await?.ok_or_else(|| {
-            AppError::Database("Failed to retrieve created member".to_string())
+            AppError::Internal("Failed to retrieve created member".to_string())
         })
     }
 
@@ -180,7 +180,7 @@ impl MemberRepository for SqliteMemberRepository {
         .bind(id_str)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         match row {
             Some(r) => Ok(Some(Self::row_to_member(r)?)),
@@ -202,7 +202,7 @@ impl MemberRepository for SqliteMemberRepository {
         .bind(email)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         match row {
             Some(r) => Ok(Some(Self::row_to_member(r)?)),
@@ -224,7 +224,7 @@ impl MemberRepository for SqliteMemberRepository {
         .bind(username)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         match row {
             Some(r) => Ok(Some(Self::row_to_member(r)?)),
@@ -246,7 +246,7 @@ impl MemberRepository for SqliteMemberRepository {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         rows.into_iter()
             .map(Self::row_to_member)
@@ -291,10 +291,10 @@ impl MemberRepository for SqliteMemberRepository {
         .bind(&id_str)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         self.find_by_id(id).await?.ok_or_else(|| {
-            AppError::Database("Failed to retrieve updated member".to_string())
+            AppError::Internal("Failed to retrieve updated member".to_string())
         })
     }
 
@@ -309,7 +309,7 @@ impl MemberRepository for SqliteMemberRepository {
             .bind(&id_str)
             .execute(&self.pool)
             .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
 
         self.find_by_id(id).await?.ok_or_else(|| {
             AppError::NotFound("Member not found".to_string())
@@ -328,7 +328,7 @@ impl MemberRepository for SqliteMemberRepository {
             .bind(&id_str)
             .execute(&self.pool)
             .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
         Ok(())
     }
 
@@ -343,7 +343,7 @@ impl MemberRepository for SqliteMemberRepository {
             .bind(&id_str)
             .execute(&self.pool)
             .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
         Ok(())
     }
 
@@ -358,7 +358,7 @@ impl MemberRepository for SqliteMemberRepository {
             .bind(&id_str)
             .execute(&self.pool)
             .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
         Ok(())
     }
 
@@ -379,7 +379,7 @@ impl MemberRepository for SqliteMemberRepository {
         .bind(id.to_string())
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
         Ok(())
     }
 
@@ -396,7 +396,7 @@ impl MemberRepository for SqliteMemberRepository {
         .bind(id.to_string())
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
         Ok(())
     }
 
@@ -410,7 +410,7 @@ impl MemberRepository for SqliteMemberRepository {
         .bind(id.to_string())
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
         Ok(())
     }
 
@@ -432,7 +432,7 @@ impl MemberRepository for SqliteMemberRepository {
         .bind(id.to_string())
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
         Ok(())
     }
 
@@ -446,7 +446,7 @@ impl MemberRepository for SqliteMemberRepository {
         .bind(id.to_string())
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
         Ok(())
     }
 
@@ -462,7 +462,7 @@ impl MemberRepository for SqliteMemberRepository {
         .bind(customer_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         match row {
             Some(r) => Ok(Some(Self::row_to_member(r)?)),
@@ -477,7 +477,7 @@ impl MemberRepository for SqliteMemberRepository {
         .bind(mode.as_str())
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
         Ok(count)
     }
 
@@ -488,12 +488,12 @@ impl MemberRepository for SqliteMemberRepository {
         .bind(mode.as_str())
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         rows.into_iter()
             .map(|(id_str,)| {
                 Uuid::parse_str(&id_str)
-                    .map_err(|e| AppError::Database(format!("Invalid uuid {}: {}", id_str, e)))
+                    .map_err(|e| AppError::Internal(format!("Invalid uuid {}: {}", id_str, e)))
             })
             .collect()
     }
@@ -575,9 +575,9 @@ impl MemberRepository for SqliteMemberRepository {
         rows_q = rows_q.bind(query.limit).bind(query.offset);
 
         let rows = rows_q.fetch_all(&self.pool).await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
         let total: i64 = count_q.fetch_one(&self.pool).await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
 
         let members = rows.into_iter().map(Self::row_to_member).collect::<Result<Vec<_>>>()?;
         Ok((members, total))

@@ -37,17 +37,17 @@ impl SqliteScheduledPaymentRepository {
 
     fn row_to_scheduled_payment(row: ScheduledPaymentRow) -> Result<ScheduledPayment> {
         let status = ScheduledPaymentStatus::from_str(&row.status)
-            .ok_or_else(|| AppError::Database(format!("Invalid status: {}", row.status)))?;
+            .ok_or_else(|| AppError::Internal(format!("Invalid status: {}", row.status)))?;
 
         let due_date = NaiveDate::parse_from_str(&row.due_date, "%Y-%m-%d")
-            .map_err(|e| AppError::Database(format!("Invalid due_date: {}", e)))?;
+            .map_err(|e| AppError::Internal(format!("Invalid due_date: {}", e)))?;
 
         Ok(ScheduledPayment {
-            id: Uuid::parse_str(&row.id).map_err(|e| AppError::Database(e.to_string()))?,
+            id: Uuid::parse_str(&row.id).map_err(|e| AppError::Internal(e.to_string()))?,
             member_id: Uuid::parse_str(&row.member_id)
-                .map_err(|e| AppError::Database(e.to_string()))?,
+                .map_err(|e| AppError::Internal(e.to_string()))?,
             membership_type_id: Uuid::parse_str(&row.membership_type_id)
-                .map_err(|e| AppError::Database(e.to_string()))?,
+                .map_err(|e| AppError::Internal(e.to_string()))?,
             amount_cents: row.amount_cents,
             currency: row.currency,
             due_date,
@@ -60,7 +60,7 @@ impl SqliteScheduledPaymentRepository {
                 .payment_id
                 .map(|s| Uuid::parse_str(&s))
                 .transpose()
-                .map_err(|e| AppError::Database(e.to_string()))?,
+                .map_err(|e| AppError::Internal(e.to_string()))?,
             failure_reason: row.failure_reason,
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
             updated_at: DateTime::from_naive_utc_and_offset(row.updated_at, Utc),
@@ -104,10 +104,10 @@ impl ScheduledPaymentRepository for SqliteScheduledPaymentRepository {
         .bind(now)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         self.find_by_id(payment.id).await?.ok_or_else(|| {
-            AppError::Database("Failed to retrieve created scheduled payment".to_string())
+            AppError::Internal("Failed to retrieve created scheduled payment".to_string())
         })
     }
 
@@ -125,7 +125,7 @@ impl ScheduledPaymentRepository for SqliteScheduledPaymentRepository {
         .bind(id_str)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         match row {
             Some(r) => Ok(Some(Self::row_to_scheduled_payment(r)?)),
@@ -148,7 +148,7 @@ impl ScheduledPaymentRepository for SqliteScheduledPaymentRepository {
         .bind(member_id_str)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         rows.into_iter()
             .map(Self::row_to_scheduled_payment)
@@ -170,7 +170,7 @@ impl ScheduledPaymentRepository for SqliteScheduledPaymentRepository {
         .bind(date_str)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         rows.into_iter()
             .map(Self::row_to_scheduled_payment)
@@ -201,10 +201,10 @@ impl ScheduledPaymentRepository for SqliteScheduledPaymentRepository {
         .bind(&id_str)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         self.find_by_id(id).await?.ok_or_else(|| {
-            AppError::Database("Failed to retrieve updated scheduled payment".to_string())
+            AppError::Internal("Failed to retrieve updated scheduled payment".to_string())
         })
     }
 
@@ -224,10 +224,10 @@ impl ScheduledPaymentRepository for SqliteScheduledPaymentRepository {
         .bind(&id_str)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         self.find_by_id(id).await?.ok_or_else(|| {
-            AppError::Database("Failed to retrieve updated scheduled payment".to_string())
+            AppError::Internal("Failed to retrieve updated scheduled payment".to_string())
         })
     }
 
@@ -248,10 +248,10 @@ impl ScheduledPaymentRepository for SqliteScheduledPaymentRepository {
         .bind(&id_str)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         self.find_by_id(id).await?.ok_or_else(|| {
-            AppError::Database("Failed to retrieve updated scheduled payment".to_string())
+            AppError::Internal("Failed to retrieve updated scheduled payment".to_string())
         })
     }
 
@@ -280,7 +280,7 @@ impl ScheduledPaymentRepository for SqliteScheduledPaymentRepository {
         .bind(since.naive_utc())
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         rows.into_iter()
             .map(Self::row_to_scheduled_payment)

@@ -60,7 +60,7 @@ impl EmailTokenService {
             .bind(expires_at_naive)
             .execute(&self.pool)
             .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
 
         Ok(CreatedToken { token, expires_at })
     }
@@ -89,12 +89,12 @@ impl EmailTokenService {
             .bind(now_naive)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
 
         Ok(match row {
             Some((member_id_str,)) => {
                 let member_id = Uuid::parse_str(&member_id_str)
-                    .map_err(|e| AppError::Database(e.to_string()))?;
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
                 Some(ConsumedToken { member_id })
             }
             None => None,
@@ -114,7 +114,7 @@ impl EmailTokenService {
             .bind(member_id.to_string())
             .execute(&self.pool)
             .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
         Ok(())
     }
 
@@ -126,7 +126,7 @@ impl EmailTokenService {
             .bind(Utc::now().naive_utc())
             .execute(&self.pool)
             .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
         Ok(result.rows_affected())
     }
 }

@@ -39,10 +39,10 @@ impl SqliteAnnouncementRepository {
             .as_ref()
             .map(|id| Uuid::parse_str(id))
             .transpose()
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(|e| AppError::Internal(e.to_string()))?;
 
         Ok(Announcement {
-            id: Uuid::parse_str(&row.id).map_err(|e| AppError::Database(e.to_string()))?,
+            id: Uuid::parse_str(&row.id).map_err(|e| AppError::Internal(e.to_string()))?,
             title: row.title,
             content: row.content,
             announcement_type: Self::parse_announcement_type(&row.announcement_type)?,
@@ -51,7 +51,7 @@ impl SqliteAnnouncementRepository {
             featured: row.featured != 0,
             image_url: row.image_url,
             published_at: row.published_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
-            created_by: Uuid::parse_str(&row.created_by).map_err(|e| AppError::Database(e.to_string()))?,
+            created_by: Uuid::parse_str(&row.created_by).map_err(|e| AppError::Internal(e.to_string()))?,
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
             updated_at: DateTime::from_naive_utc_and_offset(row.updated_at, Utc),
         })
@@ -64,7 +64,7 @@ impl SqliteAnnouncementRepository {
             "Meeting" => Ok(AnnouncementType::Meeting),
             "CTFResult" => Ok(AnnouncementType::CTFResult),
             "General" => Ok(AnnouncementType::General),
-            _ => Err(AppError::Database(format!("Invalid announcement type: {}", s))),
+            _ => Err(AppError::Internal(format!("Invalid announcement type: {}", s))),
         }
     }
 
@@ -113,10 +113,10 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         .bind(now)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         self.find_by_id(announcement.id).await?.ok_or_else(|| {
-            AppError::Database("Failed to retrieve created announcement".to_string())
+            AppError::Internal("Failed to retrieve created announcement".to_string())
         })
     }
 
@@ -133,7 +133,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         .bind(id_str)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         match row {
             Some(r) => Ok(Some(Self::row_to_announcement(r)?)),
@@ -155,7 +155,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         .bind(offset)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         rows.into_iter()
             .map(Self::row_to_announcement)
@@ -176,7 +176,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         .bind(limit)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         rows.into_iter()
             .map(Self::row_to_announcement)
@@ -195,7 +195,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         rows.into_iter()
             .map(Self::row_to_announcement)
@@ -212,7 +212,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         )
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         Ok(count.0)
     }
@@ -247,10 +247,10 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         .bind(&id_str)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         self.find_by_id(id).await?.ok_or_else(|| {
-            AppError::Database("Failed to retrieve updated announcement".to_string())
+            AppError::Internal("Failed to retrieve updated announcement".to_string())
         })
     }
 
@@ -260,7 +260,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
             .bind(&id_str)
             .execute(&self.pool)
             .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
 
         Ok(())
     }

@@ -103,7 +103,7 @@ impl SessionStore {
             Ok(Some(Session {
                 id: row.id,
                 member_id: Uuid::parse_str(&row.member_id)
-                    .map_err(|e| AppError::Database(e.to_string()))?,
+                    .map_err(|e| AppError::Internal(e.to_string()))?,
                 token_hash: row.token_hash,
                 expires_at: DateTime::from_naive_utc_and_offset(row.expires_at, Utc),
                 created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),

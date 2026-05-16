@@ -281,7 +281,7 @@ impl WebhookDispatcher {
                     "Membership payment {} has no member payer — data integrity violation",
                     payment.id,
                 );
-                return Err(AppError::Database(
+                return Err(AppError::Internal(
                     "membership payment without member payer".to_string()
                 ));
             }
@@ -507,7 +507,7 @@ impl WebhookDispatcher {
                         "Membership payment {} has no member payer — data integrity violation",
                         payment_id,
                     );
-                    return Err(AppError::Database(
+                    return Err(AppError::Internal(
                         "membership payment without member payer".to_string()
                     ));
                 }

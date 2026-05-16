@@ -125,7 +125,7 @@ impl TotpService {
         .bind(member_id.to_string())
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         Ok(true)
     }
@@ -147,7 +147,7 @@ impl TotpService {
         .bind(member_id.to_string())
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         let (encrypted_opt, enabled_at) = match row {
             Some(t) => t,
@@ -179,7 +179,7 @@ impl TotpService {
     /// case any half-finished login was hanging around.
     pub async fn disable(&self, member_id: Uuid) -> Result<()> {
         let mut tx = self.pool.begin().await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
 
         sqlx::query(
             "UPDATE members \
@@ -192,15 +192,15 @@ impl TotpService {
         .bind(member_id.to_string())
         .execute(&mut *tx)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         sqlx::query("DELETE FROM pending_logins WHERE member_id = ?")
             .bind(member_id.to_string())
             .execute(&mut *tx)
             .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
 
-        tx.commit().await.map_err(|e| AppError::Database(e.to_string()))?;
+        tx.commit().await.map_err(AppError::Database)?;
         Ok(())
     }
 
@@ -212,7 +212,7 @@ impl TotpService {
         .bind(member_id.to_string())
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?
+        .map_err(AppError::Database)?
         .flatten();
         Ok(enabled.is_some())
     }

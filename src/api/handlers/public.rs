@@ -118,11 +118,13 @@ pub async fn signup(
     // Create the member. Use a generic error for UNIQUE violations to
     // prevent attackers from enumerating valid emails/usernames.
     let member = state.service_context.member_repo.create(create_request).await
-        .map_err(|e| match e {
-            AppError::Database(msg) if msg.contains("UNIQUE") => {
-                AppError::Conflict("Registration failed: an account with this information already exists".to_string())
-            },
-            _ => e,
+        .map_err(|e| {
+            if let AppError::Database(sqlx::Error::Database(ref db_err)) = e {
+                if db_err.is_unique_violation() {
+                    return AppError::Conflict("Registration failed: an account with this information already exists".to_string());
+                }
+            }
+            e
         })?;
 
     // Send email verification. Soft-fail on send error: the account is

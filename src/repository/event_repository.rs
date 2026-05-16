@@ -44,15 +44,15 @@ impl SqliteEventRepository {
             .as_ref()
             .map(|id| Uuid::parse_str(id))
             .transpose()
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(|e| AppError::Internal(e.to_string()))?;
         let series_id = row.series_id
             .as_ref()
             .map(|id| Uuid::parse_str(id))
             .transpose()
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(|e| AppError::Internal(e.to_string()))?;
 
         Ok(Event {
-            id: Uuid::parse_str(&row.id).map_err(|e| AppError::Database(e.to_string()))?,
+            id: Uuid::parse_str(&row.id).map_err(|e| AppError::Internal(e.to_string()))?,
             title: row.title,
             description: row.description,
             event_type: Self::parse_event_type(&row.event_type)?,
@@ -64,7 +64,7 @@ impl SqliteEventRepository {
             max_attendees: row.max_attendees,
             rsvp_required: row.rsvp_required != 0,
             image_url: row.image_url,
-            created_by: Uuid::parse_str(&row.created_by).map_err(|e| AppError::Database(e.to_string()))?,
+            created_by: Uuid::parse_str(&row.created_by).map_err(|e| AppError::Internal(e.to_string()))?,
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
             updated_at: DateTime::from_naive_utc_and_offset(row.updated_at, Utc),
             series_id,
@@ -80,7 +80,7 @@ impl SqliteEventRepository {
             "Social" => Ok(EventType::Social),
             "Training" => Ok(EventType::Training),
             "Hackathon" => Ok(EventType::Hackathon),
-            _ => Err(AppError::Database(format!("Invalid event type: {}", s))),
+            _ => Err(AppError::Internal(format!("Invalid event type: {}", s))),
         }
     }
 
@@ -100,7 +100,7 @@ impl SqliteEventRepository {
             "Public" => Ok(EventVisibility::Public),
             "MembersOnly" => Ok(EventVisibility::MembersOnly),
             "AdminOnly" => Ok(EventVisibility::AdminOnly),
-            _ => Err(AppError::Database(format!("Invalid visibility: {}", s))),
+            _ => Err(AppError::Internal(format!("Invalid visibility: {}", s))),
         }
     }
 
@@ -158,10 +158,10 @@ impl EventRepository for SqliteEventRepository {
         .bind(event.occurrence_index)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         self.find_by_id(event.id).await?.ok_or_else(|| {
-            AppError::Database("Failed to retrieve created event".to_string())
+            AppError::Internal("Failed to retrieve created event".to_string())
         })
     }
 
@@ -180,7 +180,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(id_str)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         match row {
             Some(r) => Ok(Some(Self::row_to_event(r)?)),
@@ -204,7 +204,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(offset)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         rows.into_iter()
             .map(Self::row_to_event)
@@ -230,7 +230,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(limit)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         rows.into_iter()
             .map(Self::row_to_event)
@@ -254,7 +254,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(visibility_str)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         rows.into_iter()
             .map(Self::row_to_event)
@@ -278,7 +278,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(visibility_str)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         rows.into_iter()
             .map(Self::row_to_event)
@@ -300,7 +300,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(now)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         Ok(count.0)
     }
@@ -340,10 +340,10 @@ impl EventRepository for SqliteEventRepository {
         .bind(&id_str)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         self.find_by_id(id).await?.ok_or_else(|| {
-            AppError::Database("Failed to retrieve updated event".to_string())
+            AppError::Internal("Failed to retrieve updated event".to_string())
         })
     }
 
@@ -353,7 +353,7 @@ impl EventRepository for SqliteEventRepository {
             .bind(&id_str)
             .execute(&self.pool)
             .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
 
         Ok(())
     }
@@ -374,7 +374,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(&member_id_str)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         Ok(())
     }
@@ -394,7 +394,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(&member_id_str)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         Ok(())
     }
@@ -412,7 +412,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(&event_id_str)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         Ok(row.0)
     }
@@ -432,7 +432,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(&member_id_str)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         match row {
             Some((status,)) => {
@@ -440,7 +440,7 @@ impl EventRepository for SqliteEventRepository {
                     "Registered" => AttendanceStatus::Registered,
                     "Waitlisted" => AttendanceStatus::Waitlisted,
                     "Cancelled" => AttendanceStatus::Cancelled,
-                    _ => return Err(AppError::Database(format!("Invalid attendance status: {}", status))),
+                    _ => return Err(AppError::Internal(format!("Invalid attendance status: {}", status))),
                 };
                 Ok(Some(attendance_status))
             }
@@ -455,7 +455,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(series_id.to_string())
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
         Ok(max)
     }
 
@@ -471,7 +471,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(after.naive_utc())
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
         Ok(result.rows_affected())
     }
 
@@ -517,7 +517,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(from.naive_utc())
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
         Ok(result.rows_affected())
     }
 }

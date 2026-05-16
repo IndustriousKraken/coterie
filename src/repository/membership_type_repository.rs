@@ -50,7 +50,7 @@ impl SqliteMembershipTypeRepository {
 
     fn row_to_config(row: MembershipTypeRow) -> Result<MembershipTypeConfig> {
         Ok(MembershipTypeConfig {
-            id: Uuid::parse_str(&row.id).map_err(|e| AppError::Database(e.to_string()))?,
+            id: Uuid::parse_str(&row.id).map_err(|e| AppError::Internal(e.to_string()))?,
             name: row.name,
             slug: row.slug,
             description: row.description,
@@ -97,11 +97,11 @@ impl MembershipTypeRepository for SqliteMembershipTypeRepository {
         .bind(now)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         self.find_by_id(id)
             .await?
-            .ok_or_else(|| AppError::Database("Failed to retrieve created membership type".to_string()))
+            .ok_or_else(|| AppError::Internal("Failed to retrieve created membership type".to_string()))
     }
 
     async fn find_by_id(&self, id: Uuid) -> Result<Option<MembershipTypeConfig>> {
@@ -118,7 +118,7 @@ impl MembershipTypeRepository for SqliteMembershipTypeRepository {
         .bind(&id_str)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         match row {
             Some(r) => Ok(Some(Self::row_to_config(r)?)),
@@ -139,7 +139,7 @@ impl MembershipTypeRepository for SqliteMembershipTypeRepository {
         .bind(slug)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         match row {
             Some(r) => Ok(Some(Self::row_to_config(r)?)),
@@ -170,7 +170,7 @@ impl MembershipTypeRepository for SqliteMembershipTypeRepository {
         let rows = sqlx::query_as::<_, MembershipTypeRow>(query)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
 
         rows.into_iter().map(Self::row_to_config).collect()
     }
@@ -213,11 +213,11 @@ impl MembershipTypeRepository for SqliteMembershipTypeRepository {
         .bind(&id_str)
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         self.find_by_id(id)
             .await?
-            .ok_or_else(|| AppError::Database("Failed to retrieve updated membership type".to_string()))
+            .ok_or_else(|| AppError::Internal("Failed to retrieve updated membership type".to_string()))
     }
 
     async fn delete(&self, id: Uuid) -> Result<()> {
@@ -227,7 +227,7 @@ impl MembershipTypeRepository for SqliteMembershipTypeRepository {
             .bind(&id_str)
             .execute(&self.pool)
             .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(AppError::Database)?;
 
         Ok(())
     }
@@ -245,7 +245,7 @@ impl MembershipTypeRepository for SqliteMembershipTypeRepository {
         .bind(&id_str)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         Ok(row.0)
     }
@@ -256,7 +256,7 @@ impl MembershipTypeRepository for SqliteMembershipTypeRepository {
         )
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(AppError::Database)?;
 
         Ok(row.0.unwrap_or(0) + 1)
     }
