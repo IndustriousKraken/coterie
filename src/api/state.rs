@@ -4,14 +4,30 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use axum::extract::FromRef;
 use axum::http::HeaderMap;
+use sqlx::SqlitePool;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
     api::middleware::bot_challenge::BotChallengeVerifier,
+    auth::{AuthService, CsrfService, PendingLoginService, TotpService},
     config::Settings,
+    email::EmailSender,
+    integrations::IntegrationManager,
     payments::{StripeClient, WebhookDispatcher},
-    service::{billing_service::BillingService, ServiceContext},
+    repository::{
+        AnnouncementRepository, BasicTypeRepository, DonationCampaignRepository, EventRepository,
+        EventSeriesRepository, MemberRepository, MembershipTypeRepository, PaymentRepository,
+        ProcessedEventsRepository, SavedCardRepository, ScheduledPaymentRepository,
+    },
+    service::{
+        audit_service::AuditService, basic_type_service::BasicTypeService,
+        billing_service::BillingService, member_service::MemberService,
+        membership_type_service::MembershipTypeService, payment_service::PaymentService,
+        recurring_event_service::RecurringEventService, settings_service::SettingsService,
+        ServiceContext,
+    },
 };
 
 /// Extract client IP from request headers.
@@ -168,5 +184,251 @@ impl AppState {
             admin_exists_observed: Arc::new(AtomicBool::new(false)),
             bot_challenge_verifier,
         }
+    }
+}
+
+// FromRef<AppState> impls follow.
+//
+// Every constituent service, repository, and piece of infrastructure on
+// AppState (and the ServiceContext reachable through it) has a FromRef
+// impl below so handlers can write `State(svc): State<Arc<dyn X>>`
+// instead of extracting the whole AppState. Adding a new field to
+// AppState or ServiceContext SHOULD include a matching FromRef impl
+// here — see the `routing-architecture` spec.
+
+// --- Repositories ---
+
+impl FromRef<AppState> for Arc<dyn MemberRepository> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.member_repo.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<dyn EventRepository> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.event_repo.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<dyn EventSeriesRepository> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.event_series_repo.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<dyn AnnouncementRepository> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.announcement_repo.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<dyn PaymentRepository> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.payment_repo.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<dyn SavedCardRepository> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.saved_card_repo.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<dyn ScheduledPaymentRepository> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.scheduled_payment_repo.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<dyn DonationCampaignRepository> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.donation_campaign_repo.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<dyn BasicTypeRepository> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.basic_type_repo.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<dyn MembershipTypeRepository> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.membership_type_repo.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<dyn ProcessedEventsRepository> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.processed_events_repo.clone()
+    }
+}
+
+// --- Services ---
+
+impl FromRef<AppState> for Arc<AuthService> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.auth_service.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<CsrfService> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.csrf_service.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<TotpService> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.totp_service.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<PendingLoginService> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.pending_login_service.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<SettingsService> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.settings_service.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<AuditService> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.audit_service.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<PaymentService> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.payment_service.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<RecurringEventService> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.recurring_event_service.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<MembershipTypeService> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.membership_type_service.clone()
+    }
+}
+
+// Two BasicTypeService instances share the same type — disambiguate via
+// newtypes so handlers can extract whichever they need without ambiguity.
+
+#[derive(Clone)]
+pub struct EventBasicTypeService(pub Arc<BasicTypeService>);
+
+#[derive(Clone)]
+pub struct AnnouncementBasicTypeService(pub Arc<BasicTypeService>);
+
+impl FromRef<AppState> for EventBasicTypeService {
+    fn from_ref(state: &AppState) -> Self {
+        EventBasicTypeService(state.service_context.event_type_service.clone())
+    }
+}
+
+impl FromRef<AppState> for AnnouncementBasicTypeService {
+    fn from_ref(state: &AppState) -> Self {
+        AnnouncementBasicTypeService(state.service_context.announcement_type_service.clone())
+    }
+}
+
+impl FromRef<AppState> for Arc<MemberService> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.member_service.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<dyn EmailSender> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.email_sender.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<IntegrationManager> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.integration_manager.clone()
+    }
+}
+
+// --- Infrastructure ---
+
+impl FromRef<AppState> for Arc<BillingService> {
+    fn from_ref(state: &AppState) -> Self {
+        state.billing_service.clone()
+    }
+}
+
+impl FromRef<AppState> for Option<Arc<StripeClient>> {
+    fn from_ref(state: &AppState) -> Self {
+        state.stripe_client.clone()
+    }
+}
+
+impl FromRef<AppState> for Option<Arc<WebhookDispatcher>> {
+    fn from_ref(state: &AppState) -> Self {
+        state.webhook_dispatcher.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<dyn BotChallengeVerifier> {
+    fn from_ref(state: &AppState) -> Self {
+        state.bot_challenge_verifier.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<Settings> {
+    fn from_ref(state: &AppState) -> Self {
+        state.settings.clone()
+    }
+}
+
+impl FromRef<AppState> for SqlitePool {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.db_pool.clone()
+    }
+}
+
+// --- Rate limiters and locks ---
+//
+// RateLimiter appears twice on AppState (login_limiter, money_limiter), so
+// a bare `FromRef<AppState> for RateLimiter` would be ambiguous. Each
+// limiter gets a newtype wrapper.
+
+#[derive(Clone)]
+pub struct LoginLimiter(pub RateLimiter);
+
+#[derive(Clone)]
+pub struct MoneyLimiter(pub RateLimiter);
+
+impl FromRef<AppState> for LoginLimiter {
+    fn from_ref(state: &AppState) -> Self {
+        LoginLimiter(state.login_limiter.clone())
+    }
+}
+
+impl FromRef<AppState> for MoneyLimiter {
+    fn from_ref(state: &AppState) -> Self {
+        MoneyLimiter(state.money_limiter.clone())
+    }
+}
+
+impl FromRef<AppState> for Arc<AsyncMutex<()>> {
+    fn from_ref(state: &AppState) -> Self {
+        state.setup_lock.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<AtomicBool> {
+    fn from_ref(state: &AppState) -> Self {
+        state.admin_exists_observed.clone()
     }
 }

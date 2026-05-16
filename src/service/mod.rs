@@ -33,6 +33,9 @@ pub struct ServiceContext {
     pub saved_card_repo: Arc<dyn SavedCardRepository>,
     pub scheduled_payment_repo: Arc<dyn ScheduledPaymentRepository>,
     pub donation_campaign_repo: Arc<dyn DonationCampaignRepository>,
+    pub basic_type_repo: Arc<dyn BasicTypeRepository>,
+    pub membership_type_repo: Arc<dyn MembershipTypeRepository>,
+    pub processed_events_repo: Arc<dyn ProcessedEventsRepository>,
     pub integration_manager: Arc<IntegrationManager>,
     pub auth_service: Arc<AuthService>,
     pub csrf_service: Arc<CsrfService>,
@@ -78,7 +81,10 @@ impl ServiceContext {
         // and announcement kinds; membership types stay separate.
         let basic_type_repo: Arc<dyn BasicTypeRepository> =
             Arc::new(SqliteBasicTypeRepository::new(db_pool.clone()));
-        let membership_type_repo = Arc::new(SqliteMembershipTypeRepository::new(db_pool.clone()));
+        let membership_type_repo: Arc<dyn MembershipTypeRepository> =
+            Arc::new(SqliteMembershipTypeRepository::new(db_pool.clone()));
+        let processed_events_repo: Arc<dyn ProcessedEventsRepository> =
+            Arc::new(SqliteProcessedEventsRepository::new(db_pool.clone()));
 
         // Create saved card and scheduled payment repositories
         let saved_card_repo: Arc<dyn SavedCardRepository> = Arc::new(SqliteSavedCardRepository::new(db_pool.clone()));
@@ -96,7 +102,7 @@ impl ServiceContext {
             basic_type_repo.clone(),
             BasicTypeKind::Announcement,
         ));
-        let membership_type_service = Arc::new(MembershipTypeService::new(membership_type_repo));
+        let membership_type_service = Arc::new(MembershipTypeService::new(membership_type_repo.clone()));
 
         let payment_service = Arc::new(PaymentService::new(
             payment_repo.clone(),
@@ -128,6 +134,9 @@ impl ServiceContext {
             saved_card_repo,
             scheduled_payment_repo,
             donation_campaign_repo,
+            basic_type_repo,
+            membership_type_repo,
+            processed_events_repo,
             integration_manager,
             auth_service,
             csrf_service,
