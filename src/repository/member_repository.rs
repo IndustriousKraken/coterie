@@ -6,8 +6,120 @@ use uuid::Uuid;
 use crate::{
     domain::{Member, MemberStatus, CreateMemberRequest, UpdateMemberRequest, BillingMode},
     error::{AppError, Result},
-    repository::{MemberQuery, MemberRepository, MemberSortField, SortOrder},
 };
+
+/// Inputs for `MemberRepository::search`. Strongly-typed so the
+/// caller can't pass an unknown sort field and the impl can map
+/// `MemberSortField` → column name in one place (no string-debug
+/// sort keys, no SQL injection risk).
+#[derive(Debug, Clone)]
+pub struct MemberQuery {
+    /// Case-insensitive substring match on `full_name`, `email`, and
+    /// `username`. `None` or empty string skips the filter.
+    pub search: Option<String>,
+    /// Filter to exactly one status. `None` skips the filter.
+    pub status: Option<crate::domain::MemberStatus>,
+    /// Filter to exactly one membership type by FK. `None` skips.
+    pub membership_type_id: Option<Uuid>,
+    pub sort: MemberSortField,
+    pub order: SortOrder,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum MemberSortField {
+    Name,
+    Status,
+    MembershipType,
+    Joined,
+    DuesPaidUntil,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SortOrder {
+    Asc,
+    Desc,
+}
+
+#[async_trait]
+pub trait MemberRepository: Send + Sync {
+    async fn create(&self, member: CreateMemberRequest) -> Result<Member>;
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<Member>>;
+    async fn find_by_email(&self, email: &str) -> Result<Option<Member>>;
+    async fn find_by_username(&self, username: &str) -> Result<Option<Member>>;
+    /// Every member with a non-empty `discord_id`, regardless of
+    /// status. Used by the Discord reconcile sweep so we can catch
+    /// drift on Active / Honorary / Expired / Suspended members in
+    /// one pass.
+    async fn list_with_discord_id(&self) -> Result<Vec<Member>>;
+    async fn update(&self, id: Uuid, update: UpdateMemberRequest) -> Result<Member>;
+    async fn set_admin(&self, id: Uuid, is_admin: bool) -> Result<Member>;
+    async fn mark_email_verified(&self, id: Uuid) -> Result<()>;
+    async fn update_password_hash(&self, id: Uuid, password_hash: &str) -> Result<()>;
+    /// Set or clear the member's Discord snowflake ID. `None` clears it.
+    /// Validation is the caller's responsibility (see
+    /// `integrations::discord::is_valid_snowflake`).
+    async fn update_discord_id(&self, id: Uuid, discord_id: Option<&str>) -> Result<()>;
+    /// Filtered, sorted, paginated lookup. Used by the admin members
+    /// page; replaces the previous "list 1000 then filter in Rust"
+    /// shape (which silently dropped rows past 1000 and used
+    /// `format!("{:?}", status)` as a sort key tied to the Debug
+    /// derive). Returns `(rows, total_match_count)` so the caller can
+    /// compute total pages without a second round trip.
+    async fn search(&self, query: MemberQuery) -> Result<(Vec<Member>, i64)>;
+    /// Set the member's `dues_paid_until`, revive Expired→Active in
+    /// the same UPDATE, and clear the dues-reminder flag so the next
+    /// dues cycle can re-fire a reminder. Suspended/Honorary/Pending
+    /// statuses are left untouched. This is the single source of
+    /// truth for "a payment was just recorded" — every membership
+    /// payment path goes through here.
+    async fn set_dues_paid_until_with_revival(
+        &self,
+        id: Uuid,
+        new_dues_paid_until: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()>;
+    /// Inverse of `set_dues_paid_until_with_revival`: backdate
+    /// `dues_paid_until` to yesterday and flip Active→Expired in the
+    /// same UPDATE. Pending/Suspended/Honorary are left alone (same
+    /// asymmetric carve-outs as revival). Used by the admin "expire
+    /// now" action; the billing runner would do this on its next tick
+    /// anyway, but admins reasonably expect the change to be live
+    /// immediately.
+    async fn expire_dues_now(&self, id: Uuid) -> Result<()>;
+    /// Stamp `dues_reminder_sent_at = CURRENT_TIMESTAMP`. Called from
+    /// the dues-reminder runner once the email has gone out, so the
+    /// next sweep won't re-send for this dues cycle. Cleared on
+    /// payment via `set_dues_paid_until_with_revival`.
+    async fn set_dues_reminder_sent(&self, id: Uuid) -> Result<()>;
+    /// Update billing mode and subscription id atomically. Pass
+    /// `Some(&id)` to set the Stripe subscription id, `None` to clear
+    /// it (the right move when leaving `StripeSubscription`). Used by
+    /// the auto-renew lifecycle in `BillingService` and by the
+    /// Stripe webhook handler when a subscription gets cancelled
+    /// out-of-band.
+    async fn set_billing_mode(
+        &self,
+        id: Uuid,
+        mode: BillingMode,
+        stripe_subscription_id: Option<&str>,
+    ) -> Result<()>;
+    /// Persist the Stripe customer id for a member. Customer ids are
+    /// created lazily on first charge / SetupIntent so this gets
+    /// called exactly once per member's lifetime.
+    async fn set_stripe_customer_id(&self, id: Uuid, customer_id: &str) -> Result<()>;
+    /// Reverse of `stripe_customer_id` — given the Stripe-side id,
+    /// find the Coterie member. The webhook handlers use this to
+    /// route Stripe events back onto the right row.
+    async fn find_by_stripe_customer_id(&self, customer_id: &str) -> Result<Option<Member>>;
+    /// Count of members currently in a given billing mode. Drives
+    /// the admin "Stripe-sub members remaining" badge.
+    async fn count_by_billing_mode(&self, mode: BillingMode) -> Result<i64>;
+    /// Member ids in a given billing mode. Used by the bulk-migrate
+    /// job that flips every `stripe_subscription` member to
+    /// `coterie_managed`.
+    async fn list_ids_by_billing_mode(&self, mode: BillingMode) -> Result<Vec<Uuid>>;
+}
 
 // Database row struct that matches SQLite schema
 #[derive(FromRow)]

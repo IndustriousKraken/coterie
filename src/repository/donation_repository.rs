@@ -6,8 +6,15 @@ use uuid::Uuid;
 use crate::{
     domain::DonationCampaign,
     error::{AppError, Result},
-    repository::DonationCampaignRepository,
 };
+
+#[async_trait]
+pub trait DonationCampaignRepository: Send + Sync {
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<DonationCampaign>>;
+    async fn find_by_slug(&self, slug: &str) -> Result<Option<DonationCampaign>>;
+    async fn list_active(&self) -> Result<Vec<DonationCampaign>>;
+    async fn get_total_donated(&self, campaign_id: Uuid) -> Result<i64>;
+}
 
 #[derive(FromRow)]
 struct CampaignRow {

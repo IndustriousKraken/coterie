@@ -6,8 +6,19 @@ use uuid::Uuid;
 use crate::{
     domain::{Announcement, AnnouncementType},
     error::{AppError, Result},
-    repository::AnnouncementRepository,
 };
+
+#[async_trait]
+pub trait AnnouncementRepository: Send + Sync {
+    async fn create(&self, announcement: Announcement) -> Result<Announcement>;
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<Announcement>>;
+    async fn list(&self, limit: i64, offset: i64) -> Result<Vec<Announcement>>;
+    async fn list_recent(&self, limit: i64) -> Result<Vec<Announcement>>;
+    async fn list_public(&self) -> Result<Vec<Announcement>>;
+    async fn count_private_published(&self) -> Result<i64>;
+    async fn update(&self, id: Uuid, announcement: Announcement) -> Result<Announcement>;
+    async fn delete(&self, id: Uuid) -> Result<()>;
+}
 
 #[derive(FromRow)]
 struct AnnouncementRow {

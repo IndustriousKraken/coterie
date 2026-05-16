@@ -6,8 +6,17 @@ use uuid::Uuid;
 use crate::{
     domain::SavedCard,
     error::{AppError, Result},
-    repository::SavedCardRepository,
 };
+
+#[async_trait]
+pub trait SavedCardRepository: Send + Sync {
+    async fn create(&self, card: SavedCard) -> Result<SavedCard>;
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<SavedCard>>;
+    async fn find_by_member(&self, member_id: Uuid) -> Result<Vec<SavedCard>>;
+    async fn find_default_for_member(&self, member_id: Uuid) -> Result<Option<SavedCard>>;
+    async fn set_default(&self, member_id: Uuid, card_id: Uuid) -> Result<()>;
+    async fn delete(&self, id: Uuid) -> Result<()>;
+}
 
 #[derive(FromRow)]
 struct SavedCardRow {

@@ -6,8 +6,26 @@ use uuid::Uuid;
 use crate::{
     domain::{ScheduledPayment, ScheduledPaymentStatus},
     error::{AppError, Result},
-    repository::ScheduledPaymentRepository,
 };
+
+#[async_trait]
+pub trait ScheduledPaymentRepository: Send + Sync {
+    async fn create(&self, payment: ScheduledPayment) -> Result<ScheduledPayment>;
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<ScheduledPayment>>;
+    async fn find_by_member(&self, member_id: Uuid) -> Result<Vec<ScheduledPayment>>;
+    async fn find_pending_due_before(&self, date: chrono::NaiveDate) -> Result<Vec<ScheduledPayment>>;
+    async fn update_status(&self, id: Uuid, status: ScheduledPaymentStatus, failure_reason: Option<String>) -> Result<ScheduledPayment>;
+    async fn increment_retry(&self, id: Uuid) -> Result<ScheduledPayment>;
+    async fn link_payment(&self, id: Uuid, payment_id: Uuid) -> Result<ScheduledPayment>;
+    /// Failed scheduled payments whose last attempt landed in
+    /// `[since, now]`. The admin billing dashboard surfaces these
+    /// alongside their retry_count + failure_reason so an operator
+    /// can see "what's piling up." Ordered newest-attempt first.
+    async fn list_failures_since(
+        &self,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<ScheduledPayment>>;
+}
 
 #[derive(FromRow)]
 struct ScheduledPaymentRow {
