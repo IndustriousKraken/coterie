@@ -336,14 +336,12 @@ async fn main() -> anyhow::Result<()> {
                 payment_repo.clone(),
                 service_context.member_repo.clone(),
             ));
-            let processed_events_repo: Arc<dyn crate::repository::ProcessedEventsRepository> =
-                Arc::new(crate::repository::SqliteProcessedEventsRepository::new(db_pool.clone()));
             let dispatcher = Arc::new(payments::WebhookDispatcher::new(
                 client.gateway(),
                 webhook_secret,
                 payment_repo,
                 service_context.member_repo.clone(),
-                processed_events_repo,
+                service_context.processed_events_repo.clone(),
                 service_context.membership_type_service.clone(),
                 service_context.integration_manager.clone(),
             ));
