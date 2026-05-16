@@ -61,5 +61,4 @@
 
 ## 9. Spec sync
 
-- [ ] 9.1 Confirm the change's delta spec (`openspec/changes/move-repo-traits-to-per-file/specs/repository-contracts/spec.md`) matches the implemented behavior.
-- [ ] 9.2 At archive time (`opsx:archive`), the modified requirements about per-file trait location and `mod.rs`'s index-only role merge into `openspec/specs/repository-contracts/spec.md`.
+- [ ] 9.1 Confirm the change's delta spec (`openspec/changes/04-move-repo-traits-to-per-file/specs/repository-contracts/spec.md`) matches the implemented behavior.

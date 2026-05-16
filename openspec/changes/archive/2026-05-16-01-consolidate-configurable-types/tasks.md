@@ -62,5 +62,4 @@
 
 ## 10. Spec sync
 
-- [x] 10.1 Confirm the change's delta specs (`openspec/changes/consolidate-configurable-types/specs/admin-types/spec.md` and `domain-types/spec.md`) match the implemented behavior.
-- [ ] 10.2 At archive time (`opsx:archive`), the new requirements about `BasicType`, `BasicTypeKind`, the unified service, and the parameterized handlers merge into `openspec/specs/admin-types/spec.md` and `openspec/specs/domain-types/spec.md`.
+- [x] 10.1 Confirm the change's delta specs (`openspec/changes/01-consolidate-configurable-types/specs/admin-types/spec.md` and `domain-types/spec.md`) match the implemented behavior.

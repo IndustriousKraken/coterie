@@ -70,5 +70,4 @@ Goal: prove the migrated templates produce byte-equivalent output to today's. Us
 
 ## 10. Spec sync
 
-- [ ] 10.1 Confirm the change's delta spec (`openspec/changes/type-member-template-projections/specs/domain-types/spec.md`) matches the implemented behavior.
-- [ ] 10.2 At archive time (`opsx:archive`), the new requirements about `MemberStatus` predicates and typed projections merge into `openspec/specs/domain-types/spec.md`.
+- [ ] 10.1 Confirm the change's delta spec (`openspec/changes/02-type-member-template-projections/specs/domain-types/spec.md`) matches the implemented behavior.

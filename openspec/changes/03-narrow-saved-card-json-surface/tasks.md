@@ -53,5 +53,4 @@ Goal: prove (without a real browser or real Stripe) that the kept JSON endpoints
 
 ## 7. Spec sync
 
-- [ ] 7.1 Confirm the change's delta specs (`openspec/changes/narrow-saved-card-json-surface/specs/member-saved-cards/spec.md` and `saved-card-management/spec.md`) match the implemented behavior.
-- [ ] 7.2 At archive time (`opsx:archive`), the modified requirements merge into `openspec/specs/member-saved-cards/spec.md` and `openspec/specs/saved-card-management/spec.md`.
+- [ ] 7.1 Confirm the change's delta specs (`openspec/changes/03-narrow-saved-card-json-surface/specs/member-saved-cards/spec.md` and `saved-card-management/spec.md`) match the implemented behavior.
