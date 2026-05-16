@@ -61,4 +61,4 @@
 
 ## 9. Spec sync
 
-- [ ] 9.1 Confirm the change's delta spec (`openspec/changes/04-move-repo-traits-to-per-file/specs/repository-contracts/spec.md`) matches the implemented behavior.
+- [ ] 9.1 Confirm the change's delta spec (`openspec/changes/a04-move-repo-traits-to-per-file/specs/repository-contracts/spec.md`) matches the implemented behavior.

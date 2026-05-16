@@ -36,4 +36,4 @@
 
 ## 6. Spec sync
 
-- [ ] 6.1 Confirm the change's delta spec (`openspec/changes/07-refactor-api-handlers-to-fromref/specs/routing-architecture/spec.md`) matches the implemented behavior.
+- [ ] 6.1 Confirm the change's delta spec (`openspec/changes/a07-refactor-api-handlers-to-fromref/specs/routing-architecture/spec.md`) matches the implemented behavior.

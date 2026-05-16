@@ -53,4 +53,4 @@
 
 ## 6. Spec sync
 
-- [ ] 6.1 Confirm the change's delta spec (`openspec/changes/05-add-fromref-impls-on-appstate/specs/routing-architecture/spec.md`) matches the implemented behavior.
+- [ ] 6.1 Confirm the change's delta spec (`openspec/changes/a05-add-fromref-impls-on-appstate/specs/routing-architecture/spec.md`) matches the implemented behavior.

@@ -48,4 +48,4 @@ These are the heaviest. Each handler typically needs 2–5 granular extractors. 
 
 ## 6. Spec sync
 
-- [ ] 6.1 Confirm the change's delta spec (`openspec/changes/06-refactor-portal-handlers-to-fromref/specs/routing-architecture/spec.md`) matches the implemented behavior.
+- [ ] 6.1 Confirm the change's delta spec (`openspec/changes/a06-refactor-portal-handlers-to-fromref/specs/routing-architecture/spec.md`) matches the implemented behavior.

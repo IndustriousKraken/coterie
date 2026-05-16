@@ -70,4 +70,4 @@ Goal: prove the migrated templates produce byte-equivalent output to today's. Us
 
 ## 10. Spec sync
 
-- [ ] 10.1 Confirm the change's delta spec (`openspec/changes/02-type-member-template-projections/specs/domain-types/spec.md`) matches the implemented behavior.
+- [ ] 10.1 Confirm the change's delta spec (`openspec/changes/a02-type-member-template-projections/specs/domain-types/spec.md`) matches the implemented behavior.
