@@ -6,8 +6,51 @@ use uuid::Uuid;
 use crate::{
     domain::{AttendanceStatus, Event, EventType, EventVisibility},
     error::{AppError, Result},
-    repository::EventRepository,
 };
+
+#[async_trait]
+pub trait EventRepository: Send + Sync {
+    async fn create(&self, event: Event) -> Result<Event>;
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<Event>>;
+    async fn list(&self, limit: i64, offset: i64) -> Result<Vec<Event>>;
+    async fn list_upcoming(&self, limit: i64) -> Result<Vec<Event>>;
+    async fn list_public(&self) -> Result<Vec<Event>>;
+    async fn list_members_only(&self) -> Result<Vec<Event>>;
+    async fn count_members_only_upcoming(&self) -> Result<i64>;
+    async fn update(&self, id: Uuid, event: Event) -> Result<Event>;
+    async fn delete(&self, id: Uuid) -> Result<()>;
+    async fn register_attendance(&self, event_id: Uuid, member_id: Uuid) -> Result<()>;
+    async fn cancel_attendance(&self, event_id: Uuid, member_id: Uuid) -> Result<()>;
+    async fn get_attendee_count(&self, event_id: Uuid) -> Result<i64>;
+    async fn get_member_attendance_status(&self, event_id: Uuid, member_id: Uuid) -> Result<Option<AttendanceStatus>>;
+
+    // ---- Recurring-series support -------------------------------------
+
+    /// Highest `occurrence_index` already materialized for this series,
+    /// or `None` if the series has no rows yet. Used by the materializer
+    /// to continue numbering on horizon-extension passes.
+    async fn max_occurrence_index_for_series(&self, series_id: Uuid) -> Result<Option<i32>>;
+    /// Hard-delete every occurrence in the series whose `start_time`
+    /// is strictly greater than `after`. Returns the count deleted.
+    /// Used by "end the series after this date" and by the
+    /// re-materialization safety net.
+    async fn delete_series_occurrences_after(
+        &self,
+        series_id: Uuid,
+        after: chrono::DateTime<chrono::Utc>,
+    ) -> Result<u64>;
+    /// Apply the editable subset of fields (title, description, type,
+    /// visibility, location, max_attendees, rsvp_required) to every
+    /// occurrence in the series whose `start_time >= from`. Used by
+    /// the "edit this and all future" admin action — start_time and
+    /// per-row image_url are deliberately preserved per occurrence.
+    async fn update_series_occurrences_from(
+        &self,
+        series_id: Uuid,
+        from: chrono::DateTime<chrono::Utc>,
+        template: &Event,
+    ) -> Result<u64>;
+}
 
 #[derive(FromRow)]
 struct EventRow {

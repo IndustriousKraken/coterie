@@ -9,8 +9,93 @@ use crate::{
         configurable_types::BillingPeriod,
     },
     error::{AppError, Result},
-    repository::{MonthlyRevenue, PaymentRepository},
 };
+
+/// Single (month, payment_type) bucket for the admin billing dashboard.
+/// `payment_type` is the raw lowercase DB-column value
+/// (`"membership" | "donation" | "other"`) — this is a SQL aggregation
+/// row, not a real `Payment`, so we don't try to lift it into the
+/// richer `PaymentKind` (Donation needs a campaign id we don't carry
+/// at the bucket level). Callers match on the string.
+#[derive(Debug, Clone)]
+pub struct MonthlyRevenue {
+    pub year: i32,
+    pub month: u32,
+    pub payment_type: String,
+    pub total_cents: i64,
+    pub payment_count: i64,
+}
+
+#[async_trait]
+pub trait PaymentRepository: Send + Sync {
+    async fn create(&self, payment: Payment) -> Result<Payment>;
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<Payment>>;
+    async fn find_by_member(&self, member_id: Uuid) -> Result<Vec<Payment>>;
+    async fn find_by_stripe_id(&self, stripe_id: &str) -> Result<Option<Payment>>;
+    async fn update(&self, id: Uuid, payment: Payment) -> Result<Payment>;
+    /// Atomically flip a Pending payment to Completed and stamp the
+    /// Stripe PaymentIntent ID. Returns `true` if the row was actually
+    /// flipped (we own the post-payment work — extend dues, schedule
+    /// next renewal); `false` if the row had already been completed by
+    /// another caller (sync path vs. webhook race). The semantics
+    /// guarantee that exactly one caller does the post-work.
+    async fn complete_pending_payment(
+        &self,
+        id: Uuid,
+        stripe_payment_id: &str,
+    ) -> Result<bool>;
+    /// Counterpart to `complete_pending_payment` for the failure path:
+    /// flip a Pending row to Failed when the Stripe charge errored.
+    /// Returns true if a row was flipped. Idempotent against double-
+    /// failure reports.
+    async fn fail_pending_payment(&self, id: Uuid) -> Result<bool>;
+    /// Claim a Completed payment for refund. Atomic conditional UPDATE
+    /// (`WHERE status='Completed'`) — only the first caller observes
+    /// rows_affected==1; concurrent admin clicks see false and bail.
+    /// Pair with `unclaim_refund` if the subsequent Stripe call fails.
+    async fn claim_payment_for_refund(&self, id: Uuid) -> Result<bool>;
+    /// Roll back `claim_payment_for_refund` after a Stripe failure so
+    /// the row goes back to Completed and a future refund attempt can
+    /// re-claim. Conditional on status='Refunded' so this can't undo
+    /// a legitimate completed refund from a different code path.
+    async fn unclaim_refund(&self, id: Uuid) -> Result<()>;
+    /// Mark a payment Refunded, unconditionally. Used by the Stripe
+    /// `charge.refunded` webhook handler when the row hasn't already
+    /// been flipped by our own admin-button refund (caller filters
+    /// out `Refunded` echoes). Idempotent under repeat calls.
+    async fn mark_refunded(&self, id: Uuid) -> Result<()>;
+    /// Idempotently extend a member's dues for a single Payment.
+    ///
+    /// Implemented as a transactional claim-then-update: the row's
+    /// `dues_extended_at` is set to NOW under a per-payment uniqueness
+    /// guard, and `dues_paid_until` is recomputed from the latest
+    /// member state (read inside the same transaction so concurrent
+    /// payments can't lose each other's increments). Returns `true`
+    /// if THIS call did the extension; `false` if a previous call
+    /// already extended dues for this payment.
+    ///
+    /// This single method addresses two correctness issues:
+    /// (1) Stripe webhook retries that re-run a handler after a
+    ///     transient failure no longer double-extend dues (the second
+    ///     call sees the claim and no-ops).
+    /// (2) Two payments for the same member processed concurrently
+    ///     can't both compute `D + 1y` from the same starting `D` —
+    ///     the SQLite write lock serializes the SELECT/UPDATE pair.
+    async fn extend_dues_for_payment_atomic(
+        &self,
+        payment_id: Uuid,
+        member_id: Uuid,
+        billing_period: crate::domain::configurable_types::BillingPeriod,
+    ) -> Result<bool>;
+
+    // ---- Admin billing dashboard support ------------------------------
+
+    /// Sum of completed-payment cents grouped by (year, month,
+    /// payment_type) across the last `months_back` months of `paid_at`.
+    /// Refunded / Pending / Failed rows are excluded — they'd mislead
+    /// "what we actually collected." Ordered newest month first.
+    async fn revenue_by_month(&self, months_back: u32) -> Result<Vec<MonthlyRevenue>>;
+}
 
 #[derive(FromRow)]
 struct PaymentRow {
