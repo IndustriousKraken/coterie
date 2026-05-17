@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{
     extract::State,
     http::{header, StatusCode, HeaderMap},
@@ -8,7 +10,8 @@ use axum_extra::extract::CookieJar;
 use serde::Serialize;
 use serde_json::json;
 use utoipa::ToSchema;
-use crate::api::state::AppState;
+
+use crate::auth::AuthService;
 
 #[derive(Serialize, ToSchema)]
 pub struct ApiInfo {
@@ -38,7 +41,7 @@ pub struct HealthStatus {
     ),
 )]
 pub async fn root(
-    State(state): State<AppState>,
+    State(auth_service): State<Arc<AuthService>>,
     jar: CookieJar,
     headers: HeaderMap,
 ) -> Response {
@@ -52,7 +55,7 @@ pub async fn root(
     if accepts_html {
         // Check if user has a valid session
         if let Some(session_cookie) = jar.get("session") {
-            if let Ok(Some(_session)) = state.service_context.auth_service
+            if let Ok(Some(_session)) = auth_service
                 .validate_session(session_cookie.value())
                 .await
             {

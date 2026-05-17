@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{
     extract::{Query, State},
     http::{HeaderMap, StatusCode, header},
@@ -6,13 +8,27 @@ use axum::{
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use crate::{
-    api::state::AppState,
+    api::{
+        middleware::bot_challenge::BotChallengeVerifier,
+        state::MoneyLimiter,
+    },
+    config::Settings,
     domain::{CreateMemberRequest, Event, Announcement, EventVisibility, MemberStatus},
+    email::EmailSender,
     error::{AppError, Result},
+    payments::StripeClient,
+    repository::{
+        AnnouncementRepository, DonationCampaignRepository, EventRepository, MemberRepository,
+        PaymentRepository,
+    },
+    service::{
+        membership_type_service::MembershipTypeService, settings_service::SettingsService,
+    },
 };
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -60,7 +76,13 @@ pub struct PublicEventsQuery {
     ),
 )]
 pub async fn signup(
-    State(state): State<AppState>,
+    State(member_repo): State<Arc<dyn MemberRepository>>,
+    State(membership_type_service): State<Arc<MembershipTypeService>>,
+    State(bot_challenge_verifier): State<Arc<dyn BotChallengeVerifier>>,
+    State(email_sender): State<Arc<dyn EmailSender>>,
+    State(settings): State<Arc<Settings>>,
+    State(settings_service): State<Arc<SettingsService>>,
+    State(db_pool): State<SqlitePool>,
     headers: HeaderMap,
     Json(request): Json<SignupRequest>,
 ) -> Result<(StatusCode, Json<SignupResponse>)> {
@@ -70,9 +92,9 @@ pub async fn signup(
     // setups don't break.
     let ip = crate::api::state::client_ip(
         &headers,
-        state.settings.server.trust_forwarded_for(),
+        settings.server.trust_forwarded_for(),
     );
-    if state.bot_challenge_verifier
+    if bot_challenge_verifier
         .verify("public/signup", request.captcha_token.as_deref(), Some(ip))
         .await
         .is_err()
@@ -95,7 +117,7 @@ pub async fn signup(
     // would mask client typos.
     let membership_type_id = match request.membership_type_slug.as_deref() {
         Some(slug) => {
-            let mt = state.service_context.membership_type_service
+            let mt = membership_type_service
                 .get_by_slug(slug)
                 .await?
                 .ok_or_else(|| AppError::BadRequest(format!(
@@ -114,10 +136,10 @@ pub async fn signup(
         password: request.password,
         membership_type_id,
     };
-    
+
     // Create the member. Use a generic error for UNIQUE violations to
     // prevent attackers from enumerating valid emails/usernames.
-    let member = state.service_context.member_repo.create(create_request).await
+    let member = member_repo.create(create_request).await
         .map_err(|e| {
             if let AppError::Database(sqlx::Error::Database(ref db_err)) = e {
                 if db_err.is_unique_violation() {
@@ -129,7 +151,13 @@ pub async fn signup(
 
     // Send email verification. Soft-fail on send error: the account is
     // already created and an admin can manually verify / resend later.
-    if let Err(e) = send_verification_email(&state, &member).await {
+    if let Err(e) = send_verification_email(
+        &db_pool,
+        &settings,
+        &settings_service,
+        email_sender.as_ref(),
+        &member,
+    ).await {
         tracing::error!(
             "Signup succeeded but verification email failed for member {}: {}",
             member.id, e
@@ -147,20 +175,23 @@ pub async fn signup(
 
 /// Generate a verification token and email the link to the member.
 async fn send_verification_email(
-    state: &AppState,
+    db_pool: &SqlitePool,
+    settings: &Settings,
+    settings_service: &SettingsService,
+    email_sender: &dyn EmailSender,
     member: &crate::domain::Member,
 ) -> Result<()> {
     use crate::{auth::EmailTokenService, email::{self, templates::{VerifyHtml, VerifyText}}};
 
-    let service = EmailTokenService::verification(state.service_context.db_pool.clone());
+    let service = EmailTokenService::verification(db_pool.clone());
     let created = service.create(member.id, chrono::Duration::hours(24)).await?;
 
     let verify_url = format!(
         "{}/verify?token={}",
-        state.settings.server.base_url.trim_end_matches('/'),
+        settings.server.base_url.trim_end_matches('/'),
         created.token,
     );
-    let org_name = org_name(state).await;
+    let org_name = org_name(settings_service).await;
     let html = VerifyHtml { full_name: &member.full_name, org_name: &org_name, verify_url: &verify_url };
     let text = VerifyText { full_name: &member.full_name, org_name: &org_name, verify_url: &verify_url };
     let message = email::message_from_templates(
@@ -169,13 +200,13 @@ async fn send_verification_email(
         &html,
         &text,
     )?;
-    state.service_context.email_sender.send(&message).await
+    email_sender.send(&message).await
 }
 
 /// Look up the configured organization name from settings, falling back
 /// to "Coterie" if unset.
-async fn org_name(state: &AppState) -> String {
-    state.service_context.settings_service
+async fn org_name(settings_service: &SettingsService) -> String {
+    settings_service
         .get_value("org.name")
         .await
         .ok()
@@ -195,14 +226,14 @@ async fn org_name(state: &AppState) -> String {
     ),
 )]
 pub async fn list_events(
-    State(state): State<AppState>,
+    State(event_repo): State<Arc<dyn EventRepository>>,
     Query(params): Query<PublicEventsQuery>,
 ) -> Result<Response> {
     // Get public events (full details)
-    let public_events = state.service_context.event_repo.list_public().await?;
+    let public_events = event_repo.list_public().await?;
 
     // Get members-only events (will be sanitized)
-    let private_events = state.service_context.event_repo.list_members_only().await?;
+    let private_events = event_repo.list_members_only().await?;
 
     // Combine and filter to upcoming events only
     let now = Utc::now();
@@ -247,17 +278,17 @@ pub async fn list_events(
     ),
 )]
 pub async fn list_announcements(
-    State(state): State<AppState>,
+    State(announcement_repo): State<Arc<dyn AnnouncementRepository>>,
 ) -> Result<Json<Vec<Announcement>>> {
     // Get public announcements only
-    let announcements = state.service_context.announcement_repo.list_public().await?;
-    
+    let announcements = announcement_repo.list_public().await?;
+
     // Filter to published announcements only
     let published: Vec<Announcement> = announcements
         .into_iter()
         .filter(|a| a.published_at.is_some())
         .collect();
-    
+
     Ok(Json(published))
 }
 
@@ -271,11 +302,11 @@ pub async fn list_announcements(
     ),
 )]
 pub async fn rss_feed(
-    State(state): State<AppState>,
+    State(announcement_repo): State<Arc<dyn AnnouncementRepository>>,
 ) -> Result<Response> {
     // Get recent public announcements
-    let announcements = state.service_context.announcement_repo.list_public().await?;
-    
+    let announcements = announcement_repo.list_public().await?;
+
     // Generate RSS XML
     let rss = generate_rss_feed(&announcements);
     
@@ -296,13 +327,13 @@ pub async fn rss_feed(
     ),
 )]
 pub async fn calendar_feed(
-    State(state): State<AppState>,
+    State(event_repo): State<Arc<dyn EventRepository>>,
 ) -> Result<Response> {
     // Get public events (full details)
-    let public_events = state.service_context.event_repo.list_public().await?;
+    let public_events = event_repo.list_public().await?;
 
     // Get members-only events (will be sanitized in feed)
-    let private_events = state.service_context.event_repo.list_members_only().await?;
+    let private_events = event_repo.list_members_only().await?;
 
     // Combine all events for the calendar
     let all_events: Vec<_> = public_events.into_iter()
@@ -333,9 +364,9 @@ pub struct PrivateEventCount {
     ),
 )]
 pub async fn private_event_count(
-    State(state): State<AppState>,
+    State(event_repo): State<Arc<dyn EventRepository>>,
 ) -> Result<Json<PrivateEventCount>> {
-    let count = state.service_context.event_repo.count_members_only_upcoming().await?;
+    let count = event_repo.count_members_only_upcoming().await?;
     Ok(Json(PrivateEventCount { count }))
 }
 
@@ -488,7 +519,12 @@ pub struct PublicDonateResponse {
     ),
 )]
 pub async fn donate(
-    State(state): State<AppState>,
+    State(settings): State<Arc<Settings>>,
+    State(money_limiter): State<MoneyLimiter>,
+    State(bot_challenge_verifier): State<Arc<dyn BotChallengeVerifier>>,
+    State(donation_campaign_repo): State<Arc<dyn DonationCampaignRepository>>,
+    State(stripe_client): State<Option<Arc<StripeClient>>>,
+    State(member_repo): State<Arc<dyn MemberRepository>>,
     headers: HeaderMap,
     Json(request): Json<PublicDonateRequest>,
 ) -> Result<(StatusCode, Json<PublicDonateResponse>)> {
@@ -498,9 +534,9 @@ pub async fn donate(
     // a bursting IP can't burn through the provider's quota.
     let ip = crate::api::state::client_ip(
         &headers,
-        state.settings.server.trust_forwarded_for(),
+        settings.server.trust_forwarded_for(),
     );
-    if !state.money_limiter.check_and_record(ip) {
+    if !money_limiter.0.check_and_record(ip) {
         return Err(AppError::TooManyRequests);
     }
 
@@ -508,7 +544,7 @@ pub async fn donate(
     // attacks abuse this endpoint to test stolen cards; the per-IP
     // limiter stops single-source bursts but distributed bots roll
     // right past it. Fail closed when a provider is configured.
-    if state.bot_challenge_verifier
+    if bot_challenge_verifier
         .verify("public/donate", request.captcha_token.as_deref(), Some(ip))
         .await
         .is_err()
@@ -546,7 +582,7 @@ pub async fn donate(
     // shouldn't get a hard error for stale URL); inactive = reject.
     let (campaign_id, campaign_name) = match request.campaign_slug.as_deref() {
         Some(slug) if !slug.is_empty() => {
-            match state.service_context.donation_campaign_repo
+            match donation_campaign_repo
                 .find_by_slug(slug).await?
             {
                 Some(c) if !c.is_active => {
@@ -566,15 +602,15 @@ pub async fn donate(
     // member-attributed donation flow so the donation appears in their
     // payment history. If no, public-donation flow with donor identity
     // captured on the payment row directly.
-    let stripe_client = state.stripe_client.as_ref()
+    let stripe_client = stripe_client.as_ref()
         .ok_or_else(|| AppError::ServiceUnavailable(
             "Payment processing not configured".to_string()
         ))?;
 
-    let success_url = format!("{}/portal/payments/success", state.settings.server.base_url);
-    let cancel_url = format!("{}/portal/payments/cancel", state.settings.server.base_url);
+    let success_url = format!("{}/portal/payments/success", settings.server.base_url);
+    let cancel_url = format!("{}/portal/payments/cancel", settings.server.base_url);
 
-    let existing_member = state.service_context.member_repo
+    let existing_member = member_repo
         .find_by_email(email).await?;
 
     let (checkout_url, payment_id) = match existing_member {
