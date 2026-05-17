@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use askama::Template;
 use axum::{
     extract::{Path, State, Query},
@@ -8,11 +10,10 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{
-    api::{
-        middleware::auth::{CurrentUser, SessionInfo},
-        state::AppState,
-    },
+    api::middleware::auth::{CurrentUser, SessionInfo},
+    auth::CsrfService,
     domain::AttendanceStatus,
+    repository::EventRepository,
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -23,12 +24,12 @@ pub struct EventsTemplate {
 }
 
 pub async fn events_page(
-    State(state): State<AppState>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session): Extension<SessionInfo>,
 ) -> impl IntoResponse {
     let template = EventsTemplate {
-        base: BaseContext::for_member(&state, &current_user, &session).await,
+        base: BaseContext::for_member(&csrf_service, &current_user, &session).await,
     };
 
     HtmlTemplate(template)
@@ -42,14 +43,14 @@ pub struct EventsListQuery {
 }
 
 pub async fn events_list_api(
-    State(state): State<AppState>,
+    State(event_repo): State<Arc<dyn EventRepository>>,
     Extension(current_user): Extension<CurrentUser>,
     Query(query): Query<EventsListQuery>,
 ) -> impl IntoResponse {
     let member_id = current_user.member.id;
 
     // Get upcoming events (past events not currently supported)
-    let events = state.service_context.event_repo
+    let events = event_repo
         .list_upcoming(50)
         .await
         .unwrap_or_default();
@@ -92,7 +93,7 @@ pub async fn events_list_api(
         };
 
         // Check member's RSVP status for this event
-        let rsvp_status = state.service_context.event_repo
+        let rsvp_status = event_repo
             .get_member_attendance_status(event.id, member_id)
             .await
             .ok()
@@ -195,14 +196,14 @@ fn render_rsvp_button(event_id: &str, status: Option<&AttendanceStatus>) -> Stri
 
 /// Handle RSVP to an event
 pub async fn rsvp_event(
-    State(state): State<AppState>,
+    State(event_repo): State<Arc<dyn EventRepository>>,
     Extension(current_user): Extension<CurrentUser>,
     Path(event_id): Path<Uuid>,
 ) -> impl IntoResponse {
     let member_id = current_user.member.id;
 
     // Register attendance
-    if let Err(e) = state.service_context.event_repo
+    if let Err(e) = event_repo
         .register_attendance(event_id, member_id)
         .await
     {
@@ -221,14 +222,14 @@ pub async fn rsvp_event(
 
 /// Handle cancel RSVP
 pub async fn cancel_rsvp_event(
-    State(state): State<AppState>,
+    State(event_repo): State<Arc<dyn EventRepository>>,
     Extension(current_user): Extension<CurrentUser>,
     Path(event_id): Path<Uuid>,
 ) -> impl IntoResponse {
     let member_id = current_user.member.id;
 
     // Cancel attendance
-    if let Err(e) = state.service_context.event_repo
+    if let Err(e) = event_repo
         .cancel_attendance(event_id, member_id)
         .await
     {

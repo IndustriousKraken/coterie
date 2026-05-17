@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::sync::Arc;
+
 use axum::{
     body::Body,
     extract::{Path, State},
@@ -6,12 +8,14 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use axum_extra::extract::CookieJar;
+use sqlx::SqlitePool;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
-use crate::api::state::AppState;
+use crate::auth::AuthService;
+use crate::config::Settings;
 use crate::error::{AppError, Result};
 
 /// Allowed image extensions
@@ -160,7 +164,7 @@ pub async fn delete_if_upload(uploads_dir: &str, url: Option<&str>) {
 }
 
 /// Check if an image requires authentication (used by private event/announcement)
-async fn is_private_image(state: &AppState, image_path: &str) -> bool {
+async fn is_private_image(db_pool: &SqlitePool, image_path: &str) -> bool {
     let full_path = format!("uploads/{}", image_path);
 
     // Check if used by a private event
@@ -172,7 +176,7 @@ async fn is_private_image(state: &AppState, image_path: &str) -> bool {
         "#
     )
     .bind(&full_path)
-    .fetch_optional(&state.service_context.db_pool)
+    .fetch_optional(db_pool)
     .await
     .ok()
     .flatten();
@@ -190,7 +194,7 @@ async fn is_private_image(state: &AppState, image_path: &str) -> bool {
         "#
     )
     .bind(&full_path)
-    .fetch_optional(&state.service_context.db_pool)
+    .fetch_optional(db_pool)
     .await
     .ok()
     .flatten();
@@ -200,7 +204,9 @@ async fn is_private_image(state: &AppState, image_path: &str) -> bool {
 
 /// Serve uploaded files with authentication check for private content
 pub async fn serve_upload(
-    State(state): State<AppState>,
+    State(settings): State<Arc<Settings>>,
+    State(db_pool): State<SqlitePool>,
+    State(auth_service): State<Arc<AuthService>>,
     jar: CookieJar,
     Path(filename): Path<String>,
 ) -> Response {
@@ -210,10 +216,10 @@ pub async fn serve_upload(
     }
 
     // Check if this is a private image
-    if is_private_image(&state, &filename).await {
+    if is_private_image(&db_pool, &filename).await {
         // Require authentication
         let is_authenticated = if let Some(session_cookie) = jar.get("session") {
-            state.service_context.auth_service
+            auth_service
                 .validate_session(session_cookie.value())
                 .await
                 .ok()
@@ -229,7 +235,7 @@ pub async fn serve_upload(
     }
 
     // Build file path
-    let uploads_dir = state.settings.server.uploads_path();
+    let uploads_dir = settings.server.uploads_path();
     let file_path = PathBuf::from(&uploads_dir).join(&filename);
 
     // Check file exists

@@ -3,6 +3,8 @@
 //! bulk-migrate button + a per-member count so the admin can see
 //! the work to be done.
 
+use std::sync::Arc;
+
 use askama::Template;
 use axum::{
     extract::State,
@@ -11,10 +13,11 @@ use axum::{
 };
 
 use crate::{
-    api::{
-        middleware::auth::{CurrentUser, SessionInfo},
-        state::AppState,
-    },
+    api::middleware::auth::{CurrentUser, SessionInfo},
+    auth::CsrfService,
+    payments::StripeClient,
+    repository::{MemberRepository, PaymentRepository, ScheduledPaymentRepository},
+    service::{audit_service::AuditService, billing_service::BillingService},
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -33,11 +36,16 @@ pub struct AdminBillingTemplate {
 }
 
 pub async fn billing_settings_page(
-    State(state): State<AppState>,
+    State(csrf_service): State<Arc<CsrfService>>,
+    State(member_repo): State<Arc<dyn MemberRepository>>,
+    State(stripe_client): State<Option<Arc<StripeClient>>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> Response {
-    render_page(state, current_user, session_info, RenderArgs::default()).await
+    render_page(
+        &csrf_service, &member_repo, stripe_client.is_some(),
+        &current_user, &session_info, RenderArgs::default(),
+    ).await
 }
 
 #[derive(Default)]
@@ -50,14 +58,16 @@ struct RenderArgs {
 }
 
 async fn render_page(
-    state: AppState,
-    current_user: CurrentUser,
-    session_info: SessionInfo,
+    csrf_service: &CsrfService,
+    member_repo: &Arc<dyn MemberRepository>,
+    stripe_enabled: bool,
+    current_user: &CurrentUser,
+    session_info: &SessionInfo,
     args: RenderArgs,
 ) -> Response {
-    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
+    let base = BaseContext::for_member(csrf_service, current_user, session_info).await;
 
-    let stripe_subscription_count = state.service_context.member_repo
+    let stripe_subscription_count = member_repo
         .count_by_billing_mode(crate::domain::BillingMode::StripeSubscription)
         .await
         .unwrap_or(0);
@@ -65,7 +75,7 @@ async fn render_page(
     HtmlTemplate(AdminBillingTemplate {
         base,
         stripe_subscription_count,
-        stripe_enabled: state.stripe_client.is_some(),
+        stripe_enabled,
         flash_success: args.flash_success,
         flash_error: args.flash_error,
         last_succeeded: args.last_succeeded,
@@ -80,13 +90,19 @@ async fn render_page(
 /// If we ever have hundreds, move to a background task and an
 /// HTMX-polled progress page.
 pub async fn bulk_migrate_stripe_subs(
-    State(state): State<AppState>,
+    State(csrf_service): State<Arc<CsrfService>>,
+    State(member_repo): State<Arc<dyn MemberRepository>>,
+    State(stripe_client): State<Option<Arc<StripeClient>>>,
+    State(billing_service): State<Arc<BillingService>>,
+    State(audit_service): State<Arc<AuditService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> Response {
-    if state.stripe_client.is_none() {
+    let stripe_enabled = stripe_client.is_some();
+    if !stripe_enabled {
         return render_page(
-            state, current_user, session_info,
+            &csrf_service, &member_repo, stripe_enabled,
+            &current_user, &session_info,
             RenderArgs {
                 flash_error: Some(
                     "Stripe isn't configured. Add credentials before running migration.".into()
@@ -96,9 +112,9 @@ pub async fn bulk_migrate_stripe_subs(
         ).await;
     }
 
-    let summary = state.billing_service.auto_renew.bulk_migrate_stripe_subscriptions().await;
+    let summary = billing_service.auto_renew.bulk_migrate_stripe_subscriptions().await;
 
-    state.service_context.audit_service.log(
+    audit_service.log(
         Some(current_user.member.id),
         "bulk_migrate_stripe_subscriptions",
         "billing",
@@ -134,7 +150,8 @@ pub async fn bulk_migrate_stripe_subs(
         .collect();
 
     render_page(
-        state, current_user, session_info,
+        &csrf_service, &member_repo, stripe_enabled,
+        &current_user, &session_info,
         RenderArgs {
             flash_success,
             flash_error,
@@ -205,21 +222,24 @@ const FAILURE_WINDOW_DAYS: i64 = 90;
 const REVENUE_WINDOW_MONTHS: u32 = 12;
 
 pub async fn billing_dashboard_page(
-    State(state): State<AppState>,
+    State(csrf_service): State<Arc<CsrfService>>,
+    State(member_repo): State<Arc<dyn MemberRepository>>,
+    State(payment_repo): State<Arc<dyn PaymentRepository>>,
+    State(scheduled_payment_repo): State<Arc<dyn ScheduledPaymentRepository>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> Response {
-    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
+    let base = BaseContext::for_member(&csrf_service, &current_user, &session_info).await;
 
     // ---- Section 1: upcoming scheduled (next 30 days) ----
     let now = chrono::Utc::now();
     let upcoming_cutoff = (now + chrono::Duration::days(UPCOMING_WINDOW_DAYS)).date_naive();
-    let upcoming_raw = state.service_context.scheduled_payment_repo
+    let upcoming_raw = scheduled_payment_repo
         .find_pending_due_before(upcoming_cutoff).await
         .unwrap_or_default();
     let mut upcoming = Vec::with_capacity(upcoming_raw.len());
     for sp in upcoming_raw {
-        let name = lookup_member_name(&state, sp.member_id).await;
+        let name = lookup_member_name(&member_repo, sp.member_id).await;
         upcoming.push(UpcomingScheduledRow {
             member_id: sp.member_id.to_string(),
             member_name: name,
@@ -238,12 +258,12 @@ pub async fn billing_dashboard_page(
 
     // ---- Section 2: recent failures (last 90 days) ----
     let failure_since = now - chrono::Duration::days(FAILURE_WINDOW_DAYS);
-    let failures_raw = state.service_context.scheduled_payment_repo
+    let failures_raw = scheduled_payment_repo
         .list_failures_since(failure_since).await
         .unwrap_or_default();
     let mut failures = Vec::with_capacity(failures_raw.len());
     for sp in failures_raw {
-        let name = lookup_member_name(&state, sp.member_id).await;
+        let name = lookup_member_name(&member_repo, sp.member_id).await;
         failures.push(FailedScheduledRow {
             member_id: sp.member_id.to_string(),
             member_name: name,
@@ -257,7 +277,7 @@ pub async fn billing_dashboard_page(
     }
 
     // ---- Section 3: revenue by month (12 months) ----
-    let buckets = state.service_context.payment_repo
+    let buckets = payment_repo
         .revenue_by_month(REVENUE_WINDOW_MONTHS).await
         .unwrap_or_default();
     let months = fold_revenue_buckets(buckets);
@@ -277,8 +297,8 @@ pub async fn billing_dashboard_page(
 /// missing rows — a deleted member may still have outstanding
 /// scheduled-payment rows referencing them, and the dashboard should
 /// degrade gracefully rather than 500.
-async fn lookup_member_name(state: &AppState, member_id: uuid::Uuid) -> String {
-    state.service_context.member_repo
+async fn lookup_member_name(member_repo: &Arc<dyn MemberRepository>, member_id: uuid::Uuid) -> String {
+    member_repo
         .find_by_id(member_id).await.ok().flatten()
         .map(|m| m.full_name)
         .unwrap_or_else(|| format!("(deleted member {})", &member_id.to_string()[..8]))

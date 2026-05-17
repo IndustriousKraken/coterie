@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use askama::Template;
 use axum::{
     extract::State,
@@ -11,9 +13,18 @@ use serde::Deserialize;
 use crate::{
     api::{
         middleware::auth::{CurrentUser, SessionInfo},
-        state::AppState,
+        state::MoneyLimiter,
     },
+    auth::CsrfService,
+    config::Settings,
     error::AppError,
+    integrations::IntegrationManager,
+    payments::StripeClient,
+    repository::{DonationCampaignRepository, PaymentRepository, SavedCardRepository},
+    service::{
+        audit_service::AuditService, billing_service::BillingService,
+        membership_type_service::MembershipTypeService, settings_service::SettingsService,
+    },
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -114,12 +125,12 @@ pub struct ChargeSavedCardRequest {
 }
 
 pub async fn payments_page(
-    State(state): State<AppState>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session): Extension<SessionInfo>,
 ) -> impl IntoResponse {
     let template = PaymentsTemplate {
-        base: BaseContext::for_member(&state, &current_user, &session).await,
+        base: BaseContext::for_member(&csrf_service, &current_user, &session).await,
     };
 
     HtmlTemplate(template)
@@ -127,10 +138,10 @@ pub async fn payments_page(
 
 // API endpoint for full payments list
 pub async fn payments_list_api(
-    State(state): State<AppState>,
+    State(payment_repo): State<Arc<dyn PaymentRepository>>,
     Extension(current_user): Extension<CurrentUser>,
 ) -> impl IntoResponse {
-    let payments = state.service_context.payment_repo
+    let payments = payment_repo
         .find_by_member(current_user.member.id)
         .await
         .unwrap_or_default();
@@ -143,12 +154,12 @@ pub async fn payments_list_api(
 
 // API endpoint for payments summary
 pub async fn payments_summary_api(
-    State(state): State<AppState>,
+    State(payment_repo): State<Arc<dyn PaymentRepository>>,
     Extension(current_user): Extension<CurrentUser>,
 ) -> impl IntoResponse {
     use crate::domain::PaymentStatus;
 
-    let payments = state.service_context.payment_repo
+    let payments = payment_repo
         .find_by_member(current_user.member.id)
         .await
         .unwrap_or_default();
@@ -187,42 +198,46 @@ pub async fn next_due_api(
 }
 
 pub async fn payment_success_page(
-    State(state): State<AppState>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session): Extension<SessionInfo>,
 ) -> impl IntoResponse {
     let template = PaymentSuccessTemplate {
-        base: BaseContext::for_member(&state, &current_user, &session).await,
+        base: BaseContext::for_member(&csrf_service, &current_user, &session).await,
     };
 
     HtmlTemplate(template)
 }
 
 pub async fn payment_cancel_page(
-    State(state): State<AppState>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session): Extension<SessionInfo>,
 ) -> impl IntoResponse {
     let template = PaymentCancelTemplate {
-        base: BaseContext::for_member(&state, &current_user, &session).await,
+        base: BaseContext::for_member(&csrf_service, &current_user, &session).await,
     };
 
     HtmlTemplate(template)
 }
 
 pub async fn payment_new_page(
-    State(state): State<AppState>,
+    State(csrf_service): State<Arc<CsrfService>>,
+    State(settings): State<Arc<Settings>>,
+    State(stripe_client): State<Option<Arc<StripeClient>>>,
+    State(membership_type_service): State<Arc<MembershipTypeService>>,
+    State(saved_card_repo): State<Arc<dyn SavedCardRepository>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
+    let base = BaseContext::for_member(&csrf_service, &current_user, &session_info).await;
 
-    let stripe_enabled = state.stripe_client.is_some();
-    let stripe_publishable_key = state.settings.stripe.publishable_key
+    let stripe_enabled = stripe_client.is_some();
+    let stripe_publishable_key = settings.stripe.publishable_key
         .clone()
         .unwrap_or_default();
 
-    let membership_types = state.service_context.membership_type_service
+    let membership_types = membership_type_service
         .list(false)
         .await
         .unwrap_or_default()
@@ -237,7 +252,7 @@ pub async fn payment_new_page(
         })
         .collect();
 
-    let saved_cards = state.service_context.saved_card_repo
+    let saved_cards = saved_card_repo
         .find_by_member(current_user.member.id)
         .await
         .unwrap_or_default()
@@ -266,14 +281,16 @@ pub async fn payment_new_page(
 }
 
 pub async fn checkout_api(
-    State(state): State<AppState>,
+    State(settings): State<Arc<Settings>>,
+    State(stripe_client): State<Option<Arc<StripeClient>>>,
+    State(membership_type_service): State<Arc<MembershipTypeService>>,
     Extension(current_user): Extension<CurrentUser>,
     Json(request): Json<CheckoutRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
-    let stripe_client = state.stripe_client.as_ref()
+    let stripe_client = stripe_client.as_ref()
         .ok_or_else(|| AppError::ServiceUnavailable("Payment processing is not configured".to_string()))?;
 
-    let membership_type = state.service_context.membership_type_service
+    let membership_type = membership_type_service
         .get_by_slug(&request.membership_type_slug)
         .await?
         .ok_or_else(|| AppError::NotFound(format!(
@@ -293,8 +310,8 @@ pub async fn checkout_api(
         &membership_type.name,
         &membership_type.slug,
         amount_cents,
-        format!("{}/portal/payments/success", state.settings.server.base_url),
-        format!("{}/portal/payments/cancel", state.settings.server.base_url),
+        format!("{}/portal/payments/success", settings.server.base_url),
+        format!("{}/portal/payments/cancel", settings.server.base_url),
     ).await?;
 
     Ok((StatusCode::OK, Json(serde_json::json!({
@@ -303,22 +320,37 @@ pub async fn checkout_api(
     }))))
 }
 
-/// Charge a saved card for membership dues
+/// Charge a saved card for membership dues.
+///
+/// This handler is the heaviest in the payments file: it needs rate-limit
+/// (money_limiter + settings), the Stripe client, the membership-type
+/// service, both the payment and saved-card repos, the billing service
+/// (for dues extension + auto-renew enrollment), and the audit service.
+/// Granular extraction per D1 — even though we cross the D3 threshold,
+/// the dependencies are individually meaningful and the signature is
+/// the documentation a reader looks for.
 pub async fn charge_saved_card_api(
-    State(state): State<AppState>,
+    State(settings): State<Arc<Settings>>,
+    State(money_limiter): State<MoneyLimiter>,
+    State(stripe_client): State<Option<Arc<StripeClient>>>,
+    State(membership_type_service): State<Arc<MembershipTypeService>>,
+    State(payment_repo): State<Arc<dyn PaymentRepository>>,
+    State(saved_card_repo): State<Arc<dyn SavedCardRepository>>,
+    State(billing_service): State<Arc<BillingService>>,
+    State(audit_service): State<Arc<AuditService>>,
     Extension(current_user): Extension<CurrentUser>,
     headers: axum::http::HeaderMap,
     Json(request): Json<ChargeSavedCardRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
-    let ip = crate::api::state::client_ip(&headers, state.settings.server.trust_forwarded_for());
-    if !state.money_limiter.check_and_record(ip) {
+    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
+    if !money_limiter.0.check_and_record(ip) {
         return Err(AppError::TooManyRequests);
     }
 
-    let stripe_client = state.stripe_client.as_ref()
+    let stripe_client = stripe_client.as_ref()
         .ok_or_else(|| AppError::ServiceUnavailable("Payment processing not configured".to_string()))?;
 
-    let membership_type = state.service_context.membership_type_service
+    let membership_type = membership_type_service
         .get_by_slug(&request.membership_type_slug)
         .await?
         .ok_or_else(|| AppError::NotFound(format!(
@@ -335,7 +367,7 @@ pub async fn charge_saved_card_api(
     let card_id = uuid::Uuid::parse_str(&request.saved_card_id)
         .map_err(|_| AppError::BadRequest("Invalid card ID".to_string()))?;
 
-    let card = state.service_context.saved_card_repo
+    let card = saved_card_repo
         .find_by_id(card_id)
         .await?
         .ok_or(AppError::NotFound("Card not found".to_string()))?;
@@ -374,7 +406,7 @@ pub async fn charge_saved_card_api(
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
-    state.service_context.payment_repo.create(pending).await?;
+    payment_repo.create(pending).await?;
 
     // Charge the card. On error, flip the Pending row to Failed so
     // it doesn't haunt the "Pending older than 5 minutes — investigate"
@@ -389,7 +421,7 @@ pub async fn charge_saved_card_api(
     ).await {
         Ok(id) => id,
         Err(e) => {
-            let _ = state.service_context.payment_repo.fail_pending_payment(payment_id).await;
+            let _ = payment_repo.fail_pending_payment(payment_id).await;
             return Err(e);
         }
     };
@@ -397,7 +429,7 @@ pub async fn charge_saved_card_api(
     // Race-free flip. If we win (won_flip=true), do the post-work.
     // If the webhook beat us, it already did the post-work and we
     // return success without duplicating dues extension.
-    let won_flip = state.service_context.payment_repo
+    let won_flip = payment_repo
         .complete_pending_payment(payment_id, &stripe_payment_id)
         .await?;
     if !won_flip {
@@ -409,7 +441,7 @@ pub async fn charge_saved_card_api(
 
     // Both the dues-extension and the auto-renew branch below run
     // through the shared BillingService.
-    let billing_service = state.billing_service.as_ref();
+    let billing_service = billing_service.as_ref();
 
     // Extend dues first so the new dues_paid_until is what auto-renew
     // schedules off of. This is the source of truth for "when does the
@@ -442,7 +474,7 @@ pub async fn charge_saved_card_api(
                 current_user.member.id, e,
             );
         } else {
-            state.service_context.audit_service.log(
+            audit_service.log(
                 Some(current_user.member.id),
                 "enable_auto_renew",
                 "member",
@@ -470,14 +502,17 @@ pub async fn charge_saved_card_api(
 }
 
 pub async fn payment_methods_page(
-    State(state): State<AppState>,
+    State(csrf_service): State<Arc<CsrfService>>,
+    State(settings): State<Arc<Settings>>,
+    State(stripe_client): State<Option<Arc<StripeClient>>>,
+    State(saved_card_repo): State<Arc<dyn SavedCardRepository>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
+    let base = BaseContext::for_member(&csrf_service, &current_user, &session_info).await;
 
-    let stripe_enabled = state.stripe_client.is_some();
-    let stripe_publishable_key = state.settings.stripe.publishable_key
+    let stripe_enabled = stripe_client.is_some();
+    let stripe_publishable_key = settings.stripe.publishable_key
         .clone()
         .unwrap_or_default();
 
@@ -486,7 +521,7 @@ pub async fn payment_methods_page(
     let is_stripe_subscription = current_user.member.billing_mode
         == crate::domain::BillingMode::StripeSubscription;
 
-    let has_default_card = state.service_context.saved_card_repo
+    let has_default_card = saved_card_repo
         .find_default_for_member(current_user.member.id)
         .await
         .ok()
@@ -519,23 +554,28 @@ pub struct UpdateAutoRenewRequest {
 /// Idempotent: enabling an already-enrolled member just refreshes the
 /// schedule; disabling a manual member is a no-op.
 pub async fn update_auto_renew_api(
-    State(state): State<AppState>,
+    State(settings): State<Arc<Settings>>,
+    State(money_limiter): State<MoneyLimiter>,
+    State(billing_service): State<Arc<BillingService>>,
+    State(membership_type_service): State<Arc<MembershipTypeService>>,
+    State(saved_card_repo): State<Arc<dyn SavedCardRepository>>,
+    State(audit_service): State<Arc<AuditService>>,
     Extension(current_user): Extension<CurrentUser>,
     headers: axum::http::HeaderMap,
     Json(request): Json<UpdateAutoRenewRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let ip = crate::api::state::client_ip(&headers, state.settings.server.trust_forwarded_for());
-    if !state.money_limiter.check_and_record(ip) {
+    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
+    if !money_limiter.0.check_and_record(ip) {
         return Err(AppError::TooManyRequests);
     }
 
-    let billing_service = state.billing_service.as_ref();
+    let billing_service = billing_service.as_ref();
 
     if request.enable {
         // Need the member's current membership type slug to schedule
         // a renewal — that's where billing period (monthly/yearly) and
         // amount come from.
-        let mt = state.service_context.membership_type_service
+        let mt = membership_type_service
             .get(current_user.member.membership_type_id).await?
             .ok_or_else(|| AppError::Internal(
                 "Member's membership type was deleted; contact an admin.".to_string()
@@ -549,7 +589,7 @@ pub async fn update_auto_renew_api(
         let on_stripe_sub = current_user.member.billing_mode
             == crate::domain::BillingMode::StripeSubscription;
         if !on_stripe_sub {
-            let default_card = state.service_context.saved_card_repo
+            let default_card = saved_card_repo
                 .find_default_for_member(current_user.member.id).await?;
             if default_card.is_none() {
                 return Err(AppError::BadRequest(
@@ -563,7 +603,7 @@ pub async fn update_auto_renew_api(
             .enable_auto_renew(current_user.member.id, &mt.slug)
             .await?;
 
-        state.service_context.audit_service.log(
+        audit_service.log(
             Some(current_user.member.id),
             "enable_auto_renew",
             "member",
@@ -578,7 +618,7 @@ pub async fn update_auto_renew_api(
             .disable_auto_renew(current_user.member.id)
             .await?;
 
-        state.service_context.audit_service.log(
+        audit_service.log(
             Some(current_user.member.id),
             "disable_auto_renew",
             "member",
@@ -596,10 +636,10 @@ pub async fn update_auto_renew_api(
 
 /// HTMX endpoint - list saved cards as HTML
 pub async fn saved_cards_html_api(
-    State(state): State<AppState>,
+    State(saved_card_repo): State<Arc<dyn SavedCardRepository>>,
     Extension(current_user): Extension<CurrentUser>,
 ) -> impl IntoResponse {
-    let cards = state.service_context.saved_card_repo
+    let cards = saved_card_repo
         .find_by_member(current_user.member.id)
         .await
         .unwrap_or_default();
@@ -612,11 +652,13 @@ pub async fn saved_cards_html_api(
 
 /// HTMX endpoint - delete a saved card
 pub async fn delete_card_api(
-    State(state): State<AppState>,
+    State(saved_card_repo): State<Arc<dyn SavedCardRepository>>,
+    State(stripe_client): State<Option<Arc<StripeClient>>>,
+    State(integration_manager): State<Arc<IntegrationManager>>,
     Extension(current_user): Extension<CurrentUser>,
     axum::extract::Path(card_id): axum::extract::Path<uuid::Uuid>,
 ) -> Result<StatusCode, AppError> {
-    let card = state.service_context.saved_card_repo
+    let card = saved_card_repo
         .find_by_id(card_id)
         .await?
         .ok_or(AppError::NotFound("Card not found".to_string()))?;
@@ -629,7 +671,7 @@ pub async fn delete_card_api(
     // hourly billing runner will fail to charge their next renewal
     // without a card to draw on. Surface the situation rather than
     // letting the failure manifest silently weeks later.
-    let other_cards = state.service_context.saved_card_repo
+    let other_cards = saved_card_repo
         .find_by_member(current_user.member.id).await
         .unwrap_or_default()
         .into_iter()
@@ -638,10 +680,10 @@ pub async fn delete_card_api(
     let leaving_with_no_cards = other_cards == 0
         && current_user.member.billing_mode == crate::domain::BillingMode::CoterieManaged;
 
-    state.service_context.saved_card_repo.delete(card_id).await?;
+    saved_card_repo.delete(card_id).await?;
 
     // Detach on Stripe so the card doesn't outlive the Coterie row.
-    if let Some(stripe) = state.stripe_client.as_ref() {
+    if let Some(stripe) = stripe_client.as_ref() {
         if let Err(e) = stripe.detach_payment_method(&card.stripe_payment_method_id).await {
             tracing::error!(
                 "Locally deleted card {} (pm={}) but Stripe detach failed: {}",
@@ -651,7 +693,7 @@ pub async fn delete_card_api(
     }
 
     if leaving_with_no_cards {
-        state.service_context.integration_manager
+        integration_manager
             .handle_event(crate::integrations::IntegrationEvent::AdminAlert {
                 subject: format!(
                     "Auto-renew member {} deleted their last card",
@@ -675,11 +717,11 @@ pub async fn delete_card_api(
 
 /// HTMX endpoint - set a card as default
 pub async fn set_default_card_api(
-    State(state): State<AppState>,
+    State(saved_card_repo): State<Arc<dyn SavedCardRepository>>,
     Extension(current_user): Extension<CurrentUser>,
     axum::extract::Path(card_id): axum::extract::Path<uuid::Uuid>,
 ) -> Result<StatusCode, AppError> {
-    let card = state.service_context.saved_card_repo
+    let card = saved_card_repo
         .find_by_id(card_id)
         .await?
         .ok_or(AppError::NotFound("Card not found".to_string()))?;
@@ -688,7 +730,7 @@ pub async fn set_default_card_api(
         return Err(AppError::Forbidden);
     }
 
-    state.service_context.saved_card_repo.set_default(current_user.member.id, card_id).await?;
+    saved_card_repo.set_default(current_user.member.id, card_id).await?;
     Ok(StatusCode::OK)
 }
 
@@ -762,14 +804,15 @@ pub struct ReceiptTemplate {
 /// year, the page totals dues separately from donations so the donor-
 /// or-member can hand the right number to the right place.
 pub async fn receipts_page(
-    State(state): State<AppState>,
+    State(csrf_service): State<Arc<CsrfService>>,
+    State(payment_repo): State<Arc<dyn PaymentRepository>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session): Extension<SessionInfo>,
 ) -> Result<axum::response::Response, AppError> {
     use crate::domain::{PaymentKind, PaymentStatus};
     use std::collections::BTreeMap;
 
-    let payments = state.service_context.payment_repo
+    let payments = payment_repo
         .find_by_member(current_user.member.id)
         .await?;
 
@@ -829,7 +872,7 @@ pub async fn receipts_page(
     years.sort_by(|a, b| b.year.cmp(&a.year));
 
     let template = ReceiptsTemplate {
-        base: BaseContext::for_member(&state, &current_user, &session).await,
+        base: BaseContext::for_member(&csrf_service, &current_user, &session).await,
         member_full_name: current_user.member.full_name.clone(),
         years,
     };
@@ -841,13 +884,15 @@ pub async fn receipts_page(
 /// receipts; refunded / pending / failed payments return 404 (no
 /// receipt to show).
 pub async fn receipt_page(
-    State(state): State<AppState>,
+    State(payment_repo): State<Arc<dyn PaymentRepository>>,
+    State(settings_service): State<Arc<SettingsService>>,
+    State(donation_campaign_repo): State<Arc<dyn DonationCampaignRepository>>,
     Extension(current_user): Extension<CurrentUser>,
     axum::extract::Path(payment_id): axum::extract::Path<uuid::Uuid>,
 ) -> Result<axum::response::Response, AppError> {
     use crate::domain::{PaymentKind, PaymentMethod, PaymentStatus};
 
-    let payment = state.service_context.payment_repo
+    let payment = payment_repo
         .find_by_id(payment_id)
         .await?
         .ok_or(AppError::NotFound("Receipt not found".to_string()))?;
@@ -865,13 +910,12 @@ pub async fn receipt_page(
         return Err(AppError::NotFound("Receipt not found".to_string()));
     }
 
-    let settings = &state.service_context.settings_service;
-    let raw_org_name = settings.get_value("org.name").await.unwrap_or_default();
+    let raw_org_name = settings_service.get_value("org.name").await.unwrap_or_default();
     let org_name = if raw_org_name.is_empty() { "Coterie".to_string() } else { raw_org_name };
-    let org_address = settings.get_value("org.address").await.unwrap_or_default();
-    let org_contact_email = settings.get_value("org.contact_email").await.unwrap_or_default();
-    let org_website_url = settings.get_value("org.website_url").await.unwrap_or_default();
-    let org_tax_id = settings.get_value("org.tax_id").await.unwrap_or_default();
+    let org_address = settings_service.get_value("org.address").await.unwrap_or_default();
+    let org_contact_email = settings_service.get_value("org.contact_email").await.unwrap_or_default();
+    let org_website_url = settings_service.get_value("org.website_url").await.unwrap_or_default();
+    let org_tax_id = settings_service.get_value("org.tax_id").await.unwrap_or_default();
 
     let kind_label = match payment.kind {
         PaymentKind::Membership => "Dues",
@@ -889,7 +933,7 @@ pub async fn receipt_page(
 
     // Try to resolve campaign name when applicable.
     let campaign = if let Some(cid) = payment.kind.campaign_id() {
-        state.service_context.donation_campaign_repo
+        donation_campaign_repo
             .find_by_id(cid)
             .await
             .ok()

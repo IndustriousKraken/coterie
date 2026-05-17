@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use askama::Template;
 use axum::{
     extract::State,
@@ -6,10 +8,8 @@ use axum::{
 };
 
 use crate::{
-    api::{
-        middleware::auth::{CurrentUser, SessionInfo},
-        state::AppState,
-    },
+    api::middleware::auth::{CurrentUser, SessionInfo},
+    auth::CsrfService,
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -25,7 +25,7 @@ pub struct RestoreTemplate {
 /// navigate here are redirected to the dashboard — they don't belong on
 /// the "restore your account" page.
 pub async fn restore_page(
-    State(state): State<AppState>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session): Extension<SessionInfo>,
 ) -> Response {
@@ -39,7 +39,7 @@ pub async fn restore_page(
         .map(|d| d.format("%B %d, %Y").to_string());
 
     let template = RestoreTemplate {
-        base: BaseContext::for_member(&state, &current_user, &session).await,
+        base: BaseContext::for_member(&csrf_service, &current_user, &session).await,
         expired_on,
     };
 

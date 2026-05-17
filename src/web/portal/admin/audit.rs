@@ -2,6 +2,8 @@
 //! supports a simple filter + pagination via `before` cursor and
 //! `limit` query params.
 
+use std::sync::Arc;
+
 use askama::Template;
 use axum::{
     extract::{Query, State},
@@ -13,10 +15,9 @@ use chrono::Utc;
 use serde::Deserialize;
 
 use crate::{
-    api::{
-        middleware::auth::{CurrentUser, SessionInfo},
-        state::AppState,
-    },
+    api::middleware::auth::{CurrentUser, SessionInfo},
+    auth::CsrfService,
+    service::audit_service::AuditService,
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -56,17 +57,18 @@ pub struct AuditLogQuery {
 }
 
 pub async fn audit_log_page(
-    State(state): State<AppState>,
+    State(audit_service): State<Arc<AuditService>>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session): Extension<SessionInfo>,
     Query(query): Query<AuditLogQuery>,
 ) -> Response {
     let limit = query.limit.unwrap_or(100).clamp(10, 500);
-    let entries = filtered_entries(&state, &query, limit).await;
+    let entries = filtered_entries(&audit_service, &query, limit).await;
     let export_qs = build_export_qs(&query);
 
     HtmlTemplate(AuditLogTemplate {
-        base: BaseContext::for_member(&state, &current_user, &session).await,
+        base: BaseContext::for_member(&csrf_service, &current_user, &session).await,
         entries,
         action_filter: query.action,
         actor_filter: query.actor,
@@ -79,11 +81,11 @@ pub async fn audit_log_page(
 /// Apply filters over the recent audit entries. Used by both the HTML
 /// page and the CSV exporter so the two stay consistent.
 async fn filtered_entries(
-    state: &AppState,
+    audit_service: &AuditService,
     query: &AuditLogQuery,
     limit: i64,
 ) -> Vec<AuditEntryDisplay> {
-    let raw = state.service_context.audit_service
+    let raw = audit_service
         .recent(limit * 3) // over-fetch a bit to account for filtering
         .await
         .unwrap_or_default();
@@ -154,7 +156,7 @@ fn build_export_qs(q: &AuditLogQuery) -> String {
 
 /// Export audit log as CSV. Respects the same filters as the page view.
 pub async fn audit_log_export(
-    State(state): State<AppState>,
+    State(audit_service): State<Arc<AuditService>>,
     Extension(_current_user): Extension<CurrentUser>,
     Query(query): Query<AuditLogQuery>,
 ) -> Response {
@@ -164,7 +166,7 @@ pub async fn audit_log_export(
     // the DB directly.
     let limit = query.limit.unwrap_or(5000).clamp(1, 50_000);
 
-    let raw = state.service_context.audit_service
+    let raw = audit_service
         .recent(limit * 3)
         .await
         .unwrap_or_default();

@@ -2,16 +2,19 @@
 //! verification email: consumes the token and marks the member as
 //! email-verified. Shows a success or error page either way.
 
+use std::sync::Arc;
+
 use askama::Template;
 use axum::{
     extract::{Query, State},
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use sqlx::SqlitePool;
 
 use crate::{
-    api::state::AppState,
     auth::EmailTokenService,
+    repository::MemberRepository,
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -29,10 +32,11 @@ pub struct VerifyResultTemplate {
 }
 
 pub async fn verify_handler(
-    State(state): State<AppState>,
+    State(db_pool): State<SqlitePool>,
+    State(member_repo): State<Arc<dyn MemberRepository>>,
     Query(query): Query<VerifyQuery>,
 ) -> Response {
-    let service = EmailTokenService::verification(state.service_context.db_pool.clone());
+    let service = EmailTokenService::verification(db_pool.clone());
 
     let (success, message) = match service.consume(&query.token).await {
         Ok(Some(consumed)) => {
@@ -40,7 +44,7 @@ pub async fn verify_handler(
             // verification tokens for this member become moot (the DB
             // state already reflects "verified"), but invalidate them
             // as well for cleanliness.
-            if let Err(e) = state.service_context.member_repo
+            if let Err(e) = member_repo
                 .mark_email_verified(consumed.member_id).await
             {
                 tracing::error!("Failed to mark email verified: {}", e);

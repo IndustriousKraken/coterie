@@ -7,6 +7,8 @@
 //! Form posts return HTML fragments (not JSON) so HTMX can swap them
 //! in directly.
 
+use std::sync::Arc;
+
 use askama::Template;
 use axum::{
     extract::{Query, State},
@@ -14,11 +16,14 @@ use axum::{
     Extension,
 };
 use serde::Deserialize;
+use sqlx::SqlitePool;
 
 use crate::{
-    api::{
-        middleware::auth::{CurrentUser, SessionInfo},
-        state::AppState,
+    api::middleware::auth::{CurrentUser, SessionInfo},
+    auth::{CsrfService, TotpService},
+    service::{
+        audit_service::AuditService, membership_type_service::MembershipTypeService,
+        settings_service::SettingsService,
     },
     web::templates::{BaseContext, HtmlTemplate, filters},
 };
@@ -66,19 +71,23 @@ pub struct RecoveryCodesTemplate {
 }
 
 pub async fn security_page(
-    State(state): State<AppState>,
+    State(totp_service): State<Arc<TotpService>>,
+    State(settings_service): State<Arc<SettingsService>>,
+    State(membership_type_service): State<Arc<MembershipTypeService>>,
+    State(csrf_service): State<Arc<CsrfService>>,
+    State(db_pool): State<SqlitePool>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
     Query(query): Query<SecurityQuery>,
 ) -> impl IntoResponse {
-    let totp_enabled = state.service_context.totp_service
+    let totp_enabled = totp_service
         .is_enabled(current_user.member.id)
         .await
         .unwrap_or(false);
 
     let remaining = if totp_enabled {
         crate::auth::recovery_codes::remaining_count(
-            &state.service_context.db_pool,
+            &db_pool,
             current_user.member.id,
         ).await.unwrap_or(0)
     } else { 0 };
@@ -88,7 +97,7 @@ pub async fn security_page(
     // Showing the banner ALSO when the toggle is on (not only after a
     // bounce) means an admin who navigates here directly can see why
     // they're being asked to enroll.
-    let enforce = state.service_context.settings_service
+    let enforce = settings_service
         .get_setting("auth.require_totp_for_admins").await
         .ok()
         .map(|s| s.value == "true")
@@ -98,7 +107,7 @@ pub async fn security_page(
         && !totp_enabled
         && (enforce || bounced);
 
-    let membership_type_name = state.service_context.membership_type_service
+    let membership_type_name = membership_type_service
         .get(current_user.member.membership_type_id).await
         .ok().flatten()
         .map(|mt| mt.name)
@@ -116,7 +125,7 @@ pub async fn security_page(
     };
 
     HtmlTemplate(SecurityTemplate {
-        base: BaseContext::for_member(&state, &current_user, &session_info).await,
+        base: BaseContext::for_member(&csrf_service, &current_user, &session_info).await,
         member: member_info,
         totp_enabled,
         recovery_codes_remaining: remaining,
@@ -132,14 +141,15 @@ pub async fn security_page(
 // --------------------------------------------------------------------
 
 pub async fn enroll_start(
-    State(state): State<AppState>,
+    State(totp_service): State<Arc<TotpService>>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> Response {
     // Refuse if already enrolled — nothing UX-coherent to do, and we'd
     // overwrite the existing secret. Re-enrollment goes via disable
     // → enroll deliberately.
-    let already = state.service_context.totp_service
+    let already = totp_service
         .is_enabled(current_user.member.id).await.unwrap_or(false);
     if already {
         return Html(
@@ -149,7 +159,7 @@ pub async fn enroll_start(
         ).into_response();
     }
 
-    let init = match state.service_context.totp_service
+    let init = match totp_service
         .begin_enrollment(&current_user.member.email)
     {
         Ok(i) => i,
@@ -163,7 +173,7 @@ pub async fn enroll_start(
         }
     };
 
-    let csrf_token = state.service_context.csrf_service
+    let csrf_token = csrf_service
         .generate_token(&session_info.session_id).await
         .unwrap_or_else(|_| String::new());
 
@@ -190,12 +200,15 @@ pub struct EnrollConfirmRequest {
 }
 
 pub async fn enroll_confirm(
-    State(state): State<AppState>,
+    State(totp_service): State<Arc<TotpService>>,
+    State(csrf_service): State<Arc<CsrfService>>,
+    State(audit_service): State<Arc<AuditService>>,
+    State(db_pool): State<SqlitePool>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
     axum::Form(form): axum::Form<EnrollConfirmRequest>,
 ) -> Response {
-    let ok = match state.service_context.totp_service
+    let ok = match totp_service
         .confirm_enrollment(
             current_user.member.id,
             &form.secret_base32,
@@ -210,7 +223,7 @@ pub async fn enroll_confirm(
         }
     };
 
-    let csrf_token = state.service_context.csrf_service
+    let csrf_token = csrf_service
         .generate_token(&session_info.session_id).await
         .unwrap_or_else(|_| String::new());
 
@@ -228,7 +241,7 @@ pub async fn enroll_confirm(
     // Code accepted. Issue recovery codes (this is the ONLY time the
     // user sees them) and render the codes-display fragment.
     let codes = match crate::auth::recovery_codes::issue_for_member(
-        &state.service_context.db_pool,
+        &db_pool,
         current_user.member.id,
     ).await {
         Ok(c) => c,
@@ -237,13 +250,13 @@ pub async fn enroll_confirm(
             // Roll back enrollment so we don't leave the member in a
             // half-state with no recovery codes — they'd be locked out
             // if their authenticator app got wiped.
-            let _ = state.service_context.totp_service
+            let _ = totp_service
                 .disable(current_user.member.id).await;
             return error_html("Couldn't finalize 2FA setup. Please try again.");
         }
     };
 
-    state.service_context.audit_service.log(
+    audit_service.log(
         Some(current_user.member.id),
         "totp_enroll",
         "member",
@@ -275,18 +288,20 @@ pub struct DisableRequest {
 }
 
 pub async fn disable(
-    State(state): State<AppState>,
+    State(totp_service): State<Arc<TotpService>>,
+    State(audit_service): State<Arc<AuditService>>,
+    State(db_pool): State<SqlitePool>,
     Extension(current_user): Extension<CurrentUser>,
     axum::Form(form): axum::Form<DisableRequest>,
 ) -> Response {
-    let totp_ok = state.service_context.totp_service
+    let totp_ok = totp_service
         .verify_for_member(current_user.member.id, &form.code, &current_user.member.email)
         .await.unwrap_or(false);
     let recovery_ok = if totp_ok {
         false
     } else {
         crate::auth::recovery_codes::try_consume(
-            &state.service_context.db_pool,
+            &db_pool,
             current_user.member.id,
             &form.code,
         ).await.unwrap_or(false)
@@ -295,12 +310,12 @@ pub async fn disable(
         return error_html("Code didn't match. 2FA is still enabled.");
     }
 
-    if let Err(e) = state.service_context.totp_service.disable(current_user.member.id).await {
+    if let Err(e) = totp_service.disable(current_user.member.id).await {
         tracing::error!("totp disable failed: {}", e);
         return error_html("Couldn't disable 2FA. Please try again.");
     }
 
-    state.service_context.audit_service.log(
+    audit_service.log(
         Some(current_user.member.id),
         "totp_disable",
         "member",
@@ -328,25 +343,27 @@ pub struct RegenerateRequest {
 }
 
 pub async fn regenerate_recovery_codes(
-    State(state): State<AppState>,
+    State(totp_service): State<Arc<TotpService>>,
+    State(audit_service): State<Arc<AuditService>>,
+    State(db_pool): State<SqlitePool>,
     Extension(current_user): Extension<CurrentUser>,
     axum::Form(form): axum::Form<RegenerateRequest>,
 ) -> Response {
     // Must already be enrolled — regenerate is meaningless otherwise.
-    let enabled = state.service_context.totp_service
+    let enabled = totp_service
         .is_enabled(current_user.member.id).await.unwrap_or(false);
     if !enabled {
         return error_html("Two-factor authentication isn't enabled.");
     }
 
-    let totp_ok = state.service_context.totp_service
+    let totp_ok = totp_service
         .verify_for_member(current_user.member.id, &form.code, &current_user.member.email)
         .await.unwrap_or(false);
     let recovery_ok = if totp_ok {
         false
     } else {
         crate::auth::recovery_codes::try_consume(
-            &state.service_context.db_pool,
+            &db_pool,
             current_user.member.id,
             &form.code,
         ).await.unwrap_or(false)
@@ -356,7 +373,7 @@ pub async fn regenerate_recovery_codes(
     }
 
     let codes = match crate::auth::recovery_codes::issue_for_member(
-        &state.service_context.db_pool,
+        &db_pool,
         current_user.member.id,
     ).await {
         Ok(c) => c,
@@ -366,7 +383,7 @@ pub async fn regenerate_recovery_codes(
         }
     };
 
-    state.service_context.audit_service.log(
+    audit_service.log(
         Some(current_user.member.id),
         "totp_recovery_regenerate",
         "member",
