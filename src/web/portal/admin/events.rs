@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use askama::Template;
 use axum::{
     extract::{State, Query, Path, Multipart},
@@ -9,8 +11,13 @@ use serde::Deserialize;
 use crate::{
     api::{
         middleware::auth::{CurrentUser, SessionInfo},
-        state::AppState,
+        state::EventBasicTypeService,
     },
+    auth::CsrfService,
+    config::Settings,
+    integrations::IntegrationManager,
+    repository::{EventRepository, EventSeriesRepository},
+    service::{audit_service::AuditService, recurring_event_service::RecurringEventService},
     web::portal::admin::partials,
     web::templates::{BaseContext, HtmlTemplate},
     web::uploads::save_uploaded_file,
@@ -88,7 +95,8 @@ pub struct AdminEventsQuery {
 }
 
 pub async fn admin_events_page(
-    State(state): State<AppState>,
+    State(event_repo): State<Arc<dyn EventRepository>>,
+    State(csrf_service): State<Arc<CsrfService>>,
     headers: axum::http::HeaderMap,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
@@ -96,7 +104,7 @@ pub async fn admin_events_page(
 ) -> impl IntoResponse {
     let is_htmx = headers.get("HX-Request").is_some();
 
-    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
+    let base = BaseContext::for_member(&csrf_service, &current_user, &session_info).await;
 
     let page = query.page.unwrap_or(1).max(1);
     let per_page: i64 = 20;
@@ -109,7 +117,7 @@ pub async fn admin_events_page(
     let sort_field = query.sort.clone().unwrap_or_else(|| "start_time".to_string());
     let sort_order = query.order.clone().unwrap_or_else(|| "asc".to_string());
 
-    let all_events = state.service_context.event_repo
+    let all_events = event_repo
         .list(1000, 0)
         .await
         .unwrap_or_default();
@@ -155,7 +163,7 @@ pub async fn admin_events_page(
 
     let mut paginated_events = Vec::new();
     for e in filtered_events.into_iter().skip(offset as usize).take(per_page as usize) {
-        let attendee_count = state.service_context.event_repo
+        let attendee_count = event_repo
             .get_attendee_count(e.id)
             .await
             .unwrap_or(0);
@@ -248,25 +256,27 @@ pub struct AdminEventDetail {
 }
 
 pub async fn admin_event_detail_page(
-    State(state): State<AppState>,
+    State(event_repo): State<Arc<dyn EventRepository>>,
+    State(event_type_service): State<EventBasicTypeService>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
     Path(event_id): Path<String>,
 ) -> impl IntoResponse {
-    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
+    let base = BaseContext::for_member(&csrf_service, &current_user, &session_info).await;
 
     let id = match uuid::Uuid::parse_str(&event_id) {
         Ok(id) => id,
         Err(_) => return partials::admin_alert("error", "Invalid event ID", false).into_response(),
     };
 
-    let event = match state.service_context.event_repo.find_by_id(id).await {
+    let event = match event_repo.find_by_id(id).await {
         Ok(Some(e)) => e,
         Ok(None) => return partials::admin_alert("error", "Event not found", false).into_response(),
         Err(_) => return partials::admin_alert("error", "Error loading event", false).into_response(),
     };
 
-    let attendee_count = state.service_context.event_repo
+    let attendee_count = event_repo
         .get_attendee_count(event.id)
         .await
         .unwrap_or(0);
@@ -296,7 +306,7 @@ pub async fn admin_event_detail_page(
     };
 
     // Fetch active event types for the dropdown
-    let event_types = state.service_context.event_type_service
+    let event_types = event_type_service.0
         .list(false)
         .await
         .unwrap_or_default()
@@ -324,14 +334,15 @@ pub struct AdminNewEventTemplate {
 }
 
 pub async fn admin_new_event_page(
-    State(state): State<AppState>,
+    State(event_type_service): State<EventBasicTypeService>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
+    let base = BaseContext::for_member(&csrf_service, &current_user, &session_info).await;
 
     // Fetch active event types for the dropdown
-    let event_types = state.service_context.event_type_service
+    let event_types = event_type_service.0
         .list(false)
         .await
         .unwrap_or_default()
@@ -351,7 +362,11 @@ pub async fn admin_new_event_page(
 }
 
 pub async fn admin_create_event(
-    State(state): State<AppState>,
+    State(settings): State<Arc<Settings>>,
+    State(event_repo): State<Arc<dyn EventRepository>>,
+    State(recurring_event_service): State<Arc<RecurringEventService>>,
+    State(audit_service): State<Arc<AuditService>>,
+    State(integration_manager): State<Arc<IntegrationManager>>,
     Extension(current_user): Extension<CurrentUser>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
@@ -428,7 +443,7 @@ pub async fn admin_create_event(
                 if !filename.is_empty() {
                     if let Ok(data) = field.bytes().await {
                         if !data.is_empty() {
-                            match save_uploaded_file(&state.settings.server.uploads_path(), &filename, &data).await {
+                            match save_uploaded_file(&settings.server.uploads_path(), &filename, &data).await {
                                 Ok(path) => image_url = Some(path),
                                 Err(e) => return partials::admin_alert("error", &format!("Error uploading image: {}", e), false).into_response(),
                             }
@@ -505,14 +520,14 @@ pub async fn admin_create_event(
         };
         let until = parse_until(&repeat_until_str);
 
-        match state.service_context.recurring_event_service
+        match recurring_event_service
             .create_series_with_initial_materialization(
                 rule, event, until, current_user.member.id,
             ).await
         {
             Ok(created) => {
                 let first = &created.occurrences[0];
-                state.service_context.audit_service.log(
+                audit_service.log(
                     Some(current_user.member.id),
                     "create_event_series",
                     "event_series",
@@ -523,7 +538,7 @@ pub async fn admin_create_event(
                 ).await;
                 // Single Discord notification for the entire series —
                 // we treat it like one announcement, not 52.
-                state.service_context.integration_manager
+                integration_manager
                     .handle_event(crate::integrations::IntegrationEvent::EventPublished(first.clone()))
                     .await;
                 return axum::response::Redirect::to(
@@ -536,9 +551,9 @@ pub async fn admin_create_event(
         }
     }
 
-    match state.service_context.event_repo.create(event).await {
+    match event_repo.create(event).await {
         Ok(created) => {
-            state.service_context.audit_service.log(
+            audit_service.log(
                 Some(current_user.member.id),
                 "create_event",
                 "event",
@@ -549,7 +564,7 @@ pub async fn admin_create_event(
             ).await;
             // Notify integrations (Discord channel post if configured).
             // Routing by visibility happens inside DiscordIntegration.
-            state.service_context.integration_manager
+            integration_manager
                 .handle_event(crate::integrations::IntegrationEvent::EventPublished(created.clone()))
                 .await;
             axum::response::Redirect::to(&format!("/portal/admin/events/{}", created.id)).into_response()
@@ -614,7 +629,9 @@ fn parse_until(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
 }
 
 pub async fn admin_update_event(
-    State(state): State<AppState>,
+    State(settings): State<Arc<Settings>>,
+    State(event_repo): State<Arc<dyn EventRepository>>,
+    State(audit_service): State<Arc<AuditService>>,
     Extension(current_user): Extension<CurrentUser>,
     Path(event_id): Path<String>,
     mut multipart: Multipart,
@@ -626,7 +643,7 @@ pub async fn admin_update_event(
         Err(_) => return partials::admin_alert("error", "Invalid event ID", false).into_response(),
     };
 
-    let existing = match state.service_context.event_repo.find_by_id(id).await {
+    let existing = match event_repo.find_by_id(id).await {
         Ok(Some(e)) => e,
         Ok(None) => return partials::admin_alert("error", "Event not found", false).into_response(),
         Err(_) => return partials::admin_alert("error", "Error loading event", false).into_response(),
@@ -679,7 +696,7 @@ pub async fn admin_update_event(
                 if !filename.is_empty() {
                     if let Ok(data) = field.bytes().await {
                         if !data.is_empty() {
-                            match save_uploaded_file(&state.settings.server.uploads_path(), &filename, &data).await {
+                            match save_uploaded_file(&settings.server.uploads_path(), &filename, &data).await {
                                 Ok(path) => new_image_url = Some(path),
                                 Err(e) => return partials::admin_alert("error", &format!("Error uploading image: {}", e), false).into_response(),
                             }
@@ -756,7 +773,7 @@ pub async fn admin_update_event(
     // Always update THIS row first — the radio defaults to "this" and
     // even the "this and future" path expects this row to reflect the
     // form values too.
-    let updated = match state.service_context.event_repo.update(id, updated_event.clone()).await {
+    let updated = match event_repo.update(id, updated_event.clone()).await {
         Ok(u) => u,
         Err(e) => {
             return partials::admin_alert(
@@ -765,7 +782,7 @@ pub async fn admin_update_event(
         }
     };
     crate::web::uploads::delete_if_upload(
-        &state.settings.server.uploads_path(),
+        &settings.server.uploads_path(),
         image_to_delete.as_deref(),
     ).await;
 
@@ -774,7 +791,7 @@ pub async fn admin_update_event(
     let mut future_count = 0u64;
     if edit_scope == "this_and_future" {
         if let Some(series_id) = updated_event.series_id {
-            match state.service_context.event_repo
+            match event_repo
                 .update_series_occurrences_from(
                     series_id, updated_event.start_time, &updated_event,
                 ).await
@@ -787,7 +804,7 @@ pub async fn admin_update_event(
         }
     }
 
-    state.service_context.audit_service.log(
+    audit_service.log(
         Some(current_user.member.id),
         if edit_scope == "this_and_future" { "update_event_series_future" } else { "update_event" },
         "event",
@@ -806,7 +823,10 @@ pub async fn admin_update_event(
 }
 
 pub async fn admin_delete_event(
-    State(state): State<AppState>,
+    State(settings): State<Arc<Settings>>,
+    State(event_repo): State<Arc<dyn EventRepository>>,
+    State(event_series_repo): State<Arc<dyn EventSeriesRepository>>,
+    State(audit_service): State<Arc<AuditService>>,
     Extension(current_user): Extension<CurrentUser>,
     Path(event_id): Path<String>,
     axum::Form(form): axum::Form<DeleteEventForm>,
@@ -816,7 +836,7 @@ pub async fn admin_delete_event(
         Err(_) => return partials::admin_alert("error", "Invalid event ID", false).into_response(),
     };
 
-    let event = match state.service_context.event_repo.find_by_id(id).await {
+    let event = match event_repo.find_by_id(id).await {
         Ok(Some(e)) => e,
         Ok(None) => return partials::admin_alert("error", "Event not found", false).into_response(),
         Err(_) => return partials::admin_alert("error", "Error loading event", false).into_response(),
@@ -837,19 +857,19 @@ pub async fn admin_delete_event(
             // the series at this row's start_time so the horizon job
             // doesn't re-materialize them.
             let cutoff = event.start_time;
-            if let Err(e) = state.service_context.event_repo
+            if let Err(e) = event_repo
                 .delete_series_occurrences_after(sid, cutoff).await
             {
                 return partials::admin_alert(
                     "error", &format!("Error ending series: {}", e), false,
                 ).into_response();
             }
-            if let Err(e) = state.service_context.event_series_repo
+            if let Err(e) = event_series_repo
                 .set_until_date(sid, cutoff).await
             {
                 tracing::error!("set_until_date failed for series {}: {}", sid, e);
             }
-            state.service_context.audit_service.log(
+            audit_service.log(
                 Some(current_user.member.id),
                 "end_event_series",
                 "event_series",
@@ -865,12 +885,12 @@ pub async fn admin_delete_event(
 
         // delete_series: nuke the series row and all occurrences
         // (FK ON DELETE CASCADE drops every occurrence).
-        if let Err(e) = state.service_context.event_series_repo.delete(sid).await {
+        if let Err(e) = event_series_repo.delete(sid).await {
             return partials::admin_alert(
                 "error", &format!("Error deleting series: {}", e), false,
             ).into_response();
         }
-        state.service_context.audit_service.log(
+        audit_service.log(
             Some(current_user.member.id),
             "delete_event_series",
             "event_series",
@@ -884,13 +904,13 @@ pub async fn admin_delete_event(
 
     // Default: delete this single row, scope=="this".
     let image_to_delete = event.image_url.clone();
-    match state.service_context.event_repo.delete(id).await {
+    match event_repo.delete(id).await {
         Ok(_) => {
             crate::web::uploads::delete_if_upload(
-                &state.settings.server.uploads_path(),
+                &settings.server.uploads_path(),
                 image_to_delete.as_deref(),
             ).await;
-            state.service_context.audit_service.log(
+            audit_service.log(
                 Some(current_user.member.id),
                 "delete_event",
                 "event",

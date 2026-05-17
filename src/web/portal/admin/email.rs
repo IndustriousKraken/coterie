@@ -4,6 +4,8 @@
 //! so admins can verify their SMTP setup without shelling into the
 //! server.
 
+use std::sync::Arc;
+
 use askama::Template;
 use axum::{
     extract::State,
@@ -14,12 +16,14 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    api::{
-        middleware::auth::{CurrentUser, SessionInfo},
-        state::AppState,
+    api::middleware::auth::{CurrentUser, SessionInfo},
+    auth::CsrfService,
+    config::Settings,
+    email::{self, templates::{WelcomeHtml, WelcomeText}, EmailSender},
+    service::{
+        audit_service::AuditService,
+        settings_service::{SettingsService, UpdateEmailConfig},
     },
-    email::{self, templates::{WelcomeHtml, WelcomeText}},
-    service::settings_service::UpdateEmailConfig,
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -49,38 +53,47 @@ pub struct AdminEmailSettingsTemplate {
 }
 
 pub async fn email_settings_page(
-    State(state): State<AppState>,
+    State(settings_service): State<Arc<SettingsService>>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> Response {
-    render_page(state, current_user, session_info, None, None).await
+    render_page(
+        &settings_service,
+        &csrf_service,
+        &current_user,
+        &session_info,
+        None,
+        None,
+    ).await
 }
 
 async fn render_page(
-    state: AppState,
-    current_user: CurrentUser,
-    session_info: SessionInfo,
+    settings_service: &SettingsService,
+    csrf_service: &CsrfService,
+    current_user: &CurrentUser,
+    session_info: &SessionInfo,
     flash_success: Option<String>,
     flash_error: Option<String>,
 ) -> Response {
-    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
+    let base = BaseContext::for_member(csrf_service, current_user, session_info).await;
 
     // If the password is undecryptable (session_secret rotated), we
     // still want to show the page — fall back to default config so
     // the admin can see the warning banner and re-enter credentials.
-    let password_undecryptable = state.service_context.settings_service
+    let password_undecryptable = settings_service
         .smtp_password_undecryptable().await;
 
-    let cfg = state.service_context.settings_service
+    let cfg = settings_service
         .get_email_config()
         .await
         .unwrap_or_default();
 
-    let last_test_at = state.service_context.settings_service
+    let last_test_at = settings_service
         .get_value("email.last_test_at").await.unwrap_or_default();
-    let last_test_ok = state.service_context.settings_service
+    let last_test_ok = settings_service
         .get_bool("email.last_test_ok").await.unwrap_or(false);
-    let last_test_error = state.service_context.settings_service
+    let last_test_error = settings_service
         .get_value("email.last_test_error").await.unwrap_or_default();
 
     let last_test_status = if last_test_at.is_empty() {
@@ -125,20 +138,22 @@ pub struct UpdateEmailForm {
 }
 
 pub async fn update_email_settings(
-    State(state): State<AppState>,
+    State(settings_service): State<Arc<SettingsService>>,
+    State(csrf_service): State<Arc<CsrfService>>,
+    State(audit_service): State<Arc<AuditService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
     Form(form): Form<UpdateEmailForm>,
 ) -> Response {
     // CSRF is also enforced by middleware, but double-check explicitly
     // so admins get a clear error if something went wrong.
-    let csrf_valid = state.service_context.csrf_service
+    let csrf_valid = csrf_service
         .validate_token(&session_info.session_id, &form.csrf_token)
         .await
         .unwrap_or(false);
     if !csrf_valid {
         return render_page(
-            state, current_user, session_info,
+            &settings_service, &csrf_service, &current_user, &session_info,
             None,
             Some("Invalid CSRF token. Please reload and try again.".to_string()),
         ).await;
@@ -147,7 +162,7 @@ pub async fn update_email_settings(
     // Validate inputs
     if form.mode != "log" && form.mode != "smtp" {
         return render_page(
-            state, current_user, session_info,
+            &settings_service, &csrf_service, &current_user, &session_info,
             None,
             Some("Mode must be 'log' or 'smtp'.".to_string()),
         ).await;
@@ -157,7 +172,7 @@ pub async fn update_email_settings(
         Ok(p) if p > 0 => p,
         _ => {
             return render_page(
-                state, current_user, session_info,
+                &settings_service, &csrf_service, &current_user, &session_info,
                 None,
                 Some("SMTP port must be a positive number (common values: 587, 465, 25).".to_string()),
             ).await;
@@ -184,7 +199,7 @@ pub async fn update_email_settings(
         smtp_password,
     };
 
-    match state.service_context.settings_service
+    match settings_service
         .update_email_config(update, current_user.member.id)
         .await
     {
@@ -193,7 +208,7 @@ pub async fn update_email_settings(
             // new values (they include an SMTP password in plaintext
             // form on the way in — the audit row would defeat the
             // encryption-at-rest we do for the settings table).
-            state.service_context.audit_service.log(
+            audit_service.log(
                 Some(current_user.member.id),
                 "update_email_config",
                 "settings",
@@ -203,7 +218,7 @@ pub async fn update_email_settings(
                 None,
             ).await;
             render_page(
-                state, current_user, session_info,
+                &settings_service, &csrf_service, &current_user, &session_info,
                 Some("Email settings saved.".to_string()),
                 None,
             ).await
@@ -211,7 +226,7 @@ pub async fn update_email_settings(
         Err(e) => {
             tracing::error!("update_email_config failed: {}", e);
             render_page(
-                state, current_user, session_info,
+                &settings_service, &csrf_service, &current_user, &session_info,
                 None,
                 Some(format!("Failed to save settings: {}", e)),
             ).await
@@ -233,7 +248,9 @@ pub struct TestEmailForm {
 /// the `to` form field. Returns an HTMX-friendly fragment that replaces
 /// the status area on the settings page.
 pub async fn send_test_email(
-    State(state): State<AppState>,
+    State(settings): State<Arc<Settings>>,
+    State(settings_service): State<Arc<SettingsService>>,
+    State(email_sender): State<Arc<dyn EmailSender>>,
     Extension(current_user): Extension<CurrentUser>,
     Form(form): Form<TestEmailForm>,
 ) -> impl IntoResponse {
@@ -253,14 +270,14 @@ pub async fn send_test_email(
     let full_name = current_user.member.full_name.clone();
 
     // Look up org name for the subject line / body.
-    let org_name = state.service_context.settings_service
+    let org_name = settings_service
         .get_value("org.name").await
         .ok().filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Coterie".to_string());
 
     let portal_url = format!(
         "{}/portal/dashboard",
-        state.settings.server.base_url.trim_end_matches('/'),
+        settings.server.base_url.trim_end_matches('/'),
     );
 
     // Borrow the welcome template as a generic "friendly test" body —
@@ -286,7 +303,7 @@ pub async fn send_test_email(
         Err(e) => return test_result_html(false, &format!("Template error: {}", e)),
     };
 
-    let (ok, error_text) = match state.service_context.email_sender.send(&message).await {
+    let (ok, error_text) = match email_sender.send(&message).await {
         Ok(()) => (true, String::new()),
         Err(e) => (false, e.to_string()),
     };
@@ -294,7 +311,7 @@ pub async fn send_test_email(
     // Record the test result so the settings page reflects it on next load.
     // If recording fails, the email still went (or didn't) — the visible
     // result is correct. Only the "last test status" panel goes stale.
-    if let Err(e) = state.service_context.settings_service
+    if let Err(e) = settings_service
         .record_email_test(ok, &error_text, current_user.member.id)
         .await
     {

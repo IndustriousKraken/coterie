@@ -8,6 +8,8 @@
 //!   POST /reset-password  -> verify token, hash new password, update,
 //!                            invalidate all sessions
 
+use std::sync::Arc;
+
 use askama::Template;
 use axum::{
     extract::{Query, State},
@@ -16,11 +18,15 @@ use axum::{
     Form,
 };
 use serde::Deserialize;
+use sqlx::SqlitePool;
 
 use crate::{
-    api::state::AppState,
+    api::state::LoginLimiter,
     auth::{AuthService, EmailTokenService},
-    email::{self, templates::{ResetHtml, ResetText}},
+    config::Settings,
+    email::{self, templates::{ResetHtml, ResetText}, EmailSender},
+    repository::MemberRepository,
+    service::settings_service::SettingsService,
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -38,9 +44,7 @@ pub struct ForgotPasswordForm {
     pub email: String,
 }
 
-pub async fn forgot_password_page(
-    State(_state): State<AppState>,
-) -> Response {
+pub async fn forgot_password_page() -> Response {
     HtmlTemplate(ForgotPasswordTemplate {
         base: BaseContext::for_anon(),
         submitted: false,
@@ -48,14 +52,19 @@ pub async fn forgot_password_page(
 }
 
 pub async fn forgot_password_handler(
-    State(state): State<AppState>,
+    State(settings): State<Arc<Settings>>,
+    State(login_limiter): State<LoginLimiter>,
+    State(member_repo): State<Arc<dyn MemberRepository>>,
+    State(db_pool): State<SqlitePool>,
+    State(settings_service): State<Arc<SettingsService>>,
+    State(email_sender): State<Arc<dyn EmailSender>>,
     headers: HeaderMap,
     Form(form): Form<ForgotPasswordForm>,
 ) -> Response {
     // Rate-limit so the endpoint can't be used as a mass-email
     // generator or to probe for valid addresses.
-    let ip = crate::api::state::client_ip(&headers, state.settings.server.trust_forwarded_for());
-    if !state.login_limiter.check_and_record(ip) {
+    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
+    if !login_limiter.0.check_and_record(ip) {
         return (StatusCode::TOO_MANY_REQUESTS,
             "Too many requests. Please try again later."
         ).into_response();
@@ -64,20 +73,20 @@ pub async fn forgot_password_handler(
     // Look up the member. Whether or not we find one, return the same
     // response — leaking membership via this endpoint would undo the
     // enumeration protection we added on signup.
-    if let Ok(Some(member)) = state.service_context.member_repo
+    if let Ok(Some(member)) = member_repo
         .find_by_email(&form.email).await
     {
         // Generate token and send email. Soft-fail: we don't expose any
         // error to the caller; the tracing log captures the failure.
-        let service = EmailTokenService::password_reset(state.service_context.db_pool.clone());
+        let service = EmailTokenService::password_reset(db_pool.clone());
         match service.create(member.id, chrono::Duration::hours(1)).await {
             Ok(created) => {
                 let reset_url = format!(
                     "{}/reset-password?token={}",
-                    state.settings.server.base_url.trim_end_matches('/'),
+                    settings.server.base_url.trim_end_matches('/'),
                     created.token,
                 );
-                let org_name = state.service_context.settings_service
+                let org_name = settings_service
                     .get_value("org.name")
                     .await
                     .ok()
@@ -100,7 +109,7 @@ pub async fn forgot_password_handler(
                     &text,
                 ) {
                     Ok(message) => {
-                        if let Err(e) = state.service_context.email_sender.send(&message).await {
+                        if let Err(e) = email_sender.send(&message).await {
                             tracing::error!("Reset email send failed: {}", e);
                         }
                     }
@@ -151,7 +160,6 @@ pub struct ResetPasswordForm {
 }
 
 pub async fn reset_password_page(
-    State(_state): State<AppState>,
     Query(query): Query<ResetPasswordQuery>,
 ) -> Response {
     HtmlTemplate(ResetPasswordTemplate {
@@ -162,7 +170,9 @@ pub async fn reset_password_page(
 }
 
 pub async fn reset_password_handler(
-    State(state): State<AppState>,
+    State(db_pool): State<SqlitePool>,
+    State(member_repo): State<Arc<dyn MemberRepository>>,
+    State(auth_service): State<Arc<AuthService>>,
     Form(form): Form<ResetPasswordForm>,
 ) -> Response {
     // Client-side validation first (gives the form back with an error
@@ -184,7 +194,7 @@ pub async fn reset_password_handler(
 
     // Consume the token atomically. Any further attempts with the same
     // token will return None.
-    let service = EmailTokenService::password_reset(state.service_context.db_pool.clone());
+    let service = EmailTokenService::password_reset(db_pool.clone());
     let consumed = match service.consume(&form.token).await {
         Ok(Some(c)) => c,
         Ok(None) => {
@@ -217,7 +227,7 @@ pub async fn reset_password_handler(
         }
     };
 
-    if let Err(e) = state.service_context.member_repo
+    if let Err(e) = member_repo
         .update_password_hash(consumed.member_id, &new_hash).await
     {
         tracing::error!("Password update failed: {}", e);
@@ -234,7 +244,7 @@ pub async fn reset_password_handler(
     // success (the password DID change), but we log loudly because a
     // failure here means the suspected attacker's session might
     // remain valid until natural expiry.
-    if let Err(e) = state.service_context.auth_service
+    if let Err(e) = auth_service
         .invalidate_all_sessions(consumed.member_id).await
     {
         tracing::error!(

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use askama::Template;
 use axum::{
     extract::{State, Query},
@@ -7,10 +9,9 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    api::{
-        middleware::auth::{CurrentUser, SessionInfo},
-        state::AppState,
-    },
+    api::middleware::auth::{CurrentUser, SessionInfo},
+    auth::CsrfService,
+    repository::AnnouncementRepository,
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -21,12 +22,12 @@ pub struct AnnouncementsTemplate {
 }
 
 pub async fn announcements_page(
-    State(state): State<AppState>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session): Extension<SessionInfo>,
 ) -> impl IntoResponse {
     let template = AnnouncementsTemplate {
-        base: BaseContext::for_member(&state, &current_user, &session).await,
+        base: BaseContext::for_member(&csrf_service, &current_user, &session).await,
     };
 
     HtmlTemplate(template)
@@ -39,13 +40,13 @@ pub struct AnnouncementsListQuery {
 }
 
 pub async fn announcements_list_api(
-    State(state): State<AppState>,
+    State(announcement_repo): State<Arc<dyn AnnouncementRepository>>,
     Extension(_current_user): Extension<CurrentUser>,
     Query(query): Query<AnnouncementsListQuery>,
 ) -> impl IntoResponse {
     // Get all published announcements (both public and private - members can see all)
     let limit = if query.show_all.unwrap_or(false) { 100 } else { 20 };
-    let announcements = state.service_context.announcement_repo
+    let announcements = announcement_repo
         .list_recent(limit)
         .await
         .unwrap_or_default();

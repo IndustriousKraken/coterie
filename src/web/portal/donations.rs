@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use askama::Template;
 use axum::{
     extract::State,
@@ -12,10 +14,14 @@ use uuid::Uuid;
 use crate::{
     api::{
         middleware::auth::{CurrentUser, SessionInfo},
-        state::AppState,
+        state::MoneyLimiter,
     },
+    auth::CsrfService,
+    config::Settings,
     domain::{Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus},
     error::AppError,
+    payments::StripeClient,
+    repository::{DonationCampaignRepository, PaymentRepository, SavedCardRepository},
     web::templates::{BaseContext, HtmlTemplate},
 };
 use super::payments::SavedCardDisplay;
@@ -40,18 +46,22 @@ pub struct CampaignDisplay {
 }
 
 pub async fn donate_page(
-    State(state): State<AppState>,
+    State(csrf_service): State<Arc<CsrfService>>,
+    State(settings): State<Arc<Settings>>,
+    State(stripe_client): State<Option<Arc<StripeClient>>>,
+    State(saved_card_repo): State<Arc<dyn SavedCardRepository>>,
+    State(donation_campaign_repo): State<Arc<dyn DonationCampaignRepository>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
+    let base = BaseContext::for_member(&csrf_service, &current_user, &session_info).await;
 
-    let stripe_enabled = state.stripe_client.is_some();
-    let stripe_publishable_key = state.settings.stripe.publishable_key
+    let stripe_enabled = stripe_client.is_some();
+    let stripe_publishable_key = settings.stripe.publishable_key
         .clone()
         .unwrap_or_default();
 
-    let saved_cards = state.service_context.saved_card_repo
+    let saved_cards = saved_card_repo
         .find_by_member(current_user.member.id)
         .await
         .unwrap_or_default()
@@ -65,14 +75,14 @@ pub async fn donate_page(
         .collect();
 
     // Load active campaigns with progress
-    let campaigns_raw = state.service_context.donation_campaign_repo
+    let campaigns_raw = donation_campaign_repo
         .list_active()
         .await
         .unwrap_or_default();
 
     let mut campaigns = Vec::new();
     for c in campaigns_raw {
-        let raised = state.service_context.donation_campaign_repo
+        let raised = donation_campaign_repo
             .get_total_donated(c.id)
             .await
             .unwrap_or(0);
@@ -116,13 +126,18 @@ pub struct DonateRequest {
 }
 
 pub async fn donate_api(
-    State(state): State<AppState>,
+    State(settings): State<Arc<Settings>>,
+    State(money_limiter): State<MoneyLimiter>,
+    State(stripe_client): State<Option<Arc<StripeClient>>>,
+    State(payment_repo): State<Arc<dyn PaymentRepository>>,
+    State(saved_card_repo): State<Arc<dyn SavedCardRepository>>,
+    State(donation_campaign_repo): State<Arc<dyn DonationCampaignRepository>>,
     Extension(current_user): Extension<CurrentUser>,
     headers: axum::http::HeaderMap,
     Json(request): Json<DonateRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
-    let ip = crate::api::state::client_ip(&headers, state.settings.server.trust_forwarded_for());
-    if !state.money_limiter.check_and_record(ip) {
+    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
+    if !money_limiter.0.check_and_record(ip) {
         return Err(AppError::TooManyRequests);
     }
 
@@ -142,7 +157,7 @@ pub async fn donate_api(
     // donation" — recorded but not attributed to any campaign.
     let (campaign_id, campaign_name) = match request.campaign_slug.as_deref() {
         Some(slug) if !slug.is_empty() => {
-            match state.service_context.donation_campaign_repo
+            match donation_campaign_repo
                 .find_by_slug(slug).await?
             {
                 // Inactive campaigns aren't accepting donations.
@@ -170,13 +185,13 @@ pub async fn donate_api(
 
     // If saved card provided, charge directly
     if let Some(card_id_str) = &request.saved_card_id {
-        let stripe_client = state.stripe_client.as_ref()
+        let stripe_client = stripe_client.as_ref()
             .ok_or_else(|| AppError::ServiceUnavailable("Payment processing not configured".to_string()))?;
 
         let card_id = Uuid::parse_str(card_id_str)
             .map_err(|_| AppError::BadRequest("Invalid card ID".to_string()))?;
 
-        let card = state.service_context.saved_card_repo
+        let card = saved_card_repo
             .find_by_id(card_id)
             .await?
             .ok_or(AppError::NotFound("Card not found".to_string()))?;
@@ -207,7 +222,7 @@ pub async fn donate_api(
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };
-        state.service_context.payment_repo.create(pending).await?;
+        payment_repo.create(pending).await?;
 
         let stripe_payment_id = match stripe_client.charge_saved_card(
             current_user.member.id,
@@ -219,7 +234,7 @@ pub async fn donate_api(
         ).await {
             Ok(id) => id,
             Err(e) => {
-                let _ = state.service_context.payment_repo.fail_pending_payment(payment_id).await;
+                let _ = payment_repo.fail_pending_payment(payment_id).await;
                 return Err(e);
             }
         };
@@ -227,7 +242,7 @@ pub async fn donate_api(
         // Donation post-work is just the row flip — no dues
         // extension, no rescheduling. So whether we or the webhook
         // wins the flip, the user-visible result is the same.
-        let _ = state.service_context.payment_repo
+        let _ = payment_repo
             .complete_pending_payment(payment_id, &stripe_payment_id)
             .await?;
 
@@ -242,7 +257,7 @@ pub async fn donate_api(
     // old code routed donations through the membership helper, which
     // worked only because the webhook's NotFound on slug "donation"
     // caused Stripe-retry-until-idempotent-skip side effects.
-    let stripe_client = state.stripe_client.as_ref()
+    let stripe_client = stripe_client.as_ref()
         .ok_or_else(|| AppError::ServiceUnavailable("Payment processing not configured".to_string()))?;
 
     let (checkout_url, payment_id) = stripe_client.create_donation_checkout_session(
@@ -250,8 +265,8 @@ pub async fn donate_api(
         &campaign_name,
         campaign_id,
         request.amount_cents,
-        format!("{}/portal/payments/success", state.settings.server.base_url),
-        format!("{}/portal/payments/cancel", state.settings.server.base_url),
+        format!("{}/portal/payments/success", settings.server.base_url),
+        format!("{}/portal/payments/cancel", settings.server.base_url),
     ).await?;
 
     Ok((StatusCode::OK, Json(serde_json::json!({

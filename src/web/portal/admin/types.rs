@@ -5,6 +5,8 @@
 //! Membership types keep their own handler set because membership has extra
 //! fields (fee, billing period) and extra validation.
 
+use std::sync::Arc;
+
 use askama::Template;
 use axum::{
     extract::{Path, State},
@@ -16,11 +18,15 @@ use serde::Deserialize;
 use crate::{
     api::{
         middleware::auth::{CurrentUser, SessionInfo},
-        state::AppState,
+        state::{AnnouncementBasicTypeService, EventBasicTypeService},
     },
+    auth::CsrfService,
     domain::{
         BasicTypeKind, CreateBasicTypeRequest, CreateMembershipTypeRequest,
         UpdateBasicTypeRequest, UpdateMembershipTypeRequest,
+    },
+    service::{
+        basic_type_service::BasicTypeService, membership_type_service::MembershipTypeService,
     },
     web::{
         portal::admin::partials,
@@ -75,14 +81,17 @@ pub struct AdminTypesTemplate {
 }
 
 pub async fn admin_types_page(
-    State(state): State<AppState>,
+    State(event_type_service): State<EventBasicTypeService>,
+    State(announcement_type_service): State<AnnouncementBasicTypeService>,
+    State(membership_type_service): State<Arc<MembershipTypeService>>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
-    let event_types = fetch_basic_types(&state, BasicTypeKind::Event, true).await;
-    let announcement_types = fetch_basic_types(&state, BasicTypeKind::Announcement, true).await;
-    let membership_types = fetch_membership_types(&state, true).await;
+    let base = BaseContext::for_member(&csrf_service, &current_user, &session_info).await;
+    let event_types = fetch_basic_types(&event_type_service.0, true).await;
+    let announcement_types = fetch_basic_types(&announcement_type_service.0, true).await;
+    let membership_types = fetch_membership_types(&membership_type_service, true).await;
 
     HtmlTemplate(AdminTypesTemplate {
         base,
@@ -151,17 +160,18 @@ fn render_basic_form(
 }
 
 fn service_for<'a>(
-    state: &'a AppState,
+    event_type_service: &'a Arc<BasicTypeService>,
+    announcement_type_service: &'a Arc<BasicTypeService>,
     kind: BasicTypeKind,
-) -> &'a std::sync::Arc<crate::service::basic_type_service::BasicTypeService> {
+) -> &'a Arc<BasicTypeService> {
     match kind {
-        BasicTypeKind::Event => &state.service_context.event_type_service,
-        BasicTypeKind::Announcement => &state.service_context.announcement_type_service,
+        BasicTypeKind::Event => event_type_service,
+        BasicTypeKind::Announcement => announcement_type_service,
     }
 }
 
 pub async fn admin_new_basic_type_page(
-    State(state): State<AppState>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
     Path(kind_str): Path<String>,
@@ -169,12 +179,14 @@ pub async fn admin_new_basic_type_page(
     let Some(kind) = parse_kind(&kind_str) else {
         return invalid_kind_response();
     };
-    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
+    let base = BaseContext::for_member(&csrf_service, &current_user, &session_info).await;
     render_basic_form(kind, base, None, false)
 }
 
 pub async fn admin_edit_basic_type_page(
-    State(state): State<AppState>,
+    State(event_type_service): State<EventBasicTypeService>,
+    State(announcement_type_service): State<AnnouncementBasicTypeService>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
     Path((kind_str, type_id)): Path<(String, String)>,
@@ -188,7 +200,8 @@ pub async fn admin_edit_basic_type_page(
     };
 
     let kind_label = kind.display_name();
-    let basic_type = match service_for(&state, kind).get(id).await {
+    let svc = service_for(&event_type_service.0, &announcement_type_service.0, kind);
+    let basic_type = match svc.get(id).await {
         Ok(Some(t)) => t,
         Ok(None) => {
             return partials::admin_alert(
@@ -208,7 +221,7 @@ pub async fn admin_edit_basic_type_page(
         }
     };
 
-    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
+    let base = BaseContext::for_member(&csrf_service, &current_user, &session_info).await;
     let type_info = TypeInfo {
         id: basic_type.id.to_string(),
         name: basic_type.name,
@@ -238,7 +251,8 @@ pub struct BasicTypeForm {
 }
 
 pub async fn admin_create_basic_type(
-    State(state): State<AppState>,
+    State(event_type_service): State<EventBasicTypeService>,
+    State(announcement_type_service): State<AnnouncementBasicTypeService>,
     Extension(_current_user): Extension<CurrentUser>,
     Path(kind_str): Path<String>,
     axum::Form(form): axum::Form<BasicTypeForm>,
@@ -254,7 +268,8 @@ pub async fn admin_create_basic_type(
         icon: form.icon.filter(|s| !s.is_empty()),
     };
 
-    match service_for(&state, kind).create(request).await {
+    let svc = service_for(&event_type_service.0, &announcement_type_service.0, kind);
+    match svc.create(request).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
         Err(e) => partials::admin_alert(
             "error",
@@ -266,7 +281,8 @@ pub async fn admin_create_basic_type(
 }
 
 pub async fn admin_update_basic_type(
-    State(state): State<AppState>,
+    State(event_type_service): State<EventBasicTypeService>,
+    State(announcement_type_service): State<AnnouncementBasicTypeService>,
     Extension(_current_user): Extension<CurrentUser>,
     Path((kind_str, type_id)): Path<(String, String)>,
     axum::Form(form): axum::Form<BasicTypeForm>,
@@ -288,7 +304,8 @@ pub async fn admin_update_basic_type(
         is_active: Some(form.is_active.is_some()),
     };
 
-    match service_for(&state, kind).update(id, request).await {
+    let svc = service_for(&event_type_service.0, &announcement_type_service.0, kind);
+    match svc.update(id, request).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
         Err(e) => partials::admin_alert(
             "error",
@@ -300,7 +317,8 @@ pub async fn admin_update_basic_type(
 }
 
 pub async fn admin_delete_basic_type(
-    State(state): State<AppState>,
+    State(event_type_service): State<EventBasicTypeService>,
+    State(announcement_type_service): State<AnnouncementBasicTypeService>,
     Extension(_current_user): Extension<CurrentUser>,
     Path((kind_str, type_id)): Path<(String, String)>,
 ) -> Response {
@@ -312,7 +330,8 @@ pub async fn admin_delete_basic_type(
         Err(_) => return partials::admin_alert("error", "Invalid type ID", false).into_response(),
     };
 
-    match service_for(&state, kind).delete(id).await {
+    let svc = service_for(&event_type_service.0, &announcement_type_service.0, kind);
+    match svc.delete(id).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
         Err(e) => partials::admin_alert(
             "error",
@@ -336,19 +355,20 @@ pub struct MembershipTypeFormTemplate {
 }
 
 pub async fn admin_new_membership_type_page(
-    State(state): State<AppState>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
     HtmlTemplate(MembershipTypeFormTemplate {
-        base: BaseContext::for_member(&state, &current_user, &session_info).await,
+        base: BaseContext::for_member(&csrf_service, &current_user, &session_info).await,
         membership_type: None,
         is_edit: false,
     }).into_response()
 }
 
 pub async fn admin_edit_membership_type_page(
-    State(state): State<AppState>,
+    State(membership_type_service): State<Arc<MembershipTypeService>>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
     Path(type_id): Path<String>,
@@ -358,13 +378,13 @@ pub async fn admin_edit_membership_type_page(
         Err(_) => return partials::admin_alert("error", "Invalid type ID", false).into_response(),
     };
 
-    let membership_type = match state.service_context.membership_type_service.get(id).await {
+    let membership_type = match membership_type_service.get(id).await {
         Ok(Some(t)) => t,
         Ok(None) => return partials::admin_alert("error", "Membership type not found", false).into_response(),
         Err(_) => return partials::admin_alert("error", "Error loading membership type", false).into_response(),
     };
 
-    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
+    let base = BaseContext::for_member(&csrf_service, &current_user, &session_info).await;
 
     let fee_dollars = membership_type.fee_dollars();
     let type_info = MembershipTypeInfo {
@@ -402,7 +422,7 @@ pub struct MembershipTypeForm {
 }
 
 pub async fn admin_create_membership_type(
-    State(state): State<AppState>,
+    State(membership_type_service): State<Arc<MembershipTypeService>>,
     Extension(_current_user): Extension<CurrentUser>,
     axum::Form(form): axum::Form<MembershipTypeForm>,
 ) -> impl IntoResponse {
@@ -424,14 +444,14 @@ pub async fn admin_create_membership_type(
         billing_period: form.billing_period,
     };
 
-    match state.service_context.membership_type_service.create(request).await {
+    match membership_type_service.create(request).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
         Err(e) => partials::admin_alert("error", &format!("Error creating membership type: {}", e), false).into_response(),
     }
 }
 
 pub async fn admin_update_membership_type(
-    State(state): State<AppState>,
+    State(membership_type_service): State<Arc<MembershipTypeService>>,
     Extension(_current_user): Extension<CurrentUser>,
     Path(type_id): Path<String>,
     axum::Form(form): axum::Form<MembershipTypeForm>,
@@ -460,14 +480,14 @@ pub async fn admin_update_membership_type(
         billing_period: Some(form.billing_period),
     };
 
-    match state.service_context.membership_type_service.update(id, request).await {
+    match membership_type_service.update(id, request).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
         Err(e) => partials::admin_alert("error", &format!("Error updating membership type: {}", e), false).into_response(),
     }
 }
 
 pub async fn admin_delete_membership_type(
-    State(state): State<AppState>,
+    State(membership_type_service): State<Arc<MembershipTypeService>>,
     Extension(_current_user): Extension<CurrentUser>,
     Path(type_id): Path<String>,
 ) -> impl IntoResponse {
@@ -476,7 +496,7 @@ pub async fn admin_delete_membership_type(
         Err(_) => return partials::admin_alert("error", "Invalid type ID", false).into_response(),
     };
 
-    match state.service_context.membership_type_service.delete(id).await {
+    match membership_type_service.delete(id).await {
         Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
         Err(e) => partials::admin_alert("error", &format!("Error deleting membership type: {}", e), false).into_response(),
     }
@@ -487,11 +507,10 @@ pub async fn admin_delete_membership_type(
 // =============================================================================
 
 async fn fetch_basic_types(
-    state: &AppState,
-    kind: BasicTypeKind,
+    service: &BasicTypeService,
     include_inactive: bool,
 ) -> Vec<TypeInfo> {
-    service_for(state, kind)
+    service
         .list(include_inactive)
         .await
         .unwrap_or_default()
@@ -510,8 +529,11 @@ async fn fetch_basic_types(
         .collect()
 }
 
-async fn fetch_membership_types(state: &AppState, include_inactive: bool) -> Vec<MembershipTypeInfo> {
-    state.service_context.membership_type_service
+async fn fetch_membership_types(
+    service: &MembershipTypeService,
+    include_inactive: bool,
+) -> Vec<MembershipTypeInfo> {
+    service
         .list(include_inactive)
         .await
         .unwrap_or_default()

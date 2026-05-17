@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use askama::Template;
 use axum::{
     extract::{State, Query},
@@ -7,8 +9,14 @@ use axum::{
 };
 use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
+
 use crate::{
-    api::state::AppState,
+    api::state::LoginLimiter,
+    auth::{AuthService, CsrfService, PendingLoginService, TotpService},
+    config::Settings,
+    repository::MemberRepository,
+    service::audit_service::AuditService,
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -41,20 +49,21 @@ pub struct LoginResponse {
 
 // GET /login - redirect to dashboard if already logged in
 pub async fn login_page(
-    State(state): State<AppState>,
+    State(auth_service): State<Arc<AuthService>>,
+    State(member_repo): State<Arc<dyn MemberRepository>>,
     jar: CookieJar,
     Query(query): Query<LoginQuery>,
 ) -> Response {
     // Check if user already has a valid session
     if let Some(session_cookie) = jar.get("session") {
-        if let Ok(Some(session)) = state.service_context.auth_service
+        if let Ok(Some(session)) = auth_service
             .validate_session(session_cookie.value())
             .await
         {
             // Already logged in — send Expired members to the restoration
             // page directly, everyone else to the dashboard.
             use crate::domain::MemberStatus;
-            let dest = match state.service_context.member_repo
+            let dest = match member_repo
                 .find_by_id(session.member_id)
                 .await
                 .ok()
@@ -76,17 +85,29 @@ pub async fn login_page(
 }
 
 // POST /auth/login
+//
+// Login is intrinsically cross-cutting: rate-limit, member lookup, password
+// hash, TOTP enrollment check, pending-login mint, session create, all keyed
+// off cookie/secure flags from settings. Seven granular extractors would
+// add noise without clarifying intent, so per D3 of the routing-architecture
+// spec this handler keeps granular state for the load-bearing dependencies.
 pub async fn login_handler(
-    State(state): State<AppState>,
+    State(settings): State<Arc<Settings>>,
+    State(login_limiter): State<LoginLimiter>,
+    State(member_repo): State<Arc<dyn MemberRepository>>,
+    State(db_pool): State<SqlitePool>,
+    State(auth_service): State<Arc<AuthService>>,
+    State(totp_service): State<Arc<TotpService>>,
+    State(pending_login_service): State<Arc<PendingLoginService>>,
     headers: HeaderMap,
     Json(credentials): Json<LoginRequest>,
 ) -> Response {
     // Rate-limit login attempts per IP
     let ip = crate::api::state::client_ip(
         &headers,
-        state.settings.server.trust_forwarded_for(),
+        settings.server.trust_forwarded_for(),
     );
-    if !state.login_limiter.check_and_record(ip) {
+    if !login_limiter.0.check_and_record(ip) {
         return (StatusCode::TOO_MANY_REQUESTS, Json(LoginResponse {
             success: false,
             redirect: None,
@@ -95,14 +116,14 @@ pub async fn login_handler(
     }
 
     // Find member by username or email
-    let member = state.service_context.member_repo
+    let member = member_repo
         .find_by_username(&credentials.username)
         .await
         .ok()
         .flatten();
-    
+
     let member = if member.is_none() {
-        state.service_context.member_repo
+        member_repo
             .find_by_email(&credentials.username)
             .await
             .ok()
@@ -110,11 +131,11 @@ pub async fn login_handler(
     } else {
         member
     };
-    
+
     if let Some(member) = member {
         // Get password hash from database
         let password_hash = crate::auth::get_password_hash(
-            &state.service_context.db_pool,
+            &db_pool,
             &member.email
         ).await.ok().flatten();
 
@@ -161,13 +182,13 @@ pub async fn login_handler(
             // because doing it here would let an attacker who guessed
             // the password log the victim out at will — a denial-of-
             // service vector that 2FA otherwise prevents.
-            let totp_enabled = state.service_context.totp_service
+            let totp_enabled = totp_service
                 .is_enabled(member.id)
                 .await
                 .unwrap_or(false);
 
             if totp_enabled {
-                let pending_token = match state.service_context.pending_login_service
+                let pending_token = match pending_login_service
                     .create(member.id, credentials.remember_me.unwrap_or(false))
                     .await
                 {
@@ -182,7 +203,7 @@ pub async fn login_handler(
                 };
                 let pending_cookie = crate::auth::pending_login::create_cookie(
                     &pending_token,
-                    state.settings.server.cookies_are_secure(),
+                    settings.server.cookies_are_secure(),
                 );
                 // Preserve the originally-requested URL through the second
                 // step. Path-validated below in the /login/totp handler.
@@ -220,12 +241,12 @@ pub async fn login_handler(
             // creating the new one. Prevents session fixation: if an attacker
             // planted a cookie in the victim's browser, that token is now
             // dead.
-            let _ = state.service_context.auth_service
+            let _ = auth_service
                 .invalidate_all_sessions(member.id)
                 .await;
 
             // Create session
-            let (_session, token) = state.service_context.auth_service
+            let (_session, token) = auth_service
                 .create_session(
                     member.id,
                     if credentials.remember_me.unwrap_or(false) { 24 * 30 } else { 24 }
@@ -239,7 +260,7 @@ pub async fn login_handler(
             } else {
                 60 * 60 * 24 // 24 hours
             };
-            let secure_attr = if state.settings.server.cookies_are_secure() {
+            let secure_attr = if settings.server.cookies_are_secure() {
                 "; Secure"
             } else {
                 ""
@@ -316,18 +337,20 @@ pub async fn login_handler(
 // request, so the logout button works from any page. This handler
 // runs only after a valid token has been seen.
 pub async fn logout_handler(
-    State(state): State<AppState>,
+    State(auth_service): State<Arc<AuthService>>,
+    State(csrf_service): State<Arc<CsrfService>>,
+    State(audit_service): State<Arc<AuditService>>,
     jar: CookieJar,
 ) -> impl IntoResponse {
     if let Some(session_cookie) = jar.get("session") {
-        if let Ok(Some(session)) = state.service_context.auth_service
+        if let Ok(Some(session)) = auth_service
             .validate_session(session_cookie.value())
             .await
         {
-            let _ = state.service_context.csrf_service
+            let _ = csrf_service
                 .delete_token(&session.id)
                 .await;
-            state.service_context.audit_service.log(
+            audit_service.log(
                 Some(session.member_id),
                 "logout",
                 "session",
@@ -337,7 +360,7 @@ pub async fn logout_handler(
                 None,
             ).await;
         }
-        let _ = state.service_context.auth_service
+        let _ = auth_service
             .invalidate_session(session_cookie.value())
             .await;
     }
@@ -387,13 +410,14 @@ pub struct LoginTotpRequest {
 }
 
 pub async fn login_totp_page(
-    State(state): State<AppState>,
+    State(auth_service): State<Arc<AuthService>>,
+    State(pending_login_service): State<Arc<PendingLoginService>>,
     jar: CookieJar,
     Query(query): Query<LoginTotpQuery>,
 ) -> Response {
     // Already fully logged in? Don't make them go through the form again.
     if let Some(session_cookie) = jar.get("session") {
-        if state.service_context.auth_service
+        if auth_service
             .validate_session(session_cookie.value())
             .await
             .ok()
@@ -413,7 +437,7 @@ pub async fn login_totp_page(
     // Pending row must exist and be unexpired. If the cookie is stale,
     // wipe it and redirect — leaving it set keeps the page wedged on
     // refresh.
-    let pending = state.service_context.pending_login_service
+    let pending = pending_login_service
         .find(&pending_token)
         .await
         .ok()
@@ -436,8 +460,18 @@ pub async fn login_totp_page(
     HtmlTemplate(template).into_response()
 }
 
+// Second-step TOTP login is a small constellation of services — pending-login
+// lookup/consume, member lookup, TOTP verify, recovery-code consume against
+// the pool, session invalidate-all/create, and cookie attributes from
+// settings. Granular extraction per D1, with cookie/secure flags coming from
+// `settings`.
 pub async fn login_totp_handler(
-    State(state): State<AppState>,
+    State(settings): State<Arc<Settings>>,
+    State(db_pool): State<SqlitePool>,
+    State(auth_service): State<Arc<AuthService>>,
+    State(member_repo): State<Arc<dyn MemberRepository>>,
+    State(totp_service): State<Arc<TotpService>>,
+    State(pending_login_service): State<Arc<PendingLoginService>>,
     jar: CookieJar,
     Json(payload): Json<LoginTotpRequest>,
 ) -> Response {
@@ -453,7 +487,7 @@ pub async fn login_totp_handler(
         }
     };
 
-    let pending = match state.service_context.pending_login_service
+    let pending = match pending_login_service
         .find(&pending_token).await
     {
         Ok(Some(p)) => p,
@@ -471,7 +505,7 @@ pub async fn login_totp_handler(
         }
     };
 
-    let member = match state.service_context.member_repo
+    let member = match member_repo
         .find_by_id(pending.member_id).await
     {
         Ok(Some(m)) => m,
@@ -486,7 +520,7 @@ pub async fn login_totp_handler(
     // Try TOTP first; if that fails, try the recovery-code path. The
     // two formats don't overlap (6 digits vs hyphenated alphanumeric)
     // so a valid input only ever satisfies one branch.
-    let totp_ok = state.service_context.totp_service
+    let totp_ok = totp_service
         .verify_for_member(member.id, &payload.code, &member.email)
         .await
         .unwrap_or(false);
@@ -494,7 +528,7 @@ pub async fn login_totp_handler(
         false
     } else {
         match crate::auth::recovery_codes::try_consume(
-            &state.service_context.db_pool,
+            &db_pool,
             member.id,
             &payload.code,
         ).await {
@@ -515,7 +549,7 @@ pub async fn login_totp_handler(
 
     // Code accepted. Atomically consume the pending_login (so retries
     // can't issue a second session) and create the real one.
-    let consumed = state.service_context.pending_login_service
+    let consumed = pending_login_service
         .consume(&pending_token).await.ok().flatten();
     if consumed.is_none() {
         // Lost a race with another window or expiry — make them retry.
@@ -530,12 +564,12 @@ pub async fn login_totp_handler(
     // Now do the session-fixation sweep that we deliberately skipped
     // at the password-only step. Combined with the pending_login
     // consume, any half-finished login state for this member is gone.
-    let _ = state.service_context.auth_service
+    let _ = auth_service
         .invalidate_all_sessions(member.id).await;
-    let _ = state.service_context.pending_login_service
+    let _ = pending_login_service
         .delete_for_member(member.id).await;
 
-    let (_session, token) = match state.service_context.auth_service
+    let (_session, token) = match auth_service
         .create_session(
             member.id,
             if pending.remember_me { 24 * 30 } else { 24 },
@@ -558,7 +592,7 @@ pub async fn login_totp_handler(
     // future work.
     if used_recovery {
         let remaining = crate::auth::recovery_codes::remaining_count(
-            &state.service_context.db_pool, member.id,
+            &db_pool, member.id,
         ).await.unwrap_or(0);
         tracing::info!(
             "Member {} logged in via recovery code; {} codes remaining",
@@ -567,7 +601,7 @@ pub async fn login_totp_handler(
     }
 
     let max_age_secs = if pending.remember_me { 60 * 60 * 24 * 30 } else { 60 * 60 * 24 };
-    let secure_attr = if state.settings.server.cookies_are_secure() { "; Secure" } else { "" };
+    let secure_attr = if settings.server.cookies_are_secure() { "; Secure" } else { "" };
     let session_cookie_value = format!(
         "session={}; HttpOnly; SameSite=Lax; Path=/; Max-Age={}{}",
         token, max_age_secs, secure_attr,

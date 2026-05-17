@@ -1,4 +1,5 @@
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use askama::Template;
 use axum::{
@@ -8,10 +9,13 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
-    api::state::AppState,
     domain::{CreateMemberRequest, MemberStatus, UpdateMemberRequest},
+    repository::MemberRepository,
+    service::settings_service::SettingsService,
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -40,10 +44,10 @@ pub struct SetupResponse {
 
 // GET /setup
 pub async fn setup_page(
-    State(state): State<AppState>,
+    State(db_pool): State<SqlitePool>,
 ) -> Response {
     // Check if setup is already complete (admin exists)
-    let has_admin = check_admin_exists(&state).await;
+    let has_admin = check_admin_exists(&db_pool).await;
 
     if has_admin {
         // Redirect to login if setup already done
@@ -59,8 +63,16 @@ pub async fn setup_page(
 }
 
 // POST /setup
+//
+// Setup is intrinsically cross-cutting: it touches the lock, the
+// admin-observed flag, the member repo (create + update + set_admin),
+// the settings service, and the DB pool. Granular extraction per D1.
 pub async fn setup_handler(
-    State(state): State<AppState>,
+    State(setup_lock): State<Arc<AsyncMutex<()>>>,
+    State(admin_exists_observed): State<Arc<AtomicBool>>,
+    State(db_pool): State<SqlitePool>,
+    State(member_repo): State<Arc<dyn MemberRepository>>,
+    State(settings_service): State<Arc<SettingsService>>,
     Json(request): Json<SetupRequest>,
 ) -> Response {
     // Validate inputs before acquiring the setup lock so failed requests
@@ -92,11 +104,11 @@ pub async fn setup_handler(
     // Serialize first-admin creation. Without this, two concurrent setup
     // requests can both pass the "no admin exists" check and both create
     // admin accounts. The lock is held across check + create + promote.
-    let _setup_guard = state.setup_lock.lock().await;
+    let _setup_guard = setup_lock.lock().await;
 
     // Re-check inside the lock using the authoritative is_admin column
     // (not the legacy notes-LIKE heuristic).
-    if check_admin_exists(&state).await {
+    if check_admin_exists(&db_pool).await {
         return (StatusCode::BAD_REQUEST, Json(SetupResponse {
             success: false,
             redirect: None,
@@ -116,7 +128,7 @@ pub async fn setup_handler(
         membership_type_id: None,
     };
 
-    let member = match state.service_context.member_repo.create(create_request).await {
+    let member = match member_repo.create(create_request).await {
         Ok(m) => m,
         Err(e) => {
             tracing::error!("Failed to create admin user: {}", e);
@@ -135,12 +147,12 @@ pub async fn setup_handler(
         ..Default::default()
     };
 
-    if let Err(e) = state.service_context.member_repo.update(member.id, update_request).await {
+    if let Err(e) = member_repo.update(member.id, update_request).await {
         tracing::error!("Failed to activate admin user: {}", e);
     }
 
     // Set is_admin = 1 (the authoritative admin flag, used by middleware)
-    if let Err(e) = state.service_context.member_repo.set_admin(member.id, true).await {
+    if let Err(e) = member_repo.set_admin(member.id, true).await {
         tracing::error!("Failed to set is_admin on admin user: {}", e);
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(SetupResponse {
             success: false,
@@ -153,7 +165,7 @@ pub async fn setup_handler(
     // skips the redundant `SELECT 1 FROM members WHERE is_admin = 1`
     // round-trip. Without this, the middleware would learn this same
     // fact via its own DB query on the next call.
-    state.admin_exists_observed.store(true, Ordering::Relaxed);
+    admin_exists_observed.store(true, Ordering::Relaxed);
 
     // Persist the org name to the org.name setting so it shows up in
     // emails, banners, and the public site. Soft-fail: setup itself
@@ -165,7 +177,7 @@ pub async fn setup_handler(
             value: org_name.to_string(),
             reason: Some("Set during initial setup".to_string()),
         };
-        if let Err(e) = state.service_context.settings_service
+        if let Err(e) = settings_service
             .update_setting("org.name", update, member.id).await
         {
             tracing::warn!("Couldn't persist org.name during setup ({}); admin can edit later", e);
@@ -185,11 +197,11 @@ pub async fn setup_handler(
 
 /// Check if at least one admin user exists in the database.
 /// Uses the `is_admin` column — the authoritative source.
-async fn check_admin_exists(state: &AppState) -> bool {
+async fn check_admin_exists(db_pool: &SqlitePool) -> bool {
     let result: Result<Option<(i64,)>, _> = sqlx::query_as(
         "SELECT 1 as exists_flag FROM members WHERE is_admin = 1 LIMIT 1",
     )
-    .fetch_optional(&state.service_context.db_pool)
+    .fetch_optional(db_pool)
     .await;
 
     match result {

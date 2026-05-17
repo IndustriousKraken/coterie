@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use askama::Template;
 use axum::{
     extract::State,
@@ -5,12 +7,13 @@ use axum::{
     Extension,
 };
 use serde::Deserialize;
+use sqlx::SqlitePool;
 
 use crate::{
-    api::{
-        middleware::auth::{CurrentUser, SessionInfo},
-        state::AppState,
-    },
+    api::middleware::auth::{CurrentUser, SessionInfo},
+    auth::CsrfService,
+    repository::MemberRepository,
+    service::membership_type_service::MembershipTypeService,
     web::templates::{BaseContext, HtmlTemplate, filters},
 };
 use super::MemberInfo;
@@ -23,11 +26,12 @@ pub struct ProfileTemplate {
 }
 
 pub async fn profile_page(
-    State(state): State<AppState>,
+    State(membership_type_service): State<Arc<MembershipTypeService>>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let membership_type_name = state.service_context.membership_type_service
+    let membership_type_name = membership_type_service
         .get(current_user.member.membership_type_id).await
         .ok().flatten()
         .map(|mt| mt.name)
@@ -45,7 +49,7 @@ pub async fn profile_page(
     };
 
     let template = ProfileTemplate {
-        base: BaseContext::for_member(&state, &current_user, &session_info).await,
+        base: BaseContext::for_member(&csrf_service, &current_user, &session_info).await,
         member: member_info,
     };
 
@@ -60,7 +64,7 @@ pub struct UpdateProfileRequest {
 }
 
 pub async fn update_profile(
-    State(state): State<AppState>,
+    State(member_repo): State<Arc<dyn MemberRepository>>,
     Extension(current_user): Extension<CurrentUser>,
     axum::Form(form): axum::Form<UpdateProfileRequest>,
 ) -> axum::response::Response {
@@ -71,7 +75,7 @@ pub async fn update_profile(
         ..Default::default()
     };
 
-    match state.service_context.member_repo.update(current_user.member.id, update).await {
+    match member_repo.update(current_user.member.id, update).await {
         Ok(_) => {
             // Redirect back to profile with success message
             axum::response::Response::builder()
@@ -101,7 +105,8 @@ pub struct UpdatePasswordRequest {
 }
 
 pub async fn update_password(
-    State(state): State<AppState>,
+    State(db_pool): State<SqlitePool>,
+    State(member_repo): State<Arc<dyn MemberRepository>>,
     Extension(current_user): Extension<CurrentUser>,
     axum::Form(form): axum::Form<UpdatePasswordRequest>,
 ) -> impl IntoResponse {
@@ -124,7 +129,7 @@ pub async fn update_password(
 
     // Verify current password
     let password_hash = crate::auth::get_password_hash(
-        &state.service_context.db_pool,
+        &db_pool,
         &current_user.member.email
     ).await.ok().flatten();
 
@@ -163,7 +168,7 @@ pub async fn update_password(
     };
 
     // Update password in database
-    let result = state.service_context.member_repo
+    let result = member_repo
         .update_password_hash(current_user.member.id, &new_hash)
         .await;
 

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use askama::Template;
 use axum::{
     extract::State,
@@ -7,11 +9,11 @@ use axum::{
 use serde::Serialize;
 
 use crate::{
-    api::{
-        middleware::auth::{CurrentUser, SessionInfo},
-        state::AppState,
-    },
+    api::middleware::auth::{CurrentUser, SessionInfo},
+    auth::CsrfService,
     domain::AttendanceStatus,
+    repository::{EventRepository, PaymentRepository},
+    service::membership_type_service::MembershipTypeService,
     web::templates::{BaseContext, HtmlTemplate, filters},
 };
 use super::MemberInfo;
@@ -77,11 +79,12 @@ pub async fn dues_warning(
 }
 
 pub async fn member_dashboard(
-    State(state): State<AppState>,
+    State(membership_type_service): State<Arc<MembershipTypeService>>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    let membership_type_name = state.service_context.membership_type_service
+    let membership_type_name = membership_type_service
         .get(current_user.member.membership_type_id).await
         .ok().flatten()
         .map(|mt| mt.name)
@@ -99,7 +102,7 @@ pub async fn member_dashboard(
     };
 
     let template = MemberDashboardTemplate {
-        base: BaseContext::for_member(&state, &current_user, &session).await,
+        base: BaseContext::for_member(&csrf_service, &current_user, &session).await,
         member: member_info,
     };
 
@@ -119,13 +122,13 @@ struct EventSummary {
 }
 
 pub async fn upcoming_events(
-    State(state): State<AppState>,
+    State(event_repo): State<Arc<dyn EventRepository>>,
     Extension(current_user): Extension<CurrentUser>,
 ) -> impl IntoResponse {
     // Authenticated members see both public and members-only events;
     // visibility filtering is per-event inside the template, not at
     // the repo layer.
-    let events = state.service_context.event_repo
+    let events = event_repo
         .list_upcoming(5)
         .await
         .unwrap_or_default();
@@ -135,7 +138,7 @@ pub async fn upcoming_events(
     let mut event_summaries: Vec<EventSummary> = Vec::new();
 
     for event in events {
-        let attending = state.service_context.event_repo
+        let attending = event_repo
             .get_member_attendance_status(event.id, member_id)
             .await
             .ok()
@@ -208,11 +211,11 @@ struct PaymentSummary {
 }
 
 pub async fn recent_payments(
-    State(state): State<AppState>,
+    State(payment_repo): State<Arc<dyn PaymentRepository>>,
     Extension(current_user): Extension<CurrentUser>,
 ) -> impl IntoResponse {
     // Most-recent five payments for this member, regardless of status.
-    let mut payments = state.service_context.payment_repo
+    let mut payments = payment_repo
         .find_by_member(current_user.member.id)
         .await
         .unwrap_or_default();

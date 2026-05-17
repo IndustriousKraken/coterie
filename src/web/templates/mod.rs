@@ -10,10 +10,8 @@ use axum::{
     http::StatusCode,
 };
 
-use crate::api::{
-    middleware::auth::{CurrentUser, SessionInfo},
-    state::AppState,
-};
+use crate::api::middleware::auth::{CurrentUser, SessionInfo};
+use crate::auth::CsrfService;
 
 /// Context every page that extends `layouts/base.html` carries.
 ///
@@ -41,13 +39,11 @@ impl BaseContext {
     /// (including the global logout button in the layout) work from any
     /// page.
     pub async fn for_member(
-        state: &AppState,
+        csrf_service: &CsrfService,
         current_user: &CurrentUser,
         session: &SessionInfo,
     ) -> Self {
-        let csrf_token = state
-            .service_context
-            .csrf_service
+        let csrf_token = csrf_service
             .generate_token(&session.session_id)
             .await
             .unwrap_or_default();

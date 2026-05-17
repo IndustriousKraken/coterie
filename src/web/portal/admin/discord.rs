@@ -3,6 +3,8 @@
 //! button that hits Discord's API and shows the bot's identity (or
 //! the exact error) inline.
 
+use std::sync::Arc;
+
 use askama::Template;
 use axum::{
     extract::State,
@@ -13,12 +15,15 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    api::{
-        middleware::auth::{CurrentUser, SessionInfo},
-        state::AppState,
-    },
+    api::middleware::auth::{CurrentUser, SessionInfo},
+    auth::CsrfService,
+    config::Settings,
     integrations::{discord::DiscordIntegration, discord_client::DiscordClient},
-    service::settings_service::UpdateDiscordConfig,
+    repository::MemberRepository,
+    service::{
+        audit_service::AuditService,
+        settings_service::{SettingsService, UpdateDiscordConfig},
+    },
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -47,34 +52,36 @@ pub struct DiscordSettingsTemplate {
 }
 
 pub async fn discord_settings_page(
-    State(state): State<AppState>,
+    State(settings_service): State<Arc<SettingsService>>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> Response {
-    render_page(state, current_user, session_info, None, None).await
+    render_page(&settings_service, &csrf_service, &current_user, &session_info, None, None).await
 }
 
 async fn render_page(
-    state: AppState,
-    current_user: CurrentUser,
-    session_info: SessionInfo,
+    settings_service: &SettingsService,
+    csrf_service: &CsrfService,
+    current_user: &CurrentUser,
+    session_info: &SessionInfo,
     flash_success: Option<String>,
     flash_error: Option<String>,
 ) -> Response {
-    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
+    let base = BaseContext::for_member(csrf_service, current_user, session_info).await;
 
-    let token_undecryptable = state.service_context.settings_service
+    let token_undecryptable = settings_service
         .discord_token_undecryptable().await;
 
-    let cfg = state.service_context.settings_service
+    let cfg = settings_service
         .get_discord_config().await
         .unwrap_or_default();
 
-    let last_test_at = state.service_context.settings_service
+    let last_test_at = settings_service
         .get_value("discord.last_test_at").await.unwrap_or_default();
-    let last_test_ok = state.service_context.settings_service
+    let last_test_ok = settings_service
         .get_bool("discord.last_test_ok").await.unwrap_or(false);
-    let last_test_error = state.service_context.settings_service
+    let last_test_error = settings_service
         .get_value("discord.last_test_error").await.unwrap_or_default();
 
     let last_test_status = if last_test_at.is_empty() {
@@ -124,19 +131,21 @@ pub struct UpdateDiscordForm {
 }
 
 pub async fn update_discord_settings(
-    State(state): State<AppState>,
+    State(settings_service): State<Arc<SettingsService>>,
+    State(csrf_service): State<Arc<CsrfService>>,
+    State(audit_service): State<Arc<AuditService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
     Form(form): Form<UpdateDiscordForm>,
 ) -> Response {
     // Belt-and-suspenders CSRF (the middleware already validated).
-    let csrf_valid = state.service_context.csrf_service
+    let csrf_valid = csrf_service
         .validate_token(&session_info.session_id, &form.csrf_token)
         .await
         .unwrap_or(false);
     if !csrf_valid {
         return render_page(
-            state, current_user, session_info,
+            &settings_service, &csrf_service, &current_user, &session_info,
             None,
             Some("Invalid CSRF token. Reload and try again.".to_string()),
         ).await;
@@ -151,7 +160,7 @@ pub async fn update_discord_settings(
         ("Announcements channel ID", &form.announcements_channel_id),
         ("Admin alerts channel ID", &form.admin_alerts_channel_id),
     ]) {
-        return render_page(state, current_user, session_info, None, Some(err)).await;
+        return render_page(&settings_service, &csrf_service, &current_user, &session_info, None, Some(err)).await;
     }
 
     // Invite URL: if non-empty, must look like https://discord.gg/... or .com.
@@ -160,7 +169,7 @@ pub async fn update_discord_settings(
             || form.invite_url.starts_with("https://discord.com/invite/"))
     {
         return render_page(
-            state, current_user, session_info,
+            &settings_service, &csrf_service, &current_user, &session_info,
             None,
             Some("Invite URL should start with https://discord.gg/ or https://discord.com/invite/".to_string()),
         ).await;
@@ -184,26 +193,26 @@ pub async fn update_discord_settings(
         bot_token,
     };
 
-    match state.service_context.settings_service
+    match settings_service
         .update_discord_config(update, current_user.member.id)
         .await
     {
         Ok(_) => {
             // Audit but don't include bot token in the row (it'd be
             // plaintext from the form — defeats the encryption-at-rest).
-            state.service_context.audit_service.log(
+            audit_service.log(
                 Some(current_user.member.id),
                 "update_discord_config",
                 "settings",
                 "discord",
                 None, None, None,
             ).await;
-            render_page(state, current_user, session_info,
+            render_page(&settings_service, &csrf_service, &current_user, &session_info,
                 Some("Discord settings saved.".to_string()), None).await
         }
         Err(e) => {
             tracing::error!("update_discord_config failed: {}", e);
-            render_page(state, current_user, session_info,
+            render_page(&settings_service, &csrf_service, &current_user, &session_info,
                 None, Some(format!("Failed to save: {}", e))).await
         }
     }
@@ -226,11 +235,11 @@ fn first_invalid_snowflake(inputs: &[(&str, &str)]) -> Option<String> {
 /// Hit Discord's API with the current bot token and report what the
 /// connection looks like. Used by the "Test connection" button.
 pub async fn test_discord_connection(
-    State(state): State<AppState>,
+    State(settings_service): State<Arc<SettingsService>>,
     Extension(current_user): Extension<CurrentUser>,
 ) -> impl IntoResponse {
 
-    let cfg = match state.service_context.settings_service.get_discord_config().await {
+    let cfg = match settings_service.get_discord_config().await {
         Ok(c) => c,
         Err(e) => {
             // Most likely the token can't be decrypted (session_secret rotated).
@@ -254,7 +263,7 @@ pub async fn test_discord_connection(
         Err(e) => (false, e.to_string()),
     };
 
-    if let Err(e) = state.service_context.settings_service
+    if let Err(e) = settings_service
         .record_discord_test(ok, if ok { "" } else { &detail }, current_user.member.id)
         .await
     {
@@ -287,11 +296,14 @@ fn test_result_html(ok: bool, detail: &str) -> axum::response::Html<String> {
 /// Returns an HTMX-friendly fragment that replaces the test-result
 /// area with a summary.
 pub async fn reconcile_roles(
-    State(state): State<AppState>,
+    State(settings): State<Arc<Settings>>,
+    State(settings_service): State<Arc<SettingsService>>,
+    State(audit_service): State<Arc<AuditService>>,
+    State(member_repo): State<Arc<dyn MemberRepository>>,
     Extension(current_user): Extension<CurrentUser>,
 ) -> impl IntoResponse {
 
-    let cfg = match state.service_context.settings_service.get_discord_config().await {
+    let cfg = match settings_service.get_discord_config().await {
         Ok(c) => c,
         Err(e) => return test_result_html(false, &format!("Couldn't load Discord config: {}", e)),
     };
@@ -300,14 +312,14 @@ pub async fn reconcile_roles(
     }
 
     let integration = DiscordIntegration::new(
-        state.service_context.settings_service.clone(),
-        state.settings.server.base_url.clone(),
+        settings_service.clone(),
+        settings.server.base_url.clone(),
     );
     let summary = integration
-        .reconcile_all(state.service_context.member_repo.clone())
+        .reconcile_all(member_repo.clone())
         .await;
 
-    state.service_context.audit_service.log(
+    audit_service.log(
         Some(current_user.member.id),
         "discord_reconcile_manual",
         "settings",

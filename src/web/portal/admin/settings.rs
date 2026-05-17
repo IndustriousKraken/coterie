@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use askama::Template;
 use axum::{
     extract::State,
@@ -8,11 +10,10 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    api::{
-        middleware::auth::{CurrentUser, SessionInfo},
-        state::AppState,
-    },
+    api::middleware::auth::{CurrentUser, SessionInfo},
+    auth::CsrfService,
     domain::{AppSetting, UpdateSettingRequest},
+    service::{audit_service::AuditService, settings_service::SettingsService},
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -65,23 +66,32 @@ pub struct UpdateSettingForm {
 // =============================================================================
 
 pub async fn admin_settings_page(
-    State(state): State<AppState>,
+    State(settings_service): State<Arc<SettingsService>>,
+    State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
-    admin_settings_page_inner(state, current_user, session_info, None, None).await
+    admin_settings_page_inner(
+        &settings_service,
+        &csrf_service,
+        &current_user,
+        &session_info,
+        None,
+        None,
+    ).await
 }
 
 async fn admin_settings_page_inner(
-    state: AppState,
-    current_user: CurrentUser,
-    session_info: SessionInfo,
+    settings_service: &SettingsService,
+    csrf_service: &CsrfService,
+    current_user: &CurrentUser,
+    session_info: &SessionInfo,
     success_message: Option<String>,
     error_message: Option<String>,
 ) -> Response {
-    let base = BaseContext::for_member(&state, &current_user, &session_info).await;
+    let base = BaseContext::for_member(csrf_service, current_user, session_info).await;
 
-    let categories = fetch_settings_by_category(&state).await;
+    let categories = fetch_settings_by_category(settings_service).await;
 
     HtmlTemplate(AdminSettingsTemplate {
         base,
@@ -92,22 +102,25 @@ async fn admin_settings_page_inner(
 }
 
 pub async fn admin_update_setting(
-    State(state): State<AppState>,
+    State(settings_service): State<Arc<SettingsService>>,
+    State(csrf_service): State<Arc<CsrfService>>,
+    State(audit_service): State<Arc<AuditService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
     Form(form): Form<UpdateSettingForm>,
 ) -> impl IntoResponse {
     // Validate CSRF
-    let csrf_valid = state.service_context.csrf_service
+    let csrf_valid = csrf_service
         .validate_token(&session_info.session_id, &form.csrf_token)
         .await
         .unwrap_or(false);
 
     if !csrf_valid {
         return admin_settings_page_inner(
-            state,
-            current_user,
-            session_info,
+            &settings_service,
+            &csrf_service,
+            &current_user,
+            &session_info,
             None,
             Some("Invalid CSRF token. Please try again.".to_string()),
         ).await;
@@ -116,7 +129,7 @@ pub async fn admin_update_setting(
     // Capture the old value (before the update) so the audit-log diff
     // shows "was X, now Y". Sensitive settings get [REDACTED] on both
     // sides — we don't want SMTP passwords or similar in the log.
-    let prior = state.service_context.settings_service
+    let prior = settings_service
         .get_setting(&form.setting_key)
         .await
         .ok();
@@ -138,7 +151,7 @@ pub async fn admin_update_setting(
         reason: None,
     };
 
-    match state.service_context.settings_service
+    match settings_service
         .update_setting(&form.setting_key, update_request, current_user.member.id)
         .await
     {
@@ -148,7 +161,7 @@ pub async fn admin_update_setting(
             // the audit page can render the diff inline. (settings_audit
             // also keeps the same data for richer queries; this row is
             // for the unified view.)
-            state.service_context.audit_service.log(
+            audit_service.log(
                 Some(current_user.member.id),
                 "update_setting",
                 "setting",
@@ -158,9 +171,10 @@ pub async fn admin_update_setting(
                 None,
             ).await;
             admin_settings_page_inner(
-                state,
-                current_user,
-                session_info,
+                &settings_service,
+                &csrf_service,
+                &current_user,
+                &session_info,
                 Some(format!("Updated '{}'", display_name)),
                 None,
             ).await
@@ -168,9 +182,10 @@ pub async fn admin_update_setting(
         Err(e) => {
             tracing::error!("Failed to update setting {}: {:?}", form.setting_key, e);
             admin_settings_page_inner(
-                state,
-                current_user,
-                session_info,
+                &settings_service,
+                &csrf_service,
+                &current_user,
+                &session_info,
                 None,
                 Some(format!("Failed to update setting: {}", e)),
             ).await
@@ -182,8 +197,8 @@ pub async fn admin_update_setting(
 // Helper Functions
 // =============================================================================
 
-async fn fetch_settings_by_category(state: &AppState) -> Vec<SettingsCategoryInfo> {
-    let all_categories = state.service_context.settings_service
+async fn fetch_settings_by_category(settings_service: &SettingsService) -> Vec<SettingsCategoryInfo> {
+    let all_categories = settings_service
         .get_all_settings()
         .await
         .unwrap_or_default();
