@@ -15,6 +15,8 @@
 //! them and external callers shouldn't either (admin actions belong
 //! inside Coterie).
 
+use std::sync::Arc;
+
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -27,18 +29,24 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    api::{state::AppState, middleware::auth::CurrentUser},
+    api::middleware::auth::CurrentUser,
     domain::SavedCard,
     error::{AppError, Result},
+    integrations::IntegrationManager,
+    payments::{StripeClient, WebhookDispatcher},
+    repository::SavedCardRepository,
+    service::{audit_service::AuditService, billing_service::BillingService},
 };
 
 
 pub async fn stripe_webhook(
-    State(state): State<AppState>,
+    State(webhook_dispatcher): State<Option<Arc<WebhookDispatcher>>>,
+    State(billing_service): State<Arc<BillingService>>,
+    State(integration_manager): State<Arc<IntegrationManager>>,
     headers: HeaderMap,
     body: String,
 ) -> Result<impl IntoResponse> {
-    let dispatcher = match state.webhook_dispatcher.as_ref() {
+    let dispatcher = match webhook_dispatcher.as_ref() {
         Some(d) => d,
         None => return Ok(StatusCode::SERVICE_UNAVAILABLE),
     };
@@ -53,16 +61,16 @@ pub async fn stripe_webhook(
     // charges when an enrolled member pays early via Checkout (otherwise
     // the queued ScheduledPayment fires at the wrong time and double-
     // charges them).
-    let billing_service = state.billing_service.as_ref();
+    let billing_service_ref = billing_service.as_ref();
 
     // Handle the webhook. On signature failure, dispatch an admin
     // alert before returning the error so an operator gets notified
     // (in Discord, if configured) — bad signature usually means
     // either Stripe rotated the webhook secret and we still have
     // the old one, OR something is forging requests at our endpoint.
-    if let Err(e) = dispatcher.handle_webhook(&body, stripe_signature, &billing_service).await {
+    if let Err(e) = dispatcher.handle_webhook(&body, stripe_signature, &billing_service_ref).await {
         if matches!(&e, AppError::BadRequest(msg) if msg.contains("Invalid signature")) {
-            state.service_context.integration_manager
+            integration_manager
                 .handle_event(crate::integrations::IntegrationEvent::AdminAlert {
                     subject: "Stripe webhook signature failed".to_string(),
                     body: format!(
@@ -81,7 +89,7 @@ pub async fn stripe_webhook(
             // tied to the timestamp). Members would pay successfully
             // but dues / refunds wouldn't update on our side until
             // someone notices.
-            state.service_context.integration_manager
+            integration_manager
                 .handle_event(crate::integrations::IntegrationEvent::AdminAlert {
                     subject: "Stripe webhook rejected — clock drift".to_string(),
                     body: format!(
@@ -141,10 +149,10 @@ pub struct SaveCardRequest {
 
 /// Create a SetupIntent for adding a new payment method
 pub async fn create_setup_intent(
-    State(state): State<AppState>,
+    State(stripe_client): State<Option<Arc<StripeClient>>>,
     Extension(user): Extension<CurrentUser>,
 ) -> Result<Json<SetupIntentResponse>> {
-    let stripe_client = state.stripe_client.as_ref()
+    let stripe_client = stripe_client.as_ref()
         .ok_or_else(|| AppError::ServiceUnavailable("Payment processing not configured".to_string()))?;
 
     let client_secret = stripe_client.create_setup_intent(
@@ -158,11 +166,14 @@ pub async fn create_setup_intent(
 
 /// Save a payment method after SetupIntent succeeds
 pub async fn save_card(
-    State(state): State<AppState>,
+    State(stripe_client): State<Option<Arc<StripeClient>>>,
+    State(saved_card_repo): State<Arc<dyn SavedCardRepository>>,
+    State(billing_service): State<Arc<BillingService>>,
+    State(audit_service): State<Arc<AuditService>>,
     Extension(user): Extension<CurrentUser>,
     Json(request): Json<SaveCardRequest>,
 ) -> Result<(StatusCode, Json<SavedCardResponse>)> {
-    let stripe_client = state.stripe_client.as_ref()
+    let stripe_client = stripe_client.as_ref()
         .ok_or_else(|| AppError::ServiceUnavailable("Payment processing not configured".to_string()))?;
 
     // Get card details from Stripe
@@ -183,7 +194,7 @@ pub async fn save_card(
     }
 
     // Check if this is the first card (will be default)
-    let existing_cards = state.service_context.saved_card_repo.find_by_member(user.member.id).await?;
+    let existing_cards = saved_card_repo.find_by_member(user.member.id).await?;
     let is_default = existing_cards.is_empty() || request.set_as_default.unwrap_or(false);
 
     // Create the saved card record
@@ -200,11 +211,11 @@ pub async fn save_card(
         updated_at: Utc::now(),
     };
 
-    let card = state.service_context.saved_card_repo.create(card).await?;
+    let card = saved_card_repo.create(card).await?;
 
     // If this card is default and there were existing cards, clear other defaults
     if is_default && !existing_cards.is_empty() {
-        state.service_context.saved_card_repo.set_default(user.member.id, card.id).await?;
+        saved_card_repo.set_default(user.member.id, card.id).await?;
     }
 
     // If the member is on a Stripe-managed subscription, this card
@@ -213,9 +224,9 @@ pub async fn save_card(
     // save itself — the card IS in Coterie's table either way, and
     // an admin can finish the migration manually if needed.
     if user.member.billing_mode == crate::domain::BillingMode::StripeSubscription {
-        match state.billing_service.auto_renew.migrate_to_coterie_managed(user.member.id).await {
+        match billing_service.auto_renew.migrate_to_coterie_managed(user.member.id).await {
             Ok(true) => {
-                state.service_context.audit_service.log(
+                audit_service.log(
                     Some(user.member.id),
                     "migrate_stripe_to_coterie",
                     "member",

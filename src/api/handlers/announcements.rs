@@ -4,13 +4,15 @@
 //! published announcements, exposed to the public marketing site so it
 //! can show "N members-only posts available — sign up" CTAs.
 
+use std::sync::Arc;
+
 use axum::{extract::State, Json};
 use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::{
-    api::state::AppState,
     error::Result,
+    repository::AnnouncementRepository,
 };
 
 #[derive(Serialize, ToSchema)]
@@ -30,9 +32,9 @@ pub struct PrivateAnnouncementCount {
     ),
 )]
 pub async fn private_count(
-    State(state): State<AppState>,
+    State(announcement_repo): State<Arc<dyn AnnouncementRepository>>,
 ) -> Result<Json<PrivateAnnouncementCount>> {
-    let count = state.service_context.announcement_repo
+    let count = announcement_repo
         .count_private_published()
         .await?;
 

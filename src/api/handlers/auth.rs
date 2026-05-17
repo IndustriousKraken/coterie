@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -5,11 +7,14 @@ use axum::{
 };
 use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 
 use crate::{
-    api::state::{self, AppState},
-    auth,
+    api::state::{self, LoginLimiter},
+    auth::{self, AuthService},
+    config::Settings,
     error::{AppError, Result},
+    service::audit_service::AuditService,
 };
 
 #[derive(Debug, Deserialize)]
@@ -24,19 +29,22 @@ pub struct LoginResponse {
 }
 
 pub async fn login(
-    State(app): State<AppState>,
+    State(auth_service): State<Arc<AuthService>>,
+    State(settings): State<Arc<Settings>>,
+    State(login_limiter): State<LoginLimiter>,
+    State(db_pool): State<SqlitePool>,
     headers: HeaderMap,
     jar: CookieJar,
     Json(req): Json<LoginRequest>,
 ) -> Result<(CookieJar, Json<LoginResponse>)> {
     // Rate-limit login attempts per IP
-    let ip = state::client_ip(&headers, app.settings.server.trust_forwarded_for());
-    if !app.login_limiter.check_and_record(ip) {
+    let ip = state::client_ip(&headers, settings.server.trust_forwarded_for());
+    if !login_limiter.0.check_and_record(ip) {
         return Err(AppError::TooManyRequests);
     }
 
     // Get password hash from database
-    let password_hash = auth::get_password_hash(&app.service_context.db_pool, &req.email)
+    let password_hash = auth::get_password_hash(&db_pool, &req.email)
         .await?;
 
     let password_hash = match password_hash {
@@ -54,7 +62,7 @@ pub async fn login(
     }
 
     // Get member
-    let member = auth::get_member_by_email(&app.service_context.db_pool, &req.email)
+    let member = auth::get_member_by_email(&db_pool, &req.email)
         .await?
         .ok_or(AppError::Unauthorized)?;
 
@@ -69,20 +77,20 @@ pub async fn login(
     }
 
     // Invalidate pre-existing sessions to prevent session fixation.
-    let _ = app.service_context.auth_service
+    let _ = auth_service
         .invalidate_all_sessions(member.id)
         .await;
 
     // Create session (returns both session and token)
-    let (_session, token) = app.service_context.auth_service
+    let (_session, token) = auth_service
         .create_session(member.id, 24)
         .await?;
 
     // Create cookie with the actual token. The Secure flag tracks whether
     // the deployment is TLS-terminated; see ServerConfig::cookies_are_secure.
-    let cookie = app.service_context.auth_service
-        .create_session_cookie(&token, app.settings.server.cookies_are_secure());
-    
+    let cookie = auth_service
+        .create_session_cookie(&token, settings.server.cookies_are_secure());
+
     Ok((
         jar.add(cookie),
         Json(LoginResponse {
@@ -95,18 +103,20 @@ pub async fn login(
 /// `csrf_protect_unless_exempt`, so this handler runs only after a
 /// valid token has been seen. We don't re-validate here.
 pub async fn logout(
-    State(state): State<AppState>,
+    State(auth_service): State<Arc<AuthService>>,
+    State(csrf_service): State<Arc<auth::CsrfService>>,
+    State(audit_service): State<Arc<AuditService>>,
     jar: CookieJar,
 ) -> Result<(CookieJar, StatusCode)> {
     if let Some(session_cookie) = jar.get("session") {
-        if let Ok(Some(session)) = state.service_context.auth_service
+        if let Ok(Some(session)) = auth_service
             .validate_session(session_cookie.value())
             .await
         {
-            let _ = state.service_context.csrf_service
+            let _ = csrf_service
                 .delete_token(&session.id)
                 .await;
-            state.service_context.audit_service.log(
+            audit_service.log(
                 Some(session.member_id),
                 "logout",
                 "session",
@@ -116,7 +126,7 @@ pub async fn logout(
                 None,
             ).await;
         }
-        let _ = state.service_context.auth_service
+        let _ = auth_service
             .invalidate_session(session_cookie.value())
             .await;
     }
