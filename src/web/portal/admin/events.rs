@@ -15,9 +15,8 @@ use crate::{
     },
     auth::CsrfService,
     config::Settings,
-    integrations::IntegrationManager,
-    repository::{EventRepository, EventSeriesRepository},
-    service::{audit_service::AuditService, recurring_event_service::RecurringEventService},
+    repository::EventRepository,
+    service::event_admin_service::{CreateEventInput, EventAdminService, UpdateEventInput},
     web::portal::admin::partials,
     web::templates::{BaseContext, HtmlTemplate},
     web::uploads::save_uploaded_file,
@@ -363,14 +362,11 @@ pub async fn admin_new_event_page(
 
 pub async fn admin_create_event(
     State(settings): State<Arc<Settings>>,
-    State(event_repo): State<Arc<dyn EventRepository>>,
-    State(recurring_event_service): State<Arc<RecurringEventService>>,
-    State(audit_service): State<Arc<AuditService>>,
-    State(integration_manager): State<Arc<IntegrationManager>>,
+    State(event_admin_service): State<Arc<EventAdminService>>,
     Extension(current_user): Extension<CurrentUser>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    use crate::domain::{Event, EventType, EventVisibility};
+    use crate::domain::{EventType, EventVisibility};
 
     // Parse multipart form
     let mut title = String::new();
@@ -484,8 +480,28 @@ pub async fn admin_create_event(
             .map(|dt| chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc))
     };
 
-    let event = Event {
-        id: uuid::Uuid::new_v4(),
+    // Build the recurrence rule, if the admin asked for one. The
+    // service decides series-vs-single by inspecting input.recurrence.
+    let recurrence = if repeat_kind != "none" && !repeat_kind.is_empty() {
+        match build_recurrence(
+            &repeat_kind, repeat_interval, &repeat_weekdays,
+            repeat_day, &repeat_weekday, repeat_ordinal,
+        ) {
+            Ok(r) => Some(r),
+            Err(msg) => return partials::admin_alert(
+                "error", &format!("Invalid recurrence: {}", msg), false,
+            ).into_response(),
+        }
+    } else {
+        None
+    };
+    let recurrence_until = if recurrence.is_some() {
+        parse_until(&repeat_until_str)
+    } else {
+        None
+    };
+
+    let input = CreateEventInput {
         title,
         description,
         event_type,
@@ -497,79 +513,19 @@ pub async fn admin_create_event(
         max_attendees,
         rsvp_required,
         image_url,
-        created_by: current_user.member.id,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        series_id: None,
-        occurrence_index: None,
+        recurrence,
+        recurrence_until,
     };
 
-    // If the admin asked for a repeating series, route through the
-    // RecurringEventService so the series row + 12 months of
-    // occurrences materialize in one shot. Otherwise fall through to
-    // the original single-event create path.
-    if repeat_kind != "none" && !repeat_kind.is_empty() {
-        let rule = match build_recurrence(
-            &repeat_kind, repeat_interval, &repeat_weekdays,
-            repeat_day, &repeat_weekday, repeat_ordinal,
-        ) {
-            Ok(r) => r,
-            Err(msg) => return partials::admin_alert(
-                "error", &format!("Invalid recurrence: {}", msg), false,
-            ).into_response(),
-        };
-        let until = parse_until(&repeat_until_str);
-
-        match recurring_event_service
-            .create_series_with_initial_materialization(
-                rule, event, until, current_user.member.id,
-            ).await
-        {
-            Ok(created) => {
-                let first = &created.occurrences[0];
-                audit_service.log(
-                    Some(current_user.member.id),
-                    "create_event_series",
-                    "event_series",
-                    &created.series.id.to_string(),
-                    None,
-                    Some(&first.title),
-                    None,
-                ).await;
-                // Single Discord notification for the entire series —
-                // we treat it like one announcement, not 52.
-                integration_manager
-                    .handle_event(crate::integrations::IntegrationEvent::EventPublished(first.clone()))
-                    .await;
-                return axum::response::Redirect::to(
-                    &format!("/portal/admin/events/{}", first.id),
-                ).into_response();
-            }
-            Err(e) => return partials::admin_alert(
-                "error", &format!("Error creating recurring event: {}", e), false,
-            ).into_response(),
-        }
-    }
-
-    match event_repo.create(event).await {
+    match event_admin_service.create(current_user.member.id, input).await {
         Ok(created) => {
-            audit_service.log(
-                Some(current_user.member.id),
-                "create_event",
-                "event",
-                &created.id.to_string(),
-                None,
-                Some(&created.title),
-                None,
-            ).await;
-            // Notify integrations (Discord channel post if configured).
-            // Routing by visibility happens inside DiscordIntegration.
-            integration_manager
-                .handle_event(crate::integrations::IntegrationEvent::EventPublished(created.clone()))
-                .await;
-            axum::response::Redirect::to(&format!("/portal/admin/events/{}", created.id)).into_response()
+            axum::response::Redirect::to(
+                &format!("/portal/admin/events/{}", created.id),
+            ).into_response()
         }
-        Err(e) => partials::admin_alert("error", &format!("Error creating event: {}", e), false).into_response(),
+        Err(e) => partials::admin_alert(
+            "error", &format!("Error creating event: {}", e), false,
+        ).into_response(),
     }
 }
 
@@ -631,12 +587,12 @@ fn parse_until(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
 pub async fn admin_update_event(
     State(settings): State<Arc<Settings>>,
     State(event_repo): State<Arc<dyn EventRepository>>,
-    State(audit_service): State<Arc<AuditService>>,
+    State(event_admin_service): State<Arc<EventAdminService>>,
     Extension(current_user): Extension<CurrentUser>,
     Path(event_id): Path<String>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    use crate::domain::{Event, EventType, EventVisibility};
+    use crate::domain::{EventType, EventVisibility};
 
     let id = match uuid::Uuid::parse_str(&event_id) {
         Ok(id) => id,
@@ -750,8 +706,7 @@ pub async fn admin_update_event(
     // Old file should be dropped when we either replaced it or removed it.
     let image_to_delete = if image_url != old_image { old_image } else { None };
 
-    let updated_event = Event {
-        id,
+    let input = UpdateEventInput {
         title,
         description,
         event_type,
@@ -763,17 +718,15 @@ pub async fn admin_update_event(
         max_attendees,
         rsvp_required,
         image_url,
-        created_by: existing.created_by,
-        created_at: existing.created_at,
-        updated_at: chrono::Utc::now(),
-        series_id: existing.series_id,
-        occurrence_index: existing.occurrence_index,
     };
 
     // Always update THIS row first — the radio defaults to "this" and
     // even the "this and future" path expects this row to reflect the
     // form values too.
-    let updated = match event_repo.update(id, updated_event.clone()).await {
+    let updated = match event_admin_service
+        .update_one(current_user.member.id, id, input.clone())
+        .await
+    {
         Ok(u) => u,
         Err(e) => {
             return partials::admin_alert(
@@ -790,10 +743,10 @@ pub async fn admin_update_event(
     // mutable subset to every later occurrence in the series.
     let mut future_count = 0u64;
     if edit_scope == "this_and_future" {
-        if let Some(series_id) = updated_event.series_id {
-            match event_repo
-                .update_series_occurrences_from(
-                    series_id, updated_event.start_time, &updated_event,
+        if let Some(series_id) = existing.series_id {
+            match event_admin_service
+                .update_series_from(
+                    current_user.member.id, series_id, updated.start_time, input,
                 ).await
             {
                 Ok(n) => future_count = n,
@@ -803,16 +756,6 @@ pub async fn admin_update_event(
             }
         }
     }
-
-    audit_service.log(
-        Some(current_user.member.id),
-        if edit_scope == "this_and_future" { "update_event_series_future" } else { "update_event" },
-        "event",
-        &id.to_string(),
-        None,
-        Some(&updated.title),
-        None,
-    ).await;
 
     let msg = if edit_scope == "this_and_future" {
         format!("Event updated. {} future occurrences also updated.", future_count.saturating_sub(1))
@@ -825,8 +768,7 @@ pub async fn admin_update_event(
 pub async fn admin_delete_event(
     State(settings): State<Arc<Settings>>,
     State(event_repo): State<Arc<dyn EventRepository>>,
-    State(event_series_repo): State<Arc<dyn EventSeriesRepository>>,
-    State(audit_service): State<Arc<AuditService>>,
+    State(event_admin_service): State<Arc<EventAdminService>>,
     Extension(current_user): Extension<CurrentUser>,
     Path(event_id): Path<String>,
     axum::Form(form): axum::Form<DeleteEventForm>,
@@ -853,71 +795,42 @@ pub async fn admin_delete_event(
         let sid = series_id.unwrap();
 
         if scope == "end_series" {
-            // Hard-delete every occurrence after this one, then cap
-            // the series at this row's start_time so the horizon job
-            // doesn't re-materialize them.
-            let cutoff = event.start_time;
-            if let Err(e) = event_repo
-                .delete_series_occurrences_after(sid, cutoff).await
+            match event_admin_service
+                .end_series(current_user.member.id, sid, event.start_time)
+                .await
             {
-                return partials::admin_alert(
-                    "error", &format!("Error ending series: {}", e), false,
-                ).into_response();
+                Ok(_) => {
+                    return axum::response::Redirect::to(
+                        &format!("/portal/admin/events/{}", id),
+                    ).into_response();
+                }
+                Err(e) => {
+                    return partials::admin_alert(
+                        "error", &format!("Error ending series: {}", e), false,
+                    ).into_response();
+                }
             }
-            if let Err(e) = event_series_repo
-                .set_until_date(sid, cutoff).await
-            {
-                tracing::error!("set_until_date failed for series {}: {}", sid, e);
-            }
-            audit_service.log(
-                Some(current_user.member.id),
-                "end_event_series",
-                "event_series",
-                &sid.to_string(),
-                None,
-                Some(&event.title),
-                None,
-            ).await;
-            return axum::response::Redirect::to(
-                &format!("/portal/admin/events/{}", id),
-            ).into_response();
         }
 
-        // delete_series: nuke the series row and all occurrences
-        // (FK ON DELETE CASCADE drops every occurrence).
-        if let Err(e) = event_series_repo.delete(sid).await {
-            return partials::admin_alert(
-                "error", &format!("Error deleting series: {}", e), false,
-            ).into_response();
+        match event_admin_service.delete_series(current_user.member.id, sid).await {
+            Ok(_) => {
+                return axum::response::Redirect::to("/portal/admin/events").into_response();
+            }
+            Err(e) => {
+                return partials::admin_alert(
+                    "error", &format!("Error deleting series: {}", e), false,
+                ).into_response();
+            }
         }
-        audit_service.log(
-            Some(current_user.member.id),
-            "delete_event_series",
-            "event_series",
-            &sid.to_string(),
-            None,
-            Some(&event.title),
-            None,
-        ).await;
-        return axum::response::Redirect::to("/portal/admin/events").into_response();
     }
 
     // Default: delete this single row, scope=="this".
     let image_to_delete = event.image_url.clone();
-    match event_repo.delete(id).await {
+    match event_admin_service.delete_one(current_user.member.id, id).await {
         Ok(_) => {
             crate::web::uploads::delete_if_upload(
                 &settings.server.uploads_path(),
                 image_to_delete.as_deref(),
-            ).await;
-            audit_service.log(
-                Some(current_user.member.id),
-                "delete_event",
-                "event",
-                &id.to_string(),
-                None,
-                None,
-                None,
             ).await;
             axum::response::Redirect::to("/portal/admin/events").into_response()
         }
