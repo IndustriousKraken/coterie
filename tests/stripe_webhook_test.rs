@@ -25,8 +25,9 @@ use coterie::{
         fake_gateway::FakeStripeGateway, gateway::StripeGateway, StripeClient, WebhookDispatcher,
     },
     repository::{
-        MemberRepository, PaymentRepository, SqliteMemberRepository, SqlitePaymentRepository,
-        SqliteSavedCardRepository, SqliteScheduledPaymentRepository,
+        EventRepository, MemberRepository, PaymentRepository, SqliteEventRepository,
+        SqliteMemberRepository, SqlitePaymentRepository, SqliteSavedCardRepository,
+        SqliteScheduledPaymentRepository,
     },
     service::{
         billing_service::BillingService, membership_type_service::MembershipTypeService,
@@ -75,6 +76,8 @@ async fn build_harness() -> Harness {
         Arc::new(SqlitePaymentRepository::new(pool.clone()));
     let member_repo: Arc<dyn MemberRepository> =
         Arc::new(SqliteMemberRepository::new(pool.clone()));
+    let event_repo: Arc<dyn EventRepository> =
+        Arc::new(SqliteEventRepository::new(pool.clone()));
     let scheduled_repo = Arc::new(SqliteScheduledPaymentRepository::new(pool.clone()));
     let saved_card_repo = Arc::new(SqliteSavedCardRepository::new(pool.clone()));
     let mt_repo = Arc::new(coterie::repository::SqliteMembershipTypeRepository::new(pool.clone()));
@@ -110,6 +113,7 @@ async fn build_harness() -> Harness {
         payment_repo,
         saved_card_repo,
         member_repo,
+        event_repo,
         mt_service,
         settings,
         email_sender,

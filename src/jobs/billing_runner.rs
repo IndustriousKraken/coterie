@@ -69,5 +69,15 @@ impl BillingRunner {
                 tracing::error!("Dues reminder cycle error: {}", e);
             }
         }
+
+        // Send RSVP'd-event reminders (idempotent per RSVP via the
+        // event_attendance.reminder_sent_at flag, so hourly ticks are
+        // safe — only newly-eligible RSVPs get email).
+        match self.billing_service.notifications.send_event_reminders().await {
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!("Event reminder cycle error: {}", e);
+            }
+        }
     }
 }

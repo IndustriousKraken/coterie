@@ -8,7 +8,7 @@
 //! and AdminAlert plumbing has its own home, separate from the auto-
 //! renew lifecycle and expiration sweeps that share none of its deps.
 
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -17,13 +17,14 @@ use crate::{
     email::EmailSender,
     error::{AppError, Result},
     integrations::{IntegrationEvent, IntegrationManager},
-    repository::{MemberRepository, SavedCardRepository},
+    repository::{EventRepository, MemberRepository, SavedCardRepository},
     service::{membership_type_service::MembershipTypeService, settings_service::SettingsService},
 };
 
 pub struct Notifications {
     member_repo: Arc<dyn MemberRepository>,
     saved_card_repo: Arc<dyn SavedCardRepository>,
+    event_repo: Arc<dyn EventRepository>,
     membership_type_service: Arc<MembershipTypeService>,
     settings_service: Arc<SettingsService>,
     email_sender: Arc<dyn EmailSender>,
@@ -42,6 +43,7 @@ impl Notifications {
     pub fn new(
         member_repo: Arc<dyn MemberRepository>,
         saved_card_repo: Arc<dyn SavedCardRepository>,
+        event_repo: Arc<dyn EventRepository>,
         membership_type_service: Arc<MembershipTypeService>,
         settings_service: Arc<SettingsService>,
         email_sender: Arc<dyn EmailSender>,
@@ -52,6 +54,7 @@ impl Notifications {
         Self {
             member_repo,
             saved_card_repo,
+            event_repo,
             membership_type_service,
             settings_service,
             email_sender,
@@ -473,5 +476,117 @@ impl Notifications {
                 false
             }
         }
+    }
+
+    /// Send one reminder email per eligible RSVP. An RSVP is eligible
+    /// when its event starts in `(now, now + lead_hours]`, the
+    /// attendance row is `Registered`, and `reminder_sent_at` is NULL.
+    ///
+    /// The lead-hours window is read from the
+    /// `events.reminder_lead_hours` setting on every invocation
+    /// (default 24 on missing/unparseable), so operators can adjust
+    /// without restarting the runner.
+    ///
+    /// Concurrency-safe: each row is claimed via a conditional
+    /// UPDATE before the email is sent, so two ticks cannot both
+    /// email the same RSVP. A claimed-but-failed send stays stamped
+    /// — operators clear `reminder_sent_at` manually to retry. See
+    /// `event-reminders` spec D3 for the trade-off rationale.
+    pub async fn send_event_reminders(&self) -> Result<u32> {
+        use crate::email::{self, templates::{EventReminderHtml, EventReminderText}};
+
+        let lead_hours = self.settings_service
+            .get_number("events.reminder_lead_hours")
+            .await
+            .ok()
+            .filter(|n| *n > 0)
+            .unwrap_or(24);
+
+        let org_name = self.settings_service
+            .get_value("org.name").await
+            .ok().filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Coterie".to_string());
+
+        let now = Utc::now();
+        let until = now + Duration::hours(lead_hours);
+
+        let candidates = self.event_repo.list_pending_reminders(now, until).await?;
+        let total = candidates.len();
+        let mut sent = 0u32;
+
+        let base = self.base_url.trim_end_matches('/');
+
+        for row in candidates {
+            let claimed = match self.event_repo
+                .mark_reminder_sent(row.event_id, row.member_id).await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(
+                        "Event reminder claim failed for event {} member {}: {}",
+                        row.event_id, row.member_id, e
+                    );
+                    continue;
+                }
+            };
+            if !claimed {
+                // Lost the race — another tick already claimed this row.
+                continue;
+            }
+
+            let start_formatted = row.event_start.format("%B %d, %Y at %H:%M UTC").to_string();
+            let event_url = format!("{}/portal/events", base);
+            let location_ref = row.event_location.as_deref();
+
+            let html = EventReminderHtml {
+                full_name: &row.member_full_name,
+                org_name: &org_name,
+                event_title: &row.event_title,
+                event_start: &start_formatted,
+                event_location: location_ref,
+                event_url: &event_url,
+            };
+            let text = EventReminderText {
+                full_name: &row.member_full_name,
+                org_name: &org_name,
+                event_title: &row.event_title,
+                event_start: &start_formatted,
+                event_location: location_ref,
+                event_url: &event_url,
+            };
+            let subject = format!("Reminder: {} is coming up", row.event_title);
+
+            let message = match email::message_from_templates(
+                row.member_email.clone(), subject, &html, &text,
+            ) {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::error!(
+                        "Event reminder render failed for event {} member {}: {}",
+                        row.event_id, row.member_id, e
+                    );
+                    continue;
+                }
+            };
+
+            match self.email_sender.send(&message).await {
+                Ok(()) => sent += 1,
+                Err(e) => {
+                    tracing::warn!(
+                        "Event reminder send failed for {} (event {} member {}): {} \
+                         — row stays stamped per claim-then-send policy",
+                        row.member_email, row.event_id, row.member_id, e,
+                    );
+                }
+            }
+        }
+
+        if total > 0 {
+            tracing::info!(
+                "Event reminders: {} sent out of {} candidates (lead window: {} hours)",
+                sent, total, lead_hours,
+            );
+        }
+        Ok(sent)
     }
 }

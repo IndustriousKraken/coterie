@@ -20,7 +20,8 @@ use crate::{
     integrations::IntegrationManager,
     payments::StripeClient,
     repository::{
-        MemberRepository, PaymentRepository, SavedCardRepository, ScheduledPaymentRepository,
+        EventRepository, MemberRepository, PaymentRepository, SavedCardRepository,
+        ScheduledPaymentRepository,
     },
     service::{membership_type_service::MembershipTypeService, settings_service::SettingsService},
 };
@@ -40,6 +41,7 @@ impl BillingService {
         payment_repo: Arc<dyn PaymentRepository>,
         saved_card_repo: Arc<dyn SavedCardRepository>,
         member_repo: Arc<dyn MemberRepository>,
+        event_repo: Arc<dyn EventRepository>,
         membership_type_service: Arc<MembershipTypeService>,
         settings_service: Arc<SettingsService>,
         email_sender: Arc<dyn EmailSender>,
@@ -61,6 +63,7 @@ impl BillingService {
         let notifications = notifications::Notifications::new(
             member_repo.clone(),
             saved_card_repo,
+            event_repo,
             membership_type_service,
             settings_service.clone(),
             email_sender,
