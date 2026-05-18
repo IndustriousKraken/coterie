@@ -336,8 +336,38 @@ mod tests {
             SqliteMemberRepository,
         },
     };
-    use chrono::TimeZone;
+    use chrono::{Datelike, Duration, Weekday};
     use sqlx::{Executor, SqlitePool};
+
+    /// Next Saturday at 18:00 UTC strictly after `now + 1 day`. Used as
+    /// the start time for single-event tests that don't care about the
+    /// weekday — just need a valid future timestamp.
+    fn next_saturday_anchor() -> DateTime<Utc> {
+        let now = Utc::now();
+        let start = now + Duration::days(1);
+        let days_until_sat = (Weekday::Sat.num_days_from_monday() as i64
+            - start.weekday().num_days_from_monday() as i64).rem_euclid(7);
+        let date = start.date_naive() + Duration::days(days_until_sat);
+        date.and_hms_opt(18, 0, 0).unwrap().and_utc()
+    }
+
+    /// Next Tuesday at 18:00 UTC strictly after `now + 1 day`. Used as
+    /// the start time for recurring-Tuesday tests where the weekly rule
+    /// requires the anchor BE a Tuesday.
+    fn next_tuesday_anchor() -> DateTime<Utc> {
+        let now = Utc::now();
+        let start = now + Duration::days(1);
+        let days_until_tue = (Weekday::Tue.num_days_from_monday() as i64
+            - start.weekday().num_days_from_monday() as i64).rem_euclid(7);
+        let date = start.date_naive() + Duration::days(days_until_tue);
+        date.and_hms_opt(18, 0, 0).unwrap().and_utc()
+    }
+
+    /// `anchor` shifted forward by `weeks` whole weeks. Use to compute
+    /// `until_date` values relative to the test's local anchor.
+    fn weeks_after(anchor: DateTime<Utc>, weeks: i64) -> DateTime<Utc> {
+        anchor + Duration::weeks(weeks)
+    }
 
     async fn fresh_pool() -> SqlitePool {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -421,7 +451,7 @@ mod tests {
         let svc = make_service(pool.clone());
         let actor = make_actor(&pool).await;
 
-        let start = Utc.with_ymd_and_hms(2026, 8, 1, 18, 0, 0).unwrap();
+        let start = next_saturday_anchor();
         let input = single_input(start, EventVisibility::MembersOnly);
 
         let event = svc.create(actor, input).await.unwrap();
@@ -451,8 +481,8 @@ mod tests {
         let svc = make_service(pool.clone());
         let actor = make_actor(&pool).await;
 
-        let start = Utc.with_ymd_and_hms(2026, 8, 4, 18, 0, 0).unwrap(); // Tue
-        let until = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
+        let start = next_tuesday_anchor();
+        let until = weeks_after(start, 8);
         let mut input = single_input(start, EventVisibility::MembersOnly);
         input.recurrence = Some(Recurrence::WeeklyByDay {
             interval: 1,
@@ -497,7 +527,7 @@ mod tests {
         let svc = make_service(pool.clone());
         let actor = make_actor(&pool).await;
 
-        let start = Utc.with_ymd_and_hms(2026, 8, 1, 18, 0, 0).unwrap();
+        let start = next_saturday_anchor();
         let input = single_input(start, EventVisibility::AdminOnly);
 
         let event = svc.create(actor, input).await.unwrap();
@@ -527,7 +557,7 @@ mod tests {
         let svc = make_service(pool.clone());
         let actor = make_actor(&pool).await;
 
-        let start = Utc.with_ymd_and_hms(2026, 8, 1, 18, 0, 0).unwrap();
+        let start = next_saturday_anchor();
         let event = svc.create(
             actor, single_input(start, EventVisibility::MembersOnly),
         ).await.unwrap();
@@ -546,8 +576,8 @@ mod tests {
         let svc = make_service(pool.clone());
         let actor = make_actor(&pool).await;
 
-        let start = Utc.with_ymd_and_hms(2026, 8, 4, 18, 0, 0).unwrap();
-        let until = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
+        let start = next_tuesday_anchor();
+        let until = weeks_after(start, 8);
         let mut input = single_input(start, EventVisibility::MembersOnly);
         input.recurrence = Some(Recurrence::WeeklyByDay {
             interval: 1,
@@ -581,7 +611,7 @@ mod tests {
         let svc = make_service(pool.clone());
         let actor = make_actor(&pool).await;
 
-        let start = Utc.with_ymd_and_hms(2026, 8, 1, 18, 0, 0).unwrap();
+        let start = next_saturday_anchor();
         let event = svc.create(
             actor, single_input(start, EventVisibility::MembersOnly),
         ).await.unwrap();
@@ -597,8 +627,8 @@ mod tests {
         let svc = make_service(pool.clone());
         let actor = make_actor(&pool).await;
 
-        let start = Utc.with_ymd_and_hms(2026, 8, 4, 18, 0, 0).unwrap();
-        let until = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
+        let start = next_tuesday_anchor();
+        let until = weeks_after(start, 8);
         let mut input = single_input(start, EventVisibility::MembersOnly);
         input.recurrence = Some(Recurrence::WeeklyByDay {
             interval: 1,
@@ -646,8 +676,8 @@ mod tests {
         let svc = make_service(pool.clone());
         let actor = make_actor(&pool).await;
 
-        let start = Utc.with_ymd_and_hms(2026, 8, 4, 18, 0, 0).unwrap();
-        let until = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
+        let start = next_tuesday_anchor();
+        let until = weeks_after(start, 8);
         let mut input = single_input(start, EventVisibility::MembersOnly);
         input.recurrence = Some(Recurrence::WeeklyByDay {
             interval: 1,
