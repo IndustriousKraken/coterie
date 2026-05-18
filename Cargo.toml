@@ -108,6 +108,12 @@ utoipa-swagger-ui = { version = "8", features = ["axum"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde_urlencoded = "0.7.1"
 
+# CSV parser for admin bulk-import (member CSV upload). Read-only
+# parsing of operator-supplied files; writes use the manual `push_csv`
+# helper in `web::portal::admin::csv` to stay aligned with the export
+# capability's exact column emission rules.
+csv = "1.3"
+
 [features]
 # Exposes test-only helpers (FakeStripeGateway, etc.) so integration
 # tests in tests/ can construct fixtures. Enabled automatically for

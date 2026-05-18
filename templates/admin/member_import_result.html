@@ -1,0 +1,46 @@
+<div class="bg-white rounded-lg shadow-sm p-6">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-gray-900">Import result</h2>
+        <a href="/portal/admin/members"
+           class="text-sm text-blue-600 hover:underline">
+            Back to member list
+        </a>
+    </div>
+
+    <p class="text-sm text-gray-600 mb-4">
+        File: <code class="px-1 bg-gray-100 border rounded">{{ file_name }}</code>
+    </p>
+
+    <div class="grid grid-cols-2 gap-4 mb-4">
+        <div class="bg-green-50 border border-green-200 rounded p-3">
+            <div class="text-3xl font-bold text-green-700">{{ succeeded }}</div>
+            <div class="text-sm text-green-900">member{% if succeeded != 1 %}s{% endif %} imported</div>
+        </div>
+        <div class="{% if failed > 0 %}bg-red-50 border-red-200{% else %}bg-gray-50 border-gray-200{% endif %} border rounded p-3">
+            <div class="text-3xl font-bold {% if failed > 0 %}text-red-700{% else %}text-gray-500{% endif %}">{{ failed }}</div>
+            <div class="text-sm {% if failed > 0 %}text-red-900{% else %}text-gray-600{% endif %}">failed</div>
+        </div>
+    </div>
+
+    {% if failures.is_empty() %}
+        <p class="text-sm text-gray-700">
+            All rows imported successfully. The new members are in <strong>Pending</strong>
+            status with no password — they'll need to use password-reset to claim their
+            accounts before they can log in.
+        </p>
+    {% else %}
+        <h3 class="text-sm font-semibold text-gray-900 mb-2">Failures</h3>
+        <ul class="space-y-1 text-sm">
+            {% for f in failures %}
+            <li class="flex items-start gap-2 px-3 py-2 bg-red-50 border border-red-100 rounded">
+                <span class="font-mono text-xs text-red-700 mt-0.5">row {{ f.row_index }}</span>
+                {% if f.email.len() > 0 %}
+                <span class="text-gray-700">{{ f.email }}</span>
+                <span class="text-gray-400">—</span>
+                {% endif %}
+                <span class="text-red-800">{{ f.reason }}</span>
+            </li>
+            {% endfor %}
+        </ul>
+    {% endif %}
+</div>
