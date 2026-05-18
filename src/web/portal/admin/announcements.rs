@@ -15,9 +15,10 @@ use crate::{
     },
     auth::CsrfService,
     config::Settings,
-    integrations::IntegrationManager,
     repository::AnnouncementRepository,
-    service::audit_service::AuditService,
+    service::announcement_admin_service::{
+        AnnouncementAdminService, CreateAnnouncementInput, UpdateAnnouncementInput,
+    },
     web::portal::admin::partials,
     web::templates::{BaseContext, HtmlTemplate},
     web::uploads::save_uploaded_file,
@@ -357,13 +358,11 @@ pub async fn admin_new_announcement_page(
 
 pub async fn admin_create_announcement(
     State(settings): State<Arc<Settings>>,
-    State(announcement_repo): State<Arc<dyn AnnouncementRepository>>,
-    State(audit_service): State<Arc<AuditService>>,
-    State(integration_manager): State<Arc<IntegrationManager>>,
+    State(announcement_admin_service): State<Arc<AnnouncementAdminService>>,
     Extension(current_user): Extension<CurrentUser>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    use crate::domain::{Announcement, AnnouncementType};
+    use crate::domain::AnnouncementType;
 
     // Parse multipart form
     let mut title = String::new();
@@ -420,14 +419,7 @@ pub async fn admin_create_announcement(
         _ => AnnouncementType::General,
     };
 
-    let published_at = if publish_now {
-        Some(chrono::Utc::now())
-    } else {
-        None
-    };
-
-    let announcement = Announcement {
-        id: uuid::Uuid::new_v4(),
+    let input = CreateAnnouncementInput {
         title,
         content,
         announcement_type,
@@ -435,35 +427,11 @@ pub async fn admin_create_announcement(
         is_public,
         featured,
         image_url,
-        published_at,
-        created_by: current_user.member.id,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+        publish_now,
     };
 
-    match announcement_repo.create(announcement).await {
-        Ok(created) => {
-            audit_service.log(
-                Some(current_user.member.id),
-                "create_announcement",
-                "announcement",
-                &created.id.to_string(),
-                None,
-                Some(&created.title),
-                None,
-            ).await;
-            // If the admin chose "publish now", treat that the same as
-            // a separate publish action — fire the integration event so
-            // Discord posts to the announcements channel. Drafts (no
-            // published_at) don't fire; they'll fire when the admin
-            // hits the Publish button later.
-            if created.published_at.is_some() {
-                integration_manager
-                    .handle_event(crate::integrations::IntegrationEvent::AnnouncementPublished(created.clone()))
-                    .await;
-            }
-            axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", created.id)).into_response()
-        }
+    match announcement_admin_service.create(current_user.member.id, input).await {
+        Ok(created) => axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", created.id)).into_response(),
         Err(e) => partials::admin_alert("error", &format!("Error creating announcement: {}", e), false).into_response(),
     }
 }
@@ -471,12 +439,12 @@ pub async fn admin_create_announcement(
 pub async fn admin_update_announcement(
     State(settings): State<Arc<Settings>>,
     State(announcement_repo): State<Arc<dyn AnnouncementRepository>>,
-    State(audit_service): State<Arc<AuditService>>,
+    State(announcement_admin_service): State<Arc<AnnouncementAdminService>>,
     Extension(current_user): Extension<CurrentUser>,
     Path(announcement_id): Path<String>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    use crate::domain::{Announcement, AnnouncementType};
+    use crate::domain::AnnouncementType;
 
     let id = match uuid::Uuid::parse_str(&announcement_id) {
         Ok(id) => id,
@@ -556,8 +524,7 @@ pub async fn admin_update_announcement(
     };
     let image_to_delete = if image_url != old_image { old_image } else { None };
 
-    let updated_announcement = Announcement {
-        id,
+    let input = UpdateAnnouncementInput {
         title,
         content,
         announcement_type,
@@ -565,26 +532,13 @@ pub async fn admin_update_announcement(
         is_public,
         featured,
         image_url,
-        published_at: existing.published_at,
-        created_by: existing.created_by,
-        created_at: existing.created_at,
-        updated_at: chrono::Utc::now(),
     };
 
-    match announcement_repo.update(id, updated_announcement).await {
-        Ok(updated) => {
+    match announcement_admin_service.update(current_user.member.id, id, input).await {
+        Ok(_) => {
             crate::web::uploads::delete_if_upload(
                 &settings.server.uploads_path(),
                 image_to_delete.as_deref(),
-            ).await;
-            audit_service.log(
-                Some(current_user.member.id),
-                "update_announcement",
-                "announcement",
-                &id.to_string(),
-                None,
-                Some(&updated.title),
-                None,
             ).await;
             axum::response::Html(r#"<div class="px-4 py-3 bg-green-100 text-green-800 rounded-md text-sm">Announcement updated successfully</div>"#.to_string()).into_response()
         }
@@ -597,7 +551,7 @@ pub async fn admin_update_announcement(
 pub async fn admin_delete_announcement(
     State(settings): State<Arc<Settings>>,
     State(announcement_repo): State<Arc<dyn AnnouncementRepository>>,
-    State(audit_service): State<Arc<AuditService>>,
+    State(announcement_admin_service): State<Arc<AnnouncementAdminService>>,
     Extension(current_user): Extension<CurrentUser>,
     Path(announcement_id): Path<String>,
 ) -> impl IntoResponse {
@@ -610,20 +564,11 @@ pub async fn admin_delete_announcement(
         .find_by_id(id).await.ok().flatten()
         .and_then(|a| a.image_url);
 
-    match announcement_repo.delete(id).await {
+    match announcement_admin_service.delete(current_user.member.id, id).await {
         Ok(_) => {
             crate::web::uploads::delete_if_upload(
                 &settings.server.uploads_path(),
                 image_to_delete.as_deref(),
-            ).await;
-            audit_service.log(
-                Some(current_user.member.id),
-                "delete_announcement",
-                "announcement",
-                &id.to_string(),
-                None,
-                None,
-                None,
             ).await;
             axum::response::Redirect::to("/portal/admin/announcements").into_response()
         }
@@ -632,9 +577,8 @@ pub async fn admin_delete_announcement(
 }
 
 pub async fn admin_publish_announcement(
-    State(announcement_repo): State<Arc<dyn AnnouncementRepository>>,
-    State(integration_manager): State<Arc<IntegrationManager>>,
-    Extension(_current_user): Extension<CurrentUser>,
+    State(announcement_admin_service): State<Arc<AnnouncementAdminService>>,
+    Extension(current_user): Extension<CurrentUser>,
     Path(announcement_id): Path<String>,
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&announcement_id) {
@@ -642,37 +586,15 @@ pub async fn admin_publish_announcement(
         Err(_) => return partials::admin_alert("error", "Invalid announcement ID", false).into_response(),
     };
 
-    let existing = match announcement_repo.find_by_id(id).await {
-        Ok(Some(a)) => a,
-        Ok(None) => return partials::admin_alert("error", "Announcement not found", false).into_response(),
-        Err(_) => return partials::admin_alert("error", "Error loading announcement", false).into_response(),
-    };
-
-    let was_already_published = existing.published_at.is_some();
-    let mut updated = existing;
-    updated.published_at = Some(chrono::Utc::now());
-    updated.updated_at = chrono::Utc::now();
-
-    match announcement_repo.update(id, updated).await {
-        Ok(saved) => {
-            // Only fire the integration event on the transition from
-            // unpublished → published, not on re-publishing an already-
-            // public announcement (which can happen if an admin clicks
-            // Publish twice for some reason).
-            if !was_already_published {
-                integration_manager
-                    .handle_event(crate::integrations::IntegrationEvent::AnnouncementPublished(saved))
-                    .await;
-            }
-            axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", id)).into_response()
-        }
+    match announcement_admin_service.publish(current_user.member.id, id).await {
+        Ok(_) => axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", id)).into_response(),
         Err(e) => partials::admin_alert("error", &format!("Error publishing announcement: {}", e), false).into_response(),
     }
 }
 
 pub async fn admin_unpublish_announcement(
-    State(announcement_repo): State<Arc<dyn AnnouncementRepository>>,
-    Extension(_current_user): Extension<CurrentUser>,
+    State(announcement_admin_service): State<Arc<AnnouncementAdminService>>,
+    Extension(current_user): Extension<CurrentUser>,
     Path(announcement_id): Path<String>,
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&announcement_id) {
@@ -680,17 +602,7 @@ pub async fn admin_unpublish_announcement(
         Err(_) => return partials::admin_alert("error", "Invalid announcement ID", false).into_response(),
     };
 
-    let existing = match announcement_repo.find_by_id(id).await {
-        Ok(Some(a)) => a,
-        Ok(None) => return partials::admin_alert("error", "Announcement not found", false).into_response(),
-        Err(_) => return partials::admin_alert("error", "Error loading announcement", false).into_response(),
-    };
-
-    let mut updated = existing;
-    updated.published_at = None;
-    updated.updated_at = chrono::Utc::now();
-
-    match announcement_repo.update(id, updated).await {
+    match announcement_admin_service.unpublish(current_user.member.id, id).await {
         Ok(_) => axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", id)).into_response(),
         Err(e) => partials::admin_alert("error", &format!("Error unpublishing announcement: {}", e), false).into_response(),
     }

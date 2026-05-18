@@ -22,11 +22,12 @@ use crate::{
         ProcessedEventsRepository, SavedCardRepository, ScheduledPaymentRepository,
     },
     service::{
-        audit_service::AuditService, basic_type_service::BasicTypeService,
-        billing_service::BillingService, event_admin_service::EventAdminService,
-        member_service::MemberService, membership_type_service::MembershipTypeService,
-        payment_service::PaymentService, recurring_event_service::RecurringEventService,
-        settings_service::SettingsService, ServiceContext,
+        announcement_admin_service::AnnouncementAdminService, audit_service::AuditService,
+        basic_type_service::BasicTypeService, billing_service::BillingService,
+        event_admin_service::EventAdminService, member_service::MemberService,
+        membership_type_service::MembershipTypeService, payment_service::PaymentService,
+        recurring_event_service::RecurringEventService, settings_service::SettingsService,
+        ServiceContext,
     },
 };
 
@@ -350,6 +351,12 @@ impl FromRef<AppState> for Arc<MemberService> {
 impl FromRef<AppState> for Arc<EventAdminService> {
     fn from_ref(state: &AppState) -> Self {
         state.service_context.event_admin_service.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<AnnouncementAdminService> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.announcement_admin_service.clone()
     }
 }
 
