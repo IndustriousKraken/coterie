@@ -18,7 +18,7 @@ use crate::{
     api::middleware::auth::{CurrentUser, SessionInfo},
     auth::CsrfService,
     service::audit_service::AuditService,
-    web::templates::{BaseContext, HtmlTemplate},
+    web::{portal::admin::csv::push_csv, templates::{BaseContext, HtmlTemplate}},
 };
 
 #[derive(Template)]
@@ -219,21 +219,6 @@ pub async fn audit_log_export(
         ],
         out,
     ).into_response()
-}
-
-/// Emit a single CSV field. We always quote — simpler than deciding
-/// when we need to — and escape embedded quotes per RFC 4180.
-fn push_csv(out: &mut String, value: &str) {
-    out.push('"');
-    for c in value.chars() {
-        if c == '"' {
-            out.push('"');
-            out.push('"');
-        } else {
-            out.push(c);
-        }
-    }
-    out.push('"');
 }
 
 fn pretty_action(action: &str) -> String {
