@@ -14,6 +14,7 @@ pub struct Announcement {
     pub featured: bool,
     pub image_url: Option<String>,
     pub published_at: Option<DateTime<Utc>>,
+    pub scheduled_publish_at: Option<DateTime<Utc>>,
     pub created_by: Uuid,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

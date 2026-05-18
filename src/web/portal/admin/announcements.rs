@@ -24,6 +24,24 @@ use crate::{
     web::uploads::save_uploaded_file,
 };
 
+/// Parse the form's `scheduled_publish_at` value (HTML `datetime-local`,
+/// `YYYY-MM-DDTHH:MM` or with seconds) into an Option<DateTime<Utc>>.
+/// Empty input or unparseable input → None (we treat invalid as "not
+/// scheduled" rather than rejecting the whole form for v1 — form-side
+/// validation can be tightened later).
+fn parse_scheduled_publish_at(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // datetime-local typically submits `YYYY-MM-DDTHH:MM`; some browsers
+    // emit `YYYY-MM-DDTHH:MM:SS`. Try both.
+    let parsed = chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%dT%H:%M")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%dT%H:%M:%S"))
+        .ok()?;
+    Some(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(parsed, chrono::Utc))
+}
+
 /// Simple struct for type options in dropdowns
 #[derive(Clone)]
 pub struct TypeOption {
@@ -263,6 +281,11 @@ pub struct AdminAnnouncementDetail {
     pub is_published: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// Form-input value for the `datetime-local` field — empty string
+    /// if not scheduled, else `YYYY-MM-DDTHH:MM` (UTC).
+    pub scheduled_publish_at_input: String,
+    /// Human-friendly display for the sidebar — None if not scheduled.
+    pub scheduled_publish_at_display: Option<String>,
 }
 
 pub async fn admin_announcement_detail_page(
@@ -286,6 +309,12 @@ pub async fn admin_announcement_detail_page(
 
     let base = BaseContext::for_member(&csrf_service, &current_user, &session_info).await;
 
+    let scheduled_publish_at_input = announcement.scheduled_publish_at
+        .map(|dt| dt.format("%Y-%m-%dT%H:%M").to_string())
+        .unwrap_or_default();
+    let scheduled_publish_at_display = announcement.scheduled_publish_at
+        .map(|dt| dt.format("%b %d, %Y %H:%M UTC").to_string());
+
     let detail = AdminAnnouncementDetail {
         id: announcement.id.to_string(),
         title: announcement.title,
@@ -298,6 +327,8 @@ pub async fn admin_announcement_detail_page(
         is_published: announcement.published_at.is_some(),
         created_at: announcement.created_at.format("%b %d, %Y %H:%M").to_string(),
         updated_at: announcement.updated_at.format("%b %d, %Y %H:%M").to_string(),
+        scheduled_publish_at_input,
+        scheduled_publish_at_display,
     };
 
     // Fetch active announcement types for the dropdown
@@ -372,6 +403,7 @@ pub async fn admin_create_announcement(
     let mut featured = false;
     let mut publish_now = false;
     let mut image_url: Option<String> = None;
+    let mut scheduled_publish_at_str = String::new();
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
@@ -392,6 +424,9 @@ pub async fn admin_create_announcement(
             "publish_now" => {
                 publish_now = true;
                 let _ = field.text().await;
+            }
+            "scheduled_publish_at" => {
+                scheduled_publish_at_str = field.text().await.unwrap_or_default();
             }
             "image" => {
                 let filename = field.file_name().unwrap_or("").to_string();
@@ -419,6 +454,8 @@ pub async fn admin_create_announcement(
         _ => AnnouncementType::General,
     };
 
+    let scheduled_publish_at = parse_scheduled_publish_at(&scheduled_publish_at_str);
+
     let input = CreateAnnouncementInput {
         title,
         content,
@@ -428,6 +465,7 @@ pub async fn admin_create_announcement(
         featured,
         image_url,
         publish_now,
+        scheduled_publish_at,
     };
 
     match announcement_admin_service.create(current_user.member.id, input).await {
@@ -465,6 +503,7 @@ pub async fn admin_update_announcement(
     let mut featured = false;
     let mut new_image_url: Option<String> = None;
     let mut remove_image = false;
+    let mut scheduled_publish_at_str = String::new();
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
@@ -485,6 +524,9 @@ pub async fn admin_update_announcement(
             "remove_image" => {
                 remove_image = true;
                 let _ = field.text().await;
+            }
+            "scheduled_publish_at" => {
+                scheduled_publish_at_str = field.text().await.unwrap_or_default();
             }
             "image" => {
                 let filename = field.file_name().unwrap_or("").to_string();
@@ -524,6 +566,8 @@ pub async fn admin_update_announcement(
     };
     let image_to_delete = if image_url != old_image { old_image } else { None };
 
+    let scheduled_publish_at = parse_scheduled_publish_at(&scheduled_publish_at_str);
+
     let input = UpdateAnnouncementInput {
         title,
         content,
@@ -532,6 +576,7 @@ pub async fn admin_update_announcement(
         is_public,
         featured,
         image_url,
+        scheduled_publish_at,
     };
 
     match announcement_admin_service.update(current_user.member.id, id, input).await {

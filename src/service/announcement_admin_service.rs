@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::{
@@ -36,6 +36,10 @@ pub struct CreateAnnouncementInput {
     pub featured: bool,
     pub image_url: Option<String>,
     pub publish_now: bool,
+    /// Optional future-publish time. Ignored when `publish_now` is
+    /// true (publish-now wins). A Draft row with this set is what the
+    /// background runner picks up at-or-after the scheduled time.
+    pub scheduled_publish_at: Option<DateTime<Utc>>,
 }
 
 /// Typed input for updating an announcement. Carries the editable
@@ -50,6 +54,9 @@ pub struct UpdateAnnouncementInput {
     pub is_public: bool,
     pub featured: bool,
     pub image_url: Option<String>,
+    /// Optional future-publish time. Persisted as-is on the row;
+    /// empty/None clears any prior schedule.
+    pub scheduled_publish_at: Option<DateTime<Utc>>,
 }
 
 pub struct AnnouncementAdminService {
@@ -82,6 +89,13 @@ impl AnnouncementAdminService {
     ) -> Result<Announcement> {
         let now = Utc::now();
         let published_at = if input.publish_now { Some(now) } else { None };
+        // publish-now wins per spec: drop any scheduled_publish_at the
+        // form may have set if the admin also ticked "publish now".
+        let scheduled_publish_at = if input.publish_now {
+            None
+        } else {
+            input.scheduled_publish_at
+        };
 
         let announcement = Announcement {
             id: Uuid::new_v4(),
@@ -93,6 +107,7 @@ impl AnnouncementAdminService {
             featured: input.featured,
             image_url: input.image_url,
             published_at,
+            scheduled_publish_at,
             created_by: actor_id,
             created_at: now,
             updated_at: now,
@@ -146,6 +161,7 @@ impl AnnouncementAdminService {
             featured: input.featured,
             image_url: input.image_url,
             published_at: existing.published_at,
+            scheduled_publish_at: input.scheduled_publish_at,
             created_by: existing.created_by,
             created_at: existing.created_at,
             updated_at: Utc::now(),
@@ -220,6 +236,58 @@ impl AnnouncementAdminService {
         }
 
         Ok(saved)
+    }
+
+    /// Runner entry point. Finds Draft announcements whose
+    /// `scheduled_publish_at <= now`, atomically flips each to
+    /// Published (via the repo's conditional UPDATE), and on each
+    /// successful claim writes an `auto_publish_announcement` audit
+    /// row (actor_id = None — system action) and dispatches
+    /// `IntegrationEvent::AnnouncementPublished`. Returns the number
+    /// of rows published. Errors on individual rows are logged but do
+    /// not stop the loop.
+    pub async fn publish_scheduled(&self) -> Result<u32> {
+        let now = Utc::now();
+        let candidates = self.announcement_repo.list_due_for_publish(now).await?;
+        let mut sent: u32 = 0;
+        for candidate in candidates {
+            match self.announcement_repo.mark_published_now(candidate.id).await {
+                Ok(true) => {
+                    // Re-fetch so the row carries the updated
+                    // `published_at` and the cleared schedule. This
+                    // costs one extra read per row but keeps the
+                    // integration event payload accurate.
+                    let published = match self.announcement_repo.find_by_id(candidate.id).await {
+                        Ok(Some(a)) => a,
+                        Ok(None) => continue,
+                        Err(e) => {
+                            tracing::error!("publish_scheduled: refetch failed for {}: {}", candidate.id, e);
+                            continue;
+                        }
+                    };
+                    self.audit_service.log(
+                        None,
+                        "auto_publish_announcement",
+                        "announcement",
+                        &published.id.to_string(),
+                        None,
+                        Some(&published.title),
+                        None,
+                    ).await;
+                    self.integration_manager
+                        .handle_event(IntegrationEvent::AnnouncementPublished(published))
+                        .await;
+                    sent += 1;
+                }
+                Ok(false) => {
+                    // Lost the race or status changed under us; skip.
+                }
+                Err(e) => {
+                    tracing::error!("publish_scheduled: mark_published_now failed for {}: {}", candidate.id, e);
+                }
+            }
+        }
+        Ok(sent)
     }
 
     /// Unpublish a Published announcement (back to Draft). Audits
@@ -322,6 +390,7 @@ mod tests {
             featured: false,
             image_url: None,
             publish_now,
+            scheduled_publish_at: None,
         }
     }
 
@@ -383,6 +452,7 @@ mod tests {
             is_public: true,
             featured: true,
             image_url: None,
+            scheduled_publish_at: None,
         };
 
         let result = svc.update(actor, announcement.id, input).await.unwrap();

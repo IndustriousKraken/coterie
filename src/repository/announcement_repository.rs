@@ -18,6 +18,13 @@ pub trait AnnouncementRepository: Send + Sync {
     async fn count_private_published(&self) -> Result<i64>;
     async fn update(&self, id: Uuid, announcement: Announcement) -> Result<Announcement>;
     async fn delete(&self, id: Uuid) -> Result<()>;
+    /// Draft rows whose `scheduled_publish_at <= now`. Used by the
+    /// background runner to find rows ready to auto-publish.
+    async fn list_due_for_publish(&self, now: DateTime<Utc>) -> Result<Vec<Announcement>>;
+    /// Atomic Draft→Published transition. Returns `true` iff a row
+    /// was claimed (status was still Draft); `false` if someone else
+    /// already flipped it. Used by the runner to avoid double-dispatch.
+    async fn mark_published_now(&self, id: Uuid) -> Result<bool>;
 }
 
 #[derive(FromRow)]
@@ -31,6 +38,7 @@ struct AnnouncementRow {
     featured: i32,
     image_url: Option<String>,
     published_at: Option<NaiveDateTime>,
+    scheduled_publish_at: Option<NaiveDateTime>,
     created_by: String,
     created_at: NaiveDateTime,
     updated_at: NaiveDateTime,
@@ -62,6 +70,7 @@ impl SqliteAnnouncementRepository {
             featured: row.featured != 0,
             image_url: row.image_url,
             published_at: row.published_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
+            scheduled_publish_at: row.scheduled_publish_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
             created_by: Uuid::parse_str(&row.created_by).map_err(|e| AppError::Internal(e.to_string()))?,
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
             updated_at: DateTime::from_naive_utc_and_offset(row.updated_at, Utc),
@@ -99,6 +108,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         let is_public_int = if announcement.is_public { 1i32 } else { 0i32 };
         let featured_int = if announcement.featured { 1i32 } else { 0i32 };
         let published_at_naive = announcement.published_at.map(|dt| dt.naive_utc());
+        let scheduled_publish_at_naive = announcement.scheduled_publish_at.map(|dt| dt.naive_utc());
         let created_by_str = announcement.created_by.to_string();
         let now = Utc::now().naive_utc();
 
@@ -106,8 +116,8 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
             r#"
             INSERT INTO announcements (
                 id, title, content, announcement_type, announcement_type_id, is_public, featured,
-                image_url, published_at, created_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                image_url, published_at, scheduled_publish_at, created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#
         )
         .bind(&id_str)
@@ -119,6 +129,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         .bind(featured_int)
         .bind(&announcement.image_url)
         .bind(published_at_naive)
+        .bind(scheduled_publish_at_naive)
         .bind(&created_by_str)
         .bind(now)
         .bind(now)
@@ -136,7 +147,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         let row = sqlx::query_as::<_, AnnouncementRow>(
             r#"
             SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
-                   image_url, published_at, created_by, created_at, updated_at
+                   image_url, published_at, scheduled_publish_at, created_by, created_at, updated_at
             FROM announcements
             WHERE id = ?
             "#
@@ -156,7 +167,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         let rows = sqlx::query_as::<_, AnnouncementRow>(
             r#"
             SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
-                   image_url, published_at, created_by, created_at, updated_at
+                   image_url, published_at, scheduled_publish_at, created_by, created_at, updated_at
             FROM announcements
             ORDER BY created_at DESC
             LIMIT ? OFFSET ?
@@ -177,7 +188,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         let rows = sqlx::query_as::<_, AnnouncementRow>(
             r#"
             SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
-                   image_url, published_at, created_by, created_at, updated_at
+                   image_url, published_at, scheduled_publish_at, created_by, created_at, updated_at
             FROM announcements
             WHERE published_at IS NOT NULL
             ORDER BY published_at DESC
@@ -198,7 +209,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         let rows = sqlx::query_as::<_, AnnouncementRow>(
             r#"
             SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
-                   image_url, published_at, created_by, created_at, updated_at
+                   image_url, published_at, scheduled_publish_at, created_by, created_at, updated_at
             FROM announcements
             WHERE is_public = 1 AND published_at IS NOT NULL
             ORDER BY published_at DESC
@@ -235,6 +246,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         let is_public_int = if announcement.is_public { 1i32 } else { 0i32 };
         let featured_int = if announcement.featured { 1i32 } else { 0i32 };
         let published_at_naive = announcement.published_at.map(|dt| dt.naive_utc());
+        let scheduled_publish_at_naive = announcement.scheduled_publish_at.map(|dt| dt.naive_utc());
         let now = Utc::now().naive_utc();
 
         sqlx::query(
@@ -242,7 +254,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
             UPDATE announcements
             SET title = ?, content = ?, announcement_type = ?, announcement_type_id = ?,
                 is_public = ?, featured = ?, image_url = ?, published_at = ?,
-                updated_at = ?
+                scheduled_publish_at = ?, updated_at = ?
             WHERE id = ?
             "#
         )
@@ -254,6 +266,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         .bind(featured_int)
         .bind(&announcement.image_url)
         .bind(published_at_naive)
+        .bind(scheduled_publish_at_naive)
         .bind(now)
         .bind(&id_str)
         .execute(&self.pool)
@@ -274,5 +287,52 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
             .map_err(AppError::Database)?;
 
         Ok(())
+    }
+
+    async fn list_due_for_publish(&self, now: DateTime<Utc>) -> Result<Vec<Announcement>> {
+        let now_naive = now.naive_utc();
+        let rows = sqlx::query_as::<_, AnnouncementRow>(
+            r#"
+            SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
+                   image_url, published_at, scheduled_publish_at, created_by, created_at, updated_at
+            FROM announcements
+            WHERE published_at IS NULL
+              AND scheduled_publish_at IS NOT NULL
+              AND scheduled_publish_at <= ?
+            ORDER BY scheduled_publish_at ASC
+            "#
+        )
+        .bind(now_naive)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+        rows.into_iter()
+            .map(Self::row_to_announcement)
+            .collect()
+    }
+
+    async fn mark_published_now(&self, id: Uuid) -> Result<bool> {
+        let id_str = id.to_string();
+        let now = Utc::now().naive_utc();
+        // Conditional UPDATE: only flips a row that is still a Draft
+        // (published_at IS NULL). The atomicity is what prevents two
+        // concurrent runner ticks from both dispatching the integration
+        // event — exactly one wins and gets a non-zero row count.
+        let result = sqlx::query(
+            r#"
+            UPDATE announcements
+            SET published_at = ?, scheduled_publish_at = NULL, updated_at = ?
+            WHERE id = ? AND published_at IS NULL
+            "#
+        )
+        .bind(now)
+        .bind(now)
+        .bind(&id_str)
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+        Ok(result.rows_affected() > 0)
     }
 }
