@@ -1,17 +1,26 @@
 use std::sync::Arc;
 use tokio::time::{self, Duration};
 
-use crate::service::billing_service::BillingService;
+use crate::service::{
+    announcement_admin_service::AnnouncementAdminService,
+    billing_service::BillingService,
+};
 
 pub struct BillingRunner {
     billing_service: Arc<BillingService>,
+    announcement_admin_service: Arc<AnnouncementAdminService>,
     interval: Duration,
 }
 
 impl BillingRunner {
-    pub fn new(billing_service: Arc<BillingService>, interval_secs: u64) -> Self {
+    pub fn new(
+        billing_service: Arc<BillingService>,
+        announcement_admin_service: Arc<AnnouncementAdminService>,
+        interval_secs: u64,
+    ) -> Self {
         Self {
             billing_service,
+            announcement_admin_service,
             interval: Duration::from_secs(interval_secs),
         }
     }
@@ -77,6 +86,21 @@ impl BillingRunner {
             Ok(_) => {}
             Err(e) => {
                 tracing::error!("Event reminder cycle error: {}", e);
+            }
+        }
+
+        // Auto-publish scheduled announcements whose scheduled time
+        // has arrived. Idempotent via the conditional UPDATE inside
+        // mark_published_now (Draft→Published transitions exactly
+        // once per row).
+        match self.announcement_admin_service.publish_scheduled().await {
+            Ok(count) => {
+                if count > 0 {
+                    tracing::info!("Auto-published {} scheduled announcement(s)", count);
+                }
+            }
+            Err(e) => {
+                tracing::error!("Scheduled-announcement publish cycle error: {}", e);
             }
         }
     }

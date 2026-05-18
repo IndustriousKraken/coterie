@@ -366,7 +366,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Spawn billing runner (runs every hour)
     {
-        let runner = jobs::BillingRunner::new(billing_service.clone(), 60 * 60);
+        let runner = jobs::BillingRunner::new(
+            billing_service.clone(),
+            service_context.announcement_admin_service.clone(),
+            60 * 60,
+        );
         runner.spawn();
         tracing::info!("Billing runner spawned");
     }
