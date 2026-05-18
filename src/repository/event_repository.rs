@@ -8,6 +8,21 @@ use crate::{
     error::{AppError, Result},
 };
 
+/// One candidate row for the event-reminder runner — a flat join of
+/// the attendee, event, and member rows that the runner needs to
+/// render and send a reminder. Kept narrow on purpose: only the
+/// fields the template + claim step actually touch.
+#[derive(Debug, Clone)]
+pub struct EventReminderRow {
+    pub event_id: Uuid,
+    pub event_title: String,
+    pub event_start: DateTime<Utc>,
+    pub event_location: Option<String>,
+    pub member_id: Uuid,
+    pub member_email: String,
+    pub member_full_name: String,
+}
+
 #[async_trait]
 pub trait EventRepository: Send + Sync {
     async fn create(&self, event: Event) -> Result<Event>;
@@ -23,6 +38,23 @@ pub trait EventRepository: Send + Sync {
     async fn cancel_attendance(&self, event_id: Uuid, member_id: Uuid) -> Result<()>;
     async fn get_attendee_count(&self, event_id: Uuid) -> Result<i64>;
     async fn get_member_attendance_status(&self, event_id: Uuid, member_id: Uuid) -> Result<Option<AttendanceStatus>>;
+
+    // ---- Event-reminder support ---------------------------------------
+
+    /// Candidate RSVPs whose event starts in `(now, until]`, are
+    /// status='Registered', and haven't been reminded yet. The runner
+    /// iterates this list and tries to atomically claim each via
+    /// `mark_reminder_sent` before sending the email.
+    async fn list_pending_reminders(
+        &self,
+        now: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<Vec<EventReminderRow>>;
+    /// Conditional UPDATE that stamps `reminder_sent_at` only if it
+    /// was NULL — returns true exactly when a row was claimed. The
+    /// runner uses this as a concurrency-safe lock before sending the
+    /// email so two ticks (or two processes) can't double-send.
+    async fn mark_reminder_sent(&self, event_id: Uuid, member_id: Uuid) -> Result<bool>;
 
     // ---- Recurring-series support -------------------------------------
 
@@ -562,5 +594,61 @@ impl EventRepository for SqliteEventRepository {
         .await
         .map_err(AppError::Database)?;
         Ok(result.rows_affected())
+    }
+
+    async fn list_pending_reminders(
+        &self,
+        now: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<Vec<EventReminderRow>> {
+        let rows: Vec<(String, String, NaiveDateTime, Option<String>, String, String, String)> =
+            sqlx::query_as(
+                r#"
+                SELECT e.id, e.title, e.start_time, e.location,
+                       m.id, m.email, m.full_name
+                FROM event_attendance ea
+                JOIN events e ON e.id = ea.event_id
+                JOIN members m ON m.id = ea.member_id
+                WHERE ea.status = 'Registered'
+                  AND ea.reminder_sent_at IS NULL
+                  AND e.start_time > ?
+                  AND e.start_time <= ?
+                "#,
+            )
+            .bind(now.naive_utc())
+            .bind(until.naive_utc())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(AppError::Database)?;
+
+        rows.into_iter()
+            .map(|(eid, title, start, location, mid, email, full_name)| {
+                Ok(EventReminderRow {
+                    event_id: Uuid::parse_str(&eid).map_err(|e| AppError::Internal(e.to_string()))?,
+                    event_title: title,
+                    event_start: DateTime::from_naive_utc_and_offset(start, Utc),
+                    event_location: location,
+                    member_id: Uuid::parse_str(&mid).map_err(|e| AppError::Internal(e.to_string()))?,
+                    member_email: email,
+                    member_full_name: full_name,
+                })
+            })
+            .collect()
+    }
+
+    async fn mark_reminder_sent(&self, event_id: Uuid, member_id: Uuid) -> Result<bool> {
+        let result = sqlx::query(
+            r#"
+            UPDATE event_attendance
+            SET reminder_sent_at = CURRENT_TIMESTAMP
+            WHERE event_id = ? AND member_id = ? AND reminder_sent_at IS NULL
+            "#,
+        )
+        .bind(event_id.to_string())
+        .bind(member_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+        Ok(result.rows_affected() == 1)
     }
 }

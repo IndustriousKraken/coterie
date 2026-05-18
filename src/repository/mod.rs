@@ -14,7 +14,7 @@ pub use member_repository::{
     MemberRepository, SqliteMemberRepository,
     MemberQuery, MemberSortField, SortOrder,
 };
-pub use event_repository::{EventRepository, SqliteEventRepository};
+pub use event_repository::{EventRepository, EventReminderRow, SqliteEventRepository};
 pub use event_series_repository::{EventSeriesRepository, SqliteEventSeriesRepository};
 pub use announcement_repository::{AnnouncementRepository, SqliteAnnouncementRepository};
 pub use payment_repository::{PaymentRepository, SqlitePaymentRepository, MonthlyRevenue};

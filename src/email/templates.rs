@@ -152,6 +152,28 @@ pub struct SubscriptionCancelledText<'a> {
 }
 
 #[derive(Template)]
+#[template(path = "emails/event_reminder.html")]
+pub struct EventReminderHtml<'a> {
+    pub full_name: &'a str,
+    pub org_name: &'a str,
+    pub event_title: &'a str,
+    pub event_start: &'a str,
+    pub event_location: Option<&'a str>,
+    pub event_url: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "emails/event_reminder.txt")]
+pub struct EventReminderText<'a> {
+    pub full_name: &'a str,
+    pub org_name: &'a str,
+    pub event_title: &'a str,
+    pub event_start: &'a str,
+    pub event_location: Option<&'a str>,
+    pub event_url: &'a str,
+}
+
+#[derive(Template)]
 #[template(path = "emails/admin_alert.html")]
 pub struct AdminAlertHtml<'a> {
     pub org_name: &'a str,

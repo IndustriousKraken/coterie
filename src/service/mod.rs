@@ -191,6 +191,7 @@ impl ServiceContext {
             self.payment_repo.clone(),
             self.saved_card_repo.clone(),
             self.member_repo.clone(),
+            self.event_repo.clone(),
             self.membership_type_service.clone(),
             self.settings_service.clone(),
             self.email_sender.clone(),
