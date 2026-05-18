@@ -1,6 +1,7 @@
 pub mod announcements;
 pub mod audit;
 pub mod billing;
+pub mod csv;
 pub mod discord;
 pub mod email;
 pub mod events;

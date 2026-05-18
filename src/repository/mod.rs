@@ -12,7 +12,7 @@ pub mod processed_events_repository;
 
 pub use member_repository::{
     MemberRepository, SqliteMemberRepository,
-    MemberQuery, MemberSortField, SortOrder,
+    MemberQuery, MemberSortField, SortOrder, MemberExportRow,
 };
 pub use event_repository::{EventRepository, EventReminderRow, SqliteEventRepository};
 pub use event_series_repository::{EventSeriesRepository, SqliteEventSeriesRepository};

@@ -83,10 +83,29 @@
             <h1 class="text-3xl font-bold text-gray-900">Member Management</h1>
             <p class="mt-1 text-sm text-gray-600">1 total members</p>
         </div>
-        <a href="/portal/admin/members/new"
-           class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
-            Add Member
-        </a>
+        <div class="flex items-center gap-2">
+            <!-- Download CSV. A small GET form (rather than a link with a
+                 templated query string) so Askama can stamp in the active
+                 filters via hidden inputs without manual ?key=value
+                 stitching, and so empty filters don't appear in the URL. -->
+            <form action="/portal/admin/members/export" method="get">
+                
+                
+                
+                <button type="submit"
+                        class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm text-gray-700 rounded-md hover:bg-gray-50">
+                    <svg class="h-4 w-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
+                    </svg>
+                    Download CSV
+                </button>
+            </form>
+            <a href="/portal/admin/members/new"
+               class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+                Add Member
+            </a>
+        </div>
     </div>
 
     <!-- Search and Filters -->

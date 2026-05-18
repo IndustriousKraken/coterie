@@ -42,6 +42,27 @@ pub enum SortOrder {
     Desc,
 }
 
+/// Flat DTO containing exactly the columns the admin CSV export emits.
+/// Joined against `membership_types` so the type name is denormalized
+/// into `membership_type` (rather than the FK), which keeps the
+/// handler from needing a second per-row lookup.
+#[derive(Debug, Clone)]
+pub struct MemberExportRow {
+    pub id: Uuid,
+    pub email: String,
+    pub username: String,
+    pub full_name: String,
+    pub status: MemberStatus,
+    pub membership_type: String,
+    pub joined_at: DateTime<Utc>,
+    pub dues_paid_until: Option<DateTime<Utc>>,
+    pub is_admin: bool,
+    pub bypass_dues: bool,
+    pub discord_id: Option<String>,
+    pub email_verified_at: Option<DateTime<Utc>>,
+    pub notes: Option<String>,
+}
+
 #[async_trait]
 pub trait MemberRepository: Send + Sync {
     async fn create(&self, member: CreateMemberRequest) -> Result<Member>;
@@ -68,6 +89,12 @@ pub trait MemberRepository: Send + Sync {
     /// derive). Returns `(rows, total_match_count)` so the caller can
     /// compute total pages without a second round trip.
     async fn search(&self, query: MemberQuery) -> Result<(Vec<Member>, i64)>;
+    /// Like `search` but returns flat rows joined against
+    /// `membership_types` for the display name, with pagination
+    /// removed. Used by the admin CSV export — the export wants
+    /// every matching row, not a page. `MemberQuery::limit` and
+    /// `MemberQuery::offset` are ignored here; sort still applies.
+    async fn export_rows(&self, filter: MemberQuery) -> Result<Vec<MemberExportRow>>;
     /// Set the member's `dues_paid_until`, revive Expired→Active in
     /// the same UPDATE, and clear the dues-reminder flag so the next
     /// dues cycle can re-fire a reminder. Suspended/Honorary/Pending
@@ -694,4 +721,106 @@ impl MemberRepository for SqliteMemberRepository {
         let members = rows.into_iter().map(Self::row_to_member).collect::<Result<Vec<_>>>()?;
         Ok((members, total))
     }
+
+    async fn export_rows(&self, query: MemberQuery) -> Result<Vec<MemberExportRow>> {
+        let search_pat = query.search
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("%{}%", s.to_lowercase()));
+        let status_str = query.status.as_ref().map(|s| s.as_str().to_string());
+        let mtype_id_str = query.membership_type_id.map(|id| id.to_string());
+
+        let mut where_clauses: Vec<&str> = Vec::new();
+        if search_pat.is_some() {
+            where_clauses.push(
+                "(LOWER(m.full_name) LIKE ? OR LOWER(m.email) LIKE ? OR LOWER(m.username) LIKE ?)",
+            );
+        }
+        if status_str.is_some() {
+            where_clauses.push("m.status = ?");
+        }
+        if mtype_id_str.is_some() {
+            where_clauses.push("m.membership_type_id = ?");
+        }
+        let where_sql = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", where_clauses.join(" AND "))
+        };
+
+        let order_dir = match query.order {
+            SortOrder::Asc => "ASC",
+            SortOrder::Desc => "DESC",
+        };
+        let order_sql = match query.sort {
+            MemberSortField::Name => format!("LOWER(m.full_name) {}", order_dir),
+            MemberSortField::Status => format!("m.status {}", order_dir),
+            MemberSortField::MembershipType => format!("LOWER(mt.name) {}", order_dir),
+            MemberSortField::Joined => format!("m.joined_at {}", order_dir),
+            MemberSortField::DuesPaidUntil => {
+                format!("m.dues_paid_until IS NULL, m.dues_paid_until {}", order_dir)
+            }
+        };
+
+        let select_sql = format!(
+            "SELECT m.id, m.email, m.username, m.full_name, m.status, \
+                    COALESCE(mt.name, '') AS membership_type, \
+                    m.joined_at, m.dues_paid_until, m.is_admin, m.bypass_dues, \
+                    m.discord_id, m.email_verified_at, m.notes \
+             FROM members m \
+             LEFT JOIN membership_types mt ON mt.id = m.membership_type_id{} \
+             ORDER BY {}",
+            where_sql, order_sql,
+        );
+
+        let mut q = sqlx::query_as::<_, ExportRow>(&select_sql);
+        if let Some(p) = &search_pat {
+            q = q.bind(p).bind(p).bind(p);
+        }
+        if let Some(s) = &status_str {
+            q = q.bind(s);
+        }
+        if let Some(t) = &mtype_id_str {
+            q = q.bind(t);
+        }
+
+        let rows = q.fetch_all(&self.pool).await.map_err(AppError::Database)?;
+        rows.into_iter().map(|r| {
+            Ok(MemberExportRow {
+                id: Uuid::parse_str(&r.id).map_err(|e| AppError::Internal(e.to_string()))?,
+                email: r.email,
+                username: r.username,
+                full_name: r.full_name,
+                status: Self::parse_member_status(&r.status)?,
+                membership_type: r.membership_type,
+                joined_at: DateTime::from_naive_utc_and_offset(r.joined_at, Utc),
+                dues_paid_until: r.dues_paid_until
+                    .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
+                is_admin: r.is_admin != 0,
+                bypass_dues: r.bypass_dues != 0,
+                discord_id: r.discord_id,
+                email_verified_at: r.email_verified_at
+                    .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
+                notes: r.notes,
+            })
+        }).collect()
+    }
+}
+
+#[derive(FromRow)]
+struct ExportRow {
+    id: String,
+    email: String,
+    username: String,
+    full_name: String,
+    status: String,
+    membership_type: String,
+    joined_at: NaiveDateTime,
+    dues_paid_until: Option<NaiveDateTime>,
+    is_admin: i32,
+    bypass_dues: i32,
+    discord_id: Option<String>,
+    email_verified_at: Option<NaiveDateTime>,
+    notes: Option<String>,
 }

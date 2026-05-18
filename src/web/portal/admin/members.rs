@@ -3,7 +3,8 @@ use std::sync::Arc;
 use askama::Template;
 use axum::{
     extract::{State, Query, Path},
-    response::IntoResponse,
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
     Extension,
 };
 use serde::Deserialize;
@@ -225,6 +226,155 @@ pub async fn admin_members_page(
             sort_order,
         }).into_response()
     }
+}
+
+/// CSV export of the member roster. Respects the same filter query
+/// string as `admin_members_page` and emits one row per matching
+/// member, with all non-credential fields. Audit row is written
+/// through `MemberService::audit_export` so abuse is traceable.
+///
+/// Response is `text/csv; charset=utf-8` with
+/// `Content-Disposition: attachment` so browsers download rather
+/// than rendering. Filename includes the UTC date so re-downloads
+/// inside one day overwrite each other; new day → new filename.
+pub async fn admin_members_export(
+    State(member_repo): State<Arc<dyn MemberRepository>>,
+    State(member_service): State<Arc<MemberService>>,
+    State(membership_type_service): State<Arc<MembershipTypeService>>,
+    Extension(current_user): Extension<CurrentUser>,
+    Query(query): Query<AdminMembersQuery>,
+) -> Response {
+    use crate::repository::{MemberQuery, MemberSortField, SortOrder};
+
+    let all_types = membership_type_service
+        .list(true).await.unwrap_or_default();
+    let type_filter_id = query.member_type.as_deref()
+        .and_then(|slug| all_types.iter().find(|t| t.slug == slug).map(|t| t.id));
+
+    let sort_field = query.sort.as_deref().unwrap_or("name");
+    let sort_order = query.order.as_deref().unwrap_or("asc");
+
+    let typed_query = MemberQuery {
+        search: query.q.clone().filter(|s| !s.is_empty()),
+        status: query.status.as_deref().and_then(crate::domain::MemberStatus::from_str),
+        membership_type_id: type_filter_id,
+        sort: match sort_field {
+            "status" => MemberSortField::Status,
+            "type" => MemberSortField::MembershipType,
+            "joined" => MemberSortField::Joined,
+            "dues" => MemberSortField::DuesPaidUntil,
+            _ => MemberSortField::Name,
+        },
+        order: if sort_order == "desc" { SortOrder::Desc } else { SortOrder::Asc },
+        // Ignored by `export_rows`, but the field is non-optional.
+        limit: 0,
+        offset: 0,
+    };
+
+    let rows = match member_repo.export_rows(typed_query).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!("admin members export failed: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to build export. Check server logs.",
+            ).into_response();
+        }
+    };
+
+    let body = build_members_csv(&rows);
+
+    let filter_summary = build_filter_summary(&query);
+    if let Err(e) = member_service
+        .audit_export(current_user.member.id, &filter_summary, rows.len())
+        .await
+    {
+        // Audit failures are already swallowed inside AuditService::log;
+        // this branch is reachable only if a future audit_export variant
+        // returns Err. Log + continue — the download still goes through.
+        tracing::error!("admin members export audit failed: {}", e);
+    }
+
+    let filename = format!(
+        "members-export-{}.csv",
+        chrono::Utc::now().date_naive().format("%Y-%m-%d"),
+    );
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/csv; charset=utf-8".to_string()),
+            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", filename)),
+        ],
+        body,
+    ).into_response()
+}
+
+/// Assemble the CSV body: a header row followed by one row per
+/// `MemberExportRow`. Column order matches the
+/// `bulk-member-csv-export` capability spec exactly.
+fn build_members_csv(rows: &[crate::repository::MemberExportRow]) -> String {
+    use crate::web::portal::admin::csv::push_csv;
+
+    let mut out = String::with_capacity(1024 + rows.len() * 256);
+    out.push_str(
+        "id,email,username,full_name,status,membership_type,joined_at,\
+         dues_paid_until,is_admin,bypass_dues,discord_id,email_verified_at,notes\n",
+    );
+
+    for r in rows {
+        push_csv(&mut out, &r.id.to_string());
+        out.push(',');
+        push_csv(&mut out, &r.email);
+        out.push(',');
+        push_csv(&mut out, &r.username);
+        out.push(',');
+        push_csv(&mut out, &r.full_name);
+        out.push(',');
+        push_csv(&mut out, r.status.as_str());
+        out.push(',');
+        push_csv(&mut out, &r.membership_type);
+        out.push(',');
+        push_csv(&mut out, &r.joined_at.to_rfc3339());
+        out.push(',');
+        push_csv(
+            &mut out,
+            &r.dues_paid_until.map(|d| d.to_rfc3339()).unwrap_or_default(),
+        );
+        out.push(',');
+        push_csv(&mut out, if r.is_admin { "true" } else { "false" });
+        out.push(',');
+        push_csv(&mut out, if r.bypass_dues { "true" } else { "false" });
+        out.push(',');
+        push_csv(&mut out, r.discord_id.as_deref().unwrap_or(""));
+        out.push(',');
+        push_csv(
+            &mut out,
+            &r.email_verified_at.map(|d| d.to_rfc3339()).unwrap_or_default(),
+        );
+        out.push(',');
+        push_csv(&mut out, r.notes.as_deref().unwrap_or(""));
+        out.push('\n');
+    }
+    out
+}
+
+/// Compact summary of the active filters, suitable for the audit
+/// log's `new_value`. Order matches the wire shape so future readers
+/// can correlate. Empty (no filters) → empty string. The handler
+/// appends `count=N` separately so this stays a pure filter
+/// description.
+fn build_filter_summary(q: &AdminMembersQuery) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(s) = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        parts.push(format!("q={}", s));
+    }
+    if let Some(s) = q.status.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        parts.push(format!("status={}", s));
+    }
+    if let Some(s) = q.member_type.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        parts.push(format!("type={}", s));
+    }
+    parts.join(",")
 }
 
 pub async fn admin_activate_member(

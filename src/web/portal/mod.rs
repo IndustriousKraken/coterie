@@ -25,6 +25,7 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
     // and the user can use the navigation.
     let admin_routes = Router::new()
         .route("/members", get(admin::members::admin_members_page))
+        .route("/members/export", get(admin::members::admin_members_export))
         .route("/members/new", get(admin::members::admin_new_member_page))
         .route("/members/new", post(admin::members::admin_create_member))
         .route("/members/:id", get(admin::members::admin_member_detail_page))
