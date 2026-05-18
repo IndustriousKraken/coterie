@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use chrono::{DateTime, Datelike, Duration, TimeZone, Utc, Weekday};
+use chrono::{DateTime, Datelike, Duration, Utc, Weekday};
 use coterie::{
     domain::{
         CreateMemberRequest, Event, EventType, EventVisibility,
@@ -51,6 +51,69 @@ struct H {
     series_repo: Arc<dyn EventSeriesRepository>,
     service: RecurringEventService,
     creator: Uuid,
+}
+
+fn next_tuesday_anchor() -> DateTime<Utc> {
+    let now = Utc::now();
+    let start = now + Duration::days(1);
+    let days_until_tue = (Weekday::Tue.num_days_from_monday() as i64
+        - start.weekday().num_days_from_monday() as i64)
+        .rem_euclid(7);
+    let date = start.date_naive() + Duration::days(days_until_tue);
+    date.and_hms_opt(18, 0, 0).unwrap().and_utc()
+}
+
+fn weeks_after_anchor(weeks: i64) -> DateTime<Utc> {
+    next_tuesday_anchor() + Duration::weeks(weeks)
+}
+
+fn next_2nd_wednesday_anchor() -> DateTime<Utc> {
+    let now = Utc::now().date_naive();
+    let next_month_first = if now.month() == 12 {
+        chrono::NaiveDate::from_ymd_opt(now.year() + 1, 1, 1).unwrap()
+    } else {
+        chrono::NaiveDate::from_ymd_opt(now.year(), now.month() + 1, 1).unwrap()
+    };
+    let days_until_wed = (Weekday::Wed.num_days_from_monday() as i64
+        - next_month_first.weekday().num_days_from_monday() as i64)
+        .rem_euclid(7);
+    let first_wed = next_month_first + Duration::days(days_until_wed);
+    let second_wed = first_wed + Duration::days(7);
+    second_wed.and_hms_opt(19, 0, 0).unwrap().and_utc()
+}
+
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+    use chrono::Timelike;
+
+    #[test]
+    fn next_tuesday_anchor_returns_future_tuesday_at_18utc() {
+        let anchor = next_tuesday_anchor();
+        assert_eq!(anchor.weekday(), Weekday::Tue);
+        assert_eq!(anchor.hour(), 18);
+        assert_eq!(anchor.minute(), 0);
+        assert!(anchor > Utc::now());
+    }
+
+    #[test]
+    fn weeks_after_anchor_shifts_by_whole_weeks() {
+        let base = next_tuesday_anchor();
+        assert_eq!(weeks_after_anchor(0), base);
+        assert_eq!(weeks_after_anchor(5) - base, Duration::weeks(5));
+        assert_eq!(weeks_after_anchor(52) - base, Duration::weeks(52));
+    }
+
+    #[test]
+    fn next_2nd_wednesday_anchor_returns_future_2nd_wednesday_at_19utc() {
+        let anchor = next_2nd_wednesday_anchor();
+        assert_eq!(anchor.weekday(), Weekday::Wed);
+        assert_eq!(anchor.hour(), 19);
+        assert_eq!(anchor.minute(), 0);
+        assert!(anchor > Utc::now());
+        assert!((8..=14).contains(&anchor.day()),
+            "2nd Wed must fall in days 8..=14, got day {}", anchor.day());
+    }
 }
 
 async fn build() -> H {
@@ -120,7 +183,7 @@ async fn count_in_series(pool: &SqlitePool, series_id: Uuid) -> i64 {
 #[tokio::test]
 async fn weekly_creates_about_52_occurrences() {
     let h = build().await;
-    let anchor = Utc.with_ymd_and_hms(2026, 5, 5, 18, 0, 0).unwrap(); // Tue
+    let anchor = next_tuesday_anchor();
     let rule = Recurrence::WeeklyByDay {
         interval: 1,
         weekdays: vec![WeekdayCode::Tue],
@@ -158,8 +221,8 @@ async fn weekly_creates_about_52_occurrences() {
 #[tokio::test]
 async fn until_date_caps_materialization() {
     let h = build().await;
-    let anchor = Utc.with_ymd_and_hms(2026, 5, 5, 18, 0, 0).unwrap(); // Tue
-    let until = Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap(); // ~3 months
+    let anchor = next_tuesday_anchor();
+    let until = weeks_after_anchor(13); // ~3 months
     let rule = Recurrence::WeeklyByDay {
         interval: 1,
         weekdays: vec![WeekdayCode::Tue],
@@ -187,8 +250,8 @@ async fn until_date_caps_materialization() {
 #[tokio::test]
 async fn extend_horizon_adds_missing_tail() {
     let h = build().await;
-    let anchor = Utc.with_ymd_and_hms(2026, 5, 5, 18, 0, 0).unwrap();
-    let initial_until = Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap();
+    let anchor = next_tuesday_anchor();
+    let initial_until = weeks_after_anchor(13);
     let rule = Recurrence::WeeklyByDay {
         interval: 1, weekdays: vec![WeekdayCode::Tue],
     };
@@ -228,8 +291,8 @@ async fn extend_horizon_adds_missing_tail() {
 #[tokio::test]
 async fn extend_horizon_respects_until_date() {
     let h = build().await;
-    let anchor = Utc.with_ymd_and_hms(2026, 5, 5, 18, 0, 0).unwrap();
-    let until = Utc.with_ymd_and_hms(2026, 6, 30, 0, 0, 0).unwrap();
+    let anchor = next_tuesday_anchor();
+    let until = weeks_after_anchor(8);
     let rule = Recurrence::WeeklyByDay {
         interval: 1, weekdays: vec![WeekdayCode::Tue],
     };
@@ -262,13 +325,13 @@ async fn extend_horizon_respects_until_date() {
 #[tokio::test]
 async fn update_series_occurrences_from_only_touches_future_rows() {
     let h = build().await;
-    let anchor = Utc.with_ymd_and_hms(2026, 5, 5, 18, 0, 0).unwrap();
+    let anchor = next_tuesday_anchor();
     let rule = Recurrence::WeeklyByDay {
         interval: 1, weekdays: vec![WeekdayCode::Tue],
     };
     let created = h.service.create_series_with_initial_materialization(
         rule, template(h.creator, anchor),
-        Some(Utc.with_ymd_and_hms(2026, 7, 1, 0, 0, 0).unwrap()),
+        Some(weeks_after_anchor(8)),
         h.creator,
     ).await.unwrap();
 
@@ -306,13 +369,13 @@ async fn update_series_occurrences_from_only_touches_future_rows() {
 #[tokio::test]
 async fn delete_one_occurrence_leaves_siblings_intact() {
     let h = build().await;
-    let anchor = Utc.with_ymd_and_hms(2026, 5, 5, 18, 0, 0).unwrap();
+    let anchor = next_tuesday_anchor();
     let rule = Recurrence::WeeklyByDay {
         interval: 1, weekdays: vec![WeekdayCode::Tue],
     };
     let created = h.service.create_series_with_initial_materialization(
         rule, template(h.creator, anchor),
-        Some(Utc.with_ymd_and_hms(2026, 7, 1, 0, 0, 0).unwrap()),
+        Some(weeks_after_anchor(8)),
         h.creator,
     ).await.unwrap();
     let initial = count_in_series(&h.pool, created.series.id).await;
@@ -337,13 +400,13 @@ async fn delete_one_occurrence_leaves_siblings_intact() {
 #[tokio::test]
 async fn end_series_after_date_deletes_future_only() {
     let h = build().await;
-    let anchor = Utc.with_ymd_and_hms(2026, 5, 5, 18, 0, 0).unwrap();
+    let anchor = next_tuesday_anchor();
     let rule = Recurrence::WeeklyByDay {
         interval: 1, weekdays: vec![WeekdayCode::Tue],
     };
     let created = h.service.create_series_with_initial_materialization(
         rule, template(h.creator, anchor),
-        Some(Utc.with_ymd_and_hms(2027, 5, 5, 0, 0, 0).unwrap()),
+        Some(weeks_after_anchor(52)),
         h.creator,
     ).await.unwrap();
     let total_before = count_in_series(&h.pool, created.series.id).await;
@@ -382,11 +445,11 @@ async fn end_series_after_date_deletes_future_only() {
 #[tokio::test]
 async fn delete_series_cascades_to_occurrences() {
     let h = build().await;
-    let anchor = Utc.with_ymd_and_hms(2026, 5, 5, 18, 0, 0).unwrap();
+    let anchor = next_tuesday_anchor();
     let rule = Recurrence::MonthlyByDayOfMonth { interval: 1, day: 5 };
     let created = h.service.create_series_with_initial_materialization(
         rule, template(h.creator, anchor),
-        Some(Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap()),
+        Some(weeks_after_anchor(30)),
         h.creator,
     ).await.unwrap();
     assert!(count_in_series(&h.pool, created.series.id).await > 0);
@@ -404,16 +467,19 @@ async fn delete_series_cascades_to_occurrences() {
 #[tokio::test]
 async fn second_wednesday_materializes_correctly() {
     let h = build().await;
-    let anchor = Utc.with_ymd_and_hms(2026, 5, 13, 19, 0, 0).unwrap(); // 2nd Wed of May 2026
+    let anchor = next_2nd_wednesday_anchor();
     let rule = Recurrence::MonthlyByWeekdayOrdinal {
         interval: 1, weekday: WeekdayCode::Wed, ordinal: 2,
     };
-    let until = Utc.with_ymd_and_hms(2026, 12, 31, 0, 0, 0).unwrap();
+    // 33 weeks (231 days) lands strictly between the 8th 2nd-Wed gap (≤217d)
+    // and the 9th (≥238d), so the materializer yields exactly 8 occurrences
+    // regardless of which calendar month the anchor lands in.
+    let until = anchor + Duration::weeks(33);
     let created = h.service.create_series_with_initial_materialization(
         rule, template(h.creator, anchor), Some(until), h.creator,
     ).await.unwrap();
 
-    // May, Jun, Jul, Aug, Sep, Oct, Nov, Dec 2026 — 8 months.
+    // Eight consecutive months of 2nd Wednesdays starting at the anchor.
     assert_eq!(created.occurrences.len(), 8);
     for occ in &created.occurrences {
         assert_eq!(occ.start_time.weekday(), Weekday::Wed);
@@ -428,7 +494,7 @@ async fn second_wednesday_materializes_correctly() {
 #[tokio::test]
 async fn extend_horizon_for_active_series_processes_every_series() {
     let h = build().await;
-    let anchor = Utc.with_ymd_and_hms(2026, 5, 5, 18, 0, 0).unwrap();
+    let anchor = next_tuesday_anchor();
 
     // Two series with short caps, both opened back up via NULL until_date.
     for _ in 0..2 {
@@ -437,7 +503,7 @@ async fn extend_horizon_for_active_series_processes_every_series() {
                 interval: 1, weekdays: vec![WeekdayCode::Tue],
             },
             template(h.creator, anchor),
-            Some(Utc.with_ymd_and_hms(2026, 6, 30, 0, 0, 0).unwrap()),
+            Some(weeks_after_anchor(8)),
             h.creator,
         ).await.unwrap();
         sqlx::query("UPDATE event_series SET until_date = NULL WHERE id = ?")
