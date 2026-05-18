@@ -1,0 +1,100 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Bulk Import Members - Coterie Admin{% endblock %}
+
+{% block head %}
+<meta name="csrf-token" content="{{ base.csrf_token }}">
+{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="mb-6">
+        <div class="flex items-center gap-2 text-sm text-gray-500 mb-2">
+            <a href="/portal/admin/members" class="hover:text-gray-700">Members</a>
+            <span>/</span>
+            <span>Bulk Import</span>
+        </div>
+        <h1 class="text-2xl font-bold text-gray-900">Bulk Import Members</h1>
+        <p class="mt-1 text-gray-600">
+            Upload a CSV file to create multiple members in one operation. Per-row errors
+            (bad email, duplicate, unknown membership type) are reported individually — they
+            don't abort the rest of the batch.
+        </p>
+    </div>
+
+    <div class="max-w-2xl">
+        <div class="bg-white rounded-lg shadow-sm p-6">
+            <form hx-post="/portal/admin/members/import"
+                  hx-target="#import-result"
+                  hx-encoding="multipart/form-data"
+                  hx-headers='{"X-CSRF-Token": "{{ base.csrf_token }}"}'>
+                <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+
+                <div class="mb-4">
+                    <label for="file" class="block text-sm font-medium text-gray-700 mb-1">
+                        CSV File <span class="text-red-500">*</span>
+                    </label>
+                    <input type="file"
+                           id="file"
+                           name="file"
+                           accept=".csv,text/csv"
+                           required
+                           class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <p class="text-xs text-gray-400 mt-1">Maximum 5 MB.</p>
+                </div>
+
+                <details class="mb-4 bg-gray-50 rounded p-3">
+                    <summary class="text-sm font-medium text-gray-700 cursor-pointer">
+                        CSV format reminder
+                    </summary>
+                    <div class="mt-3 text-sm text-gray-700 space-y-2">
+                        <p>
+                            <strong>Required columns</strong>
+                            (any order, case-insensitive):
+                            <code class="px-1 bg-white border rounded">email</code>,
+                            <code class="px-1 bg-white border rounded">username</code>,
+                            <code class="px-1 bg-white border rounded">full_name</code>,
+                            <code class="px-1 bg-white border rounded">membership_type_slug</code>.
+                        </p>
+                        <p>
+                            <strong>Optional columns</strong>:
+                            <code class="px-1 bg-white border rounded">status</code>
+                            (defaults to <code>Pending</code>),
+                            <code class="px-1 bg-white border rounded">notes</code>,
+                            <code class="px-1 bg-white border rounded">discord_id</code>.
+                        </p>
+                        <p>
+                            Other columns from a previous export
+                            (<code>id</code>, <code>joined_at</code>, <code>is_admin</code>,
+                            <code>bypass_dues</code>, <code>email_verified_at</code>,
+                            <code>dues_paid_until</code>) are silently ignored — the system
+                            controls those fields.
+                        </p>
+                        <p>
+                            Imported members start <strong>Pending</strong> (or the row's
+                            specified status) with no password. Members will need to use
+                            password-reset to claim their account.
+                        </p>
+                        <p class="font-medium">Example (one data row):</p>
+<pre class="bg-white border rounded p-2 text-xs overflow-x-auto">email,username,full_name,membership_type_slug,status,notes
+jane@example.com,jdoe,Jane Doe,regular,Pending,Imported 2026-05</pre>
+                    </div>
+                </details>
+
+                <div class="flex justify-between items-center pt-2 border-t">
+                    <a href="/portal/admin/members"
+                       class="px-4 py-2 text-gray-600 hover:text-gray-800 text-sm">
+                        Cancel
+                    </a>
+                    <button type="submit"
+                            class="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+                        Upload &amp; Import
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <div id="import-result" class="mt-6"></div>
+    </div>
+</div>
+{% endblock %}

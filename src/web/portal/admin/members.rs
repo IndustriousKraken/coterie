@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use askama::Template;
 use axum::{
-    extract::{State, Query, Path},
+    extract::{State, Query, Path, Multipart},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     Extension,
@@ -1427,4 +1427,225 @@ fn resend_result(ok: bool, detail: &str) -> axum::response::Html<String> {
         r#"<div id="verify-resend-result" class="mt-2 p-2 {bg} {fg} rounded text-sm">{detail}</div>"#,
         bg = bg, fg = fg, detail = escaped,
     ))
+}
+
+// =====================================================================
+// Bulk member CSV import (admin upload)
+// =====================================================================
+
+/// 5 MB. Matches the cap documented in the `bulk-member-csv-import`
+/// capability spec — large enough for ~50k typical rows, small enough
+/// that an admin can't accidentally OOM the server with a malformed
+/// file. The application-level CSRF middleware already buffers up to
+/// 12 MB for multipart bodies, so we re-check the size at the file
+/// field level too rather than trusting the outer cap.
+const IMPORT_FILE_MAX_BYTES: usize = 5 * 1024 * 1024;
+
+#[derive(Template)]
+#[template(path = "admin/member_import.html")]
+pub struct AdminMemberImportPageTemplate {
+    pub base: BaseContext,
+}
+
+/// GET — show the upload form. Pure render; no service work.
+pub async fn admin_members_import_page(
+    State(csrf_service): State<Arc<CsrfService>>,
+    Extension(current_user): Extension<CurrentUser>,
+    Extension(session_info): Extension<SessionInfo>,
+) -> impl IntoResponse {
+    let base = BaseContext::for_member(&csrf_service, &current_user, &session_info).await;
+    HtmlTemplate(AdminMemberImportPageTemplate { base })
+}
+
+#[derive(Template)]
+#[template(path = "admin/member_import_result.html")]
+pub struct AdminMemberImportResultTemplate {
+    pub file_name: String,
+    pub succeeded: u32,
+    pub failed: u32,
+    pub failures: Vec<ImportFailureView>,
+}
+
+#[derive(Clone)]
+pub struct ImportFailureView {
+    pub row_index: usize,
+    pub email: String,
+    pub reason: String,
+}
+
+#[derive(Template)]
+#[template(path = "admin/member_import_error.html")]
+pub struct AdminMemberImportErrorTemplate {
+    pub message: String,
+}
+
+/// POST — accept a multipart upload with a `file` field carrying a CSV.
+/// The handler parses the CSV (5 MB cap, header validation), then
+/// delegates each row to `MemberService::bulk_import`, then renders an
+/// HTMX result fragment. CSV parsing is the handler's job; service
+/// stays format-agnostic.
+pub async fn admin_members_import(
+    State(member_service): State<Arc<MemberService>>,
+    Extension(current_user): Extension<CurrentUser>,
+    mut multipart: Multipart,
+) -> Response {
+    use crate::service::member_service::ImportRow;
+
+    let mut file_bytes: Option<Vec<u8>> = None;
+    let mut file_name = String::new();
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        match field.name().unwrap_or("") {
+            "csrf_token" => { let _ = field.text().await; }
+            "file" => {
+                file_name = field.file_name().unwrap_or("members.csv").to_string();
+                match field.bytes().await {
+                    Ok(b) => {
+                        if b.len() > IMPORT_FILE_MAX_BYTES {
+                            return import_error_fragment(&format!(
+                                "File too large ({} bytes). Maximum is {} MB.",
+                                b.len(),
+                                IMPORT_FILE_MAX_BYTES / (1024 * 1024),
+                            )).into_response();
+                        }
+                        file_bytes = Some(b.to_vec());
+                    }
+                    Err(e) => {
+                        return import_error_fragment(&format!(
+                            "Failed to read uploaded file: {}",
+                            e,
+                        )).into_response();
+                    }
+                }
+            }
+            _ => { let _ = field.bytes().await; }
+        }
+    }
+
+    let bytes = match file_bytes {
+        Some(b) if !b.is_empty() => b,
+        _ => {
+            return import_error_fragment(
+                "No CSV file was uploaded. Please select a file and try again.",
+            ).into_response();
+        }
+    };
+
+    let rows = match parse_import_csv(&bytes) {
+        Ok(rows) => rows,
+        Err(e) => return import_error_fragment(&e).into_response(),
+    };
+
+    let summary = match member_service
+        .bulk_import(current_user.member.id, &file_name, rows)
+        .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            return import_error_fragment(&format!(
+                "Import failed: {}",
+                e,
+            )).into_response();
+        }
+    };
+
+    let failures = summary
+        .failures
+        .iter()
+        .map(|f| ImportFailureView {
+            row_index: f.row_index,
+            email: f.email.clone().unwrap_or_default(),
+            reason: f.reason.clone(),
+        })
+        .collect();
+
+    HtmlTemplate(AdminMemberImportResultTemplate {
+        file_name,
+        succeeded: summary.succeeded,
+        failed: summary.failed,
+        failures,
+    }).into_response()
+}
+
+/// Parse the raw CSV bytes into `Vec<ImportRow>`. Returns Err with a
+/// user-facing message on header validation failures (missing required
+/// columns) or unreadable file structure.
+///
+/// Row-level coercion failures (e.g., a bad `status` value, a malformed
+/// row) are converted into `ImportRow`s with empty fields so the
+/// service can fail them per-row rather than aborting the batch — but
+/// truly unrecoverable parse errors (the file isn't CSV, the header is
+/// missing the `email` column) abort here.
+fn parse_import_csv(bytes: &[u8]) -> std::result::Result<Vec<crate::service::member_service::ImportRow>, String> {
+    use crate::service::member_service::ImportRow;
+
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .flexible(true)
+        .from_reader(bytes);
+
+    let headers = match reader.headers() {
+        Ok(h) => h.clone(),
+        Err(e) => return Err(format!("Could not read CSV header: {}", e)),
+    };
+
+    // Build a case-insensitive column index. Extra columns are
+    // tolerated and silently ignored; required columns must all be
+    // present or the batch aborts.
+    let col = |name: &str| -> Option<usize> {
+        headers
+            .iter()
+            .position(|h| h.trim().eq_ignore_ascii_case(name))
+    };
+
+    let email_idx = col("email").ok_or_else(|| {
+        "Missing required column 'email' in CSV header.".to_string()
+    })?;
+    let username_idx = col("username").ok_or_else(|| {
+        "Missing required column 'username' in CSV header.".to_string()
+    })?;
+    let full_name_idx = col("full_name").ok_or_else(|| {
+        "Missing required column 'full_name' in CSV header.".to_string()
+    })?;
+    let mtype_idx = col("membership_type_slug").ok_or_else(|| {
+        "Missing required column 'membership_type_slug' in CSV header.".to_string()
+    })?;
+    let status_idx = col("status");
+    let notes_idx = col("notes");
+    let discord_idx = col("discord_id");
+
+    let mut rows = Vec::new();
+    for record in reader.records() {
+        let rec = match record {
+            Ok(r) => r,
+            Err(e) => return Err(format!("Malformed CSV row: {}", e)),
+        };
+
+        let get = |i: usize| -> String {
+            rec.get(i).unwrap_or("").to_string()
+        };
+        let get_opt = |i: Option<usize>| -> Option<String> {
+            i.and_then(|idx| rec.get(idx)).map(|s| s.to_string()).filter(|s| !s.is_empty())
+        };
+
+        let status = get_opt(status_idx).and_then(|s| crate::domain::MemberStatus::from_str(s.trim()));
+
+        rows.push(ImportRow {
+            email: get(email_idx),
+            username: get(username_idx),
+            full_name: get(full_name_idx),
+            membership_type_slug: get(mtype_idx),
+            status,
+            notes: get_opt(notes_idx),
+            discord_id: get_opt(discord_idx),
+        });
+    }
+
+    Ok(rows)
+}
+
+fn import_error_fragment(message: &str) -> impl IntoResponse {
+    HtmlTemplate(AdminMemberImportErrorTemplate {
+        message: message.to_string(),
+    })
 }
