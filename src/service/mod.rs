@@ -2,6 +2,7 @@ pub mod audit_service;
 pub mod billing_service;
 pub mod configurable_types;
 pub mod basic_type_service;
+pub mod event_admin_service;
 pub mod member_service;
 pub mod payment_service;
 pub mod recurring_event_service;
@@ -16,6 +17,7 @@ use crate::auth::{AuthService, CsrfService, EmailTokenService, PendingLoginServi
 use crate::domain::BasicTypeKind;
 use crate::email::EmailSender;
 use audit_service::AuditService;
+use event_admin_service::EventAdminService;
 use member_service::MemberService;
 use payment_service::PaymentService;
 use settings_service::SettingsService;
@@ -49,6 +51,7 @@ pub struct ServiceContext {
     pub audit_service: Arc<AuditService>,
     pub payment_service: Arc<PaymentService>,
     pub member_service: Arc<MemberService>,
+    pub event_admin_service: Arc<EventAdminService>,
     pub db_pool: SqlitePool,
 }
 
@@ -124,6 +127,14 @@ impl ServiceContext {
             base_url,
         ));
 
+        let event_admin_service = Arc::new(EventAdminService::new(
+            event_repo.clone(),
+            event_series_repo.clone(),
+            recurring_event_service.clone(),
+            audit_service.clone(),
+            integration_manager.clone(),
+        ));
+
         Self {
             member_repo,
             event_repo,
@@ -150,6 +161,7 @@ impl ServiceContext {
             audit_service,
             payment_service,
             member_service,
+            event_admin_service,
             db_pool,
         }
     }
