@@ -23,6 +23,7 @@
 //! ```
 
 use async_trait::async_trait;
+use chrono::{Datelike, Utc};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
@@ -270,7 +271,7 @@ impl StripeGateway for FakeStripeGateway {
             brand: "visa".to_string(),
             last4: "4242".to_string(),
             exp_month: 12,
-            exp_year: 2030,
+            exp_year: Utc::now().year() + 5,
         })
     }
 
