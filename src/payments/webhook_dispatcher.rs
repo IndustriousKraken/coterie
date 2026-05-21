@@ -988,4 +988,20 @@ impl WebhookDispatcher {
     ) -> Result<()> {
         self.handle_successful_payment(session, billing_service).await
     }
+
+    pub async fn dispatch_invoice_paid(
+        &self,
+        invoice: stripe::Invoice,
+        billing_service: &BillingService,
+    ) -> Result<()> {
+        self.handle_invoice_paid(invoice, billing_service).await
+    }
+
+    pub async fn dispatch_invoice_payment_failed(
+        &self,
+        invoice: stripe::Invoice,
+        billing_service: &BillingService,
+    ) -> Result<()> {
+        self.handle_invoice_payment_failed(invoice, billing_service).await
+    }
 }
