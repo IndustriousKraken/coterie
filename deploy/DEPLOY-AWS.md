@@ -182,9 +182,11 @@ mkfs.ext4 /dev/nvme1n1
 mkdir -p /var/lib/coterie
 
 # Persistent mount via /etc/fstab. AWS recommends nofail + UUID to
-# avoid boot hangs if the volume detaches.
+# avoid boot hangs if the volume detaches. `discard` enables online
+# TRIM for the SSD; `noatime` skips access-time writes (SQLite makes
+# many reads — writing atime back on every one is pointless I/O).
 UUID=$(blkid -s UUID -o value /dev/nvme1n1)
-echo "UUID=$UUID /var/lib/coterie ext4 defaults,nofail,discard 0 2" >> /etc/fstab
+echo "UUID=$UUID /var/lib/coterie ext4 defaults,nofail,discard,noatime 0 2" >> /etc/fstab
 mount -a
 
 df -h /var/lib/coterie
@@ -239,8 +241,13 @@ your laptop is probably x86, the t4g instance is ARM):
 sudo apt-get install -y build-essential pkg-config libssl-dev git
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
 source $HOME/.cargo/env
-git clone https://github.com/your-org/coterie /tmp/coterie-build
-cd /tmp/coterie-build
+# Clone to your home directory (or anywhere on the EBS root volume).
+# DO NOT use /tmp — on most AMIs (including Amazon Linux and Ubuntu)
+# /tmp is mounted as tmpfs sized at half of RAM. A release-mode Rust
+# build will exhaust it mid-compile with "No space left on device"
+# even though `df -h /` shows plenty of space on the root volume.
+git clone https://github.com/your-org/coterie ~/coterie-build
+cd ~/coterie-build
 make release
 sudo mkdir -p /opt/coterie
 sudo cp target/release/coterie /opt/coterie/

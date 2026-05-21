@@ -125,9 +125,16 @@ ls -l /dev/disk/by-id/ | grep coterie
 # Mount target
 mkdir -p /var/lib/coterie
 
-# Persistent mount via /etc/fstab (using by-id to avoid /dev/sdX races)
-echo '/dev/disk/by-id/scsi-0DO_Volume_coterie-data /var/lib/coterie ext4 defaults,nofail,discard 0 2' \
+# Persistent mount via /etc/fstab. The `by-id` path avoids /dev/sdX
+# races; `nofail` keeps boot from hanging if the volume is missing;
+# `discard` enables online TRIM for the SSD; `noatime` skips access-
+# time writes (SQLite makes many reads — writing atime back on every
+# one is pointless I/O).
+echo '/dev/disk/by-id/scsi-0DO_Volume_coterie-data /var/lib/coterie ext4 defaults,nofail,discard,noatime 0 2' \
     >> /etc/fstab
+
+systemctl daemon-reload
+
 mount -a
 
 df -h /var/lib/coterie
@@ -188,11 +195,16 @@ host architecture between your laptop and the droplet):
 
 ```bash
 # On the droplet:
-apt-get install -y build-essential pkg-config libssl-dev
+apt-get install -y build-essential pkg-config libssl-dev git
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
 source $HOME/.cargo/env
-git clone https://github.com/your-org/coterie /tmp/coterie-build
-cd /tmp/coterie-build
+# Clone to /root (or anywhere on the real root disk). DO NOT use
+# /tmp — on DO's Debian/Ubuntu images /tmp is mounted as tmpfs sized
+# at half of RAM, and a release-mode Rust build will exhaust it
+# mid-compile with "No space left on device" even though `df -h /`
+# shows the root disk nearly empty.
+git clone https://github.com/IndustriousKraken/coterie /root/coterie-build
+cd /root/coterie-build
 make release
 mkdir -p /opt/coterie
 cp target/release/coterie /opt/coterie/
@@ -389,9 +401,10 @@ systemctl enable --now docker
 
 # Pull or build
 docker pull ghcr.io/your-org/coterie:latest
-# OR build from source:
-git clone https://github.com/your-org/coterie /tmp/coterie-build
-cd /tmp/coterie-build && docker build -t coterie:latest .
+# OR build from source (use /root, not /tmp — see the /tmp tmpfs
+# note in the systemd flow above):
+git clone https://github.com/your-org/coterie /root/coterie-build
+cd /root/coterie-build && docker build -t coterie:latest .
 
 # Place .env at /opt/coterie/.env (same as systemd flow above)
 mkdir -p /opt/coterie /var/lib/coterie
