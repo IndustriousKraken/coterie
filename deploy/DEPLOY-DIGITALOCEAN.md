@@ -513,6 +513,44 @@ backup script reads it directly.
 
 ---
 
+## Uninstalling / starting over
+
+If an install goes sideways and you want to wipe the slate, use
+`deploy/uninstall.sh`. Three modes:
+
+```bash
+# Soft: remove app files + systemd unit. KEEPS .env, data, user.
+# Use when you want to re-run release-deploy.sh fresh but not
+# lose your DB or secrets.
+bash /opt/coterie/deploy/uninstall.sh
+
+# Also wipe /var/lib/coterie (DB, uploads, backups). KEEPS user.
+bash /opt/coterie/deploy/uninstall.sh --data
+
+# Total scorched earth: remove user, .env, data, app, systemd unit.
+# Returns the droplet to "as if Coterie never ran."
+bash /opt/coterie/deploy/uninstall.sh --all
+
+# Skip the y/N prompt (for automation):
+bash /opt/coterie/deploy/uninstall.sh --all --yes
+```
+
+Each mode prints an inventory of what's present + a plan of what
+it will do before acting, and prompts for confirmation unless
+`--yes` is passed.
+
+If `/opt/coterie/` is already gone (e.g. a half-installed state
+where release-deploy.sh failed partway), grab the script from the
+repo:
+
+```bash
+curl -sfL https://raw.githubusercontent.com/IndustriousKraken/coterie/master/deploy/uninstall.sh \
+    -o /tmp/uninstall.sh
+bash /tmp/uninstall.sh
+```
+
+---
+
 ## Troubleshooting
 
 **`bind: address already in use`** — another service is on 8080.
