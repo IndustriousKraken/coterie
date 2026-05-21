@@ -274,14 +274,23 @@ impl MemberRepository for SqliteMemberRepository {
         let id_str = id.to_string();
         let mt_id_str = membership_type_id.to_string();
         let now_naive = now.naive_utc();
+        // Bulk-import billing-migration fields. When None, fall back to
+        // the same defaults the prior INSERT shape produced: `joined_at`
+        // defaults to `now`, the rest to SQL NULL.
+        let joined_at_naive = request.joined_at
+            .map(|dt| dt.naive_utc())
+            .unwrap_or(now_naive);
+        let dues_paid_until_naive = request.dues_paid_until.map(|dt| dt.naive_utc());
+        let email_verified_at_naive = request.email_verified_at.map(|dt| dt.naive_utc());
 
         sqlx::query(
             r#"
             INSERT INTO members (
                 id, email, username, full_name, password_hash,
                 status, membership_type_id, joined_at, bypass_dues,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                dues_paid_until, stripe_customer_id, stripe_subscription_id,
+                email_verified_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#
         )
         .bind(&id_str)
@@ -291,8 +300,12 @@ impl MemberRepository for SqliteMemberRepository {
         .bind(&password_hash)
         .bind(status_str)
         .bind(&mt_id_str)
-        .bind(now_naive)
+        .bind(joined_at_naive)
         .bind(0i32)  // bypass_dues as integer (0 = false)
+        .bind(dues_paid_until_naive)
+        .bind(&request.stripe_customer_id)
+        .bind(&request.stripe_subscription_id)
+        .bind(email_verified_at_naive)
         .bind(now_naive)
         .bind(now_naive)
         .execute(&self.pool)

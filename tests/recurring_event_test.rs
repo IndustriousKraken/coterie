@@ -137,6 +137,7 @@ async fn build() -> H {
             full_name: "Test Admin".to_string(),
             password: "p4ssword_long_enough".to_string(),
             membership_type_id: None,
+            ..Default::default()
         })
         .await
         .unwrap();

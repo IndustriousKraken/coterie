@@ -54,6 +54,7 @@ async fn delete_in_use_event_type_returns_event_type_display_name() -> anyhow::R
             full_name: "Owner".to_string(),
             password: "very-long-password-123".to_string(),
             membership_type_id: None,
+            ..Default::default()
         })
         .await?;
 
@@ -118,6 +119,7 @@ async fn delete_in_use_announcement_type_returns_announcement_type_display_name(
             full_name: "Ann Owner".to_string(),
             password: "very-long-password-123".to_string(),
             membership_type_id: None,
+            ..Default::default()
         })
         .await?;
 

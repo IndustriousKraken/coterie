@@ -946,6 +946,7 @@ pub async fn admin_create_member(
         full_name: form.full_name.clone(),
         password: form.password,
         membership_type_id: Some(membership_type_id),
+        ..Default::default()
     };
 
     match member_service.create(current_user.member.id, create_request).await {

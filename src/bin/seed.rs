@@ -442,6 +442,7 @@ async fn main() -> anyhow::Result<()> {
         full_name: config.admin.full_name.clone(),
         password: config.admin.password.clone(),
         membership_type_id: Some(admin_type_id),
+        ..Default::default()
     }).await?;
 
     member_repo.update(admin.id, UpdateMemberRequest {
@@ -467,6 +468,7 @@ async fn main() -> anyhow::Result<()> {
             full_name: user_config.full_name.clone(),
             password: user_config.password.clone(),
             membership_type_id: Some(mem_type_id),
+            ..Default::default()
         }).await?;
 
         let dues_until = if status == MemberStatus::Active {
@@ -539,6 +541,7 @@ async fn main() -> anyhow::Result<()> {
             full_name,
             password: "password123".to_string(),
             membership_type_id: Some(gen_config.membership_type_id),
+            ..Default::default()
         }).await?;
 
         let months_ago = gen_config.months_active;
