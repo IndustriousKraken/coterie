@@ -46,6 +46,11 @@ pub struct AutoRenew {
     settings_service: Arc<SettingsService>,
     integration_manager: Arc<IntegrationManager>,
     stripe_client: Option<Arc<StripeClient>>,
+    /// Absolute URL to this Coterie instance — used to build the
+    /// member-detail link in the terminal-failure AdminAlert body.
+    /// Threaded in from `BillingService::new` (same source as
+    /// `Notifications::base_url`).
+    base_url: String,
 }
 
 impl AutoRenew {
@@ -59,6 +64,7 @@ impl AutoRenew {
         settings_service: Arc<SettingsService>,
         integration_manager: Arc<IntegrationManager>,
         stripe_client: Option<Arc<StripeClient>>,
+        base_url: String,
     ) -> Self {
         Self {
             scheduled_payment_repo,
@@ -69,6 +75,7 @@ impl AutoRenew {
             settings_service,
             integration_manager,
             stripe_client,
+            base_url,
         }
     }
 
@@ -664,6 +671,60 @@ impl AutoRenew {
                         sp.member_id,
                         e
                     );
+
+                    // Re-fetch member for the alert body. Best-effort: if the
+                    // lookup fails (shouldn't, the member was just charged),
+                    // log and skip — the scheduled_payment row is already
+                    // marked Failed.
+                    if let Ok(Some(member)) =
+                        self.member_repo.find_by_id(sp.member_id).await
+                    {
+                        let amount_display =
+                            format!("${:.2}", sp.amount_cents as f64 / 100.0);
+                        let dues_until = member
+                            .dues_paid_until
+                            .map(|d| d.format("%B %d, %Y").to_string())
+                            .unwrap_or_else(|| "(unknown)".to_string());
+                        let portal_url = format!(
+                            "{}/portal/admin/members/{}",
+                            self.base_url.trim_end_matches('/'),
+                            member.id,
+                        );
+                        let subject = format!(
+                            "Coterie-managed renewal failed (final) — {}",
+                            member.full_name,
+                        );
+                        let body = format!(
+                            "Member: {} <{}>\n\
+                             Amount: {}\n\
+                             Retry count: {} / {}\n\
+                             Last failure: {}\n\
+                             Member detail: {}\n\
+                             \n\
+                             The auto-renew has been marked Failed permanently. \
+                             The member's membership will lapse on {}. Operator \
+                             action: contact the member or invite them to update \
+                             their payment method via the dues-restoration flow.",
+                            member.full_name,
+                            member.email,
+                            amount_display,
+                            sp.retry_count + 1,
+                            max_retries,
+                            e,
+                            portal_url,
+                            dues_until,
+                        );
+                        self.integration_manager
+                            .handle_event(IntegrationEvent::AdminAlert { subject, body })
+                            .await;
+                    } else {
+                        tracing::warn!(
+                            "Couldn't re-fetch member {} after terminal scheduled-payment \
+                             failure — AdminAlert not dispatched. Logs are the only \
+                             record of this failure.",
+                            sp.member_id,
+                        );
+                    }
                 } else {
                     // Back to pending for retry
                     self.scheduled_payment_repo
