@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use axum::{
     body::{to_bytes, Body},
     http::{header, Request, StatusCode},
@@ -23,8 +24,9 @@ use coterie::{
     api::state::{MoneyLimiter, RateLimiter},
     auth::{AuthService, CsrfService, PendingLoginService, SecretCrypto, TotpService},
     config::Settings,
-    domain::{CreateMemberRequest, MemberStatus, UpdateMemberRequest},
-    email::LogSender,
+    domain::{BillingMode, CreateMemberRequest, MemberStatus, UpdateMemberRequest},
+    email::{EmailMessage, EmailSender},
+    error::Result as CoterieResult,
     integrations::IntegrationManager,
     repository::{
         AnnouncementRepository, EventRepository, MemberRepository, PaymentRepository,
@@ -34,8 +36,33 @@ use coterie::{
     service::{settings_service::SettingsService, ServiceContext},
 };
 use sqlx::{Executor, SqlitePool};
+use tokio::sync::Mutex;
 use tower::ServiceExt;
 use uuid::Uuid;
+
+/// Records every email it's asked to send so tests can assert on the
+/// queue without parsing log lines. Used by tests that need to verify
+/// the import path did/didn't queue a transactional email.
+struct RecordingEmailSender {
+    sent: Mutex<Vec<EmailMessage>>,
+}
+
+impl RecordingEmailSender {
+    fn new() -> Arc<Self> {
+        Arc::new(Self { sent: Mutex::new(Vec::new()) })
+    }
+    async fn count(&self) -> usize {
+        self.sent.lock().await.len()
+    }
+}
+
+#[async_trait]
+impl EmailSender for RecordingEmailSender {
+    async fn send(&self, message: &EmailMessage) -> CoterieResult<()> {
+        self.sent.lock().await.push(message.clone());
+        Ok(())
+    }
+}
 
 // ---------------------------------------------------------------------
 // Harness
@@ -47,6 +74,7 @@ struct Harness {
     admin_id: Uuid,
     session_cookie: String,
     csrf_token: String,
+    email: Arc<RecordingEmailSender>,
 }
 
 async fn fresh_pool() -> SqlitePool {
@@ -118,10 +146,7 @@ async fn build_harness() -> Harness {
     let pending_login_service = Arc::new(PendingLoginService::new(pool.clone()));
     let settings_service = Arc::new(SettingsService::new(pool.clone(), crypto));
 
-    let email_sender = Arc::new(LogSender::new(
-        "test@example.com".to_string(),
-        "Test".to_string(),
-    ));
+    let email_sender = RecordingEmailSender::new();
     let integration_manager = Arc::new(IntegrationManager::new());
 
     let money_limiter = MoneyLimiter(RateLimiter::new(
@@ -136,7 +161,7 @@ async fn build_harness() -> Harness {
         payment_repo,
         integration_manager,
         auth_service.clone(),
-        email_sender,
+        email_sender.clone(),
         settings_service,
         csrf_service.clone(),
         totp_service,
@@ -189,6 +214,7 @@ async fn build_harness() -> Harness {
             full_name: "Admin User".to_string(),
             password: "p4ssword_long_enough".to_string(),
             membership_type_id: None,
+            ..Default::default()
         })
         .await
         .expect("create admin member");
@@ -237,6 +263,7 @@ async fn build_harness() -> Harness {
         admin_id: admin.id,
         session_cookie,
         csrf_token,
+        email: email_sender,
     }
 }
 
@@ -414,6 +441,7 @@ async fn import_partial_failure_reports_duplicate_email() {
         full_name: "Existing Dup".to_string(),
         password: "p4ssword_long_enough".to_string(),
         membership_type_id: None,
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -525,5 +553,193 @@ async fn import_unknown_membership_slug_fails_only_that_row() {
     assert!(
         text.contains("not-a-real-slug"),
         "expected unknown slug to appear in failure list; got:\n{}", text,
+    );
+}
+
+// ---------------------------------------------------------------------
+// a20-import-billing-fields: tests for the billing-migration columns
+// ---------------------------------------------------------------------
+
+/// Helper: look up a single member by email and return all relevant
+/// billing-migration fields. Panics if not found (caller's invariant).
+async fn fetch_member_billing(pool: &SqlitePool, email: &str) -> (
+    BillingMode,
+    Option<String>,
+    Option<String>,
+    Option<chrono::DateTime<chrono::Utc>>,
+    Option<chrono::DateTime<chrono::Utc>>,
+) {
+    use coterie::domain::Member;
+    let repo = SqliteMemberRepository::new(pool.clone());
+    let m: Member = repo.find_by_email(email).await.unwrap().expect("member");
+    (
+        m.billing_mode,
+        m.stripe_customer_id,
+        m.stripe_subscription_id,
+        m.dues_paid_until,
+        m.email_verified_at,
+    )
+}
+
+#[tokio::test]
+async fn import_with_stripe_subscription_sets_mode() {
+    let h = build_harness().await;
+
+    let csv = "email,username,full_name,membership_type_slug,stripe_customer_id,stripe_subscription_id\n\
+               s1@example.com,s1,Stripe One,regular,cus_ABC,sub_XYZ\n";
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(import_request(&h, "stripe-sub.csv", csv.as_bytes()))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let (mode, cust, sub, _, _) = fetch_member_billing(&h.pool, "s1@example.com").await;
+    assert_eq!(mode, BillingMode::StripeSubscription);
+    assert_eq!(cust.as_deref(), Some("cus_ABC"));
+    assert_eq!(sub.as_deref(), Some("sub_XYZ"));
+}
+
+#[tokio::test]
+async fn import_with_customer_only_stays_manual() {
+    let h = build_harness().await;
+
+    let csv = "email,username,full_name,membership_type_slug,stripe_customer_id\n\
+               c1@example.com,c1,Customer One,regular,cus_DEF\n";
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(import_request(&h, "stripe-cust.csv", csv.as_bytes()))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let (mode, cust, sub, _, _) = fetch_member_billing(&h.pool, "c1@example.com").await;
+    assert_eq!(mode, BillingMode::Manual);
+    assert_eq!(cust.as_deref(), Some("cus_DEF"));
+    assert_eq!(sub, None);
+}
+
+#[tokio::test]
+async fn import_subscription_without_customer_fails_row() {
+    let h = build_harness().await;
+    let before = member_count(&h.pool).await;
+
+    // sub_id without cust_id is a malformed row — must fail before
+    // any member is created, and the failure reason must match the spec.
+    let csv = "email,username,full_name,membership_type_slug,stripe_customer_id,stripe_subscription_id\n\
+               orphan@example.com,orphan,Orphan,regular,,sub_NO_CUST\n";
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(import_request(&h, "orphan-sub.csv", csv.as_bytes()))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+
+    // No member created; failure reason carried in result fragment.
+    assert_eq!(member_count(&h.pool).await, before);
+    assert!(!member_exists(&h.pool, "orphan@example.com").await);
+    assert!(
+        text.contains("Stripe subscription_id present without customer_id"),
+        "expected documented failure reason; got:\n{}", text,
+    );
+}
+
+#[tokio::test]
+async fn import_with_dues_paid_until_persists_date() {
+    let h = build_harness().await;
+
+    let csv = "email,username,full_name,membership_type_slug,dues_paid_until\n\
+               dpu@example.com,dpu,DPU,regular,2027-01-15\n";
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(import_request(&h, "dpu.csv", csv.as_bytes()))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let (_, _, _, dpu, _) = fetch_member_billing(&h.pool, "dpu@example.com").await;
+    let dpu = dpu.expect("dues_paid_until should be set");
+    assert_eq!(dpu.format("%Y-%m-%d").to_string(), "2027-01-15");
+    assert_eq!(dpu.format("%H:%M:%S").to_string(), "00:00:00");
+}
+
+#[tokio::test]
+async fn import_malformed_timestamp_fails_row() {
+    let h = build_harness().await;
+    let before = member_count(&h.pool).await;
+
+    // First row has a bad joined_at; the second row is well-formed and
+    // must still succeed. The failure reason must match the spec.
+    let csv = "email,username,full_name,membership_type_slug,joined_at\n\
+               bad@example.com,bad,Bad Row,regular,not-a-date\n\
+               good@example.com,good,Good Row,regular,2025-06-01\n";
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(import_request(&h, "bad-ts.csv", csv.as_bytes()))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+
+    // Bad row was rejected with the documented reason. The template
+    // HTML-escapes the quotes around the cell value, so check both
+    // halves rather than the raw spec string.
+    assert!(!member_exists(&h.pool, "bad@example.com").await);
+    assert!(
+        text.contains("Could not parse joined_at:") && text.contains("not-a-date"),
+        "expected per-field parse-error reason; got:\n{}", text,
+    );
+
+    // Good row succeeded.
+    assert!(member_exists(&h.pool, "good@example.com").await);
+    assert_eq!(member_count(&h.pool).await, before + 1);
+}
+
+#[tokio::test]
+async fn import_email_verified_at_skips_verification_email() {
+    let h = build_harness().await;
+    let emails_before = h.email.count().await;
+
+    let csv = "email,username,full_name,membership_type_slug,email_verified_at\n\
+               verified@example.com,verified,Pre Verified,regular,2024-01-01T00:00:00Z\n";
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(import_request(&h, "verified.csv", csv.as_bytes()))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Row succeeded.
+    assert!(member_exists(&h.pool, "verified@example.com").await);
+
+    // email_verified_at is populated on the created member.
+    let (_, _, _, _, evat) = fetch_member_billing(&h.pool, "verified@example.com").await;
+    let evat = evat.expect("email_verified_at should be set");
+    assert_eq!(evat.format("%Y-%m-%dT%H:%M:%SZ").to_string(), "2024-01-01T00:00:00Z");
+
+    // The import did not queue any new emails — bulk_import doesn't
+    // send verification emails today, and `email_verified_at` keeps
+    // it that way for this row going forward.
+    assert_eq!(
+        h.email.count().await,
+        emails_before,
+        "import_email_verified_at_skips_verification_email: no new emails should be queued",
     );
 }

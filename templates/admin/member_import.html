@@ -64,11 +64,23 @@
                             <code class="px-1 bg-white border rounded">discord_id</code>.
                         </p>
                         <p>
+                            <strong>Billing-migration fields</strong> (optional, for importing
+                            from an existing billing system):
+                            <code class="px-1 bg-white border rounded">dues_paid_until</code>,
+                            <code class="px-1 bg-white border rounded">joined_at</code>,
+                            <code class="px-1 bg-white border rounded">email_verified_at</code>
+                            (ISO 8601 or <code>YYYY-MM-DD</code>),
+                            <code class="px-1 bg-white border rounded">stripe_customer_id</code>,
+                            <code class="px-1 bg-white border rounded">stripe_subscription_id</code>.
+                            Provide <code>stripe_customer_id</code> + <code>stripe_subscription_id</code>
+                            together when importing members from an existing Stripe-billed system.
+                            Coterie will observe the existing subscription until the member
+                            organically migrates.
+                        </p>
+                        <p>
                             Other columns from a previous export
-                            (<code>id</code>, <code>joined_at</code>, <code>is_admin</code>,
-                            <code>bypass_dues</code>, <code>email_verified_at</code>,
-                            <code>dues_paid_until</code>) are silently ignored — the system
-                            controls those fields.
+                            (<code>id</code>, <code>is_admin</code>, <code>bypass_dues</code>)
+                            are silently ignored — the system controls those fields.
                         </p>
                         <p>
                             Imported members start <strong>Pending</strong> (or the row's

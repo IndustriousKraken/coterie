@@ -142,6 +142,7 @@ async fn insert_member(
             full_name: "Test Member".to_string(),
             password: "p4ssword_long_enough".to_string(),
             membership_type_id: None,
+            ..Default::default()
         })
         .await
         .expect("create member");

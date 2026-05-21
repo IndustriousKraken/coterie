@@ -25,6 +25,7 @@ async fn test_member_crud() -> anyhow::Result<()> {
         full_name: "Test User".to_string(),
         password: "secure_password123".to_string(),
         membership_type_id: None,
+        ..Default::default()
     };
     
     let member = repo.create(create_request).await?;

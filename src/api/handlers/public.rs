@@ -135,6 +135,7 @@ pub async fn signup(
         full_name: request.full_name,
         password: request.password,
         membership_type_id,
+        ..Default::default()
     };
 
     // Create the member. Use a generic error for UNIQUE violations to

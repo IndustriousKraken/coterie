@@ -126,6 +126,7 @@ pub async fn setup_handler(
         full_name: request.full_name.clone(),
         password: request.password.clone(),
         membership_type_id: None,
+        ..Default::default()
     };
 
     let member = match member_repo.create(create_request).await {

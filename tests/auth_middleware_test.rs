@@ -179,6 +179,7 @@ async fn make_member_with_session(
             full_name: "Test User".to_string(),
             password: "p4ssword_long_enough".to_string(),
             membership_type_id: None,
+            ..Default::default()
         })
         .await
         .expect("create member");

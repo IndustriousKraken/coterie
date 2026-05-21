@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::{
     auth::{self, AuthService},
     domain::{
-        CreateMemberRequest, Member, MemberStatus, UpdateMemberRequest,
+        BillingMode, CreateMemberRequest, Member, MemberStatus, UpdateMemberRequest,
     },
     email::{self, templates::{VerifyHtml, VerifyText, WelcomeHtml, WelcomeText}, EmailSender},
     error::{AppError, Result},
@@ -43,6 +43,23 @@ pub struct ImportRow {
     pub status: Option<MemberStatus>,
     pub notes: Option<String>,
     pub discord_id: Option<String>,
+    /// Billing-migration fields. All optional. When supplied, they
+    /// seed the corresponding columns on the created member so an
+    /// imported row from an existing billing system can preserve its
+    /// paid-through date, Stripe linkage, historical join date, and
+    /// already-verified email. See the `bulk-member-csv-import`
+    /// capability spec for the per-field semantics.
+    pub dues_paid_until: Option<DateTime<Utc>>,
+    pub stripe_customer_id: Option<String>,
+    pub stripe_subscription_id: Option<String>,
+    pub joined_at: Option<DateTime<Utc>>,
+    pub email_verified_at: Option<DateTime<Utc>>,
+    /// Sentinel: parser sets this when a cell couldn't be coerced
+    /// (e.g., malformed timestamp). `bulk_import` checks this first
+    /// and fails the row with the carried reason so the row_index in
+    /// the resulting summary aligns with the original CSV position.
+    /// `None` for well-formed rows.
+    pub parse_error: Option<String>,
 }
 
 /// A single row that didn't make it into the database. `row_index` is
@@ -551,6 +568,20 @@ impl MemberService {
             let full_name = row.full_name.trim().to_string();
             let slug = row.membership_type_slug.trim().to_string();
 
+            // Parser-surfaced per-row failure (e.g., a malformed
+            // timestamp cell). Fail the row first so the parse error
+            // reaches the operator instead of a downstream "invalid
+            // email" or similar masking message.
+            if let Some(reason) = &row.parse_error {
+                summary.failed += 1;
+                summary.failures.push(ImportFailure {
+                    row_index,
+                    email: Some(email.clone()).filter(|s| !s.is_empty()),
+                    reason: reason.clone(),
+                });
+                continue;
+            }
+
             // Row-level validation. Each branch records a failure and
             // continues to the next row.
             if email.is_empty() || !email.contains('@') {
@@ -596,6 +627,22 @@ impl MemberService {
                     continue;
                 }
             };
+
+            // Billing-migration inconsistency: a Stripe subscription
+            // always has a customer, so a row carrying a sub_id but no
+            // customer_id is malformed. Catch this BEFORE create so no
+            // member row is written for the bad row.
+            if row.stripe_subscription_id.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_some()
+                && row.stripe_customer_id.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_none()
+            {
+                summary.failed += 1;
+                summary.failures.push(ImportFailure {
+                    row_index,
+                    email: Some(email.clone()),
+                    reason: "Stripe subscription_id present without customer_id".to_string(),
+                });
+                continue;
+            }
 
             // Duplicate detection — INSERT-only semantics, no upsert.
             // We process rows sequentially so a prior row's insert is
@@ -653,12 +700,29 @@ impl MemberService {
                 hex::encode(bytes),
             );
 
+            // Normalize the optional billing-migration strings: trim
+            // and drop empties so a blank CSV cell behaves identically
+            // to an omitted column.
+            let stripe_customer_id = row.stripe_customer_id
+                .as_ref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let stripe_subscription_id = row.stripe_subscription_id
+                .as_ref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+
             let create_request = CreateMemberRequest {
                 email: email.clone(),
                 username: username.clone(),
                 full_name: full_name.clone(),
                 password: sentinel_password,
                 membership_type_id: Some(membership_type.id),
+                dues_paid_until: row.dues_paid_until,
+                stripe_customer_id: stripe_customer_id.clone(),
+                stripe_subscription_id: stripe_subscription_id.clone(),
+                joined_at: row.joined_at,
+                email_verified_at: row.email_verified_at,
             };
 
             let member = match self.member_repo.create(create_request).await {
@@ -692,6 +756,25 @@ impl MemberService {
                     continue;
                 }
             };
+
+            // Infer `billing_mode` from sub-id presence (design D2).
+            // A row carrying a Stripe subscription means Coterie is
+            // observing that subscription, not the default Manual mode.
+            // The inconsistency check above guarantees that if we have
+            // a sub_id we also have a customer_id, so this branch is
+            // only reached for a well-formed Stripe-migrated row.
+            if let Some(sub_id) = stripe_subscription_id.as_deref() {
+                if let Err(e) = self
+                    .member_repo
+                    .set_billing_mode(member.id, BillingMode::StripeSubscription, Some(sub_id))
+                    .await
+                {
+                    tracing::error!(
+                        "Bulk import: created {} but billing_mode update failed: {}",
+                        member.id, e,
+                    );
+                }
+            }
 
             // Apply optional fields. Status default is Pending (the
             // repo's default); only call update when the row asked for
@@ -943,6 +1026,7 @@ mod tests {
             full_name: "Test User".to_string(),
             password: "secure_password123".to_string(),
             membership_type_id: None,
+            ..Default::default()
         })
         .await
         .unwrap()
@@ -1166,6 +1250,7 @@ mod tests {
             full_name: "New User".to_string(),
             password: "secure_password123".to_string(),
             membership_type_id: None,
+            ..Default::default()
         };
         let created = svc.create(actor.id, request).await.unwrap();
 

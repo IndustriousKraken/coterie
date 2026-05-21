@@ -174,6 +174,7 @@ async fn build_harness() -> Harness {
             full_name: "Admin User".to_string(),
             password: "p4ssword_long_enough".to_string(),
             membership_type_id: None,
+            ..Default::default()
         })
         .await
         .expect("create admin member");
@@ -238,6 +239,7 @@ async fn seed_member(
             full_name: full_name.to_string(),
             password: "p4ssword_long_enough".to_string(),
             membership_type_id: None,
+            ..Default::default()
         })
         .await
         .expect("create member");

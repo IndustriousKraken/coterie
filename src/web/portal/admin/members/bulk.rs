@@ -318,6 +318,7 @@ pub async fn admin_members_import(
 /// truly unrecoverable parse errors (the file isn't CSV, the header is
 /// missing the `email` column) abort here.
 fn parse_import_csv(bytes: &[u8]) -> std::result::Result<Vec<crate::service::member_service::ImportRow>, String> {
+    use chrono::{DateTime, NaiveDate, Utc};
     use crate::service::member_service::ImportRow;
 
     let mut reader = csv::ReaderBuilder::new()
@@ -354,6 +355,34 @@ fn parse_import_csv(bytes: &[u8]) -> std::result::Result<Vec<crate::service::mem
     let status_idx = col("status");
     let notes_idx = col("notes");
     let discord_idx = col("discord_id");
+    // Billing-migration optional columns. Same case-insensitive,
+    // any-position handling as the others.
+    let dues_paid_until_idx = col("dues_paid_until");
+    let stripe_customer_idx = col("stripe_customer_id");
+    let stripe_subscription_idx = col("stripe_subscription_id");
+    let joined_at_idx = col("joined_at");
+    let email_verified_at_idx = col("email_verified_at");
+
+    // Parse a timestamp cell. RFC 3339 first; fall back to
+    // `YYYY-MM-DD` (interpreted as midnight UTC). Empty cell → `None`.
+    // On parse failure, the caller sets `parse_error` on the row so
+    // `bulk_import` rejects it with the documented reason.
+    fn parse_timestamp(field: &str, cell: &str)
+        -> std::result::Result<Option<DateTime<Utc>>, String>
+    {
+        let trimmed = cell.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        if let Ok(dt) = DateTime::parse_from_rfc3339(trimmed) {
+            return Ok(Some(dt.with_timezone(&Utc)));
+        }
+        if let Ok(d) = NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
+            let dt = d.and_hms_opt(0, 0, 0).unwrap().and_utc();
+            return Ok(Some(dt));
+        }
+        Err(format!("Could not parse {}: '{}'", field, trimmed))
+    }
 
     let mut rows = Vec::new();
     for record in reader.records() {
@@ -368,8 +397,43 @@ fn parse_import_csv(bytes: &[u8]) -> std::result::Result<Vec<crate::service::mem
         let get_opt = |i: Option<usize>| -> Option<String> {
             i.and_then(|idx| rec.get(idx)).map(|s| s.to_string()).filter(|s| !s.is_empty())
         };
+        // Like `get_opt` but also trims and treats trim-empty as None.
+        // Used for the Stripe ID columns (trimmed strings, blank = None).
+        let get_trimmed_opt = |i: Option<usize>| -> Option<String> {
+            i.and_then(|idx| rec.get(idx))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        };
 
         let status = get_opt(status_idx).and_then(|s| crate::domain::MemberStatus::from_str(s.trim()));
+
+        // Parse the three optional timestamps; the first failure wins
+        // and stamps `parse_error` so the row fails downstream rather
+        // than being silently dropped.
+        let cell_for = |idx: Option<usize>| -> &str {
+            idx.and_then(|i| rec.get(i)).unwrap_or("")
+        };
+        let mut parse_error: Option<String> = None;
+        let dues_paid_until = match parse_timestamp("dues_paid_until", cell_for(dues_paid_until_idx)) {
+            Ok(opt) => opt,
+            Err(e) => { parse_error = Some(e); None }
+        };
+        let joined_at = if parse_error.is_some() {
+            None
+        } else {
+            match parse_timestamp("joined_at", cell_for(joined_at_idx)) {
+                Ok(opt) => opt,
+                Err(e) => { parse_error = Some(e); None }
+            }
+        };
+        let email_verified_at = if parse_error.is_some() {
+            None
+        } else {
+            match parse_timestamp("email_verified_at", cell_for(email_verified_at_idx)) {
+                Ok(opt) => opt,
+                Err(e) => { parse_error = Some(e); None }
+            }
+        };
 
         rows.push(ImportRow {
             email: get(email_idx),
@@ -379,6 +443,12 @@ fn parse_import_csv(bytes: &[u8]) -> std::result::Result<Vec<crate::service::mem
             status,
             notes: get_opt(notes_idx),
             discord_id: get_opt(discord_idx),
+            dues_paid_until,
+            stripe_customer_id: get_trimmed_opt(stripe_customer_idx),
+            stripe_subscription_id: get_trimmed_opt(stripe_subscription_idx),
+            joined_at,
+            email_verified_at,
+            parse_error,
         });
     }
 

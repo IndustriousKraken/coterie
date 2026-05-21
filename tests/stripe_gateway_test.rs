@@ -91,6 +91,7 @@ async fn insert_member_with_customer(
         full_name: "Test Member".to_string(),
         password: "p4ssword_long_enough".to_string(),
         membership_type_id: None,
+        ..Default::default()
     }).await.expect("create member");
 
     sqlx::query("UPDATE members SET stripe_customer_id = ? WHERE id = ?")
@@ -184,6 +185,7 @@ async fn charge_saved_card_member_without_customer_bails_before_stripe() {
         full_name: "No Customer".to_string(),
         password: "p4ssword_long_enough".to_string(),
         membership_type_id: None,
+        ..Default::default()
     }).await.unwrap();
 
     let (client, fake) = build_client_with_fake(pool);

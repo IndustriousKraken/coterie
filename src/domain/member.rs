@@ -153,7 +153,7 @@ pub struct MemberProfile {
     pub discord_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CreateMemberRequest {
     pub email: String,
     pub username: String,
@@ -164,6 +164,16 @@ pub struct CreateMemberRequest {
     /// public signup (no slug provided), tests, and the seed binary.
     /// Admin "create member" passes the chosen ID explicitly.
     pub membership_type_id: Option<Uuid>,
+    /// Bulk-import billing-migration fields. All optional and `None`
+    /// for the admin "create member" form and public signup paths —
+    /// only the CSV importer populates them, to seed historical
+    /// `joined_at`, Stripe ID linkage, paid-through date, and pre-
+    /// verified email at migration time.
+    pub dues_paid_until: Option<DateTime<Utc>>,
+    pub stripe_customer_id: Option<String>,
+    pub stripe_subscription_id: Option<String>,
+    pub joined_at: Option<DateTime<Utc>>,
+    pub email_verified_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

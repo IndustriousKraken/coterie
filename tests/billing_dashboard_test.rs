@@ -51,6 +51,7 @@ async fn make_member(pool: &SqlitePool) -> Uuid {
             full_name: "Test".to_string(),
             password: "p4ssword_long_enough".to_string(),
             membership_type_id: None,
+            ..Default::default()
         })
         .await
         .unwrap();

@@ -164,6 +164,7 @@ async fn seed_admin(state: &AppState) {
         full_name: "Seed Admin".to_string(),
         password: "SeedPassword1".to_string(),
         membership_type_id: None,
+        ..Default::default()
     };
     let member = state
         .service_context

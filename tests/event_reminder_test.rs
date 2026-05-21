@@ -143,6 +143,7 @@ async fn build_with(
             full_name: "RSVP'd Member".to_string(),
             password: "p4ssword_long_enough".to_string(),
             membership_type_id: None,
+            ..Default::default()
         })
         .await
         .expect("create member");
