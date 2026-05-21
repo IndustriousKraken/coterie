@@ -59,6 +59,7 @@ impl BillingService {
             settings_service.clone(),
             integration_manager.clone(),
             stripe_client,
+            base_url.clone(),
         );
         let notifications = notifications::Notifications::new(
             member_repo.clone(),
