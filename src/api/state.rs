@@ -25,7 +25,8 @@ use crate::{
         announcement_admin_service::AnnouncementAdminService, audit_service::AuditService,
         basic_type_service::BasicTypeService, billing_service::BillingService,
         event_admin_service::EventAdminService, member_service::MemberService,
-        membership_type_service::MembershipTypeService, payment_service::PaymentService,
+        membership_type_service::MembershipTypeService,
+        payment_admin_service::PaymentAdminService, payment_service::PaymentService,
         recurring_event_service::RecurringEventService, settings_service::SettingsService,
         ServiceContext,
     },
@@ -172,6 +173,7 @@ impl AppState {
         billing_service: Arc<BillingService>,
         settings: Arc<Settings>,
         bot_challenge_verifier: Arc<dyn BotChallengeVerifier>,
+        money_limiter: MoneyLimiter,
     ) -> Self {
         Self {
             service_context,
@@ -180,7 +182,7 @@ impl AppState {
             billing_service,
             settings,
             login_limiter: RateLimiter::new(5, Duration::from_secs(15 * 60)),
-            money_limiter: RateLimiter::new(10, Duration::from_secs(60)),
+            money_limiter: money_limiter.0,
             setup_lock: Arc::new(AsyncMutex::new(())),
             admin_exists_observed: Arc::new(AtomicBool::new(false)),
             bot_challenge_verifier,
@@ -357,6 +359,12 @@ impl FromRef<AppState> for Arc<EventAdminService> {
 impl FromRef<AppState> for Arc<AnnouncementAdminService> {
     fn from_ref(state: &AppState) -> Self {
         state.service_context.announcement_admin_service.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<PaymentAdminService> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.payment_admin_service.clone()
     }
 }
 

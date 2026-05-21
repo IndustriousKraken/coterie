@@ -5,6 +5,7 @@ pub mod configurable_types;
 pub mod basic_type_service;
 pub mod event_admin_service;
 pub mod member_service;
+pub mod payment_admin_service;
 pub mod payment_service;
 pub mod recurring_event_service;
 pub mod settings_service;
@@ -12,15 +13,18 @@ pub mod membership_type_service;
 
 use std::sync::Arc;
 use sqlx::SqlitePool;
+use crate::api::state::MoneyLimiter;
 use crate::repository::*;
 use crate::integrations::IntegrationManager;
 use crate::auth::{AuthService, CsrfService, PendingLoginService, TotpService};
 use crate::domain::BasicTypeKind;
 use crate::email::EmailSender;
+use crate::payments::StripeClient;
 use announcement_admin_service::AnnouncementAdminService;
 use audit_service::AuditService;
 use event_admin_service::EventAdminService;
 use member_service::MemberService;
+use payment_admin_service::PaymentAdminService;
 use payment_service::PaymentService;
 use settings_service::SettingsService;
 use basic_type_service::BasicTypeService;
@@ -55,6 +59,7 @@ pub struct ServiceContext {
     pub member_service: Arc<MemberService>,
     pub event_admin_service: Arc<EventAdminService>,
     pub announcement_admin_service: Arc<AnnouncementAdminService>,
+    pub payment_admin_service: Arc<PaymentAdminService>,
     pub db_pool: SqlitePool,
 }
 
@@ -71,6 +76,8 @@ impl ServiceContext {
         csrf_service: Arc<CsrfService>,
         totp_service: Arc<TotpService>,
         pending_login_service: Arc<PendingLoginService>,
+        stripe_client: Option<Arc<StripeClient>>,
+        money_limiter: MoneyLimiter,
         base_url: String,
         db_pool: SqlitePool,
     ) -> Self {
@@ -143,6 +150,14 @@ impl ServiceContext {
             integration_manager.clone(),
         ));
 
+        let payment_admin_service = Arc::new(PaymentAdminService::new(
+            payment_repo.clone(),
+            stripe_client,
+            audit_service.clone(),
+            integration_manager.clone(),
+            money_limiter,
+        ));
+
         Self {
             member_repo,
             event_repo,
@@ -171,6 +186,7 @@ impl ServiceContext {
             member_service,
             event_admin_service,
             announcement_admin_service,
+            payment_admin_service,
             db_pool,
         }
     }

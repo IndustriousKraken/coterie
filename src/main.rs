@@ -185,6 +185,46 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Initialize Stripe client up front (before ServiceContext) so
+    // PaymentAdminService can take it as a constructor dep. The
+    // companion WebhookDispatcher is built further down — it needs
+    // fields that live on ServiceContext. Stripe is wired only when
+    // both an API key AND a webhook secret are configured; missing
+    // either disables Stripe entirely.
+    let stripe_client: Option<Arc<payments::StripeClient>> = if settings.stripe.enabled {
+        match (
+            settings.stripe.secret_key.clone(),
+            settings.stripe.webhook_secret.clone(),
+        ) {
+            (Some(api_key), Some(_)) => {
+                tracing::info!("Stripe payment processing enabled");
+                Some(Arc::new(payments::StripeClient::new(
+                    api_key,
+                    payment_repo.clone(),
+                    member_repo.clone(),
+                )))
+            }
+            _ => {
+                tracing::warn!("Stripe enabled but missing configuration");
+                None
+            }
+        }
+    } else {
+        tracing::info!("Stripe payment processing disabled");
+        None
+    };
+
+    // Per-IP rate limiter for money-moving endpoints (charge, donate,
+    // refund). Built once and shared between AppState (login/charge
+    // handlers extract it via FromRef) and ServiceContext
+    // (PaymentAdminService holds it so the refund chain owns its own
+    // limit check). Both views must point at the same internal map or
+    // limits silently halve.
+    let money_limiter = api::state::MoneyLimiter(api::state::RateLimiter::new(
+        10,
+        std::time::Duration::from_secs(60),
+    ));
+
     // Create service context
     let service_context = Arc::new(ServiceContext::new(
         member_repo,
@@ -198,6 +238,8 @@ async fn main() -> anyhow::Result<()> {
         csrf_service,
         totp_service,
         pending_login_service,
+        stripe_client.clone(),
+        money_limiter.clone(),
         settings.server.base_url.clone(),
         db_pool.clone(),
     ));
@@ -323,20 +365,15 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Initialize Stripe client + webhook dispatcher if configured.
-    // The two share the same gateway instance (and the same set of
-    // dependencies) but each owns the half it cares about — outbound
-    // calls vs inbound event dispatch.
-    let (stripe_client, webhook_dispatcher) = if settings.stripe.enabled {
-        if let (Some(api_key), Some(webhook_secret)) =
-            (settings.stripe.secret_key.clone(), settings.stripe.webhook_secret.clone()) {
-            tracing::info!("Stripe payment processing enabled");
-            let client = Arc::new(payments::StripeClient::new(
-                api_key,
-                payment_repo.clone(),
-                service_context.member_repo.clone(),
-            ));
-            let dispatcher = Arc::new(payments::WebhookDispatcher::new(
+    // Stripe webhook dispatcher — paired with the StripeClient built
+    // above. Stays here (after ServiceContext::new) because it pulls
+    // several service_context-owned fields (processed_events_repo,
+    // membership_type_service, integration_manager). Built only when
+    // a configured stripe_client is present; the API-key / secret
+    // pair check already happened up top.
+    let webhook_dispatcher: Option<Arc<payments::WebhookDispatcher>> = match &stripe_client {
+        Some(client) => settings.stripe.webhook_secret.clone().map(|webhook_secret| {
+            Arc::new(payments::WebhookDispatcher::new(
                 client.gateway(),
                 webhook_secret,
                 payment_repo,
@@ -344,15 +381,9 @@ async fn main() -> anyhow::Result<()> {
                 service_context.processed_events_repo.clone(),
                 service_context.membership_type_service.clone(),
                 service_context.integration_manager.clone(),
-            ));
-            (Some(client), Some(dispatcher))
-        } else {
-            tracing::warn!("Stripe enabled but missing configuration");
-            (None, None)
-        }
-    } else {
-        tracing::info!("Stripe payment processing disabled");
-        (None, None)
+            ))
+        }),
+        None => None,
     };
 
     // Build BillingService once so the runner and every request share
@@ -399,6 +430,7 @@ async fn main() -> anyhow::Result<()> {
         billing_service,
         Arc::new(settings.clone()),
         bot_challenge_verifier,
+        money_limiter,
     );
 
     // Spawn periodic cleanup for the login rate limiter

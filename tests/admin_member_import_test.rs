@@ -20,6 +20,7 @@ use axum::{
     Router,
 };
 use coterie::{
+    api::state::{MoneyLimiter, RateLimiter},
     auth::{AuthService, CsrfService, PendingLoginService, SecretCrypto, TotpService},
     config::Settings,
     domain::{CreateMemberRequest, MemberStatus, UpdateMemberRequest},
@@ -123,6 +124,11 @@ async fn build_harness() -> Harness {
     ));
     let integration_manager = Arc::new(IntegrationManager::new());
 
+    let money_limiter = MoneyLimiter(RateLimiter::new(
+        10,
+        std::time::Duration::from_secs(60),
+    ));
+
     let service_context = Arc::new(ServiceContext::new(
         member_repo.clone(),
         event_repo,
@@ -135,6 +141,8 @@ async fn build_harness() -> Harness {
         csrf_service.clone(),
         totp_service,
         pending_login_service,
+        None, // stripe_client not needed for these tests
+        money_limiter.clone(),
         settings.server.base_url.clone(),
         pool.clone(),
     ));
@@ -151,6 +159,7 @@ async fn build_harness() -> Harness {
         billing_service,
         settings,
         Arc::new(coterie::api::middleware::bot_challenge::DisabledVerifier),
+        money_limiter,
     );
 
     // Seed an active membership type with the slug "regular". The

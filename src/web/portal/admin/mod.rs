@@ -7,5 +7,6 @@ pub mod email;
 pub mod events;
 pub mod members;
 pub mod partials;
+pub mod payments;
 pub mod settings;
 pub mod types;
