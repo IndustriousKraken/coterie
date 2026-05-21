@@ -25,7 +25,7 @@ use crate::{
         audit_service::AuditService, membership_type_service::MembershipTypeService,
         settings_service::SettingsService,
     },
-    web::templates::{BaseContext, HtmlTemplate, filters},
+    web::templates::{BaseContext, HtmlTemplate},
 };
 use super::{MemberInfo, is_admin};
 
