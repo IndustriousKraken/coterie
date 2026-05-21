@@ -24,7 +24,7 @@ use axum::{
 use coterie::{
     api::{
         middleware::bot_challenge::DisabledVerifier,
-        state::AppState,
+        state::{AppState, MoneyLimiter, RateLimiter},
     },
     auth::{AuthService, CsrfService, PendingLoginService, SecretCrypto, TotpService},
     config::Settings,
@@ -117,6 +117,11 @@ async fn build_app_state(pool: SqlitePool) -> AppState {
     ));
     let integration_manager = Arc::new(IntegrationManager::new());
 
+    let money_limiter = MoneyLimiter(RateLimiter::new(
+        10,
+        std::time::Duration::from_secs(60),
+    ));
+
     let service_context = Arc::new(ServiceContext::new(
         member_repo,
         event_repo,
@@ -129,6 +134,8 @@ async fn build_app_state(pool: SqlitePool) -> AppState {
         csrf_service,
         totp_service,
         pending_login_service,
+        None, // stripe_client not needed for these tests
+        money_limiter.clone(),
         settings.server.base_url.clone(),
         pool.clone(),
     ));
@@ -145,6 +152,7 @@ async fn build_app_state(pool: SqlitePool) -> AppState {
         billing_service,
         settings,
         Arc::new(DisabledVerifier),
+        money_limiter,
     )
 }
 

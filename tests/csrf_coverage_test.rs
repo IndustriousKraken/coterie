@@ -21,6 +21,7 @@ use axum::{
     Router,
 };
 use coterie::{
+    api::state::{MoneyLimiter, RateLimiter},
     auth::{AuthService, CsrfService, PendingLoginService, SecretCrypto, TotpService},
     config::Settings,
     email::LogSender,
@@ -121,6 +122,11 @@ async fn build_app() -> Router {
     ));
     let integration_manager = Arc::new(IntegrationManager::new());
 
+    let money_limiter = MoneyLimiter(RateLimiter::new(
+        10,
+        std::time::Duration::from_secs(60),
+    ));
+
     let service_context = Arc::new(ServiceContext::new(
         member_repo,
         event_repo,
@@ -133,6 +139,8 @@ async fn build_app() -> Router {
         csrf_service,
         totp_service,
         pending_login_service,
+        None, // stripe_client not needed for these tests
+        money_limiter.clone(),
         settings.server.base_url.clone(),
         pool.clone(),
     ));
@@ -149,6 +157,7 @@ async fn build_app() -> Router {
         billing_service,
         settings,
         std::sync::Arc::new(coterie::api::middleware::bot_challenge::DisabledVerifier),
+        money_limiter,
     );
 
     let api_app = coterie::api::create_app(app_state.clone());
