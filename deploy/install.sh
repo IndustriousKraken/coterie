@@ -81,7 +81,7 @@ Coterie scaffolding is in place. Remaining steps:
        sudo cp .env.example $APP_DIR/.env
        sudo chown $USER_NAME:$GROUP_NAME $APP_DIR/.env
        sudo chmod 0640 $APP_DIR/.env
-       sudo $EDITOR $APP_DIR/.env
+       sudo ${EDITOR:-nano} $APP_DIR/.env
 
      Generate the session secret with:
        openssl rand -hex 32
