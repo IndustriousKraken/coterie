@@ -102,6 +102,12 @@ jobs:
           cp -r static "dist/$STAGE/"
           cp -r migrations "dist/$STAGE/"
           cp -r deploy "dist/$STAGE/"
+          cp .env.example "dist/$STAGE/"
+          # config/ holds default settings the binary reads at runtime
+          # if present; templates/ holds Askama templates (compile-time
+          # only, but ship them for parity with the staging deploy).
+          [ -d config ] && cp -r config "dist/$STAGE/" || true
+          [ -d templates ] && cp -r templates "dist/$STAGE/" || true
           echo "${{ steps.version.outputs.tag }}" > "dist/$STAGE/VERSION"
           echo "${{ steps.version.outputs.sha }}" >> "dist/$STAGE/VERSION"
           (cd dist && tar czf "$STAGE.tar.gz" "$STAGE")

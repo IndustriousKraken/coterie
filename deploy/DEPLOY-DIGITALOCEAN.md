@@ -175,23 +175,44 @@ apt-get install -y awscli
 
 ## 5. Deploy the Coterie code
 
-You need the `coterie` binary, the `static/` directory (built CSS),
-and the `deploy/` directory. The simplest way is rsync from your dev
-machine:
+**Happy path — pull a pre-built release tarball from GitHub.**
+The `release.yml` workflow builds a musl-static binary and publishes
+it to GitHub Releases on every `v*` tag. `release-deploy.sh` pulls
+the latest tarball, verifies its SHA-256, places files under
+`/opt/coterie/`, and runs `install.sh` to set up the system user
+and systemd unit. One command.
 
 ```bash
-# On your local machine, from the repo root:
-make release      # builds target/release/coterie + static/style.css
-rsync -avz --progress \
-    target/release/coterie \
-    static/ \
-    deploy/ \
-    .env.example \
-    root@<droplet-ip>:/opt/coterie/
+# On the droplet, as root:
+apt-get install -y curl python3 tar
+
+# Bootstrap: grab just the deploy script from the latest release.
+curl -sfL https://raw.githubusercontent.com/IndustriousKraken/coterie/master/deploy/release-deploy.sh \
+    -o /usr/local/bin/coterie-release-deploy
+chmod +x /usr/local/bin/coterie-release-deploy
+
+# Pull the latest release. On first run, this detects no prior
+# install, runs install.sh, prints next-steps. On subsequent runs,
+# it does the service-stop/swap/restart dance.
+/usr/local/bin/coterie-release-deploy
+
+# After this completes, jump to "## 7. Configure `.env`" below
+# (step 6 is folded into the release-deploy.sh script).
 ```
 
-Or build on the droplet directly (slower, but no need for matching
-host architecture between your laptop and the droplet):
+You can also pin to a specific version (useful for rollback or
+deploying an older tested release):
+
+```bash
+/usr/local/bin/coterie-release-deploy v1.2.3
+```
+
+---
+
+### Fallback: build from source on the droplet
+
+Only needed if you want to deploy a commit that hasn't been tagged
+yet, or if you need to make local code changes:
 
 ```bash
 # On the droplet:
@@ -210,11 +231,38 @@ mkdir -p /opt/coterie
 cp target/release/coterie /opt/coterie/
 cp -r static deploy /opt/coterie/
 cp .env.example /opt/coterie/
+cd /opt/coterie
+bash deploy/install.sh
+```
+
+Building from source on a 1 GB droplet is painful (and 512 MB is
+not enough). The release-tarball path above avoids this entirely.
+
+---
+
+### Fallback: rsync from your dev machine
+
+```bash
+# On your local machine, from the repo root:
+make release      # builds target/release/coterie + static/style.css
+rsync -avz --progress \
+    target/release/coterie \
+    static/ \
+    deploy/ \
+    .env.example \
+    root@<droplet-ip>:/opt/coterie/
+
+# Then on the droplet:
+cd /opt/coterie && bash deploy/install.sh
 ```
 
 ---
 
-## 6. Run the installer
+## 6. (Skip if you used the happy path)
+
+If you used the release-tarball path in step 5, `install.sh` has
+already been run — skip to step 7. If you used one of the fallback
+paths (build from source or rsync), run the installer now:
 
 ```bash
 cd /opt/coterie
@@ -391,29 +439,21 @@ Two layers of protection beyond Coterie's own backups:
 
 ## Updating to a new release
 
-After first-deploy, you don't need to build Coterie on the droplet
-or rsync from your laptop. The `release.yml` GitHub Actions workflow
-builds a musl-static binary tarball on every tagged commit and
-publishes it to the repo's Releases page. The `release-deploy.sh`
-script pulls the latest (or a specific) release and installs it.
-
-Prereqs (one-time): make sure `curl`, `jq`, and `tar` are installed
-on the droplet:
-
-```bash
-apt-get install -y curl jq tar
-```
+The same `release-deploy.sh` you used in step 5 handles updates. On
+subsequent runs (with the binary already present at `/opt/coterie/`)
+it does the service-stop / swap / restart dance instead of running
+install.sh.
 
 Update to the latest tagged release:
 
 ```bash
-bash /opt/coterie/deploy/release-deploy.sh
+/usr/local/bin/coterie-release-deploy
 ```
 
 Roll back to a specific earlier version:
 
 ```bash
-bash /opt/coterie/deploy/release-deploy.sh v1.2.3
+/usr/local/bin/coterie-release-deploy v1.2.3
 ```
 
 The script downloads the tarball, verifies its SHA-256 checksum
