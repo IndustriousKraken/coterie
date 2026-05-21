@@ -11,8 +11,9 @@
 //!
 //! Run with: cargo test --features test-utils --test stripe_webhook_test
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use coterie::{
     auth::SecretCrypto,
     domain::{
@@ -20,7 +21,8 @@ use coterie::{
         PaymentMethod, PaymentStatus, StripeRef,
     },
     email::LogSender,
-    integrations::IntegrationManager,
+    error::Result as CoterieResult,
+    integrations::{Integration, IntegrationEvent, IntegrationManager},
     payments::{
         fake_gateway::FakeStripeGateway, gateway::StripeGateway, StripeClient, WebhookDispatcher,
     },
@@ -34,10 +36,50 @@ use coterie::{
         settings_service::SettingsService,
     },
 };
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use serde_json::json;
 use sqlx::{Executor, SqlitePool};
 use uuid::Uuid;
+
+// ---------------------------------------------------------------------
+// RecordingIntegration — test-only Integration impl that captures every
+// dispatched IntegrationEvent into a shared Vec the test can inspect.
+// Lets the invoice.payment_failed tests verify that AdminAlerts make it
+// through the IntegrationManager without modifying production code.
+// ---------------------------------------------------------------------
+
+struct RecordingIntegration {
+    events: Arc<Mutex<Vec<IntegrationEvent>>>,
+}
+
+#[async_trait]
+impl Integration for RecordingIntegration {
+    fn name(&self) -> &str {
+        "test-recording"
+    }
+    fn is_enabled(&self) -> bool {
+        true
+    }
+    async fn health_check(&self) -> CoterieResult<()> {
+        Ok(())
+    }
+    async fn handle_event(&self, event: &IntegrationEvent) -> CoterieResult<()> {
+        self.events.lock().unwrap().push(event.clone());
+        Ok(())
+    }
+}
+
+fn admin_alert_subjects(events: &Arc<Mutex<Vec<IntegrationEvent>>>) -> Vec<String> {
+    events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            IntegrationEvent::AdminAlert { subject, .. } => Some(subject.clone()),
+            _ => None,
+        })
+        .collect()
+}
 
 // ---------------------------------------------------------------------
 // Setup helpers
@@ -66,6 +108,7 @@ struct Harness {
     fake: Arc<FakeStripeGateway>,
     billing: BillingService,
     pool: SqlitePool,
+    recorded_events: Arc<Mutex<Vec<IntegrationEvent>>>,
 }
 
 async fn build_harness() -> Harness {
@@ -89,6 +132,13 @@ async fn build_harness() -> Harness {
         "Test".to_string(),
     ));
     let integrations = Arc::new(IntegrationManager::new());
+    let recorded_events: Arc<Mutex<Vec<IntegrationEvent>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    integrations
+        .register(Arc::new(RecordingIntegration {
+            events: recorded_events.clone(),
+        }))
+        .await;
 
     let gw: Arc<dyn StripeGateway> = fake.clone();
     let client = StripeClient::with_gateway(
@@ -123,7 +173,14 @@ async fn build_harness() -> Harness {
         pool.clone(),
     );
 
-    Harness { client, dispatcher, fake, billing, pool }
+    Harness {
+        client,
+        dispatcher,
+        fake,
+        billing,
+        pool,
+        recorded_events,
+    }
 }
 
 /// Insert a member, attach the seeded "member" membership_type so dues
@@ -688,4 +745,375 @@ async fn webhook_handlers_do_not_call_gateway_unnecessarily() {
     // Found row by IN-clause on pi_, so no fallback Stripe lookup
     // should have fired.
     assert_eq!(h.fake.calls().len(), 0, "no gateway calls expected");
+}
+
+// ---------------------------------------------------------------------
+// Invoice-event helpers
+// ---------------------------------------------------------------------
+
+/// JSON-build a minimal `stripe::Invoice`. Most fields are Option, so we
+/// only populate what the handlers actually look at: id, customer,
+/// subscription, currency, amount_paid/amount_due/amount_remaining,
+/// status, attempt_count, next_payment_attempt. The rest defaults to
+/// None and the handler treats them as missing.
+fn build_invoice(
+    id: &str,
+    customer_id: &str,
+    subscription_id: &str,
+    amount_paid: i64,
+    status: &str,
+    attempt_count: u64,
+    next_payment_attempt: Option<i64>,
+) -> stripe::Invoice {
+    let mut body = json!({
+        "id": id,
+        "object": "invoice",
+        "customer": customer_id,
+        "subscription": subscription_id,
+        "amount_paid": amount_paid,
+        "amount_due": amount_paid,
+        "amount_remaining": 0,
+        "currency": "usd",
+        "status": status,
+        "attempt_count": attempt_count,
+        "livemode": false,
+        "created": Utc::now().timestamp(),
+        "period_start": Utc::now().timestamp(),
+        "period_end": Utc::now().timestamp() + 86400 * 60,
+    });
+    if let Some(ts) = next_payment_attempt {
+        body["next_payment_attempt"] = json!(ts);
+    }
+    serde_json::from_value(body).expect("Invoice from JSON")
+}
+
+/// Seed `dues_paid_until` and `stripe_subscription_id` on a member.
+/// The webhook handlers look up members by stripe_customer_id (set via
+/// insert_member), but the integration tests want to confirm that the
+/// dues anchor advances from a known starting point and to mirror the
+/// production state of an imported StripeSubscription-mode member.
+async fn set_member_subscription_state(
+    pool: &SqlitePool,
+    member_id: Uuid,
+    dues_paid_until: chrono::DateTime<Utc>,
+    stripe_subscription_id: &str,
+) {
+    sqlx::query(
+        "UPDATE members \
+         SET dues_paid_until = ?, stripe_subscription_id = ? \
+         WHERE id = ?",
+    )
+    .bind(dues_paid_until)
+    .bind(stripe_subscription_id)
+    .bind(member_id.to_string())
+    .execute(pool)
+    .await
+    .expect("seed subscription state");
+}
+
+async fn count_payments_by_stripe_id(pool: &SqlitePool, stripe_id: &str) -> i64 {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM payments WHERE stripe_payment_id = ?",
+    )
+    .bind(stripe_id)
+    .fetch_one(pool)
+    .await
+    .expect("count payments")
+}
+
+async fn payment_status_by_stripe_id(pool: &SqlitePool, stripe_id: &str) -> Option<String> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT status FROM payments WHERE stripe_payment_id = ?",
+    )
+    .bind(stripe_id)
+    .fetch_optional(pool)
+    .await
+    .expect("query status")
+}
+
+// ---------------------------------------------------------------------
+// 5. invoice.paid: extends dues for known StripeSubscription member,
+//    records a Completed Payment row, idempotent on retry, no-op on
+//    unknown subscription.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn invoice_paid_extends_dues_for_stripe_subscription_member() {
+    let h = build_harness().await;
+    let customer_id = "cus_sub_paid";
+    let member_id =
+        insert_member(&h.pool, Some(customer_id), BillingMode::StripeSubscription).await;
+    let seeded_dues = Utc::now() + Duration::days(30);
+    set_member_subscription_state(&h.pool, member_id, seeded_dues, "sub_test_123").await;
+
+    let invoice_id = "in_test_paid_happy";
+    let invoice = build_invoice(
+        invoice_id,
+        customer_id,
+        "sub_test_123",
+        50_00,
+        "paid",
+        1,
+        None,
+    );
+
+    h.dispatcher
+        .dispatch_invoice_paid(invoice, &h.billing)
+        .await
+        .expect("dispatch_invoice_paid");
+
+    // Dues advanced from the seeded anchor (today + 30 days) by one
+    // monthly billing period (the seeded 'member' membership type).
+    let dues_after = member_dues_paid_until(&h.pool, member_id)
+        .await
+        .expect("dues_paid_until set");
+    assert!(
+        dues_after > seeded_dues,
+        "dues_paid_until {} must advance past the seeded anchor {}",
+        dues_after, seeded_dues,
+    );
+
+    // Payment row exists for the invoice, status Completed.
+    assert_eq!(count_payments_by_stripe_id(&h.pool, invoice_id).await, 1);
+    assert_eq!(
+        payment_status_by_stripe_id(&h.pool, invoice_id).await.as_deref(),
+        Some("Completed"),
+    );
+}
+
+#[tokio::test]
+async fn invoice_paid_idempotency() {
+    // Same event delivered twice (Stripe's at-least-once semantics).
+    // The unique partial index on payments.stripe_payment_id is the
+    // current line of defense — the inner handler doesn't pre-check
+    // for an existing payment, so the second create() returns Err with
+    // a UNIQUE constraint violation. That's fine for production
+    // because handle_webhook's processed_events_repo.claim dedupes
+    // upstream; here we just verify the DB ends in the right shape no
+    // matter what the second dispatch's Result is.
+    let h = build_harness().await;
+    let customer_id = "cus_sub_idem";
+    let member_id =
+        insert_member(&h.pool, Some(customer_id), BillingMode::StripeSubscription).await;
+    let seeded_dues = Utc::now() + Duration::days(30);
+    set_member_subscription_state(&h.pool, member_id, seeded_dues, "sub_test_idem").await;
+
+    let invoice_id = "in_test_idem";
+    let invoice = build_invoice(
+        invoice_id,
+        customer_id,
+        "sub_test_idem",
+        50_00,
+        "paid",
+        1,
+        None,
+    );
+
+    h.dispatcher
+        .dispatch_invoice_paid(invoice.clone(), &h.billing)
+        .await
+        .expect("first dispatch ok");
+
+    let dues_after_first = member_dues_paid_until(&h.pool, member_id)
+        .await
+        .expect("dues set after first dispatch");
+
+    // Second dispatch — Result is intentionally ignored. Either the
+    // UNIQUE index rejects the duplicate Payment INSERT (Err) or a
+    // future handler revision pre-detects the dup (Ok). What MUST
+    // hold either way: dues do not advance further, and only one
+    // payment row exists for the invoice.
+    let _ = h
+        .dispatcher
+        .dispatch_invoice_paid(invoice, &h.billing)
+        .await;
+
+    let dues_after_second = member_dues_paid_until(&h.pool, member_id)
+        .await
+        .expect("dues still set after second dispatch");
+    assert_eq!(
+        dues_after_first, dues_after_second,
+        "dues_paid_until must NOT shift on the second dispatch — extension must be idempotent",
+    );
+    assert_eq!(
+        count_payments_by_stripe_id(&h.pool, invoice_id).await,
+        1,
+        "exactly one Payment row must exist for the invoice",
+    );
+}
+
+#[tokio::test]
+async fn invoice_paid_for_unknown_subscription_is_noop() {
+    let h = build_harness().await;
+    let customer_id = "cus_sub_unknown_paid";
+    let member_id =
+        insert_member(&h.pool, Some(customer_id), BillingMode::StripeSubscription).await;
+    let seeded_dues = Utc::now() + Duration::days(30);
+    set_member_subscription_state(&h.pool, member_id, seeded_dues, "sub_test_known").await;
+
+    // Invoice references a customer that doesn't match any member.
+    // The handler looks up by stripe_customer_id, so an unknown
+    // customer (or by extension an unknown subscription) is a noop.
+    let invoice_id = "in_test_unknown";
+    let invoice = build_invoice(
+        invoice_id,
+        "cus_NEVER_HEARD_OF",
+        "sub_NEVER_HEARD_OF",
+        50_00,
+        "paid",
+        1,
+        None,
+    );
+
+    h.dispatcher
+        .dispatch_invoice_paid(invoice, &h.billing)
+        .await
+        .expect("dispatch should succeed quietly");
+
+    assert_eq!(
+        count_payments_by_stripe_id(&h.pool, invoice_id).await,
+        0,
+        "no Payment row should be created for an unknown subscription",
+    );
+    let dues_after = member_dues_paid_until(&h.pool, member_id)
+        .await
+        .expect("dues still set");
+    assert_eq!(
+        dues_after, seeded_dues,
+        "seeded member's dues_paid_until must not change",
+    );
+}
+
+// ---------------------------------------------------------------------
+// 6. invoice.payment_failed: dispatches AdminAlert on first attempt,
+//    softens copy on final attempt, no-op for unknown subscription.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn invoice_payment_failed_dispatches_admin_alert() {
+    let h = build_harness().await;
+    let customer_id = "cus_sub_failed";
+    let member_id =
+        insert_member(&h.pool, Some(customer_id), BillingMode::StripeSubscription).await;
+    let seeded_dues = Utc::now() + Duration::days(30);
+    set_member_subscription_state(&h.pool, member_id, seeded_dues, "sub_test_failed").await;
+
+    // First attempt, retries scheduled (next_payment_attempt set).
+    let future_ts = (Utc::now() + Duration::days(3)).timestamp();
+    let invoice = build_invoice(
+        "in_test_failed_first",
+        customer_id,
+        "sub_test_failed",
+        50_00,
+        "open",
+        1,
+        Some(future_ts),
+    );
+
+    h.dispatcher
+        .dispatch_invoice_payment_failed(invoice, &h.billing)
+        .await
+        .expect("dispatch_invoice_payment_failed");
+
+    let subjects = admin_alert_subjects(&h.recorded_events);
+    assert!(
+        subjects.iter().any(|s| s.contains("Stripe subscription charge failed")),
+        "expected AdminAlert subject containing 'Stripe subscription charge failed'; got {:?}",
+        subjects,
+    );
+    assert!(
+        !subjects.iter().any(|s| s.contains("(final)")),
+        "non-final retry must not include '(final)' in subject; got {:?}",
+        subjects,
+    );
+
+    // No DB mutation: dues and billing_mode unchanged.
+    let dues_after = member_dues_paid_until(&h.pool, member_id)
+        .await
+        .expect("dues still set");
+    assert_eq!(
+        dues_after, seeded_dues,
+        "dues_paid_until must not change on a failed-payment event",
+    );
+    assert_eq!(
+        member_billing_mode(&h.pool, member_id).await,
+        "stripe_subscription",
+        "billing_mode must not change on a failed-payment event",
+    );
+}
+
+#[tokio::test]
+async fn invoice_payment_failed_final_attempt_softens_copy() {
+    let h = build_harness().await;
+    let customer_id = "cus_sub_failed_final";
+    let member_id =
+        insert_member(&h.pool, Some(customer_id), BillingMode::StripeSubscription).await;
+    let seeded_dues = Utc::now() + Duration::days(30);
+    set_member_subscription_state(&h.pool, member_id, seeded_dues, "sub_test_failed_final").await;
+
+    // Final attempt: next_payment_attempt = None signals Stripe is
+    // done retrying. handle_invoice_payment_failed should pass
+    // is_final = true to notify_subscription_payment_failed, which
+    // formats the AdminAlert subject with the "(final)" suffix.
+    let invoice = build_invoice(
+        "in_test_failed_final",
+        customer_id,
+        "sub_test_failed_final",
+        50_00,
+        "open",
+        4,
+        None,
+    );
+
+    h.dispatcher
+        .dispatch_invoice_payment_failed(invoice, &h.billing)
+        .await
+        .expect("dispatch_invoice_payment_failed (final)");
+
+    let subjects = admin_alert_subjects(&h.recorded_events);
+    assert!(
+        subjects.iter().any(|s| s.contains("(final)")),
+        "final-attempt AdminAlert subject must contain '(final)'; got {:?}",
+        subjects,
+    );
+}
+
+#[tokio::test]
+async fn invoice_payment_failed_for_unknown_subscription_is_noop() {
+    let h = build_harness().await;
+    let customer_id = "cus_sub_failed_unknown";
+    let member_id =
+        insert_member(&h.pool, Some(customer_id), BillingMode::StripeSubscription).await;
+    let seeded_dues = Utc::now() + Duration::days(30);
+    set_member_subscription_state(&h.pool, member_id, seeded_dues, "sub_test_known_failed").await;
+
+    let future_ts = (Utc::now() + Duration::days(3)).timestamp();
+    let invoice = build_invoice(
+        "in_test_failed_unknown",
+        "cus_NEVER_HEARD_OF",
+        "sub_NEVER_HEARD_OF",
+        50_00,
+        "open",
+        1,
+        Some(future_ts),
+    );
+
+    h.dispatcher
+        .dispatch_invoice_payment_failed(invoice, &h.billing)
+        .await
+        .expect("dispatch should succeed quietly");
+
+    let subjects = admin_alert_subjects(&h.recorded_events);
+    assert!(
+        subjects.is_empty(),
+        "no AdminAlert should be dispatched for an unknown subscription; got {:?}",
+        subjects,
+    );
+    let dues_after = member_dues_paid_until(&h.pool, member_id)
+        .await
+        .expect("dues still set");
+    assert_eq!(
+        dues_after, seeded_dues,
+        "seeded member's dues_paid_until must not change",
+    );
 }
