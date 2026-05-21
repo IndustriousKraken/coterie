@@ -1,0 +1,120 @@
+name: Release
+
+# Build + publish a GitHub Release when a `v*` tag is pushed.
+#
+# Why tag-triggered (not branch-triggered): you explicitly decide
+# what becomes a production release by tagging. Master can be
+# whatever-state; only tagged commits get binaries published. Roll
+# back by tagging an earlier commit (or downloading an older
+# release on prod).
+#
+# What gets produced:
+#   - coterie-<tag>-x86_64-linux-musl.tar.gz containing:
+#       coterie binary (musl-static — runs on Debian/Ubuntu/Alpine)
+#       seed binary (for first-time setup)
+#       static/, migrations/, deploy/
+#       VERSION file (the tag + commit SHA)
+#   - SHA256SUMS file for integrity check on the prod side
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v1.0.0). Must already exist."
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # required to create releases
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0  # so we can compute commit count / changelog if needed
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF##*/}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-musl-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-musl-release-
+            ${{ runner.os }}-cargo-
+
+      - name: Run tests
+        run: cargo test --features test-utils --release
+        # Tests gate the release. If anything fails here, no
+        # tarball is uploaded and the tag still exists but has
+        # no asset attached — operator can decide whether to fix
+        # forward or delete the tag.
+
+      - name: Build release binaries (musl-static)
+        run: |
+          cargo build --release \
+            --target x86_64-unknown-linux-musl \
+            --bins
+        # `--bins` builds every binary target (coterie + seed).
+        # `--target x86_64-unknown-linux-musl` produces a fully
+        # static binary that runs on any glibc OR musl Linux.
+        # Coterie is rustls-only so this works cleanly.
+
+      - name: Stage release artifacts
+        run: |
+          STAGE="coterie-${{ steps.version.outputs.tag }}-x86_64-linux-musl"
+          mkdir -p "dist/$STAGE"
+          cp target/x86_64-unknown-linux-musl/release/coterie "dist/$STAGE/"
+          cp target/x86_64-unknown-linux-musl/release/seed "dist/$STAGE/"
+          cp -r static "dist/$STAGE/"
+          cp -r migrations "dist/$STAGE/"
+          cp -r deploy "dist/$STAGE/"
+          echo "${{ steps.version.outputs.tag }}" > "dist/$STAGE/VERSION"
+          echo "${{ steps.version.outputs.sha }}" >> "dist/$STAGE/VERSION"
+          (cd dist && tar czf "$STAGE.tar.gz" "$STAGE")
+          (cd dist && sha256sum "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256")
+          ls -lh dist/
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/coterie-${{ steps.version.outputs.tag }}-x86_64-linux-musl.tar.gz
+            dist/coterie-${{ steps.version.outputs.tag }}-x86_64-linux-musl.tar.gz.sha256

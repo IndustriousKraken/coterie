@@ -389,6 +389,53 @@ Two layers of protection beyond Coterie's own backups:
 
 ---
 
+## Updating to a new release
+
+After first-deploy, you don't need to build Coterie on the droplet
+or rsync from your laptop. The `release.yml` GitHub Actions workflow
+builds a musl-static binary tarball on every tagged commit and
+publishes it to the repo's Releases page. The `release-deploy.sh`
+script pulls the latest (or a specific) release and installs it.
+
+Prereqs (one-time): make sure `curl`, `jq`, and `tar` are installed
+on the droplet:
+
+```bash
+apt-get install -y curl jq tar
+```
+
+Update to the latest tagged release:
+
+```bash
+bash /opt/coterie/deploy/release-deploy.sh
+```
+
+Roll back to a specific earlier version:
+
+```bash
+bash /opt/coterie/deploy/release-deploy.sh v1.2.3
+```
+
+The script downloads the tarball, verifies its SHA-256 checksum
+against the release's `.sha256` asset, stops the `coterie` service,
+swaps the binaries + `static/` + `migrations/` atomically, restores
+ownership, restarts the service, and prints the resulting service
+status. It's idempotent — if the requested version is already
+installed, it exits without restarting.
+
+To automate updates (after a stable initial period):
+
+```bash
+# /etc/cron.d/coterie-update — pull the latest tagged release nightly
+30 3 * * * root /opt/coterie/deploy/release-deploy.sh >> /var/log/coterie-update.log 2>&1
+```
+
+The `release.yml` workflow only publishes releases on `v*` tags, so
+this cron is safe — it only picks up versions you've explicitly
+decided to ship by tagging.
+
+---
+
 ## Docker alternative (steps 5–7)
 
 If you'd rather run Coterie as a container (e.g. for parity with a
