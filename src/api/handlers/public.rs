@@ -181,10 +181,11 @@ async fn send_verification_email(
     email_sender: &dyn EmailSender,
     member: &crate::domain::Member,
 ) -> Result<()> {
-    use crate::{auth::EmailTokenService, email::{self, templates::{VerifyHtml, VerifyText}}};
+    use crate::{auth, email::{self, templates::{VerifyHtml, VerifyText}}};
 
-    let service = EmailTokenService::verification(db_pool.clone());
-    let created = service.create(member.id, chrono::Duration::hours(24)).await?;
+    let created = auth::email_tokens::create_verification_token(
+        db_pool, member.id, chrono::Duration::hours(24),
+    ).await?;
 
     let verify_url = format!(
         "{}/verify?token={}",

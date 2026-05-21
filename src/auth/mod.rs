@@ -20,7 +20,10 @@ pub mod totp;
 
 use session::{Session, SessionStore};
 pub use csrf::CsrfService;
-pub use email_tokens::EmailTokenService;
+pub use email_tokens::{
+    consume_password_reset_token, consume_verification_token, create_password_reset_token,
+    create_verification_token,
+};
 pub use pending_login::PendingLoginService;
 pub use secret_crypto::SecretCrypto;
 pub use totp::TotpService;

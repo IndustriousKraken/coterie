@@ -14,7 +14,7 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 use crate::repository::*;
 use crate::integrations::IntegrationManager;
-use crate::auth::{AuthService, CsrfService, EmailTokenService, PendingLoginService, TotpService};
+use crate::auth::{AuthService, CsrfService, PendingLoginService, TotpService};
 use crate::domain::BasicTypeKind;
 use crate::email::EmailSender;
 use announcement_admin_service::AnnouncementAdminService;
@@ -117,7 +117,6 @@ impl ServiceContext {
             audit_service.clone(),
         ));
 
-        let email_token_service = Arc::new(EmailTokenService::verification(db_pool.clone()));
         let member_service = Arc::new(MemberService::new(
             member_repo.clone(),
             auth_service.clone(),
@@ -126,7 +125,7 @@ impl ServiceContext {
             email_sender.clone(),
             membership_type_service.clone(),
             settings_service.clone(),
-            email_token_service,
+            db_pool.clone(),
             base_url,
         ));
 

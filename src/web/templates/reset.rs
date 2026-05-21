@@ -22,7 +22,7 @@ use sqlx::SqlitePool;
 
 use crate::{
     api::state::LoginLimiter,
-    auth::{AuthService, EmailTokenService},
+    auth::{self, AuthService},
     config::Settings,
     email::{self, templates::{ResetHtml, ResetText}, EmailSender},
     repository::MemberRepository,
@@ -78,8 +78,9 @@ pub async fn forgot_password_handler(
     {
         // Generate token and send email. Soft-fail: we don't expose any
         // error to the caller; the tracing log captures the failure.
-        let service = EmailTokenService::password_reset(db_pool.clone());
-        match service.create(member.id, chrono::Duration::hours(1)).await {
+        match auth::email_tokens::create_password_reset_token(
+            &db_pool, member.id, chrono::Duration::hours(1),
+        ).await {
             Ok(created) => {
                 let reset_url = format!(
                     "{}/reset-password?token={}",
@@ -194,8 +195,9 @@ pub async fn reset_password_handler(
 
     // Consume the token atomically. Any further attempts with the same
     // token will return None.
-    let service = EmailTokenService::password_reset(db_pool.clone());
-    let consumed = match service.consume(&form.token).await {
+    let consumed = match auth::email_tokens::consume_password_reset_token(
+        &db_pool, &form.token,
+    ).await {
         Ok(Some(c)) => c,
         Ok(None) => {
             return HtmlTemplate(ResetPasswordResultTemplate {
@@ -253,7 +255,9 @@ pub async fn reset_password_handler(
             consumed.member_id, e
         );
     }
-    if let Err(e) = service.invalidate_for_member(consumed.member_id).await {
+    if let Err(e) = auth::email_tokens::invalidate_password_reset_tokens_for_member(
+        &db_pool, consumed.member_id,
+    ).await {
         tracing::warn!(
             "Couldn't invalidate other reset tokens for member {}: {}",
             consumed.member_id, e
