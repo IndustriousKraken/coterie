@@ -1,4 +1,4 @@
-//! Integration tests for `EmailTokenService`. The service is the
+//! Integration tests for the email-token free functions. They are the
 //! security-critical backend for email-verification and password-reset
 //! tokens; these tests lock in the single-use, expiry, cross-purpose,
 //! invalidate, and cleanup invariants spelled out in
@@ -11,7 +11,11 @@
 
 use chrono::{Duration, Utc};
 use coterie::{
-    auth::EmailTokenService,
+    auth::email_tokens::{
+        cleanup_expired_password_reset_tokens, consume_password_reset_token,
+        consume_verification_token, create_password_reset_token, create_verification_token,
+        invalidate_password_reset_tokens_for_member,
+    },
     domain::CreateMemberRequest,
     repository::{MemberRepository, SqliteMemberRepository},
 };
@@ -64,15 +68,20 @@ fn sha256_hex(plaintext: &str) -> String {
 async fn consume_redeems_exactly_once() {
     let pool = fresh_pool().await;
     let member_id = make_member(&pool).await;
-    let svc = EmailTokenService::password_reset(pool);
 
-    let created = svc.create(member_id, Duration::hours(1)).await.expect("create");
+    let created = create_password_reset_token(&pool, member_id, Duration::hours(1))
+        .await
+        .expect("create");
 
-    let first = svc.consume(&created.token).await.expect("consume #1");
+    let first = consume_password_reset_token(&pool, &created.token)
+        .await
+        .expect("consume #1");
     let first = first.expect("first consume returns Some");
     assert_eq!(first.member_id, member_id);
 
-    let second = svc.consume(&created.token).await.expect("consume #2");
+    let second = consume_password_reset_token(&pool, &created.token)
+        .await
+        .expect("consume #2");
     assert!(second.is_none(), "second consume of same token must return None");
 }
 
@@ -80,7 +89,6 @@ async fn consume_redeems_exactly_once() {
 async fn consume_rejects_expired_token() {
     let pool = fresh_pool().await;
     let member_id = make_member(&pool).await;
-    let svc = EmailTokenService::password_reset(pool.clone());
 
     // Insert a row directly with expires_at in the past so we don't
     // wait for real time to pass. We pick our own plaintext so we can
@@ -100,7 +108,9 @@ async fn consume_rejects_expired_token() {
     .await
     .expect("seed expired row");
 
-    let consumed = svc.consume(plaintext).await.expect("consume");
+    let consumed = consume_password_reset_token(&pool, plaintext)
+        .await
+        .expect("consume");
     assert!(consumed.is_none(), "expired token must not consume");
 
     // The gated UPDATE must have done nothing — consumed_at stays NULL.
@@ -117,9 +127,10 @@ async fn consume_rejects_expired_token() {
 #[tokio::test]
 async fn consume_rejects_unknown_token() {
     let pool = fresh_pool().await;
-    let svc = EmailTokenService::password_reset(pool);
 
-    let result = svc.consume("not-a-real-token").await.expect("consume");
+    let result = consume_password_reset_token(&pool, "not-a-real-token")
+        .await
+        .expect("consume");
     assert!(result.is_none(), "unknown plaintext must return Ok(None)");
 }
 
@@ -132,19 +143,23 @@ async fn password_reset_token_does_not_consume_at_verification_service() {
     let pool = fresh_pool().await;
     let member_id = make_member(&pool).await;
 
-    let reset = EmailTokenService::password_reset(pool.clone());
-    let verify = EmailTokenService::verification(pool);
+    let created = create_password_reset_token(&pool, member_id, Duration::hours(1))
+        .await
+        .expect("create");
 
-    let created = reset.create(member_id, Duration::hours(1)).await.expect("create");
-
-    let crossed = verify.consume(&created.token).await.expect("consume");
+    let crossed = consume_verification_token(&pool, &created.token)
+        .await
+        .expect("consume");
     assert!(
         crossed.is_none(),
-        "reset token must not redeem at verification service (separate table)"
+        "reset token must not redeem at verification function (separate table)"
     );
 
-    // Sanity: original token still works at the correct service.
-    assert!(reset.consume(&created.token).await.unwrap().is_some());
+    // Sanity: original token still works at the correct function.
+    assert!(consume_password_reset_token(&pool, &created.token)
+        .await
+        .unwrap()
+        .is_some());
 }
 
 #[tokio::test]
@@ -152,18 +167,22 @@ async fn verification_token_does_not_consume_at_password_reset_service() {
     let pool = fresh_pool().await;
     let member_id = make_member(&pool).await;
 
-    let verify = EmailTokenService::verification(pool.clone());
-    let reset = EmailTokenService::password_reset(pool);
+    let created = create_verification_token(&pool, member_id, Duration::hours(1))
+        .await
+        .expect("create");
 
-    let created = verify.create(member_id, Duration::hours(1)).await.expect("create");
-
-    let crossed = reset.consume(&created.token).await.expect("consume");
+    let crossed = consume_password_reset_token(&pool, &created.token)
+        .await
+        .expect("consume");
     assert!(
         crossed.is_none(),
-        "verification token must not redeem at password-reset service (separate table)"
+        "verification token must not redeem at password-reset function (separate table)"
     );
 
-    assert!(verify.consume(&created.token).await.unwrap().is_some());
+    assert!(consume_verification_token(&pool, &created.token)
+        .await
+        .unwrap()
+        .is_some());
 }
 
 // --------------------------------------------------------------------
@@ -174,27 +193,37 @@ async fn verification_token_does_not_consume_at_password_reset_service() {
 async fn invalidate_for_member_marks_outstanding_consumed() {
     let pool = fresh_pool().await;
     let member_id = make_member(&pool).await;
-    let svc = EmailTokenService::password_reset(pool);
 
-    let a = svc.create(member_id, Duration::hours(1)).await.expect("create a");
-    let b = svc.create(member_id, Duration::hours(1)).await.expect("create b");
+    let a = create_password_reset_token(&pool, member_id, Duration::hours(1))
+        .await
+        .expect("create a");
+    let b = create_password_reset_token(&pool, member_id, Duration::hours(1))
+        .await
+        .expect("create b");
 
-    svc.invalidate_for_member(member_id).await.expect("invalidate");
+    invalidate_password_reset_tokens_for_member(&pool, member_id)
+        .await
+        .expect("invalidate");
 
-    assert!(svc.consume(&a.token).await.unwrap().is_none(),
-        "token a must be unusable after invalidate_for_member");
-    assert!(svc.consume(&b.token).await.unwrap().is_none(),
-        "token b must be unusable after invalidate_for_member");
+    assert!(
+        consume_password_reset_token(&pool, &a.token).await.unwrap().is_none(),
+        "token a must be unusable after invalidate_for_member"
+    );
+    assert!(
+        consume_password_reset_token(&pool, &b.token).await.unwrap().is_none(),
+        "token b must be unusable after invalidate_for_member"
+    );
 }
 
 #[tokio::test]
 async fn cleanup_expired_deletes_only_expired_rows() {
     let pool = fresh_pool().await;
     let member_id = make_member(&pool).await;
-    let svc = EmailTokenService::password_reset(pool.clone());
 
-    // One fresh token via the service.
-    let fresh = svc.create(member_id, Duration::hours(1)).await.expect("create fresh");
+    // One fresh token via the function.
+    let fresh = create_password_reset_token(&pool, member_id, Duration::hours(1))
+        .await
+        .expect("create fresh");
 
     // One already-expired row inserted directly.
     let expired_plaintext = "expired-row-for-cleanup-test";
@@ -212,11 +241,15 @@ async fn cleanup_expired_deletes_only_expired_rows() {
     .await
     .expect("seed expired row");
 
-    let deleted = svc.cleanup_expired().await.expect("cleanup");
+    let deleted = cleanup_expired_password_reset_tokens(&pool)
+        .await
+        .expect("cleanup");
     assert_eq!(deleted, 1, "cleanup_expired must delete exactly the expired row");
 
     // The fresh token still redeems — cleanup did not touch it.
-    let consumed = svc.consume(&fresh.token).await.expect("consume fresh");
+    let consumed = consume_password_reset_token(&pool, &fresh.token)
+        .await
+        .expect("consume fresh");
     assert!(consumed.is_some(), "unexpired token must still redeem after cleanup");
 }
 
@@ -228,9 +261,10 @@ async fn cleanup_expired_deletes_only_expired_rows() {
 async fn created_token_is_sha256_of_plaintext() {
     let pool = fresh_pool().await;
     let member_id = make_member(&pool).await;
-    let svc = EmailTokenService::password_reset(pool.clone());
 
-    let created = svc.create(member_id, Duration::hours(1)).await.expect("create");
+    let created = create_password_reset_token(&pool, member_id, Duration::hours(1))
+        .await
+        .expect("create");
 
     let stored_hash: String = sqlx::query_scalar(
         "SELECT token_hash FROM password_reset_tokens WHERE member_id = ?",
@@ -241,6 +275,8 @@ async fn created_token_is_sha256_of_plaintext() {
     .expect("read token_hash");
 
     let expected = sha256_hex(&created.token);
-    assert_eq!(stored_hash, expected,
-        "token_hash must be hex(SHA-256(plaintext)) with no other transformation");
+    assert_eq!(
+        stored_hash, expected,
+        "token_hash must be hex(SHA-256(plaintext)) with no other transformation"
+    );
 }

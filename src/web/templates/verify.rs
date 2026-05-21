@@ -13,7 +13,7 @@ use serde::Deserialize;
 use sqlx::SqlitePool;
 
 use crate::{
-    auth::EmailTokenService,
+    auth,
     repository::MemberRepository,
     web::templates::{BaseContext, HtmlTemplate},
 };
@@ -36,9 +36,9 @@ pub async fn verify_handler(
     State(member_repo): State<Arc<dyn MemberRepository>>,
     Query(query): Query<VerifyQuery>,
 ) -> Response {
-    let service = EmailTokenService::verification(db_pool.clone());
-
-    let (success, message) = match service.consume(&query.token).await {
+    let (success, message) = match auth::email_tokens::consume_verification_token(
+        &db_pool, &query.token,
+    ).await {
         Ok(Some(consumed)) => {
             // Mark the member as verified. Any other outstanding
             // verification tokens for this member become moot (the DB
@@ -50,7 +50,9 @@ pub async fn verify_handler(
                 tracing::error!("Failed to mark email verified: {}", e);
                 (false, "We couldn't finish verifying your email. Please try again or contact support.".to_string())
             } else {
-                if let Err(e) = service.invalidate_for_member(consumed.member_id).await {
+                if let Err(e) = auth::email_tokens::invalidate_verification_tokens_for_member(
+                    &db_pool, consumed.member_id,
+                ).await {
                     tracing::warn!(
                         "Verified email for member {} but couldn't invalidate other tokens: {}",
                         consumed.member_id, e

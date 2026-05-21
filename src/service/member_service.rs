@@ -13,10 +13,11 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, Utc};
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::{
-    auth::{AuthService, EmailTokenService},
+    auth::{self, AuthService},
     domain::{
         CreateMemberRequest, Member, MemberStatus, UpdateMemberRequest,
     },
@@ -71,7 +72,7 @@ pub struct MemberService {
     email_sender: Arc<dyn EmailSender>,
     membership_type_service: Arc<MembershipTypeService>,
     settings_service: Arc<SettingsService>,
-    email_token_service: Arc<EmailTokenService>,
+    db_pool: SqlitePool,
     /// Public base URL of this Coterie instance, used to build the
     /// portal and verification links inside transactional emails.
     /// Pulled from `Settings::server::base_url` at startup; we keep a
@@ -90,7 +91,7 @@ impl MemberService {
         email_sender: Arc<dyn EmailSender>,
         membership_type_service: Arc<MembershipTypeService>,
         settings_service: Arc<SettingsService>,
-        email_token_service: Arc<EmailTokenService>,
+        db_pool: SqlitePool,
         base_url: String,
     ) -> Self {
         Self {
@@ -101,7 +102,7 @@ impl MemberService {
             email_sender,
             membership_type_service,
             settings_service,
-            email_token_service,
+            db_pool,
             base_url,
         }
     }
@@ -414,16 +415,18 @@ impl MemberService {
         // If invalidation fails, the new token is still valid and works — but
         // any older tokens out in flight (e.g. in the member's spam folder
         // from a previous send) might still work too. Worth logging.
-        if let Err(e) = self.email_token_service.invalidate_for_member(member_id).await {
+        if let Err(e) = auth::email_tokens::invalidate_verification_tokens_for_member(
+            &self.db_pool, member_id,
+        ).await {
             tracing::warn!(
                 "Resending verification for {} but couldn't invalidate previous tokens: {}",
                 member_id, e,
             );
         }
 
-        let created = self.email_token_service
-            .create(member_id, chrono::Duration::hours(24))
-            .await?;
+        let created = auth::email_tokens::create_verification_token(
+            &self.db_pool, member_id, chrono::Duration::hours(24),
+        ).await?;
 
         let org_name = self.settings_service
             .get_value("org.name").await
@@ -918,7 +921,6 @@ mod tests {
         let membership_type_service = Arc::new(MembershipTypeService::new(membership_type_repo));
         let crypto = Arc::new(SecretCrypto::new("test-secret-please-ignore"));
         let settings_service = Arc::new(SettingsService::new(pool.clone(), crypto));
-        let email_token_service = Arc::new(EmailTokenService::verification(pool.clone()));
 
         MemberService::new(
             member_repo,
@@ -928,7 +930,7 @@ mod tests {
             email_sender,
             membership_type_service,
             settings_service,
-            email_token_service,
+            pool.clone(),
             "http://test.local".to_string(),
         )
     }
