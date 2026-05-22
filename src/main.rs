@@ -11,8 +11,9 @@ mod repository;
 mod service;
 mod web;
 
+use std::str::FromStr;
 use std::sync::Arc;
-use sqlx::{Executor, sqlite::SqlitePoolOptions};
+use sqlx::{Executor, sqlite::{SqliteConnectOptions, SqlitePoolOptions}};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
@@ -70,6 +71,14 @@ async fn main() -> anyhow::Result<()> {
     //     wait is plenty for a concurrent writer to finish.
     //   synchronous = NORMAL — the WAL-recommended setting; FULL is for
     //     rollback journals.
+    // Parse the URL into SqliteConnectOptions so we can opt into
+    // create_if_missing. Without this, a fresh deploy fails at
+    // `unable to open database file` because sqlx's default `.connect()`
+    // path doesn't create the file — operators have to remember to
+    // add `?mode=rwc` to the URL, which is a deploy footgun.
+    let connect_options = SqliteConnectOptions::from_str(&database_url)?
+        .create_if_missing(true);
+
     let db_pool = SqlitePoolOptions::new()
         .max_connections(settings.database.max_connections)
         .after_connect(|conn, _meta| Box::pin(async move {
@@ -79,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
             conn.execute("PRAGMA busy_timeout = 5000").await?;
             Ok(())
         }))
-        .connect(&database_url)
+        .connect_with(connect_options)
         .await?;
 
     // Run migrations

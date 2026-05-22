@@ -300,8 +300,11 @@ COTERIE__SERVER__DATA_DIR=/var/lib/coterie
 COTERIE__DATABASE__URL=sqlite://coterie.db
 ```
 
-Add Stripe / Discord blocks if you're using them; see `.env.example`
-for the field list.
+Add Stripe / Discord blocks if you're using them. For Stripe
+specifically, see `deploy/STRIPE-SETUP.md` for the full walk-through
+— it covers test vs. live mode, API keys, webhook registration
+(URL, events to subscribe to, API version), and the test-event
+verification step. Otherwise `.env.example` has the field list.
 
 ---
 
@@ -314,9 +317,24 @@ nano /etc/caddy/Caddyfile
 # - If you're not hosting a public site on this droplet, delete the
 #   second site block
 
+# Create the log directory the Caddyfile.example writes to. Caddy's
+# systemd unit normally auto-creates /var/log/caddy via
+# LogsDirectory=caddy, but if Caddy was running with a previous
+# config that didn't reference logs, the dir doesn't exist yet.
+# Use -R on the chown because earlier failed attempts may have left
+# root-owned log files inside that the caddy user can't write to.
+mkdir -p /var/log/caddy
+chown -R caddy:caddy /var/log/caddy
+
 caddy validate --config /etc/caddy/Caddyfile
 systemctl reload caddy
+systemctl status caddy --no-pager   # confirm reload succeeded
 ```
+
+If reload fails with `setting up custom log ... opening log writer`,
+the log directory wasn't created or isn't writable by the `caddy`
+user. Re-run the `mkdir` + `chown` above. The previous config keeps
+running until reload succeeds — no downtime from a failed reload.
 
 ---
 

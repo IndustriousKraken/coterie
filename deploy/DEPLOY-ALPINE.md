@@ -177,7 +177,10 @@ COTERIE__SERVER__DATA_DIR=/var/lib/coterie
 COTERIE__DATABASE__URL=sqlite://coterie.db
 ```
 
-See `.env.example` for the full set of options (Stripe, Discord, etc.).
+See `.env.example` for the full set of options (Stripe, Discord,
+etc.). For Stripe specifically, `deploy/STRIPE-SETUP.md` walks
+through the dashboard configuration (webhook URL, events to
+subscribe to, API version) end-to-end.
 
 ---
 
@@ -218,6 +221,9 @@ Identical to the Ubuntu path:
 ```sh
 cp /opt/coterie/deploy/Caddyfile.example /etc/caddy/Caddyfile
 vi /etc/caddy/Caddyfile     # update domain
+
+# Create the log directory the Caddyfile.example writes to.
+install -d -m 0755 -o caddy -g caddy /var/log/caddy
 
 caddy validate --config /etc/caddy/Caddyfile
 

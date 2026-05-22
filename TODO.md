@@ -64,6 +64,31 @@ Items still to do. Completed work lives in git history.
 - [ ] CI/CD pipeline (GitHub Actions) — staging-only flow exists in
       `deploy/SETUP.md`; full release pipeline still TBD
 - [ ] Pre-commit hooks
+- [ ] **Full Debian provisioning script** — wrap the manual steps in
+      `DEPLOY-DIGITALOCEAN.md` into a single idempotent
+      `deploy/provision-debian.sh` that takes a fresh droplet from
+      bare to "Coterie running with Caddy + TLS" without manual
+      intervention. Steps to automate:
+      - `apt-get update && apt-get install -y` the prereqs (curl,
+        python3, tar, sqlite3, caddy, awscli, ca-certificates)
+      - Mount the attached block volume + add the fstab entry
+        (detect the by-id path; cope with the volume already being
+        mounted if re-run)
+      - Run `release-deploy.sh` (which itself runs `install.sh`)
+      - Drop the Caddyfile in place from `Caddyfile.example` with
+        domain substitution + `mkdir -p /var/log/caddy &&
+        chown -R caddy:caddy /var/log/caddy` so a botched first run
+        doesn't leave root-owned log files behind
+      - Stage `.env` from `.env.example` with `openssl rand -hex 32`
+        already substituted into `SESSION_SECRET`
+      - Print a "still-to-do" summary at the end (Stripe keys,
+        Discord, DNS, `/setup` wizard)
+
+      Goal: a single command turns a fresh droplet into a running
+      Coterie. Critical for disaster recovery and for the per-org
+      provisioning model if Coterie ever becomes a hosted product.
+      Manual deploy is fine the first time; the second time it's a
+      chore worth scripting.
 
 ## Documentation
 
