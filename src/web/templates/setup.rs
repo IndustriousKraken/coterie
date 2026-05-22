@@ -43,23 +43,40 @@ pub struct SetupResponse {
 }
 
 // GET /setup
+//
+// Defense-in-depth: once an admin exists, /setup is a dead-end. The
+// POST handler already refuses inside the setup_lock; the GET handler
+// redirects to /login so an operator who stumbles here post-bootstrap
+// doesn't see a form they can't submit.
+//
+// Reads `admin_exists_observed` first to match the `require_setup`
+// middleware's cache contract — once any path observes an admin, every
+// subsequent request skips the DB query for the rest of the process.
 pub async fn setup_page(
+    State(admin_exists_observed): State<Arc<AtomicBool>>,
     State(db_pool): State<SqlitePool>,
 ) -> Response {
-    // Check if setup is already complete (admin exists)
-    let has_admin = check_admin_exists(&db_pool).await;
+    if admin_exists_observed.load(Ordering::Relaxed) {
+        return redirect_to_login();
+    }
 
-    if has_admin {
-        // Redirect to login if setup already done
-        let mut headers = HeaderMap::new();
-        headers.insert(header::LOCATION, "/login".parse().unwrap());
-        return (StatusCode::SEE_OTHER, headers).into_response();
+    if check_admin_exists(&db_pool).await {
+        // Arm the flag for consistency with the middleware's cache
+        // semantics — subsequent requests skip the redundant query.
+        admin_exists_observed.store(true, Ordering::Relaxed);
+        return redirect_to_login();
     }
 
     let template = SetupTemplate {
         base: BaseContext::for_anon(),
     };
     HtmlTemplate(template).into_response()
+}
+
+fn redirect_to_login() -> Response {
+    let mut headers = HeaderMap::new();
+    headers.insert(header::LOCATION, "/login".parse().unwrap());
+    (StatusCode::SEE_OTHER, headers).into_response()
 }
 
 // POST /setup
