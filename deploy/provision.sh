@@ -46,9 +46,14 @@ ADMIN_USERNAME=""
 ADMIN_FULL_NAME=""
 ADMIN_PASSWORD=""
 ENABLE_STRIPE=false
+STRIPE_MODE="live"            # "test" or "live"; default matches a24 baseline
 STRIPE_PK=""
 STRIPE_SK=""
 STRIPE_WHSEC=""
+PRELOAD_LIVE=false            # true if operator pre-loads live creds during test-mode wizard
+STRIPE_LIVE_PK=""
+STRIPE_LIVE_SK=""
+STRIPE_LIVE_WHSEC=""
 ENABLE_DISCORD=false
 DISCORD_BOT_TOKEN=""
 DISCORD_GUILD_ID=""
@@ -192,6 +197,19 @@ prompt_yn() {
     done
 }
 
+# validate_prefix VAR_NAME EXPECTED_PREFIX — die if the named variable's
+# value does not start with EXPECTED_PREFIX. Used for Stripe credential
+# checks in test mode (and live-creds-pre-load) so an obviously wrong
+# value is caught before it lands on disk.
+validate_prefix() {
+    local var_name="$1"
+    local expected="$2"
+    local value="${!var_name}"
+    if [[ "$value" != "${expected}"* ]]; then
+        die "${var_name} must start with '${expected}' (got: '${value:0:10}…'). Refusing to continue."
+    fi
+}
+
 # run CMD ARGS… — wrapper that respects DRY_RUN. Logs the command, then
 # runs it unless DRY_RUN is true.
 run() {
@@ -239,9 +257,19 @@ ENVIRONMENT VARIABLES
 
   Integrations (each gated by ENABLE_*; defaults false except CADDY=true)
     COTERIE_PROVISION_ENABLE_STRIPE      true/false
-    COTERIE_PROVISION_STRIPE_PK          Stripe publishable key
-    COTERIE_PROVISION_STRIPE_SK          Stripe secret key
-    COTERIE_PROVISION_STRIPE_WHSEC       Stripe webhook signing secret
+    COTERIE_PROVISION_STRIPE_MODE        test|live (default: live)
+                                         test mode uses coterie-test.db;
+                                         switch later with
+                                         deploy/switch-stripe-to-live.sh.
+    COTERIE_PROVISION_STRIPE_PK          Stripe publishable key (active mode)
+    COTERIE_PROVISION_STRIPE_SK          Stripe secret key (active mode)
+    COTERIE_PROVISION_STRIPE_WHSEC       Stripe webhook signing secret (active mode)
+    COTERIE_PROVISION_PRELOAD_LIVE       true/false — in test mode, also
+                                         collect live creds and stash in
+                                         /opt/coterie/.env.live for later.
+    COTERIE_PROVISION_STRIPE_LIVE_PK     Pre-loaded live publishable key
+    COTERIE_PROVISION_STRIPE_LIVE_SK     Pre-loaded live secret key
+    COTERIE_PROVISION_STRIPE_LIVE_WHSEC  Pre-loaded live webhook signing secret
 
     COTERIE_PROVISION_ENABLE_DISCORD     true/false
     COTERIE_PROVISION_DISCORD_BOT_TOKEN
@@ -502,9 +530,38 @@ echo ""
 info "=== Step 4: Integrations ==="
 prompt_yn ENABLE_STRIPE "Enable Stripe payments?" "n"
 if [[ "$ENABLE_STRIPE" == "true" ]]; then
-    prompt        STRIPE_PK     "Stripe publishable key (pk_test_ or pk_live_)"
-    prompt_secret STRIPE_SK     "Stripe secret key (sk_test_ or sk_live_)"
-    prompt_secret STRIPE_WHSEC  "Stripe webhook signing secret (whsec_)"
+    # a25: test-or-live mode choice. Default 'live' preserves a24 behavior.
+    # When 'test', a separate coterie-test.db is used so test charges don't
+    # pollute the eventual live database. See deploy/switch-stripe-to-live.sh.
+    prompt STRIPE_MODE "Stripe mode (test/live)" "live"
+    case "$STRIPE_MODE" in
+        test|live) ;;
+        *) die "STRIPE_MODE must be 'test' or 'live' (got: '$STRIPE_MODE')" ;;
+    esac
+
+    if [[ "$STRIPE_MODE" == "test" ]]; then
+        prompt        STRIPE_PK     "Stripe TEST publishable key (pk_test_…)"
+        validate_prefix STRIPE_PK "pk_test_"
+        prompt_secret STRIPE_SK     "Stripe TEST secret key (sk_test_…)"
+        validate_prefix STRIPE_SK "sk_test_"
+        prompt_secret STRIPE_WHSEC  "Stripe TEST webhook signing secret (whsec_…)"
+        validate_prefix STRIPE_WHSEC "whsec_"
+
+        prompt_yn PRELOAD_LIVE "Do you also have live credentials to pre-load for later switchover?" "n"
+        if [[ "$PRELOAD_LIVE" == "true" ]]; then
+            prompt        STRIPE_LIVE_PK    "Stripe LIVE publishable key (pk_live_…)"
+            validate_prefix STRIPE_LIVE_PK "pk_live_"
+            prompt_secret STRIPE_LIVE_SK    "Stripe LIVE secret key (sk_live_…)"
+            validate_prefix STRIPE_LIVE_SK "sk_live_"
+            prompt_secret STRIPE_LIVE_WHSEC "Stripe LIVE webhook signing secret (whsec_…)"
+            validate_prefix STRIPE_LIVE_WHSEC "whsec_"
+        fi
+    else
+        # Live mode: behavior matches a24 baseline.
+        prompt        STRIPE_PK     "Stripe publishable key (pk_live_…)"
+        prompt_secret STRIPE_SK     "Stripe secret key (sk_live_…)"
+        prompt_secret STRIPE_WHSEC  "Stripe webhook signing secret (whsec_…)"
+    fi
 fi
 
 # 3.7 Discord
@@ -547,7 +604,14 @@ if [[ "$EXISTING_ADMIN" == "true" ]]; then
 else
     echo "  Admin:              $ADMIN_EMAIL ($ADMIN_USERNAME)"
 fi
-echo "  Stripe:             $ENABLE_STRIPE"
+if [[ "$ENABLE_STRIPE" == "true" ]]; then
+    echo "  Stripe:             $ENABLE_STRIPE (mode: $STRIPE_MODE)"
+    if [[ "$STRIPE_MODE" == "test" && "$PRELOAD_LIVE" == "true" ]]; then
+        echo "                      (pre-loading live creds for switchover)"
+    fi
+else
+    echo "  Stripe:             $ENABLE_STRIPE"
+fi
 echo "  Discord:            $ENABLE_DISCORD"
 echo "  UniFi:              $ENABLE_UNIFI"
 echo "  Caddy + TLS:        $ENABLE_CADDY"
@@ -690,6 +754,15 @@ generate_env() {
             "# COTERIE__SERVER__DATA_DIR="*|"COTERIE__SERVER__DATA_DIR="*)
                 printf '%s\n' "COTERIE__SERVER__DATA_DIR=${DATA_DIR}"
                 ;;
+            "COTERIE__DATABASE__URL="*)
+                # a25: in test mode the wizard targets a separate test DB
+                # so verification data doesn't pollute the eventual live DB.
+                if [[ "$ENABLE_STRIPE" == "true" && "$STRIPE_MODE" == "test" ]]; then
+                    printf '%s\n' "COTERIE__DATABASE__URL=sqlite:///var/lib/coterie/coterie-test.db?mode=rwc"
+                else
+                    printf '%s\n' "$line"
+                fi
+                ;;
             "COTERIE__STRIPE__ENABLED="*)
                 printf '%s\n' "COTERIE__STRIPE__ENABLED=${ENABLE_STRIPE}"
                 ;;
@@ -783,6 +856,27 @@ generate_env() {
     chmod 0640 "$target"
 }
 
+# a25: if the operator pre-loaded live credentials in test mode, stash
+# them in /opt/coterie/.env.live for switch-stripe-to-live.sh to source.
+# Same permissions as .env (0640, coterie:coterie).
+write_env_live() {
+    local target="$INSTALL_DIR/.env.live"
+    local tmp
+    tmp="$(mktemp)"
+    {
+        printf '# Coterie live-mode Stripe credentials, pre-loaded by provision.sh.\n'
+        printf '# Read by deploy/switch-stripe-to-live.sh at switchover time.\n'
+        printf '# Safe to delete if you would rather provide live creds interactively.\n'
+        printf '\n'
+        printf 'COTERIE__STRIPE__PUBLISHABLE_KEY=%s\n' "$STRIPE_LIVE_PK"
+        printf 'COTERIE__STRIPE__SECRET_KEY=%s\n' "$STRIPE_LIVE_SK"
+        printf 'COTERIE__STRIPE__WEBHOOK_SECRET=%s\n' "$STRIPE_LIVE_WHSEC"
+    } > "$tmp"
+    mv "$tmp" "$target"
+    chown coterie:coterie "$target"
+    chmod 0640 "$target"
+}
+
 if [[ "$EXISTING_ENV" == "true" ]]; then
     overwrite_env=false
     if [[ "${COTERIE_PROVISION_OVERWRITE_ENV:-}" == "true" ]]; then
@@ -800,6 +894,12 @@ if [[ "$EXISTING_ENV" == "true" ]]; then
     fi
 else
     generate_env
+fi
+
+# a25: stash pre-loaded live credentials for switch-stripe-to-live.sh.
+if [[ "$ENABLE_STRIPE" == "true" && "$STRIPE_MODE" == "test" && "$PRELOAD_LIVE" == "true" ]]; then
+    info "Writing pre-loaded live credentials to $INSTALL_DIR/.env.live (chmod 0640)..."
+    write_env_live
 fi
 
 # ---------------------------------------------------------------------
@@ -1030,6 +1130,49 @@ if [[ "$ENABLE_CADDY" == "true" ]]; then
         warn "This often just means DNS isn't pointing at this box yet — Caddy hasn't issued a cert for ${PORTAL_DOMAIN}."
         warn "Once you point DNS, the first inbound HTTPS request triggers cert issuance."
     fi
+fi
+
+# ---------------------------------------------------------------------
+# 10.5 Stripe test-mode verification checklist (a25)
+# ---------------------------------------------------------------------
+
+# When the operator chose test mode, print the verification checklist
+# (per design.md D8) immediately before the final summary. In live mode
+# the checklist is suppressed to match the a24 baseline output exactly.
+if [[ "$ENABLE_STRIPE" == "true" && "$STRIPE_MODE" == "test" ]]; then
+    cat <<EOF
+
+============================================================
+Stripe TEST MODE — verification checklist
+============================================================
+Coterie is running in Stripe TEST mode with a separate test database
+($DATA_DIR/coterie-test.db). Use this time to verify Stripe wiring
+before switching to live.
+
+Test card to use: 4242 4242 4242 4242, any future expiry, any 3-digit
+CVC, any ZIP.
+
+Suggested verification steps:
+
+  [ ] Sign up a test member via your public site or directly via
+      Coterie's signup form (if exposed).
+  [ ] Make a test donation through /portal/donate (logged in as
+      admin) or via the public donate flow.
+  [ ] Confirm each test charge appears in your Stripe dashboard's
+      TEST MODE payments view.
+  [ ] Confirm \`journalctl -u coterie\` shows the webhook events
+      arriving cleanly (look for "Webhook event received").
+  [ ] Confirm the receipt email arrived at the address you used.
+
+When satisfied, switch to live mode:
+
+  sudo bash $INSTALL_DIR/deploy/switch-stripe-to-live.sh
+
+This will: stop Coterie, archive coterie-test.db, create a fresh
+coterie.db, copy your admin row across, prompt for (or load) your
+live Stripe credentials, rewrite .env, and start Coterie back up.
+============================================================
+EOF
 fi
 
 # ---------------------------------------------------------------------

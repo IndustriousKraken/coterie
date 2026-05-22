@@ -36,6 +36,81 @@ Workflow:
 
 The rest of this doc applies to either mode.
 
+> **Webhook configurations do NOT cross modes.** If you plan to use both
+> modes — even sequentially (test today, live tomorrow) — you must
+> register a separate webhook endpoint in each mode's dashboard. Each
+> mode has its own signing secret. See sections 2-3 below; repeat them
+> for live mode after switching.
+
+---
+
+## 0a. The test-mode-first workflow (recommended for first deploys)
+
+If you're using `deploy/provision.sh` to set up a fresh box, the wizard
+can start the instance in Stripe **test mode** against a separate
+database file (`coterie-test.db`). You then run real flows through real
+Stripe with test cards, confirm everything works, and run a single
+script to transition to live mode without re-entering the admin
+password.
+
+The flow:
+
+1. **Run the wizard in test mode.** When `provision.sh` asks "Stripe
+   mode (test/live)?", answer `test`. Supply your `pk_test_…`,
+   `sk_test_…`, and the test-mode `whsec_…`. The wizard configures
+   Coterie to use `coterie-test.db` so verification data never touches
+   what will become the live database.
+
+   You may also pre-load your live credentials at this point if you
+   have them — they get stashed in `/opt/coterie/.env.live` (chmod
+   0640, owned by `coterie`) for the switchover script to find later.
+
+2. **Verify Stripe wiring** using `4242 4242 4242 4242` (any future
+   expiry, any 3-digit CVC, any ZIP). Run through the flows that
+   matter for your deployment: signup-with-payment, donate,
+   subscription renewal, refund. Confirm each charge appears in
+   Stripe's test-mode dashboard and that Coterie's logs show the
+   webhook events arriving (look for "Webhook event received" in
+   `journalctl -u coterie`).
+
+3. **Switch to live mode** when ready:
+
+   ```bash
+   sudo bash /opt/coterie/deploy/switch-stripe-to-live.sh
+   ```
+
+   This script:
+   - refuses to run if `.env` already has `pk_live_` (idempotent),
+   - refuses if `coterie-test.db` doesn't exist (nothing to switch
+     from),
+   - loads live credentials from `/opt/coterie/.env.live` if present,
+     otherwise prompts you,
+   - validates each credential's prefix and confirms the secret key
+     against Stripe's `/v1/balance` endpoint *before* any
+     modifications,
+   - stops Coterie, creates a fresh `coterie.db` with the same
+     schema as the test DB, copies the admin row(s) across via
+     `ATTACH DATABASE`, archives the test DB (or `--discard-test-db`
+     to remove it), atomically rewrites `.env`, removes `.env.live`,
+     and restarts Coterie.
+
+   Flags:
+   - `--discard-test-db` — delete the test DB instead of archiving it.
+   - `--yes` — skip the final confirmation prompt (for IaC).
+   - `--help` — full reference.
+
+   **You will need a separately-registered live-mode webhook endpoint
+   in Stripe's dashboard before live charges can flow correctly.**
+   Toggle the Stripe dashboard to live mode and add an endpoint with
+   the same URL (`https://<your-domain>/api/payments/webhook/stripe`)
+   and event subscriptions described in sections 2-3 of this
+   document. The signing secret you supply to
+   `switch-stripe-to-live.sh` is the live-mode `whsec_…` from THAT
+   live-mode webhook.
+
+The switchover is **one-way**. If you need a test instance later,
+provision a new one.
+
 ---
 
 ## 1. Grab the API keys
