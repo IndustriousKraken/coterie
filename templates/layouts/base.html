@@ -6,22 +6,17 @@
     <meta name="csrf-token" content="{{ base.csrf_token }}">
     <title>{% block title %}Coterie{% endblock %}</title>
     
-    <!-- HTMX (pinned + SRI) -->
-    <script nonce="__CSP_NONCE__"
-            src="https://unpkg.com/htmx.org@1.9.10"
-            integrity="sha384-YwQSRkoBOUtKKVfHQ8C2zCPslUZHuxiPHts6X/xQCuGHipTtRXd7ImqS1VTLlpiT"
-            crossorigin="anonymous"></script>
-    <script nonce="__CSP_NONCE__"
-            src="https://unpkg.com/htmx.org@1.9.10/dist/ext/json-enc.js"
-            integrity="sha384-nRnAvEUI7N/XvvowiMiq7oEI04gOXMCqD3Bidvedw+YNbj7zTQACPlRI3Jt3vYM4"
-            crossorigin="anonymous"></script>
+    <!-- HTMX (self-hosted from /static/js/) -->
+    <!-- Self-hosting eliminates the dependency on external CDN
+         availability and on visitors' networks not interfering
+         with CDN traffic. The version pin lives in the filename
+         convention — keep it in lock-step with whatever's in
+         static/js/ when upgrading. -->
+    <script nonce="__CSP_NONCE__" src="/static/js/htmx.min.js"></script>
+    <script nonce="__CSP_NONCE__" src="/static/js/htmx-json-enc.js"></script>
 
-    <!-- Alpine.js (CSP build — no `Function()` so works without 'unsafe-eval') -->
-    <script nonce="__CSP_NONCE__"
-            defer
-            src="https://unpkg.com/alpinejs@3.13.5/dist/cdn.csp.min.js"
-            integrity="sha384-qZ7VE99GohFZdSLmj9//6HiHLNWo5eOEs1RrcdDXTygxJB4VAuCIBei06IJemclm"
-            crossorigin="anonymous"></script>
+    <!-- Alpine.js CSP build (no `Function()` so works without 'unsafe-eval'). -->
+    <script nonce="__CSP_NONCE__" defer src="/static/js/alpine.min.js"></script>
 
     <!-- Tailwind CSS (locally built) -->
     <link rel="stylesheet" href="/static/style.css">
