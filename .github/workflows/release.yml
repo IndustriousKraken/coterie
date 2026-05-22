@@ -54,6 +54,21 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
+      - name: Determine prerelease flag
+        id: prerelease
+        # Tags matching ^v\d+\.\d+\.\d+$ are stable releases. Anything
+        # else (v1.0.0dev, v1.0.0-rc1, v1.0.0alpha, ...) is published
+        # with prerelease=true so GitHub's /releases/latest endpoint
+        # and the provisioning wizard's "latest stable" default both
+        # pick safe versions.
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+          else
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+          fi
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -119,6 +134,7 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.tag }}
+          prerelease: ${{ steps.prerelease.outputs.prerelease }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
