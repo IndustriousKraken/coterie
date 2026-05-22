@@ -173,43 +173,54 @@ apt-get install -y awscli
 
 ---
 
-## 5. Deploy the Coterie code
+## 5. Deploy with the provisioning wizard (recommended)
 
-**Happy path — pull a pre-built release tarball from GitHub.**
-The `release.yml` workflow builds a musl-static binary and publishes
-it to GitHub Releases on every `v*` tag. `release-deploy.sh` pulls
-the latest tarball, verifies its SHA-256, places files under
-`/opt/coterie/`, and runs `install.sh` to set up the system user
-and systemd unit. One command.
+**Happy path — one command, end to end.** `deploy/provision.sh` runs
+on a fresh Debian box and takes it all the way to a running Coterie
+instance: it installs system packages (incl. Caddy), pulls the latest
+release tarball via `release-deploy.sh`, generates `.env` with a fresh
+session secret, creates your first admin (no /setup web flow needed),
+writes a Caddyfile substituted with your domains (and creates
+`/var/log/caddy` with correct ownership before reloading), and starts
+the service. Steps 6–11 below are what the wizard does internally —
+skim them if you want to understand each step, but you don't need to
+run them manually.
 
 ```bash
 # On the droplet, as root:
-apt-get install -y curl python3 tar
-
-# Bootstrap: grab just the deploy script from the latest release.
-curl -sfL https://raw.githubusercontent.com/IndustriousKraken/coterie/master/deploy/release-deploy.sh \
-    -o /usr/local/bin/coterie-release-deploy
-chmod +x /usr/local/bin/coterie-release-deploy
-
-# Pull the latest release. On first run, this detects no prior
-# install, runs install.sh, prints next-steps. On subsequent runs,
-# it does the service-stop/swap/restart dance.
-/usr/local/bin/coterie-release-deploy
-
-# After this completes, jump to "## 7. Configure `.env`" below
-# (step 6 is folded into the release-deploy.sh script).
+curl -sfL https://raw.githubusercontent.com/IndustriousKraken/coterie/master/deploy/provision.sh \
+    -o /tmp/provision.sh
+sudo bash /tmp/provision.sh
 ```
 
-You can also pin to a specific version (useful for rollback or
-deploying an older tested release):
+The wizard asks for your org name, portal domain, optional marketing
+domain, admin credentials, and which integrations (Stripe / Discord /
+UniFi / Caddy) to enable. Everything has a sensible default and a
+matching `COTERIE_PROVISION_*` env var for non-interactive runs (see
+`bash provision.sh --help` for the full list).
+
+Useful flags:
 
 ```bash
-/usr/local/bin/coterie-release-deploy v1.2.3
+sudo bash /tmp/provision.sh --dry-run    # print the plan, do nothing
+sudo bash /tmp/provision.sh --help       # env-var list + flag reference
 ```
+
+To pin a specific release (rollback or testing):
+
+```bash
+COTERIE_PROVISION_VERSION=v1.2.3 sudo -E bash /tmp/provision.sh
+```
+
+The wizard is idempotent — re-running it on a half-configured box
+detects existing state (`.env`, existing admin, existing Caddyfile)
+and prompts before clobbering each. After it finishes, skip to
+step 9 (DNS) — there's nothing manual left between you and serving
+traffic.
 
 ---
 
-### Fallback: build from source on the droplet
+### Manual fallback: build from source on the droplet
 
 Only needed if you want to deploy a commit that hasn't been tagged
 yet, or if you need to make local code changes:
@@ -240,7 +251,7 @@ not enough). The release-tarball path above avoids this entirely.
 
 ---
 
-### Fallback: rsync from your dev machine
+### Manual fallback: rsync from your dev machine
 
 ```bash
 # On your local machine, from the repo root:
@@ -258,11 +269,15 @@ cd /opt/coterie && bash deploy/install.sh
 
 ---
 
-## 6. (Skip if you used the happy path)
+## 6. (Skip if you used the wizard)
 
-If you used the release-tarball path in step 5, `install.sh` has
-already been run — skip to step 7. If you used one of the fallback
-paths (build from source or rsync), run the installer now:
+If you used `provision.sh` in step 5, every following step is already
+done — skip to step 9 (DNS). The remaining steps (6–8, 10–11) document
+what the wizard does internally; read them if you want to understand
+each substep, or if you're following a manual fallback path.
+
+If you used one of the manual fallback paths (build from source or
+rsync), run the installer now:
 
 ```bash
 cd /opt/coterie
