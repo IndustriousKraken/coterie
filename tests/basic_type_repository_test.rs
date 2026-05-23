@@ -12,26 +12,15 @@ use coterie::{
     },
     service::basic_type_service::BasicTypeService,
 };
-use sqlx::SqlitePool;
 use uuid::Uuid;
 
-async fn fresh_pool() -> anyhow::Result<SqlitePool> {
-    let pool = SqlitePool::connect(":memory:").await?;
-    sqlx::migrate!("./migrations").run(&pool).await?;
-    // Strip default rows seeded by the migrations so each test starts from a
-    // clean slate.
-    sqlx::query("DELETE FROM event_types").execute(&pool).await?;
-    sqlx::query("DELETE FROM announcement_types")
-        .execute(&pool)
-        .await?;
-    Ok(pool)
-}
+mod common;
+use common::fresh_pool_no_seeded_basic_types as fresh_pool;
 
 #[tokio::test]
 async fn delete_in_use_event_type_returns_event_type_display_name() -> anyhow::Result<()> {
     let pool = fresh_pool().await?;
-    let repo: Arc<dyn BasicTypeRepository> =
-        Arc::new(SqliteBasicTypeRepository::new(pool.clone()));
+    let repo: Arc<dyn BasicTypeRepository> = Arc::new(SqliteBasicTypeRepository::new(pool.clone()));
     let service = BasicTypeService::new(repo.clone(), BasicTypeKind::Event);
 
     let created = service
@@ -97,8 +86,7 @@ async fn delete_in_use_event_type_returns_event_type_display_name() -> anyhow::R
 async fn delete_in_use_announcement_type_returns_announcement_type_display_name(
 ) -> anyhow::Result<()> {
     let pool = fresh_pool().await?;
-    let repo: Arc<dyn BasicTypeRepository> =
-        Arc::new(SqliteBasicTypeRepository::new(pool.clone()));
+    let repo: Arc<dyn BasicTypeRepository> = Arc::new(SqliteBasicTypeRepository::new(pool.clone()));
     let service = BasicTypeService::new(repo.clone(), BasicTypeKind::Announcement);
 
     let created = service
@@ -156,8 +144,7 @@ async fn delete_in_use_announcement_type_returns_announcement_type_display_name(
 #[tokio::test]
 async fn list_event_and_announcement_kinds_query_disjoint_tables() -> anyhow::Result<()> {
     let pool = fresh_pool().await?;
-    let repo: Arc<dyn BasicTypeRepository> =
-        Arc::new(SqliteBasicTypeRepository::new(pool.clone()));
+    let repo: Arc<dyn BasicTypeRepository> = Arc::new(SqliteBasicTypeRepository::new(pool.clone()));
     let event_service = BasicTypeService::new(repo.clone(), BasicTypeKind::Event);
     let announcement_service = BasicTypeService::new(repo.clone(), BasicTypeKind::Announcement);
 
@@ -205,7 +192,11 @@ async fn list_event_and_announcement_kinds_query_disjoint_tables() -> anyhow::Re
 
     // The two queries hit physically separate tables; sets must be disjoint.
     for e in &event_ids {
-        assert!(!ann_ids.contains(e), "event id {} bled into announcements", e);
+        assert!(
+            !ann_ids.contains(e),
+            "event id {} bled into announcements",
+            e
+        );
     }
 
     Ok(())

@@ -19,14 +19,14 @@ use coterie::{
         AnnouncementRepository, MemberRepository, SqliteAnnouncementRepository,
         SqliteMemberRepository,
     },
-    service::{
-        announcement_admin_service::AnnouncementAdminService,
-        audit_service::AuditService,
-    },
+    service::{announcement_admin_service::AnnouncementAdminService, audit_service::AuditService},
 };
-use sqlx::{Executor, SqlitePool};
+use sqlx::SqlitePool;
 use tokio::sync::Mutex;
 use uuid::Uuid;
+
+mod common;
+use common::fresh_pool;
 
 // ---------------------------------------------------------------------
 // Fake Integration — records every event handled.
@@ -75,22 +75,6 @@ impl Integration for FakeIntegration {
 // ---------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------
-
-async fn fresh_pool() -> SqlitePool {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(5)
-        .after_connect(|conn, _| {
-            Box::pin(async move {
-                conn.execute("PRAGMA foreign_keys = ON").await?;
-                Ok(())
-            })
-        })
-        .connect("sqlite::memory:")
-        .await
-        .expect("connect to :memory:");
-    sqlx::migrate!("./migrations").run(&pool).await.expect("migrate");
-    pool
-}
 
 struct H {
     pool: SqlitePool,
@@ -161,26 +145,24 @@ async fn seed_announcement(
 }
 
 async fn audit_count(pool: &SqlitePool, action: &str, entity_id: &str) -> i64 {
-    let count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM audit_logs WHERE action = ? AND entity_id = ?",
-    )
-    .bind(action)
-    .bind(entity_id)
-    .fetch_one(pool)
-    .await
-    .expect("audit count");
+    let count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM audit_logs WHERE action = ? AND entity_id = ?")
+            .bind(action)
+            .bind(entity_id)
+            .fetch_one(pool)
+            .await
+            .expect("audit count");
     count.0
 }
 
 async fn audit_actor_is_null(pool: &SqlitePool, action: &str, entity_id: &str) -> bool {
-    let row: Option<(Option<String>,)> = sqlx::query_as(
-        "SELECT actor_id FROM audit_logs WHERE action = ? AND entity_id = ?",
-    )
-    .bind(action)
-    .bind(entity_id)
-    .fetch_optional(pool)
-    .await
-    .expect("actor_id query");
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT actor_id FROM audit_logs WHERE action = ? AND entity_id = ?")
+            .bind(action)
+            .bind(entity_id)
+            .fetch_optional(pool)
+            .await
+            .expect("actor_id query");
     matches!(row, Some((None,)))
 }
 
@@ -195,12 +177,21 @@ async fn past_due_draft_fires_publishes_audits_and_dispatches() {
     let scheduled = Utc::now() - Duration::minutes(5);
     let row = seed_announcement(&h, None, Some(scheduled)).await;
 
-    let count = h.service.publish_scheduled().await.expect("publish_scheduled");
+    let count = h
+        .service
+        .publish_scheduled()
+        .await
+        .expect("publish_scheduled");
 
     assert_eq!(count, 1, "exactly one row should have been published");
 
     // Row is now Published.
-    let fetched = h.repo.find_by_id(row.id).await.unwrap().expect("row exists");
+    let fetched = h
+        .repo
+        .find_by_id(row.id)
+        .await
+        .unwrap()
+        .expect("row exists");
     assert!(
         fetched.published_at.is_some(),
         "row should be Published after publish_scheduled"
@@ -231,11 +222,20 @@ async fn future_draft_is_not_touched() {
     let scheduled = Utc::now() + Duration::hours(2);
     let row = seed_announcement(&h, None, Some(scheduled)).await;
 
-    let count = h.service.publish_scheduled().await.expect("publish_scheduled");
+    let count = h
+        .service
+        .publish_scheduled()
+        .await
+        .expect("publish_scheduled");
 
     assert_eq!(count, 0, "future-scheduled row should not be published");
 
-    let fetched = h.repo.find_by_id(row.id).await.unwrap().expect("row exists");
+    let fetched = h
+        .repo
+        .find_by_id(row.id)
+        .await
+        .unwrap()
+        .expect("row exists");
     assert!(fetched.published_at.is_none(), "row should still be Draft");
     assert!(
         fetched.scheduled_publish_at.is_some(),
@@ -259,11 +259,20 @@ async fn already_published_row_is_not_double_dispatched() {
     let scheduled = Some(Utc::now() - Duration::minutes(5));
     let row = seed_announcement(&h, already_published, scheduled).await;
 
-    let count = h.service.publish_scheduled().await.expect("publish_scheduled");
+    let count = h
+        .service
+        .publish_scheduled()
+        .await
+        .expect("publish_scheduled");
 
     assert_eq!(count, 0, "Published rows must not be re-fired");
 
-    let fetched = h.repo.find_by_id(row.id).await.unwrap().expect("row exists");
+    let fetched = h
+        .repo
+        .find_by_id(row.id)
+        .await
+        .unwrap()
+        .expect("row exists");
     assert!(
         fetched.published_at.is_some(),
         "row should remain Published",
@@ -296,5 +305,8 @@ async fn concurrent_mark_published_now_only_one_wins() {
     let result_b = task_b.await.expect("task_b join").expect("repo b");
 
     let winners = [result_a, result_b].iter().filter(|x| **x).count();
-    assert_eq!(winners, 1, "exactly one of the two concurrent calls must win");
+    assert_eq!(
+        winners, 1,
+        "exactly one of the two concurrent calls must win"
+    );
 }

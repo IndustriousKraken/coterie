@@ -35,7 +35,10 @@ use coterie::{
     },
     service::{settings_service::SettingsService, ServiceContext},
 };
-use sqlx::{Executor, SqlitePool};
+use sqlx::SqlitePool;
+
+mod common;
+use common::fresh_pool;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -49,7 +52,9 @@ struct RecordingEmailSender {
 
 impl RecordingEmailSender {
     fn new() -> Arc<Self> {
-        Arc::new(Self { sent: Mutex::new(Vec::new()) })
+        Arc::new(Self {
+            sent: Mutex::new(Vec::new()),
+        })
     }
     async fn count(&self) -> usize {
         self.sent.lock().await.len()
@@ -75,22 +80,6 @@ struct Harness {
     session_cookie: String,
     csrf_token: String,
     email: Arc<RecordingEmailSender>,
-}
-
-async fn fresh_pool() -> SqlitePool {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .after_connect(|conn, _| {
-            Box::pin(async move {
-                conn.execute("PRAGMA foreign_keys = ON").await?;
-                Ok(())
-            })
-        })
-        .connect("sqlite::memory:")
-        .await
-        .expect("connect to :memory:");
-    sqlx::migrate!("./migrations").run(&pool).await.expect("migrate");
-    pool
 }
 
 async fn build_harness() -> Harness {
@@ -125,8 +114,7 @@ async fn build_harness() -> Harness {
 
     let member_repo: Arc<dyn MemberRepository> =
         Arc::new(SqliteMemberRepository::new(pool.clone()));
-    let event_repo: Arc<dyn EventRepository> =
-        Arc::new(SqliteEventRepository::new(pool.clone()));
+    let event_repo: Arc<dyn EventRepository> = Arc::new(SqliteEventRepository::new(pool.clone()));
     let announcement_repo: Arc<dyn AnnouncementRepository> =
         Arc::new(SqliteAnnouncementRepository::new(pool.clone()));
     let payment_repo: Arc<dyn PaymentRepository> =
@@ -149,10 +137,7 @@ async fn build_harness() -> Harness {
     let email_sender = RecordingEmailSender::new();
     let integration_manager = Arc::new(IntegrationManager::new());
 
-    let money_limiter = MoneyLimiter(RateLimiter::new(
-        10,
-        std::time::Duration::from_secs(60),
-    ));
+    let money_limiter = MoneyLimiter(RateLimiter::new(10, std::time::Duration::from_secs(60)));
 
     let service_context = Arc::new(ServiceContext::new(
         member_repo.clone(),
@@ -172,10 +157,8 @@ async fn build_harness() -> Harness {
         pool.clone(),
     ));
 
-    let billing_service = Arc::new(service_context.billing_service(
-        None,
-        settings.server.base_url.clone(),
-    ));
+    let billing_service =
+        Arc::new(service_context.billing_service(None, settings.server.base_url.clone()));
 
     let app_state = coterie::api::state::AppState::new(
         service_context,
@@ -271,9 +254,7 @@ async fn build_harness() -> Harness {
 /// a `file` field carrying the supplied CSV bytes under the supplied
 /// filename. The CSRF middleware reads `csrf_token` first, so it must
 /// appear before `file` in the body.
-fn build_multipart(csrf_token: &str, file_name: &str, csv_bytes: &[u8])
-    -> (String, Vec<u8>)
-{
+fn build_multipart(csrf_token: &str, file_name: &str, csv_bytes: &[u8]) -> (String, Vec<u8>) {
     let boundary = "----coterie-test-boundary-xyz";
     let mut body: Vec<u8> = Vec::new();
 
@@ -286,9 +267,8 @@ fn build_multipart(csrf_token: &str, file_name: &str, csv_bytes: &[u8])
     // file field
     body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
     body.extend_from_slice(
-        format!(
-            "Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n"
-        ).as_bytes(),
+        format!("Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n")
+            .as_bytes(),
     );
     body.extend_from_slice(b"Content-Type: text/csv\r\n\r\n");
     body.extend_from_slice(csv_bytes);
@@ -320,24 +300,20 @@ async fn member_count(pool: &SqlitePool) -> i64 {
 }
 
 async fn audit_count_by_action(pool: &SqlitePool, action: &str) -> i64 {
-    let row: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM audit_logs WHERE action = ?",
-    )
-    .bind(action)
-    .fetch_one(pool)
-    .await
-    .unwrap();
+    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_logs WHERE action = ?")
+        .bind(action)
+        .fetch_one(pool)
+        .await
+        .unwrap();
     row.0
 }
 
 async fn member_exists(pool: &SqlitePool, email: &str) -> bool {
-    let row: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM members WHERE email = ?",
-    )
-    .bind(email)
-    .fetch_one(pool)
-    .await
-    .unwrap();
+    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM members WHERE email = ?")
+        .bind(email)
+        .fetch_one(pool)
+        .await
+        .unwrap();
     row.0 > 0
 }
 
@@ -351,7 +327,10 @@ async fn import_happy_path_creates_members_and_audit_rows() {
 
     // Baseline: just the seeded admin row.
     let before = member_count(&h.pool).await;
-    assert_eq!(before, 1, "expected only the admin in members before import");
+    assert_eq!(
+        before, 1,
+        "expected only the admin in members before import"
+    );
 
     let csv = "email,username,full_name,membership_type_slug,status\n\
                alice@example.com,alice,Alice A.,regular,Active\n\
@@ -370,7 +349,8 @@ async fn import_happy_path_creates_members_and_audit_rows() {
     let text = String::from_utf8(body.to_vec()).expect("utf-8 body");
     assert!(
         text.contains("3 members imported") || text.contains(">3<"),
-        "result fragment should show 3 imported; got:\n{}", text,
+        "result fragment should show 3 imported; got:\n{}",
+        text,
     );
 
     // 3 new members + 1 admin = 4 rows.
@@ -381,7 +361,10 @@ async fn import_happy_path_creates_members_and_audit_rows() {
 
     // 3 per-row import_member rows + 1 aggregate import_members_batch.
     assert_eq!(audit_count_by_action(&h.pool, "import_member").await, 3);
-    assert_eq!(audit_count_by_action(&h.pool, "import_members_batch").await, 1);
+    assert_eq!(
+        audit_count_by_action(&h.pool, "import_members_batch").await,
+        1
+    );
 
     // Aggregate row carries the right summary string.
     let agg: (String, String, Option<String>) = sqlx::query_as(
@@ -398,7 +381,8 @@ async fn import_happy_path_creates_members_and_audit_rows() {
         summary.contains("file=members.csv")
             && summary.contains("succeeded=3")
             && summary.contains("failed=0"),
-        "aggregate new_value should describe file + counts; got {:?}", summary,
+        "aggregate new_value should describe file + counts; got {:?}",
+        summary,
     );
 
     // Each per-row audit row carries the new member's email.
@@ -471,24 +455,32 @@ async fn import_partial_failure_reports_duplicate_email() {
     // Fragment lists the duplicate-email failure with the email value.
     assert!(
         text.contains("dup@example.com"),
-        "result fragment must mention the duplicate email; got:\n{}", text,
+        "result fragment must mention the duplicate email; got:\n{}",
+        text,
     );
     assert!(
         text.to_lowercase().contains("already exists"),
-        "result fragment must call out the duplicate; got:\n{}", text,
+        "result fragment must call out the duplicate; got:\n{}",
+        text,
     );
 
     // 2 successful import_member rows + 1 aggregate.
     assert_eq!(audit_count_by_action(&h.pool, "import_member").await, 2);
-    assert_eq!(audit_count_by_action(&h.pool, "import_members_batch").await, 1);
-    let agg_summary: (Option<String>,) = sqlx::query_as(
-        "SELECT new_value FROM audit_logs WHERE action = 'import_members_batch'",
-    )
-    .fetch_one(&h.pool)
-    .await
-    .unwrap();
+    assert_eq!(
+        audit_count_by_action(&h.pool, "import_members_batch").await,
+        1
+    );
+    let agg_summary: (Option<String>,) =
+        sqlx::query_as("SELECT new_value FROM audit_logs WHERE action = 'import_members_batch'")
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
     let s = agg_summary.0.unwrap_or_default();
-    assert!(s.contains("succeeded=2") && s.contains("failed=1"), "agg: {:?}", s);
+    assert!(
+        s.contains("succeeded=2") && s.contains("failed=1"),
+        "agg: {:?}",
+        s
+    );
 }
 
 #[tokio::test]
@@ -517,11 +509,15 @@ async fn import_missing_required_column_aborts_batch() {
     // batch must not create members or audit rows.
     assert!(
         text.contains("email") && text.to_lowercase().contains("missing"),
-        "expected missing-column error message; got:\n{}", text,
+        "expected missing-column error message; got:\n{}",
+        text,
     );
     assert_eq!(member_count(&h.pool).await, before);
     assert_eq!(audit_count_by_action(&h.pool, "import_member").await, 0);
-    assert_eq!(audit_count_by_action(&h.pool, "import_members_batch").await, 0);
+    assert_eq!(
+        audit_count_by_action(&h.pool, "import_members_batch").await,
+        0
+    );
 }
 
 #[tokio::test]
@@ -552,7 +548,8 @@ async fn import_unknown_membership_slug_fails_only_that_row() {
     // Result fragment names the unknown slug.
     assert!(
         text.contains("not-a-real-slug"),
-        "expected unknown slug to appear in failure list; got:\n{}", text,
+        "expected unknown slug to appear in failure list; got:\n{}",
+        text,
     );
 }
 
@@ -562,7 +559,10 @@ async fn import_unknown_membership_slug_fails_only_that_row() {
 
 /// Helper: look up a single member by email and return all relevant
 /// billing-migration fields. Panics if not found (caller's invariant).
-async fn fetch_member_billing(pool: &SqlitePool, email: &str) -> (
+async fn fetch_member_billing(
+    pool: &SqlitePool,
+    email: &str,
+) -> (
     BillingMode,
     Option<String>,
     Option<String>,
@@ -585,7 +585,8 @@ async fn fetch_member_billing(pool: &SqlitePool, email: &str) -> (
 async fn import_with_stripe_subscription_sets_mode() {
     let h = build_harness().await;
 
-    let csv = "email,username,full_name,membership_type_slug,stripe_customer_id,stripe_subscription_id\n\
+    let csv =
+        "email,username,full_name,membership_type_slug,stripe_customer_id,stripe_subscription_id\n\
                s1@example.com,s1,Stripe One,regular,cus_ABC,sub_XYZ\n";
 
     let resp = h
@@ -630,7 +631,8 @@ async fn import_subscription_without_customer_fails_row() {
 
     // sub_id without cust_id is a malformed row — must fail before
     // any member is created, and the failure reason must match the spec.
-    let csv = "email,username,full_name,membership_type_slug,stripe_customer_id,stripe_subscription_id\n\
+    let csv =
+        "email,username,full_name,membership_type_slug,stripe_customer_id,stripe_subscription_id\n\
                orphan@example.com,orphan,Orphan,regular,,sub_NO_CUST\n";
 
     let resp = h
@@ -649,7 +651,8 @@ async fn import_subscription_without_customer_fails_row() {
     assert!(!member_exists(&h.pool, "orphan@example.com").await);
     assert!(
         text.contains("Stripe subscription_id present without customer_id"),
-        "expected documented failure reason; got:\n{}", text,
+        "expected documented failure reason; got:\n{}",
+        text,
     );
 }
 
@@ -702,7 +705,8 @@ async fn import_malformed_timestamp_fails_row() {
     assert!(!member_exists(&h.pool, "bad@example.com").await);
     assert!(
         text.contains("Could not parse joined_at:") && text.contains("not-a-date"),
-        "expected per-field parse-error reason; got:\n{}", text,
+        "expected per-field parse-error reason; got:\n{}",
+        text,
     );
 
     // Good row succeeded.
@@ -732,7 +736,10 @@ async fn import_email_verified_at_skips_verification_email() {
     // email_verified_at is populated on the created member.
     let (_, _, _, _, evat) = fetch_member_billing(&h.pool, "verified@example.com").await;
     let evat = evat.expect("email_verified_at should be set");
-    assert_eq!(evat.format("%Y-%m-%dT%H:%M:%SZ").to_string(), "2024-01-01T00:00:00Z");
+    assert_eq!(
+        evat.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        "2024-01-01T00:00:00Z"
+    );
 
     // The import did not queue any new emails — bulk_import doesn't
     // send verification emails today, and `email_verified_at` keeps

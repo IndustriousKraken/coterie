@@ -7,7 +7,6 @@
 //! test boots the merged router and drives `GET /setup` end-to-end.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use axum::{
     body::Body,
@@ -15,47 +14,18 @@ use axum::{
 };
 use coterie::{
     admin_cli::{self, Cli, CreateAdminOutcome, PasswordSource},
-    api::{
-        middleware::bot_challenge::DisabledVerifier,
-        state::{AppState, MoneyLimiter, RateLimiter},
-    },
-    auth::{AuthService, CsrfService, PendingLoginService, SecretCrypto, TotpService},
-    config::Settings,
+    auth::AuthService,
     domain::{CreateMemberRequest, MemberStatus, UpdateMemberRequest},
-    email::LogSender,
-    integrations::IntegrationManager,
-    repository::{
-        AnnouncementRepository, EventRepository, MemberRepository, PaymentRepository,
-        SqliteAnnouncementRepository, SqliteEventRepository, SqliteMemberRepository,
-        SqlitePaymentRepository,
-    },
-    service::{settings_service::SettingsService, ServiceContext},
+    repository::{MemberRepository, SqliteMemberRepository},
 };
-use sqlx::{Executor, SqlitePool};
 use tower::ServiceExt;
+
+mod common;
+use common::{build_app_state, fresh_pool};
 
 // ----------------------------------------------------------------------
 // Helpers
 // ----------------------------------------------------------------------
-
-async fn fresh_pool() -> SqlitePool {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .after_connect(|conn, _| {
-            Box::pin(async move {
-                conn.execute("PRAGMA foreign_keys = ON").await?;
-                Ok(())
-            })
-        })
-        .connect("sqlite::memory:")
-        .await
-        .expect("connect to :memory:");
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .expect("migrate");
-    pool
-}
 
 fn cli_with_inline_password(email: &str, username: &str, name: &str, password: &str) -> Cli {
     Cli {
@@ -262,97 +232,6 @@ async fn password_file_strips_trailing_newline() {
 // Boots the merged router (same shape as `main.rs` minus the CSRF
 // layer, matching the existing setup_redirect_test.rs harness), pre-
 // creates an admin, and asserts GET /setup returns 303 → /login.
-
-async fn build_app_state(pool: SqlitePool) -> AppState {
-    let settings = Settings {
-        server: coterie::config::ServerConfig {
-            host: "127.0.0.1".to_string(),
-            port: 0,
-            base_url: "http://127.0.0.1".to_string(),
-            data_dir: "./data".to_string(),
-            uploads_dir: None,
-            secure_cookies: Some(false),
-            cors_origins: None,
-            trust_forwarded_for: Some(false),
-        },
-        database: coterie::config::DatabaseConfig {
-            url: "sqlite::memory:".to_string(),
-            max_connections: 1,
-        },
-        auth: coterie::config::AuthConfig {
-            session_secret: "test-session-secret-please-ignore".to_string(),
-            session_duration_hours: 24,
-            totp_issuer: "Coterie Test".to_string(),
-        },
-        stripe: Default::default(),
-        integrations: Default::default(),
-        seed: Default::default(),
-        bot_challenge: Default::default(),
-    };
-    let settings = Arc::new(settings);
-
-    let member_repo: Arc<dyn MemberRepository> =
-        Arc::new(SqliteMemberRepository::new(pool.clone()));
-    let event_repo: Arc<dyn EventRepository> =
-        Arc::new(SqliteEventRepository::new(pool.clone()));
-    let announcement_repo: Arc<dyn AnnouncementRepository> =
-        Arc::new(SqliteAnnouncementRepository::new(pool.clone()));
-    let payment_repo: Arc<dyn PaymentRepository> =
-        Arc::new(SqlitePaymentRepository::new(pool.clone()));
-
-    let crypto = Arc::new(SecretCrypto::new("test-secret-please-ignore"));
-    let auth_service = Arc::new(AuthService::new(
-        pool.clone(),
-        settings.auth.session_secret.clone(),
-    ));
-    let csrf_service = Arc::new(CsrfService::new(&settings.auth.session_secret));
-    let totp_service = Arc::new(TotpService::new(
-        pool.clone(),
-        crypto.clone(),
-        "Coterie".to_string(),
-    ));
-    let pending_login_service = Arc::new(PendingLoginService::new(pool.clone()));
-    let settings_service = Arc::new(SettingsService::new(pool.clone(), crypto));
-    let email_sender = Arc::new(LogSender::new(
-        "test@example.com".to_string(),
-        "Test".to_string(),
-    ));
-    let integration_manager = Arc::new(IntegrationManager::new());
-    let money_limiter =
-        MoneyLimiter(RateLimiter::new(10, std::time::Duration::from_secs(60)));
-
-    let service_context = Arc::new(ServiceContext::new(
-        member_repo,
-        event_repo,
-        announcement_repo,
-        payment_repo,
-        integration_manager,
-        auth_service,
-        email_sender,
-        settings_service,
-        csrf_service,
-        totp_service,
-        pending_login_service,
-        None,
-        money_limiter.clone(),
-        settings.server.base_url.clone(),
-        pool.clone(),
-    ));
-
-    let billing_service = Arc::new(
-        service_context.billing_service(None, settings.server.base_url.clone()),
-    );
-
-    AppState::new(
-        service_context,
-        None,
-        None,
-        billing_service,
-        settings,
-        Arc::new(DisabledVerifier),
-        money_limiter,
-    )
-}
 
 #[tokio::test]
 async fn setup_get_redirects_when_admin_exists() {

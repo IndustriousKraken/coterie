@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use coterie::{
+    auth::SecretCrypto,
     domain::{CreateMemberRequest, PaymentKind, PaymentMethod, MAX_PAYMENT_CENTS},
     email::{EmailMessage, EmailSender},
     error::{AppError, Result as CoterieResult},
@@ -27,9 +28,11 @@ use coterie::{
         payment_service::{PaymentService, RecordManualPaymentInput},
         settings_service::SettingsService,
     },
-    auth::SecretCrypto,
 };
-use sqlx::{Executor, SqlitePool};
+use sqlx::SqlitePool;
+
+mod common;
+use common::fresh_pool;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------
@@ -43,22 +46,6 @@ impl EmailSender for NoopEmailSender {
     async fn send(&self, _message: &EmailMessage) -> CoterieResult<()> {
         Ok(())
     }
-}
-
-async fn fresh_pool() -> SqlitePool {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .after_connect(|conn, _| {
-            Box::pin(async move {
-                conn.execute("PRAGMA foreign_keys = ON").await?;
-                Ok(())
-            })
-        })
-        .connect("sqlite::memory:")
-        .await
-        .expect("connect to :memory:");
-    sqlx::migrate!("./migrations").run(&pool).await.expect("migrate");
-    pool
 }
 
 struct H {
@@ -92,7 +79,9 @@ async fn build_harness() -> H {
     let event_repo = Arc::new(SqliteEventRepository::new(pool.clone()));
     let saved_card_repo = Arc::new(SqliteSavedCardRepository::new(pool.clone()));
     let scheduled_repo = Arc::new(SqliteScheduledPaymentRepository::new(pool.clone()));
-    let mt_repo = Arc::new(coterie::repository::SqliteMembershipTypeRepository::new(pool.clone()));
+    let mt_repo = Arc::new(coterie::repository::SqliteMembershipTypeRepository::new(
+        pool.clone(),
+    ));
     let mt_service = Arc::new(MembershipTypeService::new(mt_repo));
     let crypto = Arc::new(SecretCrypto::new("test-secret-please-ignore"));
     let settings = Arc::new(SettingsService::new(pool.clone(), crypto));
@@ -114,7 +103,11 @@ async fn build_harness() -> H {
         pool.clone(),
     );
 
-    H { pool, payment_service, billing }
+    H {
+        pool,
+        payment_service,
+        billing,
+    }
 }
 
 async fn seed_member(pool: &SqlitePool) -> Uuid {
@@ -187,8 +180,11 @@ async fn record_manual_rejects_negative_amount() {
         }
         other => panic!("expected BadRequest, got {:?}", other),
     }
-    assert_eq!(payments_count(&h.pool).await, 0,
-        "no payments row should have been persisted");
+    assert_eq!(
+        payments_count(&h.pool).await,
+        0,
+        "no payments row should have been persisted"
+    );
 }
 
 #[tokio::test]
@@ -220,7 +216,8 @@ async fn record_manual_rejects_over_cap_amount() {
             assert!(
                 msg.contains(&dollars),
                 "message should name the cap in whole dollars ({}), got: {}",
-                dollars, msg,
+                dollars,
+                msg,
             );
         }
         other => panic!("expected BadRequest, got {:?}", other),
@@ -292,7 +289,8 @@ async fn record_manual_rejects_unknown_member() {
             assert!(
                 msg.contains(&unknown_member.to_string()),
                 "message should include the unknown id ({}), got: {}",
-                unknown_member, msg,
+                unknown_member,
+                msg,
             );
         }
         other => panic!("expected BadRequest, got {:?}", other),
@@ -313,7 +311,9 @@ async fn record_manual_rejects_donation_with_stale_campaign_id() {
             RecordManualPaymentInput {
                 member_id,
                 amount_cents: 2_500,
-                kind: PaymentKind::Donation { campaign_id: Some(stale_campaign) },
+                kind: PaymentKind::Donation {
+                    campaign_id: Some(stale_campaign),
+                },
                 description: "ghost-campaign".to_string(),
                 payment_method: PaymentMethod::Manual,
                 membership_type_slug: None,
@@ -326,10 +326,14 @@ async fn record_manual_rejects_donation_with_stale_campaign_id() {
 
     assert!(
         matches!(err, AppError::BadRequest(_)),
-        "expected BadRequest, got {:?}", err,
+        "expected BadRequest, got {:?}",
+        err,
     );
-    assert_eq!(payments_count(&h.pool).await, 0,
-        "no orphan donation row should have been created");
+    assert_eq!(
+        payments_count(&h.pool).await,
+        0,
+        "no orphan donation row should have been created"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -359,8 +363,12 @@ async fn record_manual_waived_dues_audits_as_waive_dues() {
         .expect("waived membership should record");
 
     let actions = audit_actions_for(&h.pool, member_id).await;
-    assert_eq!(actions.len(), 1,
-        "expected exactly one audit row for this member, got {:?}", actions);
+    assert_eq!(
+        actions.len(),
+        1,
+        "expected exactly one audit row for this member, got {:?}",
+        actions
+    );
     assert_eq!(actions[0], "waive_dues");
 }
 

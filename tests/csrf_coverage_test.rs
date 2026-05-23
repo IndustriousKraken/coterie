@@ -33,27 +33,10 @@ use coterie::{
     },
     service::{settings_service::SettingsService, ServiceContext},
 };
-use sqlx::{Executor, SqlitePool};
 use tower::ServiceExt;
 
-async fn fresh_pool() -> SqlitePool {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .after_connect(|conn, _| {
-            Box::pin(async move {
-                conn.execute("PRAGMA foreign_keys = ON").await?;
-                Ok(())
-            })
-        })
-        .connect("sqlite::memory:")
-        .await
-        .expect("connect to :memory:");
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .expect("migrate");
-    pool
-}
+mod common;
+use common::fresh_pool;
 
 /// Build the full merged app the way `main.rs` does. The whole point
 /// of F9 is that a unit test of the middleware in isolation would pass
@@ -94,8 +77,7 @@ async fn build_app() -> Router {
     // --- Repos
     let member_repo: Arc<dyn MemberRepository> =
         Arc::new(SqliteMemberRepository::new(pool.clone()));
-    let event_repo: Arc<dyn EventRepository> =
-        Arc::new(SqliteEventRepository::new(pool.clone()));
+    let event_repo: Arc<dyn EventRepository> = Arc::new(SqliteEventRepository::new(pool.clone()));
     let announcement_repo: Arc<dyn AnnouncementRepository> =
         Arc::new(SqliteAnnouncementRepository::new(pool.clone()));
     let payment_repo: Arc<dyn PaymentRepository> =
@@ -122,10 +104,7 @@ async fn build_app() -> Router {
     ));
     let integration_manager = Arc::new(IntegrationManager::new());
 
-    let money_limiter = MoneyLimiter(RateLimiter::new(
-        10,
-        std::time::Duration::from_secs(60),
-    ));
+    let money_limiter = MoneyLimiter(RateLimiter::new(10, std::time::Duration::from_secs(60)));
 
     let service_context = Arc::new(ServiceContext::new(
         member_repo,
@@ -145,10 +124,8 @@ async fn build_app() -> Router {
         pool.clone(),
     ));
 
-    let billing_service = Arc::new(service_context.billing_service(
-        None,
-        settings.server.base_url.clone(),
-    ));
+    let billing_service =
+        Arc::new(service_context.billing_service(None, settings.server.base_url.clone()));
 
     let app_state = coterie::api::state::AppState::new(
         service_context,

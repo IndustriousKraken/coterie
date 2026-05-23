@@ -19,46 +19,27 @@ use coterie::{
     payments::{
         fake_gateway::{FakeCall, FakeStripeGateway},
         gateway::{
-            PaymentIntentResult, RefundOutput, RetrievedCheckoutSession,
-            RetrievedInvoice, StripeGateway,
+            PaymentIntentResult, RefundOutput, RetrievedCheckoutSession, RetrievedInvoice,
+            StripeGateway,
         },
         StripeClient,
     },
     repository::{
         DonationCampaignRepository, MemberRepository, PaymentRepository,
-        SqliteDonationCampaignRepository, SqliteMemberRepository,
-        SqlitePaymentRepository,
+        SqliteDonationCampaignRepository, SqliteMemberRepository, SqlitePaymentRepository,
     },
     service::membership_type_service::MembershipTypeService,
 };
-use sqlx::{Executor, SqlitePool};
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
-/// Spin up a fresh in-memory DB, run every migration, and return a
-/// pool ready for service construction.
-async fn fresh_pool() -> SqlitePool {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1) // :memory: is connection-private, so single-connection only
-        .after_connect(|conn, _| Box::pin(async move {
-            conn.execute("PRAGMA foreign_keys = ON").await?;
-            Ok(())
-        }))
-        .connect("sqlite::memory:")
-        .await
-        .expect("connect to :memory:");
-
-    sqlx::migrate!("./migrations").run(&pool).await
-        .expect("run migrations");
-
-    pool
-}
+mod common;
+use common::fresh_pool;
 
 /// Build a `StripeClient` wired to a `FakeStripeGateway` — returns
 /// both so tests can drive the fake (queue responses, inspect calls)
 /// while exercising the client.
-fn build_client_with_fake(
-    pool: SqlitePool,
-) -> (StripeClient, Arc<FakeStripeGateway>) {
+fn build_client_with_fake(pool: SqlitePool) -> (StripeClient, Arc<FakeStripeGateway>) {
     let fake = Arc::new(FakeStripeGateway::new());
     let payment_repo: Arc<dyn PaymentRepository> =
         Arc::new(SqlitePaymentRepository::new(pool.clone()));
@@ -66,7 +47,9 @@ fn build_client_with_fake(
         Arc::new(SqliteMemberRepository::new(pool.clone()));
     let _campaign_repo: Arc<dyn DonationCampaignRepository> =
         Arc::new(SqliteDonationCampaignRepository::new(pool.clone()));
-    let mt_repo = Arc::new(coterie::repository::SqliteMembershipTypeRepository::new(pool.clone()));
+    let mt_repo = Arc::new(coterie::repository::SqliteMembershipTypeRepository::new(
+        pool.clone(),
+    ));
     let mt_service = Arc::new(MembershipTypeService::new(mt_repo));
     let integration_manager = Arc::new(IntegrationManager::new());
 
@@ -80,19 +63,19 @@ fn build_client_with_fake(
 
 /// Minimal helper: insert a Member with a stripe_customer_id set, so
 /// `charge_saved_card` can find it. Returns the member's ID.
-async fn insert_member_with_customer(
-    pool: &SqlitePool,
-    customer_id: &str,
-) -> Uuid {
+async fn insert_member_with_customer(pool: &SqlitePool, customer_id: &str) -> Uuid {
     let repo = SqliteMemberRepository::new(pool.clone());
-    let member = repo.create(CreateMemberRequest {
-        email: format!("test-{}@example.com", Uuid::new_v4()),
-        username: format!("test_{}", Uuid::new_v4().simple()),
-        full_name: "Test Member".to_string(),
-        password: "p4ssword_long_enough".to_string(),
-        membership_type_id: None,
-        ..Default::default()
-    }).await.expect("create member");
+    let member = repo
+        .create(CreateMemberRequest {
+            email: format!("test-{}@example.com", Uuid::new_v4()),
+            username: format!("test_{}", Uuid::new_v4().simple()),
+            full_name: "Test Member".to_string(),
+            password: "p4ssword_long_enough".to_string(),
+            membership_type_id: None,
+            ..Default::default()
+        })
+        .await
+        .expect("create member");
 
     sqlx::query("UPDATE members SET stripe_customer_id = ? WHERE id = ?")
         .bind(customer_id)
@@ -118,14 +101,16 @@ async fn charge_saved_card_happy_path() {
     });
 
     let payment_id = Uuid::new_v4();
-    let result = client.charge_saved_card(
-        member_id,
-        "pm_card_visa",
-        12_50,
-        "Annual dues",
-        "idem-key-1",
-        payment_id,
-    ).await;
+    let result = client
+        .charge_saved_card(
+            member_id,
+            "pm_card_visa",
+            12_50,
+            "Annual dues",
+            "idem-key-1",
+            payment_id,
+        )
+        .await;
 
     assert_eq!(result.expect("charge succeeded"), "pi_known_charge");
 
@@ -140,8 +125,14 @@ async fn charge_saved_card_happy_path() {
             assert_eq!(input.description, "Annual dues");
             // Metadata carries the member_id + payment_id so the
             // PI.succeeded webhook can resolve the local row.
-            assert_eq!(input.metadata.get("member_id").unwrap(), &member_id.to_string());
-            assert_eq!(input.metadata.get("payment_id").unwrap(), &payment_id.to_string());
+            assert_eq!(
+                input.metadata.get("member_id").unwrap(),
+                &member_id.to_string()
+            );
+            assert_eq!(
+                input.metadata.get("payment_id").unwrap(),
+                &payment_id.to_string()
+            );
         }
         other => panic!("expected CreatePaymentIntent, got {:?}", other),
     }
@@ -157,14 +148,17 @@ async fn charge_saved_card_requires_action_returns_external_error() {
         id: "pi_3ds_needed".to_string(),
     });
 
-    let err = client.charge_saved_card(
-        member_id,
-        "pm_card_authentication",
-        50_00,
-        "Annual dues",
-        "idem-key-2",
-        Uuid::new_v4(),
-    ).await.expect_err("must surface RequiresAction as error");
+    let err = client
+        .charge_saved_card(
+            member_id,
+            "pm_card_authentication",
+            50_00,
+            "Annual dues",
+            "idem-key-2",
+            Uuid::new_v4(),
+        )
+        .await
+        .expect_err("must surface RequiresAction as error");
 
     match err {
         AppError::External(msg) => assert!(msg.to_lowercase().contains("authentication")),
@@ -179,27 +173,30 @@ async fn charge_saved_card_member_without_customer_bails_before_stripe() {
     // pre-saved-card state. Charging should refuse before any gateway
     // call goes out.
     let repo = SqliteMemberRepository::new(pool.clone());
-    let member = repo.create(CreateMemberRequest {
-        email: "no-customer@example.com".to_string(),
-        username: "no_customer".to_string(),
-        full_name: "No Customer".to_string(),
-        password: "p4ssword_long_enough".to_string(),
-        membership_type_id: None,
-        ..Default::default()
-    }).await.unwrap();
+    let member = repo
+        .create(CreateMemberRequest {
+            email: "no-customer@example.com".to_string(),
+            username: "no_customer".to_string(),
+            full_name: "No Customer".to_string(),
+            password: "p4ssword_long_enough".to_string(),
+            membership_type_id: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
 
     let (client, fake) = build_client_with_fake(pool);
-    let err = client.charge_saved_card(
-        member.id,
-        "pm_card_visa",
-        100,
-        "x",
-        "ikey",
-        Uuid::new_v4(),
-    ).await.expect_err("must refuse");
+    let err = client
+        .charge_saved_card(member.id, "pm_card_visa", 100, "x", "ikey", Uuid::new_v4())
+        .await
+        .expect_err("must refuse");
 
     matches!(err, AppError::BadRequest(_));
-    assert_eq!(fake.calls().len(), 0, "no Stripe traffic when customer missing");
+    assert_eq!(
+        fake.calls().len(),
+        0,
+        "no Stripe traffic when customer missing"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -212,12 +209,19 @@ async fn refund_payment_with_pi_id_passes_through() {
     let (client, fake) = build_client_with_fake(pool);
 
     // Default fake response is fine — auto-generated re_test_1
-    let id = client.refund_payment(
-        &StripeRef::PaymentIntent("pi_real_payment".to_string()),
-        "ikey-pi",
-    ).await.expect("refund succeeded");
+    let id = client
+        .refund_payment(
+            &StripeRef::PaymentIntent("pi_real_payment".to_string()),
+            "ikey-pi",
+        )
+        .await
+        .expect("refund succeeded");
 
-    assert!(id.starts_with("re_test_"), "refund id should be a generated test id, got {}", id);
+    assert!(
+        id.starts_with("re_test_"),
+        "refund id should be a generated test id, got {}",
+        id
+    );
 
     let calls = fake.calls();
     assert_eq!(calls.len(), 1);
@@ -239,22 +243,33 @@ async fn refund_payment_with_cs_id_resolves_to_pi_first() {
     fake.next_retrieve_checkout_session(RetrievedCheckoutSession {
         payment_intent_id: Some("pi_from_session".to_string()),
     });
-    fake.next_refund(RefundOutput { id: "re_known".to_string() });
+    fake.next_refund(RefundOutput {
+        id: "re_known".to_string(),
+    });
 
-    let id = client.refund_payment(
-        &StripeRef::CheckoutSession("cs_test_session".to_string()),
-        "ikey-cs",
-    ).await.expect("refund succeeded");
+    let id = client
+        .refund_payment(
+            &StripeRef::CheckoutSession("cs_test_session".to_string()),
+            "ikey-cs",
+        )
+        .await
+        .expect("refund succeeded");
     assert_eq!(id, "re_known");
 
     let calls = fake.calls();
-    assert_eq!(calls.len(), 2, "should retrieve session, then create refund");
+    assert_eq!(
+        calls.len(),
+        2,
+        "should retrieve session, then create refund"
+    );
     assert!(matches!(&calls[0],
         FakeCall::RetrieveCheckoutSession { session_id } if session_id == "cs_test_session"));
     match &calls[1] {
         FakeCall::CreateRefund(input) => {
-            assert_eq!(input.payment_intent_id, "pi_from_session",
-                "should refund the resolved pi_, not the cs_");
+            assert_eq!(
+                input.payment_intent_id, "pi_from_session",
+                "should refund the resolved pi_, not the cs_"
+            );
         }
         other => panic!("expected CreateRefund, got {:?}", other),
     }
@@ -269,10 +284,13 @@ async fn refund_payment_with_invoice_id_resolves_to_pi_first() {
         payment_intent_id: Some("pi_from_invoice".to_string()),
     });
 
-    let id = client.refund_payment(
-        &StripeRef::Invoice("in_subscription_1".to_string()),
-        "ikey-in",
-    ).await.expect("refund succeeded");
+    let id = client
+        .refund_payment(
+            &StripeRef::Invoice("in_subscription_1".to_string()),
+            "ikey-in",
+        )
+        .await
+        .expect("refund succeeded");
     assert!(id.starts_with("re_test_"));
 
     let calls = fake.calls();
@@ -304,14 +322,20 @@ async fn refund_payment_when_session_has_no_intent_returns_error() {
         payment_intent_id: None,
     });
 
-    let err = client.refund_payment(
-        &StripeRef::CheckoutSession("cs_no_intent".to_string()),
-        "ikey",
-    ).await.expect_err("must reject session with no PI");
+    let err = client
+        .refund_payment(
+            &StripeRef::CheckoutSession("cs_no_intent".to_string()),
+            "ikey",
+        )
+        .await
+        .expect_err("must reject session with no PI");
     match err {
         AppError::BadRequest(msg) => {
-            assert!(msg.to_lowercase().contains("no paymentintent"),
-                "msg: {}", msg);
+            assert!(
+                msg.to_lowercase().contains("no paymentintent"),
+                "msg: {}",
+                msg
+            );
         }
         other => panic!("expected BadRequest, got {:?}", other),
     }
@@ -320,7 +344,10 @@ async fn refund_payment_when_session_has_no_intent_returns_error() {
     // proceeded to create_refund.
     let calls = fake.calls();
     assert_eq!(calls.len(), 1);
-    assert!(matches!(&calls[0], FakeCall::RetrieveCheckoutSession { .. }));
+    assert!(matches!(
+        &calls[0],
+        FakeCall::RetrieveCheckoutSession { .. }
+    ));
 }
 
 #[tokio::test]
@@ -330,10 +357,10 @@ async fn refund_payment_propagates_stripe_failure() {
 
     fake.next_refund_err(AppError::External("Stripe is on fire".to_string()));
 
-    let err = client.refund_payment(
-        &StripeRef::PaymentIntent("pi_anything".to_string()),
-        "ikey",
-    ).await.expect_err("must surface error");
+    let err = client
+        .refund_payment(&StripeRef::PaymentIntent("pi_anything".to_string()), "ikey")
+        .await
+        .expect_err("must surface error");
     match err {
         AppError::External(msg) => assert!(msg.contains("on fire") || msg.contains("Stripe")),
         other => panic!("expected External, got {:?}", other),
