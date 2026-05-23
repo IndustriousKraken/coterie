@@ -1,8 +1,11 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use coterie_provision::fs_ops::RealFs;
-use coterie_provision::install::{self, InstallArgs};
+use coterie_provision::install::{self, InstallArgs, StripeMode};
+use coterie_provision::output::RealOutput;
 use coterie_provision::prompts::InquirePrompter;
+use coterie_provision::stripe_api::RealStripeApi;
+use coterie_provision::switch_to_live::{self, RealRootCheck, SwitchArgs};
 use coterie_provision::system::RealSystem;
 use secrecy::SecretString;
 
@@ -64,6 +67,10 @@ struct InstallCli {
     #[arg(long, env = "COTERIE_PROVISION_ENABLE_STRIPE")]
     enable_stripe: Option<bool>,
 
+    /// Stripe mode: `test` or `live`. Default: `live`.
+    #[arg(long, env = "COTERIE_PROVISION_STRIPE_MODE")]
+    stripe_mode: Option<String>,
+
     #[arg(long, env = "COTERIE_PROVISION_STRIPE_PK")]
     stripe_publishable_key: Option<String>,
 
@@ -72,6 +79,24 @@ struct InstallCli {
 
     #[arg(long, env = "COTERIE_PROVISION_STRIPE_WHSEC", hide_env_values = true)]
     stripe_webhook_secret: Option<String>,
+
+    /// In test mode: also stage live creds in /opt/coterie/.env.live.
+    /// Inferred true when all three --live-* values are supplied.
+    #[arg(long, env = "COTERIE_PROVISION_PRELOAD_LIVE_CREDS")]
+    preload_live_creds: Option<bool>,
+
+    #[arg(long, env = "COTERIE_PROVISION_STRIPE_LIVE_PK")]
+    stripe_live_publishable_key: Option<String>,
+
+    #[arg(long, env = "COTERIE_PROVISION_STRIPE_LIVE_SK", hide_env_values = true)]
+    stripe_live_secret_key: Option<String>,
+
+    #[arg(
+        long,
+        env = "COTERIE_PROVISION_STRIPE_LIVE_WHSEC",
+        hide_env_values = true
+    )]
+    stripe_live_webhook_secret: Option<String>,
 
     #[arg(long, env = "COTERIE_PROVISION_ENABLE_DISCORD")]
     enable_discord: Option<bool>,
@@ -128,22 +153,57 @@ struct InstallCli {
 
 #[derive(Debug, Parser, Default)]
 struct SwitchStripeCli {
-    /// Live publishable key (pk_live_…).
+    /// Delete coterie-test.db rather than archiving it.
     #[arg(long)]
-    publishable_key: Option<String>,
+    discard_test_db: bool,
+
+    /// Skip the confirmation prompt and proceed.
+    #[arg(long)]
+    yes: bool,
+
+    /// Disable interactive prompting — credentials must come from
+    /// /opt/coterie/.env.live, env vars, or flags.
+    #[arg(long)]
+    no_prompt: bool,
+
+    /// Live publishable key (pk_live_…).
+    #[arg(long, env = "COTERIE_PROVISION_STRIPE_LIVE_PK")]
+    live_pk: Option<String>,
 
     /// Live secret key (sk_live_…). Env-only is preferred.
-    #[arg(long, env = "COTERIE_PROVISION_STRIPE_SK", hide_env_values = true)]
-    secret_key: Option<String>,
+    #[arg(long, env = "COTERIE_PROVISION_STRIPE_LIVE_SK", hide_env_values = true)]
+    live_sk: Option<String>,
 
     /// Live webhook signing secret (whsec_…).
-    #[arg(long, env = "COTERIE_PROVISION_STRIPE_WHSEC", hide_env_values = true)]
-    webhook_secret: Option<String>,
+    #[arg(
+        long,
+        env = "COTERIE_PROVISION_STRIPE_LIVE_WHSEC",
+        hide_env_values = true
+    )]
+    live_whsec: Option<String>,
 }
 
-impl From<InstallCli> for InstallArgs {
-    fn from(c: InstallCli) -> Self {
+impl From<SwitchStripeCli> for SwitchArgs {
+    fn from(c: SwitchStripeCli) -> Self {
         Self {
+            discard_test_db: c.discard_test_db,
+            yes: c.yes,
+            no_prompt: c.no_prompt,
+            live_pk: c.live_pk,
+            live_sk: c.live_sk.map(SecretString::new),
+            live_whsec: c.live_whsec.map(SecretString::new),
+        }
+    }
+}
+
+impl TryFrom<InstallCli> for InstallArgs {
+    type Error = anyhow::Error;
+    fn try_from(c: InstallCli) -> Result<Self> {
+        let stripe_mode = match c.stripe_mode.as_deref() {
+            Some(s) => Some(s.parse::<StripeMode>()?),
+            None => None,
+        };
+        Ok(Self {
             org_name: c.org_name,
             portal_domain: c.portal_domain,
             marketing_domain: c.marketing_domain,
@@ -153,9 +213,14 @@ impl From<InstallCli> for InstallArgs {
             admin_full_name: c.admin_full_name,
             admin_password: c.admin_password.map(SecretString::new),
             enable_stripe: c.enable_stripe,
+            stripe_mode,
             stripe_publishable_key: c.stripe_publishable_key,
             stripe_secret_key: c.stripe_secret_key.map(SecretString::new),
             stripe_webhook_secret: c.stripe_webhook_secret.map(SecretString::new),
+            preload_live_creds: c.preload_live_creds,
+            stripe_live_publishable_key: c.stripe_live_publishable_key,
+            stripe_live_secret_key: c.stripe_live_secret_key.map(SecretString::new),
+            stripe_live_webhook_secret: c.stripe_live_webhook_secret.map(SecretString::new),
             enable_discord: c.enable_discord,
             discord_bot_token: c.discord_bot_token.map(SecretString::new),
             discord_guild_id: c.discord_guild_id,
@@ -171,7 +236,8 @@ impl From<InstallCli> for InstallArgs {
             no_prompt: c.no_prompt,
             dry_run: c.dry_run,
             overwrite_env: c.overwrite_env,
-        }
+            skip_root_check: false,
+        })
     }
 }
 
@@ -193,15 +259,27 @@ fn real_main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Install(args) => {
-            let install_args: InstallArgs = (*args).into();
+            let install_args: InstallArgs = (*args).try_into()?;
             let sys = RealSystem::new();
             let fs = RealFs::new();
             let prompts = InquirePrompter::new();
-            install::run(install_args, &sys, &fs, &prompts)
+            let output = RealOutput::new();
+            install::run(install_args, &sys, &fs, &prompts, &output)
         }
-        Command::SwitchStripeToLive(_) => {
-            // Filled in by openspec change a25.
-            todo!("switch-stripe-to-live: implemented by openspec change a25");
+        Command::SwitchStripeToLive(args) => {
+            let switch_args: SwitchArgs = (*args).into();
+            let sys = RealSystem::new();
+            let fs = RealFs::new();
+            let api = RealStripeApi::new()?;
+            let prompts = InquirePrompter::new();
+            let output = RealOutput::new();
+            let root = RealRootCheck;
+            let exit_code =
+                switch_to_live::run(switch_args, &sys, &fs, &api, &prompts, &output, &root)?;
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
+            Ok(())
         }
     }
 }

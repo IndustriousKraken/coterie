@@ -2,6 +2,64 @@ use anyhow::{anyhow, Context, Result};
 use secrecy::SecretString;
 use std::str::FromStr;
 
+/// Boolean variant of `resolve` — accepts the usual yes/no/1/0 spellings
+/// from env vars.
+pub fn resolve_bool<Fp: FnOnce() -> Result<bool>>(
+    name: &str,
+    env_var: &str,
+    cli_value: Option<bool>,
+    default: Option<bool>,
+    no_prompt: bool,
+    prompt_fn: Fp,
+) -> Result<bool> {
+    if let Some(v) = cli_value {
+        return Ok(v);
+    }
+    if let Ok(raw) = std::env::var(env_var) {
+        if !raw.is_empty() {
+            return match raw.to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "y" | "on" => Ok(true),
+                "false" | "0" | "no" | "n" | "off" => Ok(false),
+                other => Err(anyhow!("env var {env_var}={other} is not a boolean")),
+            };
+        }
+    }
+    if no_prompt {
+        if let Some(d) = default {
+            return Ok(d);
+        }
+        return Err(anyhow!(
+            "missing required boolean input `{name}` — set {env_var} or pass --{name}"
+        ));
+    }
+    prompt_fn()
+}
+
+/// Secret variant of `resolve` — returns `SecretString` and never logs
+/// the value on error.
+pub fn resolve_secret<Fp: FnOnce() -> Result<SecretString>>(
+    name: &str,
+    env_var: &str,
+    cli_value: Option<SecretString>,
+    no_prompt: bool,
+    prompt_fn: Fp,
+) -> Result<SecretString> {
+    if let Some(v) = cli_value {
+        return Ok(v);
+    }
+    if let Ok(raw) = std::env::var(env_var) {
+        if !raw.is_empty() {
+            return Ok(SecretString::new(raw));
+        }
+    }
+    if no_prompt {
+        return Err(anyhow!(
+            "missing required secret input `{name}` — set {env_var} or pass --{name}"
+        ));
+    }
+    prompt_fn()
+}
+
 /// Resolves an input value via the chain: cli flag → env var →
 /// (interactive prompt OR default if non-interactive).
 ///

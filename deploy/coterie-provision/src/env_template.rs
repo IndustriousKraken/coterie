@@ -1,4 +1,22 @@
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::{ExposeSecret, Secret, SecretString};
+
+/// Selects which database file `.env` will point at. Live mode keeps
+/// the historical `sqlite://coterie.db`; test mode uses a separate
+/// `coterie-test.db` so test charges don't pollute production data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatabaseUrl {
+    Live,
+    Test,
+}
+
+impl DatabaseUrl {
+    pub fn as_env_str(self) -> &'static str {
+        match self {
+            DatabaseUrl::Live => "sqlite://coterie.db",
+            DatabaseUrl::Test => "sqlite:///var/lib/coterie/coterie-test.db?mode=rwc",
+        }
+    }
+}
 
 /// Configuration values collected from the operator that feed into
 /// rendering of `/opt/coterie/.env` from the shipped `.env.example`.
@@ -231,6 +249,32 @@ fn match_commented_key<'a>(raw: &str, expected: &'a str) -> Option<&'a str> {
     }
 }
 
+/// Render the contents of `/opt/coterie/.env.live`, which holds only
+/// the Stripe-live triple so the `switch-stripe-to-live` subcommand can
+/// load them later without re-prompting. Order and key names match the
+/// real `.env` so the file can be parsed with any dotenv-style parser.
+pub fn render_live_overlay(
+    publishable_key: &str,
+    secret_key: &Secret<String>,
+    webhook_secret: &Secret<String>,
+) -> String {
+    let mut out = String::new();
+    out.push_str("# Live-mode Stripe credentials staged by `coterie-provision install`.\n");
+    out.push_str("# Consumed and removed by `coterie-provision switch-stripe-to-live`.\n");
+    out.push_str(&format!(
+        "COTERIE__STRIPE__PUBLISHABLE_KEY={publishable_key}\n"
+    ));
+    out.push_str(&format!(
+        "COTERIE__STRIPE__SECRET_KEY={}\n",
+        secret_key.expose_secret()
+    ));
+    out.push_str(&format!(
+        "COTERIE__STRIPE__WEBHOOK_SECRET={}\n",
+        webhook_secret.expose_secret()
+    ));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,6 +352,38 @@ mod tests {
         assert!(out.contains("COTERIE__INTEGRATIONS__DISCORD__GUILD_ID=111"));
         assert!(out.contains("COTERIE__INTEGRATIONS__DISCORD__MEMBER_ROLE_ID=222"));
         assert!(out.contains("COTERIE__INTEGRATIONS__DISCORD__EXPIRED_ROLE_ID=333"));
+    }
+
+    #[test]
+    fn database_url_test_mode_uses_absolute_test_db_path() {
+        let mut c = base_config();
+        c.database_url = DatabaseUrl::Test.as_env_str().to_string();
+        let out = render_env(fixture(), &c);
+        assert!(out
+            .contains("COTERIE__DATABASE__URL=sqlite:///var/lib/coterie/coterie-test.db?mode=rwc"));
+    }
+
+    #[test]
+    fn database_url_live_mode_uses_bare_coterie_db() {
+        let c = base_config();
+        let out = render_env(fixture(), &c);
+        assert!(out.contains("COTERIE__DATABASE__URL=sqlite://coterie.db"));
+    }
+
+    #[test]
+    fn live_overlay_golden() {
+        let pk = "pk_live_AAAA";
+        let sk = Secret::new("sk_live_BBBB".to_string());
+        let wh = Secret::new("whsec_CCCC".to_string());
+        let out = render_live_overlay(pk, &sk, &wh);
+        let expected = "\
+# Live-mode Stripe credentials staged by `coterie-provision install`.
+# Consumed and removed by `coterie-provision switch-stripe-to-live`.
+COTERIE__STRIPE__PUBLISHABLE_KEY=pk_live_AAAA
+COTERIE__STRIPE__SECRET_KEY=sk_live_BBBB
+COTERIE__STRIPE__WEBHOOK_SECRET=whsec_CCCC
+";
+        assert_eq!(out, expected);
     }
 
     #[test]

@@ -1,10 +1,14 @@
 pub mod caddyfile;
+pub mod checklist;
 pub mod env_template;
 pub mod fs_ops;
 pub mod github_api;
 pub mod install;
+pub mod output;
 pub mod prompts;
+pub mod stripe_api;
 pub mod stripe_check;
+pub mod switch_to_live;
 pub mod system;
 pub mod version_selector;
 
