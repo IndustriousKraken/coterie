@@ -173,39 +173,83 @@ apt-get install -y awscli
 
 ---
 
-## 5. Deploy the Coterie code
+## 5. Run the provisioning wizard
 
-**Happy path — pull a pre-built release tarball from GitHub.**
-The `release.yml` workflow builds a musl-static binary and publishes
-it to GitHub Releases on every `v*` tag. `release-deploy.sh` pulls
-the latest tarball, verifies its SHA-256, places files under
-`/opt/coterie/`, and runs `install.sh` to set up the system user
-and systemd unit. One command.
+**Happy path — one command, end-to-end install.** The
+`coterie-provision` binary (shipped in every GitHub Release) drives the
+full first-deploy: apt packages, release-tarball download, `.env`
+generation with a random session secret, first-admin bootstrap (via
+`create_admin`), Caddyfile setup with the log-dir fix, and a final
+smoke test against `/health`. The bash bootstrap below downloads the
+binary, verifies its SHA-256, and execs into it.
 
 ```bash
 # On the droplet, as root:
-apt-get install -y curl python3 tar
+curl -sfL https://raw.githubusercontent.com/IndustriousKraken/coterie/master/deploy/provision.sh \
+    -o /tmp/provision.sh
+sudo bash /tmp/provision.sh
+```
 
-# Bootstrap: grab just the deploy script from the latest release.
+The wizard prompts for:
+- Org name (used in emails / page titles)
+- Portal domain (e.g. `coterie.example.com`)
+- Marketing domain (optional second Caddy vhost)
+- Org contact email (AdminAlert delivery target)
+- First admin: email, username, full name, password (entered twice)
+- Whether to enable Stripe / Discord / UniFi / Caddy + their credentials
+
+When it finishes, Coterie is running under systemd, the first admin
+exists in the DB (so `/setup` is unreachable from the moment the
+service comes up), and Caddy is serving on 443 with TLS auto-
+provisioned (assuming DNS is pointed at the box).
+
+The wizard is idempotent — re-running detects existing `.env` /
+Caddyfile / admin and prompts before clobbering.
+
+You can pin a specific version:
+
+```bash
+sudo bash /tmp/provision.sh --tag v1.2.3
+```
+
+Or run fully non-interactive for IaC:
+
+```bash
+COTERIE_PROVISION_ORG_NAME="Neon Temple" \
+COTERIE_PROVISION_PORTAL_DOMAIN="coterie.theneontemple.com" \
+COTERIE_PROVISION_ADMIN_EMAIL="rab@theneontemple.com" \
+COTERIE_PROVISION_ADMIN_USERNAME="rab" \
+COTERIE_PROVISION_ADMIN_FULL_NAME="R A Bee" \
+COTERIE_PROVISION_ADMIN_PASSWORD="…" \
+sudo -E bash /tmp/provision.sh -- --no-prompt
+```
+
+After the wizard completes, jump to "## 8. DNS + first login" below
+(steps 6 and 7 are folded into the wizard).
+
+---
+
+### Manual fallback: release-deploy.sh
+
+If you want to understand or override individual steps, the wizard
+just composes existing infrastructure. The Coterie code itself can be
+pulled with `release-deploy.sh` alone (it skips the .env / Caddyfile /
+create_admin steps the wizard handles):
+
+```bash
+apt-get install -y curl python3 tar
 curl -sfL https://raw.githubusercontent.com/IndustriousKraken/coterie/master/deploy/release-deploy.sh \
     -o /usr/local/bin/coterie-release-deploy
 chmod +x /usr/local/bin/coterie-release-deploy
-
-# Pull the latest release. On first run, this detects no prior
-# install, runs install.sh, prints next-steps. On subsequent runs,
-# it does the service-stop/swap/restart dance.
-/usr/local/bin/coterie-release-deploy
-
-# After this completes, jump to "## 7. Configure `.env`" below
-# (step 6 is folded into the release-deploy.sh script).
+/usr/local/bin/coterie-release-deploy           # latest
+/usr/local/bin/coterie-release-deploy v1.2.3    # pinned
 ```
 
-You can also pin to a specific version (useful for rollback or
-deploying an older tested release):
-
-```bash
-/usr/local/bin/coterie-release-deploy v1.2.3
-```
+You then need to write `/opt/coterie/.env`, run `create_admin`,
+configure Caddy, and start the service yourself — see the original
+walkthrough in this repo's history, or read
+[`deploy/coterie-provision/src/install.rs`](coterie-provision/src/install.rs)
+for the exact sequence the wizard performs.
 
 ---
 

@@ -54,6 +54,21 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
+      - name: Determine prerelease flag
+        id: prerelease
+        # Pure-semver tags (v1.2.3) are stable releases. Anything else
+        # — dev/alpha/beta/rc suffixes — is published with
+        # `prerelease: true` so `/releases/latest` only returns safe
+        # versions. This lets the provisioning wizard default to the
+        # latest stable without surprising operators with dev tags.
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+          else
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+          fi
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -93,12 +108,21 @@ jobs:
         # static binary that runs on any glibc OR musl Linux.
         # Coterie is rustls-only so this works cleanly.
 
+      - name: Build coterie-provision (musl-static)
+        run: |
+          cargo build --release \
+            --target x86_64-unknown-linux-musl \
+            -p coterie-provision
+
       - name: Stage release artifacts
         run: |
           STAGE="coterie-${{ steps.version.outputs.tag }}-x86_64-linux-musl"
           mkdir -p "dist/$STAGE"
           cp target/x86_64-unknown-linux-musl/release/coterie "dist/$STAGE/"
           cp target/x86_64-unknown-linux-musl/release/seed "dist/$STAGE/"
+          # create_admin is built by the main `cargo build --bins` step.
+          [ -f target/x86_64-unknown-linux-musl/release/create_admin ] && \
+              cp target/x86_64-unknown-linux-musl/release/create_admin "dist/$STAGE/" || true
           cp -r static "dist/$STAGE/"
           cp -r migrations "dist/$STAGE/"
           cp -r deploy "dist/$STAGE/"
@@ -112,6 +136,16 @@ jobs:
           echo "${{ steps.version.outputs.sha }}" >> "dist/$STAGE/VERSION"
           (cd dist && tar czf "$STAGE.tar.gz" "$STAGE")
           (cd dist && sha256sum "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256")
+
+          # Stage coterie-provision as its own tarball so the bash
+          # bootstrap can fetch just that binary without pulling down
+          # the full Coterie release.
+          PROVISION_STAGE="coterie-provision-${{ steps.version.outputs.tag }}-x86_64-unknown-linux-musl"
+          mkdir -p "dist/$PROVISION_STAGE"
+          cp target/x86_64-unknown-linux-musl/release/coterie-provision "dist/$PROVISION_STAGE/"
+          (cd dist && tar czf "$PROVISION_STAGE.tar.gz" -C "$PROVISION_STAGE" coterie-provision)
+          (cd dist && sha256sum "$PROVISION_STAGE.tar.gz" > "$PROVISION_STAGE.tar.gz.sha256")
+
           ls -lh dist/
 
       - name: Publish GitHub Release
@@ -121,6 +155,9 @@ jobs:
           name: ${{ steps.version.outputs.tag }}
           generate_release_notes: true
           fail_on_unmatched_files: true
+          prerelease: ${{ steps.prerelease.outputs.prerelease }}
           files: |
             dist/coterie-${{ steps.version.outputs.tag }}-x86_64-linux-musl.tar.gz
             dist/coterie-${{ steps.version.outputs.tag }}-x86_64-linux-musl.tar.gz.sha256
+            dist/coterie-provision-${{ steps.version.outputs.tag }}-x86_64-unknown-linux-musl.tar.gz
+            dist/coterie-provision-${{ steps.version.outputs.tag }}-x86_64-unknown-linux-musl.tar.gz.sha256

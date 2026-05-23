@@ -1,0 +1,90 @@
+# Example Caddyfile for a Coterie deployment.
+#
+# Copy or include this in your /etc/caddy/Caddyfile and replace
+# `coterie.example.com` and `example.com` with your real hostnames.
+# Caddy provisions and renews TLS certificates automatically; no other
+# config is required for HTTPS.
+#
+# Two virtual hosts:
+#   1. coterie.example.com — the Coterie API + management portal
+#   2. example.com         — your public marketing / member-signup site
+#                            (static files; can also be hosted on a
+#                             separate provider if you'd rather)
+#
+# Reload after editing:
+#   sudo caddy validate --config /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# Logs:
+#   sudo journalctl -u caddy -f               (Caddy itself)
+#   sudo tail -f /var/log/caddy/coterie-access.log
+
+# ---------------------------------------------------------------------
+# Coterie portal + API
+# ---------------------------------------------------------------------
+coterie.example.com {
+    # Reverse proxy to the local Coterie binary. Coterie listens on
+    # 127.0.0.1:8080 by default; only Caddy can reach it.
+    reverse_proxy 127.0.0.1:8080
+
+    # Compression. zstd is preferred when supported; gzip is the
+    # fallback for older clients. Coterie also serves a CompressionLayer
+    # internally — Caddy's encode wins because it sits in front, so the
+    # internal one is effectively a no-op for HTTPS clients.
+    encode zstd gzip
+
+    # Hardening headers that complement the ones Coterie sets itself.
+    # Coterie sets CSP (with per-request nonce), X-Content-Type-Options,
+    # X-Frame-Options, Referrer-Policy. The ones below are the
+    # transport-layer ones Coterie can't reasonably set without
+    # knowing the deployment topology.
+    header {
+        # 1 year HSTS, including subdomains, with preload eligibility.
+        # Only enable preload after you've confirmed every subdomain
+        # of `example.com` is HTTPS-ready and you actually want to be
+        # in the browser preload list.
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+        # Don't advertise software fingerprints in 4xx/5xx pages.
+        -Server
+        -X-Powered-By
+    }
+
+    # Access logging. Rotate this file with logrotate or via Caddy's
+    # built-in log rotation (uncomment the `roll_*` lines).
+    log {
+        output file /var/log/caddy/coterie-access.log {
+            # roll_size 100MiB
+            # roll_keep 7
+            # roll_keep_for 720h
+        }
+        format json
+    }
+
+    # Stripe webhook bodies can be slightly larger than typical API
+    # requests (especially payment_intent.succeeded with full PM
+    # metadata). 1 MB is a comfortable ceiling.
+    request_body {
+        max_size 1MB
+    }
+}
+
+# ---------------------------------------------------------------------
+# Public marketing / signup site (optional)
+# ---------------------------------------------------------------------
+# Use this block if you're hosting the public site from the same VPS.
+# If your public site lives on Netlify / Cloudflare Pages / etc.,
+# delete this block.
+example.com, www.example.com {
+    root * /var/www/example.com
+    encode zstd gzip
+    file_server
+
+    # Match coterie's HSTS so the apex domain is also locked to HTTPS.
+    header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+    log {
+        output file /var/log/caddy/site-access.log
+        format json
+    }
+}
