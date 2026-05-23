@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "deploy/coterie-provision"]
+default-members = ["."]
+
 [package]
 name = "coterie"
 version = "0.1.0"

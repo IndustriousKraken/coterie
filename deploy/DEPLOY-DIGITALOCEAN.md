@@ -175,37 +175,49 @@ apt-get install -y awscli
 
 ## 5. Deploy the Coterie code
 
-**Happy path — pull a pre-built release tarball from GitHub.**
-The `release.yml` workflow builds a musl-static binary and publishes
-it to GitHub Releases on every `v*` tag. `release-deploy.sh` pulls
-the latest tarball, verifies its SHA-256, places files under
-`/opt/coterie/`, and runs `install.sh` to set up the system user
-and systemd unit. One command.
+**Happy path — the provisioning wizard.** A single command downloads
+the wizard binary, prompts for the org-specific values (portal
+domain, first admin, optional Stripe/Discord/UniFi credentials), and
+handles **all** of steps 5–11 below in one pass: apt packages,
+Coterie binaries, `.env` generation, the first admin account,
+Caddyfile + log directory, and the service unit.
 
 ```bash
 # On the droplet, as root:
-apt-get install -y curl python3 tar
+curl -sfL https://raw.githubusercontent.com/IndustriousKraken/coterie/master/deploy/provision.sh \
+    -o /tmp/provision.sh
+sudo bash /tmp/provision.sh
+```
 
-# Bootstrap: grab just the deploy script from the latest release.
+The wizard is **idempotent** — re-run it after a failure and it will
+detect existing state (`.env` already there, admin already in DB,
+Caddyfile already wizard-managed) and either skip or prompt before
+overwriting. Use `--dry-run` to see the plan first, or
+`--no-prompt` plus `COTERIE_PROVISION_*` env vars for fully scripted
+provisioning (IaC).
+
+After it completes, jump to **## 9. DNS** below to point your
+hostnames at the box; the wizard has already done steps 6–8 and the
+service should be reachable on the loopback. (You can still read
+steps 6–8 below for what the wizard did internally.)
+
+---
+
+### Manual fallback: pull a release tarball
+
+If you'd rather drive each step yourself, the prior happy path still
+works:
+
+```bash
+apt-get install -y curl python3 tar
 curl -sfL https://raw.githubusercontent.com/IndustriousKraken/coterie/master/deploy/release-deploy.sh \
     -o /usr/local/bin/coterie-release-deploy
 chmod +x /usr/local/bin/coterie-release-deploy
-
-# Pull the latest release. On first run, this detects no prior
-# install, runs install.sh, prints next-steps. On subsequent runs,
-# it does the service-stop/swap/restart dance.
-/usr/local/bin/coterie-release-deploy
-
-# After this completes, jump to "## 7. Configure `.env`" below
-# (step 6 is folded into the release-deploy.sh script).
+/usr/local/bin/coterie-release-deploy            # latest stable
+/usr/local/bin/coterie-release-deploy v1.2.3     # specific tag
 ```
 
-You can also pin to a specific version (useful for rollback or
-deploying an older tested release):
-
-```bash
-/usr/local/bin/coterie-release-deploy v1.2.3
-```
+Then continue with step 6 below.
 
 ---
 

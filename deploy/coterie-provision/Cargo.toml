@@ -1,0 +1,35 @@
+[package]
+name = "coterie-provision"
+version = "0.1.0"
+edition = "2021"
+description = "End-to-end install wizard for Coterie."
+publish = false
+
+[lib]
+name = "coterie_provision"
+path = "src/lib.rs"
+
+[[bin]]
+name = "coterie-provision"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+inquire = { version = "0.7", default-features = false, features = ["crossterm"] }
+secrecy = "0.8"
+tempfile = "3"
+rand = "0.8"
+hex = "0.4"
+regex = "1"
+
+[dev-dependencies]
+pretty_assertions = "1"
+tempfile = "3"
+
+[features]
+# Enables FakeSystem / FakeFs in non-test builds (used by --dry-run path).
+test-support = []

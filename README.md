@@ -175,8 +175,32 @@ See [TODO.md](TODO.md) for the full open-items list.
 
 ## Deployment
 
-Production deployment artifacts and walkthroughs live in
-[`deploy/`](deploy/):
+### Recommended: provisioning wizard
+
+On a fresh Debian 13 (or recent Ubuntu) box, run the wizard and answer
+its prompts — it handles apt packages, the Coterie binaries, `.env`
+generation, the first admin, Caddy + TLS, and the service unit
+end-to-end:
+
+```sh
+curl -sfL https://raw.githubusercontent.com/IndustriousKraken/coterie/master/deploy/provision.sh \
+    -o /tmp/provision.sh
+sudo bash /tmp/provision.sh
+```
+
+The wizard is **idempotent** (re-runs detect existing state and prompt
+before overwriting) and supports a **non-interactive mode** (set
+`COTERIE_PROVISION_*` env vars or pass `--flag`s, then add
+`--no-prompt`) for IaC pipelines. Use `--dry-run` to print the plan
+without executing anything. See
+[`deploy/DEPLOY-DIGITALOCEAN.md`](deploy/DEPLOY-DIGITALOCEAN.md) for
+DNS, droplet sizing, and post-install steps.
+
+### Manual deploy (advanced)
+
+If you want to understand each step, run on an unsupported distro, or
+deploy via your own automation, the longer-form walkthroughs are
+still here:
 
 - [`DEPLOY-DIGITALOCEAN.md`](deploy/DEPLOY-DIGITALOCEAN.md) —
   end-to-end DO droplet (Ubuntu, ~45 min)
