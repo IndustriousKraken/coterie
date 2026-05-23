@@ -4,21 +4,55 @@ use secrecy::{ExposeSecret, SecretString};
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use crate::caddyfile;
-use crate::env_template::{self, EnvConfig};
+use crate::checklist::TEST_MODE_CHECKLIST;
+use crate::env_template::{self, DatabaseUrl, EnvConfig};
 use crate::fs_ops::FileSystem;
-use crate::prompts::{resolve, Prompter};
+use crate::output::Output;
+use crate::prompts::{resolve, resolve_bool, resolve_secret, Prompter};
 use crate::stripe_check;
 use crate::system::SystemCommand;
 
 const INSTALL_DIR: &str = "/opt/coterie";
 const ENV_PATH: &str = "/opt/coterie/.env";
+pub(crate) const ENV_LIVE_PATH: &str = "/opt/coterie/.env.live";
 const ENV_EXAMPLE_PATH: &str = "/opt/coterie/.env.example";
 const CADDYFILE_PATH: &str = "/etc/caddy/Caddyfile";
 const CADDYFILE_EXAMPLE_PATH: &str = "/opt/coterie/deploy/Caddyfile.example";
 const CADDY_LOG_DIR: &str = "/var/log/caddy";
 const RELEASE_DEPLOY_PATH: &str = "/usr/local/bin/coterie-release-deploy";
+
+/// Which Stripe mode the wizard is configuring for. Default: `Live`
+/// (matches a24 baseline behavior).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StripeMode {
+    Test,
+    Live,
+}
+
+impl StripeMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StripeMode::Test => "test",
+            StripeMode::Live => "live",
+        }
+    }
+}
+
+impl FromStr for StripeMode {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "test" => Ok(StripeMode::Test),
+            "live" => Ok(StripeMode::Live),
+            other => Err(anyhow!(
+                "invalid stripe mode `{other}` — expected `test` or `live`"
+            )),
+        }
+    }
+}
 
 /// Parsed CLI inputs (independent of clap so the install flow is
 /// straightforward to unit test). `main.rs` converts the clap struct
@@ -35,9 +69,20 @@ pub struct InstallArgs {
     pub admin_password: Option<SecretString>,
 
     pub enable_stripe: Option<bool>,
+    /// Test or live mode. Defaults to `Live` when unset and `no_prompt`
+    /// is on (matches a24 baseline). In interactive mode the operator is
+    /// prompted.
+    pub stripe_mode: Option<StripeMode>,
     pub stripe_publishable_key: Option<String>,
     pub stripe_secret_key: Option<SecretString>,
     pub stripe_webhook_secret: Option<SecretString>,
+    /// If test mode is selected, this flag (or programmatic supply of
+    /// the three `stripe_live_*` fields below) opts in to staging live
+    /// credentials in `/opt/coterie/.env.live` for the switchover.
+    pub preload_live_creds: Option<bool>,
+    pub stripe_live_publishable_key: Option<String>,
+    pub stripe_live_secret_key: Option<SecretString>,
+    pub stripe_live_webhook_secret: Option<SecretString>,
 
     pub enable_discord: Option<bool>,
     pub discord_bot_token: Option<SecretString>,
@@ -59,6 +104,12 @@ pub struct InstallArgs {
     /// prompting. Honors `COTERIE_PROVISION_OVERWRITE_ENV=true` to flip
     /// the behavior to silent-overwrite.
     pub overwrite_env: bool,
+    /// Test-only escape hatch. The CLI never sets this. Production code
+    /// always enforces the root check; integration tests against
+    /// `FakeFs`/`FakeSystem` set it true so they can exercise the full
+    /// write path without being root.
+    #[doc(hidden)]
+    pub skip_root_check: bool,
 }
 
 /// Idempotency findings detected at the start of the install.
@@ -69,16 +120,21 @@ pub struct PreflightState {
     pub caddyfile_managed_by_us: bool,
 }
 
-/// The orchestrator. Parametric over `SystemCommand` + `FileSystem` so
-/// the test suite can drive it end-to-end with fakes.
-pub fn run<S: SystemCommand, F: FileSystem, P: Prompter>(
+/// The orchestrator. Parametric over `SystemCommand` + `FileSystem` +
+/// `Output` so the test suite can drive it end-to-end with fakes.
+///
+/// `Output` carries the test-mode verification checklist (and any other
+/// "must be assertable" lines) so integration tests can confirm the
+/// text was emitted without scraping the real process stdout.
+pub fn run<S: SystemCommand, F: FileSystem, P: Prompter, O: Output>(
     args: InstallArgs,
     sys: &S,
     fs: &F,
     prompts: &P,
+    output: &O,
 ) -> Result<()> {
     // --- Preflight ----------------------------------------------------
-    if !args.dry_run {
+    if !args.dry_run && !args.skip_root_check {
         // Root check. The test path passes dry_run = true so this is
         // skipped; the prod path enforces it.
         if !is_root() {
@@ -116,12 +172,19 @@ pub fn run<S: SystemCommand, F: FileSystem, P: Prompter>(
     exec.run_release_deploy(&inputs.version)?;
     exec.assert_binaries_present()?;
     exec.render_and_write_env(&inputs)?;
+    exec.write_live_overlay_if_needed(&inputs)?;
     exec.bootstrap_admin(&inputs)?;
     if inputs.enable_caddy {
         exec.write_caddyfile(&inputs)?;
     }
     exec.enable_and_start_service()?;
     exec.smoke_test()?;
+
+    // Test-mode wizard prints the verification checklist before the
+    // closing summary. Live mode skips it (matches a24 baseline).
+    if inputs.enable_stripe && inputs.stripe_mode == StripeMode::Test {
+        output.println(TEST_MODE_CHECKLIST);
+    }
 
     print_exit_summary(&inputs);
     Ok(())
@@ -165,9 +228,16 @@ pub struct ResolvedInputs {
     pub admin_full_name: String,
     pub admin_password: SecretString,
     pub enable_stripe: bool,
+    pub stripe_mode: StripeMode,
     pub stripe_publishable_key: Option<String>,
     pub stripe_secret_key: Option<SecretString>,
     pub stripe_webhook_secret: Option<SecretString>,
+    /// Live triple staged into `/opt/coterie/.env.live` when the operator
+    /// pre-loaded them during a test-mode wizard run. None outside that
+    /// path.
+    pub stripe_live_publishable_key: Option<String>,
+    pub stripe_live_secret_key: Option<SecretString>,
+    pub stripe_live_webhook_secret: Option<SecretString>,
     pub enable_discord: bool,
     pub discord_bot_token: Option<SecretString>,
     pub discord_guild_id: Option<String>,
@@ -276,45 +346,167 @@ fn gather_inputs<P: Prompter>(
         || prompts.prompt_yn("Enable Stripe integration?", false),
     )?;
 
-    let (stripe_pk, stripe_sk, stripe_whsec) = if enable_stripe {
-        let pk = resolve(
-            "stripe-publishable-key",
-            "COTERIE_PROVISION_STRIPE_PK",
-            args.stripe_publishable_key.clone(),
-            None,
+    let (
+        stripe_mode,
+        stripe_pk,
+        stripe_sk,
+        stripe_whsec,
+        stripe_live_pk,
+        stripe_live_sk,
+        stripe_live_whsec,
+    ) = if enable_stripe {
+        // Mode prompt: defaults to `live` to match a24's baseline. The
+        // `resolve` helper handles flag/env/prompt uniformly.
+        let mode = resolve::<StripeMode, _>(
+            "stripe-mode",
+            "COTERIE_PROVISION_STRIPE_MODE",
+            args.stripe_mode,
+            Some(StripeMode::Live),
             no_prompt,
-            || prompts.prompt_text("Stripe publishable key (pk_…)", None),
+            || {
+                let items = vec!["live".to_string(), "test".to_string()];
+                let idx = prompts.prompt_select("Stripe mode (test or live)?", &items)?;
+                items[idx]
+                    .parse::<StripeMode>()
+                    .map_err(|e| anyhow!("invalid stripe mode: {e}"))
+            },
         )?;
-        // Allow either test or live; we just enforce the family.
-        if !pk.starts_with("pk_test_") && !pk.starts_with("pk_live_") {
-            return Err(anyhow!(
-                "Stripe publishable key must start with pk_test_ or pk_live_"
-            ));
+
+        match mode {
+            StripeMode::Live => {
+                let pk = resolve(
+                    "stripe-publishable-key",
+                    "COTERIE_PROVISION_STRIPE_PK",
+                    args.stripe_publishable_key.clone(),
+                    None,
+                    no_prompt,
+                    || prompts.prompt_text("Stripe publishable key (pk_…)", None),
+                )?;
+                // Live mode wizard matches a24 baseline: accept either
+                // test or live family. (Operators occasionally configure
+                // a "live mode" instance with test keys for testing.)
+                if !pk.starts_with("pk_test_") && !pk.starts_with("pk_live_") {
+                    return Err(anyhow!(
+                        "Stripe publishable key must start with pk_test_ or pk_live_"
+                    ));
+                }
+                let sk = resolve_secret(
+                    "stripe-secret-key",
+                    "COTERIE_PROVISION_STRIPE_SK",
+                    args.stripe_secret_key.clone(),
+                    no_prompt,
+                    || prompts.prompt_secret("Stripe secret key (sk_…) — input hidden"),
+                )?;
+                let sk_str = sk.expose_secret().clone();
+                if !sk_str.starts_with("sk_test_") && !sk_str.starts_with("sk_live_") {
+                    return Err(anyhow!(
+                        "Stripe secret key must start with sk_test_ or sk_live_"
+                    ));
+                }
+                let whsec = resolve_secret(
+                    "stripe-webhook-secret",
+                    "COTERIE_PROVISION_STRIPE_WHSEC",
+                    args.stripe_webhook_secret.clone(),
+                    no_prompt,
+                    || prompts.prompt_secret("Stripe webhook signing secret (whsec_…)"),
+                )?;
+                stripe_check::validate_prefix(whsec.expose_secret(), "whsec_")?;
+                (mode, Some(pk), Some(sk), Some(whsec), None, None, None)
+            }
+            StripeMode::Test => {
+                let pk = resolve(
+                    "stripe-publishable-key",
+                    "COTERIE_PROVISION_STRIPE_PK",
+                    args.stripe_publishable_key.clone(),
+                    None,
+                    no_prompt,
+                    || prompts.prompt_text("Stripe TEST publishable key (pk_test_…)", None),
+                )?;
+                stripe_check::validate_prefix(&pk, "pk_test_")?;
+                let sk = resolve_secret(
+                    "stripe-secret-key",
+                    "COTERIE_PROVISION_STRIPE_SK",
+                    args.stripe_secret_key.clone(),
+                    no_prompt,
+                    || prompts.prompt_secret("Stripe TEST secret key (sk_test_…) — input hidden"),
+                )?;
+                stripe_check::validate_prefix(sk.expose_secret(), "sk_test_")?;
+                let whsec = resolve_secret(
+                    "stripe-webhook-secret",
+                    "COTERIE_PROVISION_STRIPE_WHSEC",
+                    args.stripe_webhook_secret.clone(),
+                    no_prompt,
+                    || prompts.prompt_secret("Stripe TEST webhook signing secret (whsec_…)"),
+                )?;
+                stripe_check::validate_prefix(whsec.expose_secret(), "whsec_")?;
+
+                // Optional pre-load of live creds. Programmatic users
+                // can either set preload_live_creds=true, or simply
+                // supply the three live values (we infer "yes" from
+                // that). Interactive users get a y/N prompt.
+                let already_supplied = args.stripe_live_publishable_key.is_some()
+                    && args.stripe_live_secret_key.is_some()
+                    && args.stripe_live_webhook_secret.is_some();
+                let preload = if let Some(b) = args.preload_live_creds {
+                    b
+                } else if already_supplied {
+                    true
+                } else if no_prompt {
+                    false
+                } else {
+                    prompts.prompt_yn(
+                        "Do you also have live credentials to pre-load for later switchover?",
+                        false,
+                    )?
+                };
+
+                let (live_pk, live_sk, live_whsec) = if preload {
+                    let lpk = resolve(
+                        "stripe-live-pk",
+                        "COTERIE_PROVISION_STRIPE_LIVE_PK",
+                        args.stripe_live_publishable_key.clone(),
+                        None,
+                        no_prompt,
+                        || prompts.prompt_text("Stripe LIVE publishable key (pk_live_…)", None),
+                    )?;
+                    stripe_check::validate_prefix(&lpk, "pk_live_")?;
+                    let lsk = resolve_secret(
+                        "stripe-live-sk",
+                        "COTERIE_PROVISION_STRIPE_LIVE_SK",
+                        args.stripe_live_secret_key.clone(),
+                        no_prompt,
+                        || {
+                            prompts
+                                .prompt_secret("Stripe LIVE secret key (sk_live_…) — input hidden")
+                        },
+                    )?;
+                    stripe_check::validate_prefix(lsk.expose_secret(), "sk_live_")?;
+                    let lwhsec = resolve_secret(
+                        "stripe-live-whsec",
+                        "COTERIE_PROVISION_STRIPE_LIVE_WHSEC",
+                        args.stripe_live_webhook_secret.clone(),
+                        no_prompt,
+                        || prompts.prompt_secret("Stripe LIVE webhook signing secret (whsec_…)"),
+                    )?;
+                    stripe_check::validate_prefix(lwhsec.expose_secret(), "whsec_")?;
+                    (Some(lpk), Some(lsk), Some(lwhsec))
+                } else {
+                    (None, None, None)
+                };
+
+                (
+                    mode,
+                    Some(pk),
+                    Some(sk),
+                    Some(whsec),
+                    live_pk,
+                    live_sk,
+                    live_whsec,
+                )
+            }
         }
-        let sk = resolve_secret(
-            "stripe-secret-key",
-            "COTERIE_PROVISION_STRIPE_SK",
-            args.stripe_secret_key.clone(),
-            no_prompt,
-            || prompts.prompt_secret("Stripe secret key (sk_…) — input hidden"),
-        )?;
-        let sk_str = sk.expose_secret().clone();
-        if !sk_str.starts_with("sk_test_") && !sk_str.starts_with("sk_live_") {
-            return Err(anyhow!(
-                "Stripe secret key must start with sk_test_ or sk_live_"
-            ));
-        }
-        let whsec = resolve_secret(
-            "stripe-webhook-secret",
-            "COTERIE_PROVISION_STRIPE_WHSEC",
-            args.stripe_webhook_secret.clone(),
-            no_prompt,
-            || prompts.prompt_secret("Stripe webhook signing secret (whsec_…)"),
-        )?;
-        stripe_check::validate_prefix(whsec.expose_secret(), "whsec_")?;
-        (Some(pk), Some(sk), Some(whsec))
     } else {
-        (None, None, None)
+        (StripeMode::Live, None, None, None, None, None, None)
     };
 
     let enable_discord = resolve_bool(
@@ -468,9 +660,13 @@ fn gather_inputs<P: Prompter>(
         admin_full_name,
         admin_password,
         enable_stripe,
+        stripe_mode,
         stripe_publishable_key: stripe_pk,
         stripe_secret_key: stripe_sk,
         stripe_webhook_secret: stripe_whsec,
+        stripe_live_publishable_key: stripe_live_pk,
+        stripe_live_secret_key: stripe_live_sk,
+        stripe_live_webhook_secret: stripe_live_whsec,
         enable_discord,
         discord_bot_token: discord_token,
         discord_guild_id: discord_guild,
@@ -486,60 +682,6 @@ fn gather_inputs<P: Prompter>(
         overwrite_env,
         session_secret,
     })
-}
-
-fn resolve_bool<Fp: FnOnce() -> Result<bool>>(
-    name: &str,
-    env_var: &str,
-    cli_value: Option<bool>,
-    default: Option<bool>,
-    no_prompt: bool,
-    prompt_fn: Fp,
-) -> Result<bool> {
-    if let Some(v) = cli_value {
-        return Ok(v);
-    }
-    if let Ok(raw) = std::env::var(env_var) {
-        if !raw.is_empty() {
-            return match raw.to_ascii_lowercase().as_str() {
-                "true" | "1" | "yes" | "y" | "on" => Ok(true),
-                "false" | "0" | "no" | "n" | "off" => Ok(false),
-                other => Err(anyhow!("env var {env_var}={other} is not a boolean")),
-            };
-        }
-    }
-    if no_prompt {
-        if let Some(d) = default {
-            return Ok(d);
-        }
-        return Err(anyhow!(
-            "missing required boolean input `{name}` — set {env_var} or pass --{name}"
-        ));
-    }
-    prompt_fn()
-}
-
-fn resolve_secret<Fp: FnOnce() -> Result<SecretString>>(
-    name: &str,
-    env_var: &str,
-    cli_value: Option<SecretString>,
-    no_prompt: bool,
-    prompt_fn: Fp,
-) -> Result<SecretString> {
-    if let Some(v) = cli_value {
-        return Ok(v);
-    }
-    if let Ok(raw) = std::env::var(env_var) {
-        if !raw.is_empty() {
-            return Ok(SecretString::new(raw));
-        }
-    }
-    if no_prompt {
-        return Err(anyhow!(
-            "missing required secret input `{name}` — set {env_var} or pass --{name}"
-        ));
-    }
-    prompt_fn()
 }
 
 fn generate_session_secret() -> SecretString {
@@ -568,6 +710,9 @@ fn print_summary(inputs: &ResolvedInputs, dry_run: bool) {
         "Integrations:    stripe={} discord={} unifi={} caddy={}",
         inputs.enable_stripe, inputs.enable_discord, inputs.enable_unifi, inputs.enable_caddy
     );
+    if inputs.enable_stripe {
+        println!("Stripe mode:     {}", inputs.stripe_mode.as_str());
+    }
     if !inputs.overwrite_env {
         println!("(.env already present; will be preserved)");
     }
@@ -748,6 +893,13 @@ impl<'a, S: SystemCommand, F: FileSystem> Executor<'a, S, F> {
 
         let base_url = format!("https://{}", inputs.portal_domain);
         let mut env_config = EnvConfig::defaults_for(&base_url, inputs.session_secret.clone());
+        // When test mode is selected, route to a separate sqlite file so
+        // test charges/members don't land in what will become the
+        // production DB. The switchover subcommand rewrites this back to
+        // `coterie.db` when the operator transitions to live mode.
+        if inputs.enable_stripe && inputs.stripe_mode == StripeMode::Test {
+            env_config.database_url = DatabaseUrl::Test.as_env_str().to_string();
+        }
         if inputs.enable_stripe {
             env_config.stripe = Some(env_template::StripeConfig {
                 publishable_key: inputs
@@ -816,6 +968,42 @@ impl<'a, S: SystemCommand, F: FileSystem> Executor<'a, S, F> {
         self.fs.chmod(Path::new(ENV_PATH), 0o640)?;
         self.fs
             .chown(Path::new(ENV_PATH), "coterie", "coterie")
+            .ok();
+        Ok(())
+    }
+
+    /// Stage `/opt/coterie/.env.live` if the operator pre-loaded a live
+    /// Stripe triple during a test-mode wizard run. The switchover
+    /// subcommand consumes (and removes) this file later.
+    fn write_live_overlay_if_needed(&self, inputs: &ResolvedInputs) -> Result<()> {
+        let (Some(pk), Some(sk), Some(whsec)) = (
+            inputs.stripe_live_publishable_key.as_ref(),
+            inputs.stripe_live_secret_key.as_ref(),
+            inputs.stripe_live_webhook_secret.as_ref(),
+        ) else {
+            return Ok(());
+        };
+        let rendered = env_template::render_live_overlay(
+            pk,
+            &secrecy::Secret::new(sk.expose_secret().clone()),
+            &secrecy::Secret::new(whsec.expose_secret().clone()),
+        );
+        self.announce(&format!(
+            "writing {} (live creds staged for switchover)",
+            ENV_LIVE_PATH
+        ));
+        if self.dry_run {
+            println!("--- {ENV_LIVE_PATH} preview (dry-run) ---");
+            for line in rendered.lines() {
+                println!("    {line}");
+            }
+            return Ok(());
+        }
+        self.fs
+            .write(Path::new(ENV_LIVE_PATH), rendered.as_bytes())?;
+        self.fs.chmod(Path::new(ENV_LIVE_PATH), 0o640)?;
+        self.fs
+            .chown(Path::new(ENV_LIVE_PATH), "coterie", "coterie")
             .ok();
         Ok(())
     }
@@ -956,6 +1144,7 @@ fn overwrite_with_zeros(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output::CaptureOutput;
     use crate::test_support::{FakeFs, FakeSystem, MockPrompter};
     use std::path::Path;
 
@@ -963,31 +1152,19 @@ mod tests {
         InstallArgs {
             org_name: Some("Acme Coterie".to_string()),
             portal_domain: Some("portal.acme.io".to_string()),
-            marketing_domain: None,
             contact_email: Some("ops@acme.io".to_string()),
             admin_email: Some("rab@acme.io".to_string()),
             admin_username: Some("rab".to_string()),
             admin_full_name: Some("R A Bee".to_string()),
             admin_password: Some(SecretString::new("hunter2hunter2".to_string())),
             enable_stripe: Some(false),
-            stripe_publishable_key: None,
-            stripe_secret_key: None,
-            stripe_webhook_secret: None,
             enable_discord: Some(false),
-            discord_bot_token: None,
-            discord_guild_id: None,
-            discord_member_role_id: None,
-            discord_expired_role_id: None,
             enable_unifi: Some(false),
-            unifi_controller_url: None,
-            unifi_username: None,
-            unifi_password: None,
-            unifi_site_id: None,
             enable_caddy: Some(true),
             version: Some("v1.1.0".to_string()),
             no_prompt: true,
             dry_run: true,
-            overwrite_env: false,
+            ..Default::default()
         }
     }
 
@@ -997,7 +1174,8 @@ mod tests {
         let sys = FakeSystem::new();
         let fs = FakeFs::new();
         let prompts = MockPrompter::new();
-        run(args, &sys, &fs, &prompts).unwrap();
+        let out = CaptureOutput::new();
+        run(args, &sys, &fs, &prompts, &out).unwrap();
         // In dry-run mode, no apt-get calls are made (announce-only).
         assert_eq!(sys.calls.borrow().len(), 0);
     }
@@ -1045,6 +1223,8 @@ mod tests {
     fn dry_run_install_with_all_integrations() {
         let mut args = make_args();
         args.enable_stripe = Some(true);
+        // Default mode is live; supply live-or-test-prefixed keys.
+        args.stripe_mode = Some(StripeMode::Live);
         args.stripe_publishable_key = Some("pk_test_abc".to_string());
         args.stripe_secret_key = Some(SecretString::new("sk_test_xyz".to_string()));
         args.stripe_webhook_secret = Some(SecretString::new("whsec_zzz".to_string()));
@@ -1061,7 +1241,8 @@ mod tests {
         let sys = FakeSystem::new();
         let fs = FakeFs::new();
         let prompts = MockPrompter::new();
-        run(args, &sys, &fs, &prompts).unwrap();
+        let out = CaptureOutput::new();
+        run(args, &sys, &fs, &prompts, &out).unwrap();
     }
 
     #[test]
@@ -1073,7 +1254,8 @@ mod tests {
         let sys = FakeSystem::new();
         let fs = FakeFs::new();
         let prompts = MockPrompter::new();
-        let err = run(args, &sys, &fs, &prompts).unwrap_err();
+        let out = CaptureOutput::new();
+        let err = run(args, &sys, &fs, &prompts, &out).unwrap_err();
         assert!(err.to_string().contains("org-name") || err.to_string().contains("ORG_NAME"));
     }
 
@@ -1081,6 +1263,7 @@ mod tests {
     fn stripe_bad_prefix_rejected() {
         let mut args = make_args();
         args.enable_stripe = Some(true);
+        args.stripe_mode = Some(StripeMode::Live);
         args.stripe_publishable_key = Some("pk_invalid_abc".to_string());
         args.stripe_secret_key = Some(SecretString::new("sk_test_xyz".to_string()));
         args.stripe_webhook_secret = Some(SecretString::new("whsec_zzz".to_string()));
@@ -1088,7 +1271,8 @@ mod tests {
         let sys = FakeSystem::new();
         let fs = FakeFs::new();
         let prompts = MockPrompter::new();
-        let err = run(args, &sys, &fs, &prompts).unwrap_err();
+        let out = CaptureOutput::new();
+        let err = run(args, &sys, &fs, &prompts, &out).unwrap_err();
         assert!(err.to_string().contains("pk_test_") || err.to_string().contains("pk_live_"));
     }
 }

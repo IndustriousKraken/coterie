@@ -23,6 +23,8 @@ tempfile = "3"
 rand = "0.8"
 hex = "0.4"
 regex = "1"
+rusqlite = { version = "0.29", features = ["bundled"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [dev-dependencies]
 pretty_assertions = "1"
@@ -37,4 +39,8 @@ required-features = ["test-support"]
 
 [[test]]
 name = "caddyfile"
+required-features = ["test-support"]
+
+[[test]]
+name = "switch_to_live"
 required-features = ["test-support"]
