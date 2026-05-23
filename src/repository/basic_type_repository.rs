@@ -17,6 +17,7 @@ use crate::{
         slugify, BasicType, BasicTypeKind, CreateBasicTypeRequest, UpdateBasicTypeRequest,
     },
     error::{AppError, Result},
+    util::string::capitalize_first,
 };
 
 #[derive(FromRow)]
@@ -289,13 +290,5 @@ impl BasicTypeRepository for SqliteBasicTypeRepository {
             .map_err(AppError::Database)?;
 
         Ok(row.0.unwrap_or(0) + 1)
-    }
-}
-
-fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
     }
 }

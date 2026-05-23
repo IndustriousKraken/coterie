@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc, NaiveDateTime};
 use sqlx::{SqlitePool, FromRow};
 use uuid::Uuid;
 
+use super::tokens::hash_token;
 use crate::error::{AppError, Result};
 
 #[derive(Debug, Clone)]
@@ -146,11 +147,4 @@ impl SessionStore {
 
         Ok(result.rows_affected())
     }
-}
-
-fn hash_token(token: &str) -> String {
-    use sha2::{Sha256, Digest};
-    let mut hasher = Sha256::new();
-    hasher.update(token.as_bytes());
-    hex::encode(hasher.finalize())
 }

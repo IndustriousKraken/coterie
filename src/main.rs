@@ -9,6 +9,7 @@ mod jobs;
 mod payments;
 mod repository;
 mod service;
+mod util;
 mod web;
 
 use std::str::FromStr;

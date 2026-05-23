@@ -28,6 +28,7 @@ use crate::{
     service::{
         basic_type_service::BasicTypeService, membership_type_service::MembershipTypeService,
     },
+    util::string::capitalize_first,
     web::{
         portal::admin::partials,
         templates::{BaseContext, HtmlTemplate},
@@ -556,12 +557,4 @@ async fn fetch_membership_types(
             }
         })
         .collect()
-}
-
-fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
 }

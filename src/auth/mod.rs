@@ -16,6 +16,7 @@ pub mod pending_login;
 pub mod recovery_codes;
 pub mod secret_crypto;
 pub mod session;
+pub mod tokens;
 pub mod totp;
 
 use session::{Session, SessionStore};
@@ -71,7 +72,7 @@ impl AuthService {
     }
 
     pub async fn create_session(&self, member_id: Uuid, duration_hours: i64) -> Result<(Session, String)> {
-        let token = generate_token();
+        let token = tokens::generate_token();
         let expires_at = Utc::now() + Duration::hours(duration_hours);
         
         let session = self.session_store
@@ -137,13 +138,6 @@ pub fn validate_password(password: &str) -> std::result::Result<(), &'static str
         return Err("Password must contain at least one number");
     }
     Ok(())
-}
-
-fn generate_token() -> String {
-    use rand::RngCore;
-    let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    hex::encode(bytes)
 }
 
 pub async fn get_password_hash(pool: &SqlitePool, email: &str) -> Result<Option<String>> {

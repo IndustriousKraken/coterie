@@ -15,6 +15,7 @@ use crate::{
         check_delete_unused_for_basic, check_unique_slug_for_basic,
         validate_hex_color_for_request,
     },
+    util::string::capitalize_first,
 };
 
 pub struct BasicTypeService {
@@ -83,13 +84,5 @@ impl BasicTypeService {
         check_delete_unused_for_basic(self.repo.as_ref(), self.kind, id).await?;
 
         self.repo.delete(self.kind, id).await
-    }
-}
-
-fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
     }
 }

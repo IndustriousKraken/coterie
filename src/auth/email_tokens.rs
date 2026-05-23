@@ -10,6 +10,7 @@ use chrono::{DateTime, Duration, Utc};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
+use super::tokens::{generate_token, hash_token};
 use crate::error::{AppError, Result};
 
 pub struct CreatedToken {
@@ -175,18 +176,4 @@ pub async fn invalidate_password_reset_tokens_for_member(
 #[allow(dead_code)]
 pub async fn cleanup_expired_password_reset_tokens(pool: &SqlitePool) -> Result<u64> {
     cleanup_expired_in_table(pool, "password_reset_tokens").await
-}
-
-fn generate_token() -> String {
-    use rand::RngCore;
-    let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    hex::encode(bytes)
-}
-
-fn hash_token(token: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(token.as_bytes());
-    hex::encode(hasher.finalize())
 }
