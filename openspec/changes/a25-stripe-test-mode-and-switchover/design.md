@@ -224,4 +224,13 @@ Single PR. Depends on `a24` shipping first (the `coterie-provision` binary must 
 5. Add the new `StripeApi` trait (+ Real and Fake implementations) to the crate.
 6. Update `STRIPE-SETUP.md` to describe the test-mode workflow and reference the switchover subcommand.
 7. `cargo test`, `cargo clippy --deny warnings`, `cargo fmt --check` — autocoder validation gates.
-8. PR description documents operator smoke instructions: wizard in test mode on fresh VM, do a test donation, switch to live, confirm /portal still works and admin login still works.
+
+## Operator handoff (PR description content, post-autocoder)
+
+The autocoder cannot make real Stripe charges or run the switchover against a live VM. Before merging, the operator runs these manually on a fresh Debian 13 VM:
+
+- Run the wizard in test mode with test Stripe credentials. Confirm `/var/lib/coterie/coterie-test.db` exists; `coterie.db` does not. Make a test donation via the portal using `4242 4242 4242 4242`. Confirm the charge appears in Stripe's test-mode dashboard and Coterie's logs show the webhook event.
+- Run `coterie-provision switch-stripe-to-live`. Confirm `.env` now references `coterie.db` and `pk_live_*`. Log in with the admin credentials from the test-mode run — should authenticate against the new live DB. Make a small live test charge to confirm the live wiring works.
+- Run `coterie-provision switch-stripe-to-live` a second time. Should exit 0 with "already in live mode" — verifies idempotency.
+
+If any of those fail, the PR doesn't merge.

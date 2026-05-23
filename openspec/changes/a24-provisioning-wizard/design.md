@@ -271,4 +271,15 @@ Single PR.
 8. Update `DEPLOY-DIGITALOCEAN.md` to make the wizard the primary path; demote the manual section.
 9. Update `README.md` deploy section to lead with the wizard.
 10. `cargo test`, `cargo clippy --deny warnings`, `cargo fmt --check` — the autocoder's validation gates.
-11. PR description includes operator smoke instructions (fresh Debian 13 VM, run the curl-and-bash) so the operator can run them post-merge as a manual gate.
+
+## Operator handoff (PR description content, post-autocoder)
+
+The autocoder cannot validate VM-level behavior. Before merging, the operator (or whoever's gating the PR) runs the following on a fresh Debian 13 VM. These are NOT autocoder tasks — they belong in the PR description so the human reviewer has a checklist:
+
+- Spin up a fresh Debian 13 droplet (or local VM). Run the curl-and-bash bootstrap interactively. Confirm Coterie is reachable at the chosen domain and the admin can log in.
+- Re-run on the same box to test idempotency. Each step should skip (already done) or prompt before overwriting.
+- Run with `--dry-run`. Confirm no side effects; output is the plan.
+- Run fully non-interactive (all env vars set). Confirm no prompts appear.
+- Test recovery: provision → `uninstall.sh --all` → provision again. Both runs succeed.
+
+If any of those fail, the PR doesn't merge.
