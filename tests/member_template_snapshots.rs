@@ -19,9 +19,10 @@ use coterie::{
         portal::{
             MemberInfo,
             admin::members::{
-                AdminMemberDetailInfo, AdminMemberDetailTemplate, AdminMemberInfo,
-                AdminMembersTableTemplate, AdminMembersTemplate, AdminNewMemberTemplate,
-                AdminSavedCardInfo, MembershipTypeOption,
+                create::AdminNewMemberTemplate,
+                detail::{AdminMemberDetailInfo, AdminMemberDetailTemplate, AdminSavedCardInfo},
+                list::{AdminMemberInfo, AdminMembersTableTemplate, AdminMembersTemplate},
+                MembershipTypeOption,
             },
             dashboard::MemberDashboardTemplate,
             profile::ProfileTemplate,
