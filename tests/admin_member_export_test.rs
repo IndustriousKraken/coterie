@@ -35,7 +35,10 @@ use coterie::{
     },
     service::{settings_service::SettingsService, ServiceContext},
 };
-use sqlx::{Executor, SqlitePool};
+use sqlx::SqlitePool;
+
+mod common;
+use common::fresh_pool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -49,22 +52,6 @@ struct Harness {
     member_repo: Arc<dyn MemberRepository>,
     admin_id: Uuid,
     session_cookie: String,
-}
-
-async fn fresh_pool() -> SqlitePool {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .after_connect(|conn, _| {
-            Box::pin(async move {
-                conn.execute("PRAGMA foreign_keys = ON").await?;
-                Ok(())
-            })
-        })
-        .connect("sqlite::memory:")
-        .await
-        .expect("connect to :memory:");
-    sqlx::migrate!("./migrations").run(&pool).await.expect("migrate");
-    pool
 }
 
 async fn build_harness() -> Harness {
@@ -99,8 +86,7 @@ async fn build_harness() -> Harness {
 
     let member_repo: Arc<dyn MemberRepository> =
         Arc::new(SqliteMemberRepository::new(pool.clone()));
-    let event_repo: Arc<dyn EventRepository> =
-        Arc::new(SqliteEventRepository::new(pool.clone()));
+    let event_repo: Arc<dyn EventRepository> = Arc::new(SqliteEventRepository::new(pool.clone()));
     let announcement_repo: Arc<dyn AnnouncementRepository> =
         Arc::new(SqliteAnnouncementRepository::new(pool.clone()));
     let payment_repo: Arc<dyn PaymentRepository> =
@@ -126,10 +112,7 @@ async fn build_harness() -> Harness {
     ));
     let integration_manager = Arc::new(IntegrationManager::new());
 
-    let money_limiter = MoneyLimiter(RateLimiter::new(
-        10,
-        std::time::Duration::from_secs(60),
-    ));
+    let money_limiter = MoneyLimiter(RateLimiter::new(10, std::time::Duration::from_secs(60)));
 
     let service_context = Arc::new(ServiceContext::new(
         member_repo.clone(),
@@ -149,10 +132,8 @@ async fn build_harness() -> Harness {
         pool.clone(),
     ));
 
-    let billing_service = Arc::new(service_context.billing_service(
-        None,
-        settings.server.base_url.clone(),
-    ));
+    let billing_service =
+        Arc::new(service_context.billing_service(None, settings.server.base_url.clone()));
 
     let app_state = coterie::api::state::AppState::new(
         service_context,
@@ -305,12 +286,33 @@ fn parse_csv_row(line: &str) -> Vec<String> {
 #[tokio::test]
 async fn export_unfiltered_returns_csv_with_all_members() {
     let h = build_harness().await;
-    seed_member(&h, "alice@example.com", "alice", "Alice A.",
-                MemberStatus::Active, None).await;
-    seed_member(&h, "bob@example.com", "bob", "Bob B.",
-                MemberStatus::Pending, None).await;
-    seed_member(&h, "carla@example.com", "carla", "Carla C.",
-                MemberStatus::Expired, None).await;
+    seed_member(
+        &h,
+        "alice@example.com",
+        "alice",
+        "Alice A.",
+        MemberStatus::Active,
+        None,
+    )
+    .await;
+    seed_member(
+        &h,
+        "bob@example.com",
+        "bob",
+        "Bob B.",
+        MemberStatus::Pending,
+        None,
+    )
+    .await;
+    seed_member(
+        &h,
+        "carla@example.com",
+        "carla",
+        "Carla C.",
+        MemberStatus::Expired,
+        None,
+    )
+    .await;
 
     let resp = h
         .app
@@ -320,14 +322,22 @@ async fn export_unfiltered_returns_csv_with_all_members() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
-    let ct = resp.headers().get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok()).unwrap_or("");
+    let ct = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
     assert_eq!(ct, "text/csv; charset=utf-8");
-    let cd = resp.headers().get(header::CONTENT_DISPOSITION)
-        .and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let cd = resp
+        .headers()
+        .get(header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
     assert!(
         cd.starts_with("attachment; filename=\"members-export-") && cd.ends_with(".csv\""),
-        "expected dated attachment filename, got {:?}", cd,
+        "expected dated attachment filename, got {:?}",
+        cd,
     );
 
     let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
@@ -341,18 +351,45 @@ async fn export_unfiltered_returns_csv_with_all_members() {
     );
     // 3 seeded + 1 admin = 4 data rows.
     let data_rows: Vec<&str> = lines.filter(|l| !l.is_empty()).collect();
-    assert_eq!(data_rows.len(), 4, "expected 4 data rows, got {}\n{}", data_rows.len(), text);
+    assert_eq!(
+        data_rows.len(),
+        4,
+        "expected 4 data rows, got {}\n{}",
+        data_rows.len(),
+        text
+    );
 }
 
 #[tokio::test]
 async fn export_status_filter_returns_only_matching_members() {
     let h = build_harness().await;
-    let active_id = seed_member(&h, "alice@example.com", "alice", "Alice A.",
-                                MemberStatus::Active, None).await;
-    seed_member(&h, "bob@example.com", "bob", "Bob B.",
-                MemberStatus::Pending, None).await;
-    seed_member(&h, "carla@example.com", "carla", "Carla C.",
-                MemberStatus::Expired, None).await;
+    let active_id = seed_member(
+        &h,
+        "alice@example.com",
+        "alice",
+        "Alice A.",
+        MemberStatus::Active,
+        None,
+    )
+    .await;
+    seed_member(
+        &h,
+        "bob@example.com",
+        "bob",
+        "Bob B.",
+        MemberStatus::Pending,
+        None,
+    )
+    .await;
+    seed_member(
+        &h,
+        "carla@example.com",
+        "carla",
+        "Carla C.",
+        MemberStatus::Expired,
+        None,
+    )
+    .await;
 
     let resp = h
         .app
@@ -369,7 +406,12 @@ async fn export_status_filter_returns_only_matching_members() {
     let data_rows: Vec<&str> = lines.filter(|l| !l.is_empty()).collect();
 
     // Admin is Active too, so the count is 2 (Alice + Admin).
-    assert_eq!(data_rows.len(), 2, "Active filter must keep only Active rows; got body:\n{}", text);
+    assert_eq!(
+        data_rows.len(),
+        2,
+        "Active filter must keep only Active rows; got body:\n{}",
+        text
+    );
     let ids: Vec<String> = data_rows
         .iter()
         .map(|r| parse_csv_row(r).into_iter().next().unwrap())
@@ -388,7 +430,8 @@ async fn export_escapes_special_characters_per_rfc_4180() {
         "O'Brien, Sean",
         MemberStatus::Active,
         Some("Has \"complications\""),
-    ).await;
+    )
+    .await;
 
     let resp = h
         .app
@@ -406,15 +449,19 @@ async fn export_escapes_special_characters_per_rfc_4180() {
     // around the internal quotes.
     assert!(
         text.contains(r#""O'Brien, Sean""#),
-        "expected quoted full_name to appear verbatim in body, got:\n{}", text,
+        "expected quoted full_name to appear verbatim in body, got:\n{}",
+        text,
     );
     assert!(
         text.contains(r#""Has ""complications""""#),
-        "expected doubled-quote escaping for notes in body, got:\n{}", text,
+        "expected doubled-quote escaping for notes in body, got:\n{}",
+        text,
     );
 
     // Round-trip: parsing the row we care about yields the original strings.
-    let row_line = text.lines().find(|l| l.contains("obrien@example.com"))
+    let row_line = text
+        .lines()
+        .find(|l| l.contains("obrien@example.com"))
         .expect("seeded row present");
     let fields = parse_csv_row(row_line);
     // Column order: id, email, username, full_name, status, ...
@@ -427,8 +474,15 @@ async fn export_escapes_special_characters_per_rfc_4180() {
 #[tokio::test]
 async fn export_writes_audit_row_for_acting_admin() {
     let h = build_harness().await;
-    seed_member(&h, "alice@example.com", "alice", "Alice A.",
-                MemberStatus::Active, None).await;
+    seed_member(
+        &h,
+        "alice@example.com",
+        "alice",
+        "Alice A.",
+        MemberStatus::Active,
+        None,
+    )
+    .await;
 
     let resp = h
         .app
@@ -454,6 +508,7 @@ async fn export_writes_audit_row_for_acting_admin() {
     let new_value = row.4.unwrap_or_default();
     assert!(
         new_value.contains("status=Active") && new_value.ends_with("count=2"),
-        "new_value should describe filter + count; got {:?}", new_value,
+        "new_value should describe filter + count; got {:?}",
+        new_value,
     );
 }

@@ -10,32 +10,13 @@
 
 use std::sync::Arc;
 
-use coterie::{
-    auth::{
-        recovery_codes, PendingLoginService, SecretCrypto, TotpService,
-    },
-    domain::{CreateMemberRequest},
-    repository::{MemberRepository, SqliteMemberRepository},
-};
-use sqlx::{Executor, SqlitePool};
+use coterie::auth::{recovery_codes, PendingLoginService, SecretCrypto, TotpService};
+use sqlx::SqlitePool;
 use totp_rs::{Algorithm, TOTP};
 use uuid::Uuid;
 
-async fn fresh_pool() -> SqlitePool {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .after_connect(|conn, _| {
-            Box::pin(async move {
-                conn.execute("PRAGMA foreign_keys = ON").await?;
-                Ok(())
-            })
-        })
-        .connect("sqlite::memory:")
-        .await
-        .expect("connect to :memory:");
-    sqlx::migrate!("./migrations").run(&pool).await.expect("migrate");
-    pool
-}
+mod common;
+use common::{fresh_pool, make_member_with_email as make_member};
 
 fn build_totp_service(pool: &SqlitePool) -> TotpService {
     TotpService::new(
@@ -43,23 +24,6 @@ fn build_totp_service(pool: &SqlitePool) -> TotpService {
         Arc::new(SecretCrypto::new("test-secret-please-ignore")),
         "Coterie Test".to_string(),
     )
-}
-
-async fn make_member(pool: &SqlitePool) -> (Uuid, String) {
-    let repo = SqliteMemberRepository::new(pool.clone());
-    let member = repo
-        .create(CreateMemberRequest {
-            email: format!("u-{}@example.com", Uuid::new_v4()),
-            username: format!("user_{}", Uuid::new_v4().simple()),
-            full_name: "Test User".to_string(),
-            password: "p4ssword_long_enough".to_string(),
-            membership_type_id: None,
-            ..Default::default()
-        })
-        .await
-        .expect("create");
-    let email = member.email.clone();
-    (member.id, email)
 }
 
 /// Reconstruct a TOTP from the secret_base32 the enrollment-init
@@ -70,7 +34,16 @@ async fn make_member(pool: &SqlitePool) -> (Uuid, String) {
 fn totp_from_b32(secret_b32: &str, account_name: &str) -> TOTP {
     use totp_rs::Secret;
     let bytes = Secret::Encoded(secret_b32.to_string()).to_bytes().unwrap();
-    TOTP::new(Algorithm::SHA1, 6, 1, 30, bytes, Some("Coterie Test".to_string()), account_name.to_string()).unwrap()
+    TOTP::new(
+        Algorithm::SHA1,
+        6,
+        1,
+        30,
+        bytes,
+        Some("Coterie Test".to_string()),
+        account_name.to_string(),
+    )
+    .unwrap()
 }
 
 // --------------------------------------------------------------------
@@ -89,15 +62,20 @@ async fn enroll_round_trip_persists_secret_and_enables_2fa() {
     let totp = totp_from_b32(&init.secret_base32, &email);
     let code = totp.generate_current().unwrap();
 
-    let confirmed = svc.confirm_enrollment(member_id, &init.secret_base32, &code, &email)
-        .await.expect("confirm");
+    let confirmed = svc
+        .confirm_enrollment(member_id, &init.secret_base32, &code, &email)
+        .await
+        .expect("confirm");
     assert!(confirmed);
     assert!(svc.is_enabled(member_id).await.unwrap(), "now enabled");
 
     // The secret must round-trip via the encrypted column for the next
     // verify_for_member call to work — covers SecretCrypto integration.
     let next_code = totp.generate_current().unwrap();
-    assert!(svc.verify_for_member(member_id, &next_code, &email).await.unwrap());
+    assert!(svc
+        .verify_for_member(member_id, &next_code, &email)
+        .await
+        .unwrap());
 }
 
 #[tokio::test]
@@ -107,11 +85,15 @@ async fn enroll_with_wrong_code_does_not_persist() {
     let svc = build_totp_service(&pool);
 
     let init = svc.begin_enrollment(&email).expect("begin");
-    let confirmed = svc.confirm_enrollment(member_id, &init.secret_base32, "000000", &email)
-        .await.expect("confirm");
+    let confirmed = svc
+        .confirm_enrollment(member_id, &init.secret_base32, "000000", &email)
+        .await
+        .expect("confirm");
     assert!(!confirmed);
-    assert!(!svc.is_enabled(member_id).await.unwrap(),
-        "wrong-code enrollment must NOT enable 2FA");
+    assert!(
+        !svc.is_enabled(member_id).await.unwrap(),
+        "wrong-code enrollment must NOT enable 2FA"
+    );
 }
 
 // --------------------------------------------------------------------
@@ -124,8 +106,12 @@ async fn verify_returns_false_when_2fa_off() {
     let (member_id, email) = make_member(&pool).await;
     let svc = build_totp_service(&pool);
 
-    assert!(!svc.verify_for_member(member_id, "123456", &email).await.unwrap(),
-        "any code must be rejected when 2FA isn't enrolled");
+    assert!(
+        !svc.verify_for_member(member_id, "123456", &email)
+            .await
+            .unwrap(),
+        "any code must be rejected when 2FA isn't enrolled"
+    );
 }
 
 #[tokio::test]
@@ -137,12 +123,16 @@ async fn verify_rejects_off_window_code() {
     let totp = totp_from_b32(&init.secret_base32, &email);
     let now_code = totp.generate_current().unwrap();
     svc.confirm_enrollment(member_id, &init.secret_base32, &now_code, &email)
-        .await.unwrap();
+        .await
+        .unwrap();
 
     // A code generated for "way in the past" — far enough that even
     // SKEW=1 won't accept it.
     let stale_code = totp.generate(0);
-    assert!(!svc.verify_for_member(member_id, &stale_code, &email).await.unwrap());
+    assert!(!svc
+        .verify_for_member(member_id, &stale_code, &email)
+        .await
+        .unwrap());
 }
 
 // --------------------------------------------------------------------
@@ -157,18 +147,40 @@ async fn disable_clears_secret_and_recovery_codes() {
 
     let init = svc.begin_enrollment(&email).unwrap();
     let totp = totp_from_b32(&init.secret_base32, &email);
-    svc.confirm_enrollment(member_id, &init.secret_base32, &totp.generate_current().unwrap(), &email)
-        .await.unwrap();
-    let _codes = recovery_codes::issue_for_member(&pool, member_id).await.unwrap();
-    assert_eq!(recovery_codes::remaining_count(&pool, member_id).await.unwrap(), 10);
+    svc.confirm_enrollment(
+        member_id,
+        &init.secret_base32,
+        &totp.generate_current().unwrap(),
+        &email,
+    )
+    .await
+    .unwrap();
+    let _codes = recovery_codes::issue_for_member(&pool, member_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        recovery_codes::remaining_count(&pool, member_id)
+            .await
+            .unwrap(),
+        10
+    );
 
     svc.disable(member_id).await.unwrap();
 
     assert!(!svc.is_enabled(member_id).await.unwrap());
-    assert_eq!(recovery_codes::remaining_count(&pool, member_id).await.unwrap(), 0);
+    assert_eq!(
+        recovery_codes::remaining_count(&pool, member_id)
+            .await
+            .unwrap(),
+        0
+    );
     let next_code = totp.generate_current().unwrap();
-    assert!(!svc.verify_for_member(member_id, &next_code, &email).await.unwrap(),
-        "old codes must stop working after disable");
+    assert!(
+        !svc.verify_for_member(member_id, &next_code, &email)
+            .await
+            .unwrap(),
+        "old codes must stop working after disable"
+    );
 }
 
 // --------------------------------------------------------------------
@@ -180,18 +192,36 @@ async fn recovery_code_one_time_use() {
     let pool = fresh_pool().await;
     let (member_id, _) = make_member(&pool).await;
 
-    let codes = recovery_codes::issue_for_member(&pool, member_id).await.unwrap();
+    let codes = recovery_codes::issue_for_member(&pool, member_id)
+        .await
+        .unwrap();
     assert_eq!(codes.len(), 10);
     let pick = codes[3].clone();
 
     // First use succeeds; second use of the same code must fail.
-    assert!(recovery_codes::try_consume(&pool, member_id, &pick).await.unwrap());
-    assert!(!recovery_codes::try_consume(&pool, member_id, &pick).await.unwrap());
-    assert_eq!(recovery_codes::remaining_count(&pool, member_id).await.unwrap(), 9);
+    assert!(recovery_codes::try_consume(&pool, member_id, &pick)
+        .await
+        .unwrap());
+    assert!(!recovery_codes::try_consume(&pool, member_id, &pick)
+        .await
+        .unwrap());
+    assert_eq!(
+        recovery_codes::remaining_count(&pool, member_id)
+            .await
+            .unwrap(),
+        9
+    );
 
     // Other codes still work.
-    assert!(recovery_codes::try_consume(&pool, member_id, &codes[0]).await.unwrap());
-    assert_eq!(recovery_codes::remaining_count(&pool, member_id).await.unwrap(), 8);
+    assert!(recovery_codes::try_consume(&pool, member_id, &codes[0])
+        .await
+        .unwrap());
+    assert_eq!(
+        recovery_codes::remaining_count(&pool, member_id)
+            .await
+            .unwrap(),
+        8
+    );
 }
 
 #[tokio::test]
@@ -199,13 +229,19 @@ async fn recovery_codes_regenerate_invalidates_old_set() {
     let pool = fresh_pool().await;
     let (member_id, _) = make_member(&pool).await;
 
-    let original = recovery_codes::issue_for_member(&pool, member_id).await.unwrap();
-    let _new = recovery_codes::issue_for_member(&pool, member_id).await.unwrap();
+    let original = recovery_codes::issue_for_member(&pool, member_id)
+        .await
+        .unwrap();
+    let _new = recovery_codes::issue_for_member(&pool, member_id)
+        .await
+        .unwrap();
 
     // Every original code should now fail.
     for code in &original {
         assert!(
-            !recovery_codes::try_consume(&pool, member_id, code).await.unwrap(),
+            !recovery_codes::try_consume(&pool, member_id, code)
+                .await
+                .unwrap(),
             "old code {} unexpectedly still valid",
             code,
         );
@@ -216,22 +252,28 @@ async fn recovery_codes_regenerate_invalidates_old_set() {
 async fn recovery_codes_format_normalization() {
     let pool = fresh_pool().await;
     let (member_id, _) = make_member(&pool).await;
-    let codes = recovery_codes::issue_for_member(&pool, member_id).await.unwrap();
+    let codes = recovery_codes::issue_for_member(&pool, member_id)
+        .await
+        .unwrap();
     let pick = codes[0].clone();
 
     // Whitespace, lowercase, missing-hyphens variants must all match
     // the same hash. (Users will paste these in all kinds of mangled
     // forms.)
-    let lower_no_hyphens: String = pick.chars()
+    let lower_no_hyphens: String = pick
+        .chars()
         .filter(|c| c.is_ascii_alphanumeric())
         .collect::<String>()
         .to_lowercase();
     let with_spaces = pick.replace('-', " ");
     let consumed = recovery_codes::try_consume(&pool, member_id, &lower_no_hyphens)
-        .await.unwrap();
+        .await
+        .unwrap();
     assert!(consumed, "lowercase no-hyphens should match");
     assert!(
-        !recovery_codes::try_consume(&pool, member_id, &with_spaces).await.unwrap(),
+        !recovery_codes::try_consume(&pool, member_id, &with_spaces)
+            .await
+            .unwrap(),
         "same code should now be consumed regardless of formatting"
     );
 }
@@ -265,8 +307,14 @@ async fn pending_login_find_does_not_consume() {
 
     let token = svc.create(member_id, false).await.unwrap();
     assert!(svc.find(&token).await.unwrap().is_some(), "find #1");
-    assert!(svc.find(&token).await.unwrap().is_some(), "find #2 — must still exist");
-    assert!(svc.consume(&token).await.unwrap().is_some(), "consume — first time");
+    assert!(
+        svc.find(&token).await.unwrap().is_some(),
+        "find #2 — must still exist"
+    );
+    assert!(
+        svc.consume(&token).await.unwrap().is_some(),
+        "consume — first time"
+    );
     assert!(svc.find(&token).await.unwrap().is_none(), "after consume");
 }
 
@@ -306,8 +354,14 @@ async fn pending_login_expired_is_swept() {
     .await
     .unwrap();
 
-    assert!(svc.find(token).await.unwrap().is_none(), "expired must not be visible");
-    assert!(svc.consume(token).await.unwrap().is_none(), "expired must not consume");
+    assert!(
+        svc.find(token).await.unwrap().is_none(),
+        "expired must not be visible"
+    );
+    assert!(
+        svc.consume(token).await.unwrap().is_none(),
+        "expired must not consume"
+    );
 
     let swept = svc.cleanup_expired().await.unwrap();
     assert!(swept >= 1, "cleanup should have removed at least one row");
@@ -362,8 +416,14 @@ async fn pending_login_disable_clears_member_rows() {
     // Enroll so disable() has something to clear.
     let init = totp.begin_enrollment(&email).unwrap();
     let t = totp_from_b32(&init.secret_base32, &email);
-    totp.confirm_enrollment(member_id, &init.secret_base32, &t.generate_current().unwrap(), &email)
-        .await.unwrap();
+    totp.confirm_enrollment(
+        member_id,
+        &init.secret_base32,
+        &t.generate_current().unwrap(),
+        &email,
+    )
+    .await
+    .unwrap();
 
     // Mint two pending tokens so we can verify disable() wipes them all.
     let _t1 = pl.create(member_id, false).await.unwrap();
@@ -372,12 +432,10 @@ async fn pending_login_disable_clears_member_rows() {
     totp.disable(member_id).await.unwrap();
 
     // Both tokens should be gone (delete_for_member ran inside disable()).
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM pending_logins WHERE member_id = ?",
-    )
-    .bind(member_id.to_string())
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pending_logins WHERE member_id = ?")
+        .bind(member_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(count, 0);
 }

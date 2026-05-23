@@ -14,49 +14,19 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use coterie::{
     domain::{
-        CreateMemberRequest, Payer, Payment, PaymentKind, PaymentMethod,
-        PaymentStatus, ScheduledPayment, ScheduledPaymentStatus, StripeRef,
+        Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus, ScheduledPayment,
+        ScheduledPaymentStatus, StripeRef,
     },
     repository::{
-        MemberRepository, PaymentRepository, ScheduledPaymentRepository,
-        SqliteMemberRepository, SqlitePaymentRepository,
+        PaymentRepository, ScheduledPaymentRepository, SqlitePaymentRepository,
         SqliteScheduledPaymentRepository,
     },
 };
-use sqlx::{Executor, SqlitePool};
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
-async fn fresh_pool() -> SqlitePool {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .after_connect(|conn, _| {
-            Box::pin(async move {
-                conn.execute("PRAGMA foreign_keys = ON").await?;
-                Ok(())
-            })
-        })
-        .connect("sqlite::memory:")
-        .await
-        .expect(":memory:");
-    sqlx::migrate!("./migrations").run(&pool).await.expect("migrate");
-    pool
-}
-
-async fn make_member(pool: &SqlitePool) -> Uuid {
-    let repo = SqliteMemberRepository::new(pool.clone());
-    let m = repo
-        .create(CreateMemberRequest {
-            email: format!("u-{}@example.com", Uuid::new_v4()),
-            username: format!("u_{}", Uuid::new_v4().simple()),
-            full_name: "Test".to_string(),
-            password: "p4ssword_long_enough".to_string(),
-            membership_type_id: None,
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    m.id
-}
+mod common;
+use common::{fresh_pool, make_member};
 
 /// Insert a Payment and stamp `paid_at` directly via SQL — the
 /// repository's create() doesn't accept paid_at-in-the-past for
@@ -89,7 +59,9 @@ async fn insert_completed_payment(
     sqlx::query("UPDATE payments SET paid_at = ?, status = 'Completed' WHERE id = ?")
         .bind(paid_at.naive_utc())
         .bind(id.to_string())
-        .execute(pool).await.unwrap();
+        .execute(pool)
+        .await
+        .unwrap();
     id
 }
 
@@ -106,13 +78,31 @@ async fn revenue_by_month_groups_dues_and_donations_separately() {
     let last_month = Utc::now() - Duration::days(20);
     insert_completed_payment(&pool, &repo, m, 50_00, PaymentKind::Membership, last_month).await;
     insert_completed_payment(&pool, &repo, m, 25_00, PaymentKind::Membership, last_month).await;
-    insert_completed_payment(&pool, &repo, m, 100_00, PaymentKind::Donation { campaign_id: None }, last_month).await;
+    insert_completed_payment(
+        &pool,
+        &repo,
+        m,
+        100_00,
+        PaymentKind::Donation { campaign_id: None },
+        last_month,
+    )
+    .await;
 
     let buckets = repo.revenue_by_month(12).await.unwrap();
-    assert_eq!(buckets.len(), 2, "should have two buckets: Membership + Donation");
+    assert_eq!(
+        buckets.len(),
+        2,
+        "should have two buckets: Membership + Donation"
+    );
 
-    let dues = buckets.iter().find(|b| b.payment_type == "membership").unwrap();
-    let donations = buckets.iter().find(|b| b.payment_type == "donation").unwrap();
+    let dues = buckets
+        .iter()
+        .find(|b| b.payment_type == "membership")
+        .unwrap();
+    let donations = buckets
+        .iter()
+        .find(|b| b.payment_type == "donation")
+        .unwrap();
 
     assert_eq!(dues.total_cents, 75_00);
     assert_eq!(dues.payment_count, 2);
@@ -127,18 +117,28 @@ async fn revenue_by_month_excludes_refunded_and_pending() {
     let m = make_member(&pool).await;
     let recent = Utc::now() - Duration::days(5);
 
-    let completed = insert_completed_payment(&pool, &repo, m, 50_00, PaymentKind::Membership, recent).await;
-    let to_refund = insert_completed_payment(&pool, &repo, m, 75_00, PaymentKind::Membership, recent).await;
-    let to_pend = insert_completed_payment(&pool, &repo, m, 99_00, PaymentKind::Membership, recent).await;
+    let completed =
+        insert_completed_payment(&pool, &repo, m, 50_00, PaymentKind::Membership, recent).await;
+    let to_refund =
+        insert_completed_payment(&pool, &repo, m, 75_00, PaymentKind::Membership, recent).await;
+    let to_pend =
+        insert_completed_payment(&pool, &repo, m, 99_00, PaymentKind::Membership, recent).await;
 
     // Flip the second one to Refunded and the third one to Pending.
     sqlx::query("UPDATE payments SET status = 'Refunded' WHERE id = ?")
-        .bind(to_refund.to_string()).execute(&pool).await.unwrap();
+        .bind(to_refund.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("UPDATE payments SET status = 'Pending', paid_at = NULL WHERE id = ?")
-        .bind(to_pend.to_string()).execute(&pool).await.unwrap();
+        .bind(to_pend.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let buckets = repo.revenue_by_month(12).await.unwrap();
-    let dues = buckets.iter()
+    let dues = buckets
+        .iter()
         .find(|b| b.payment_type == "membership")
         .expect("dues bucket present");
 
@@ -158,8 +158,24 @@ async fn revenue_by_month_orders_newest_first() {
 
     let three_months_ago = Utc::now() - Duration::days(90);
     let one_month_ago = Utc::now() - Duration::days(20);
-    insert_completed_payment(&pool, &repo, m, 10_00, PaymentKind::Membership, three_months_ago).await;
-    insert_completed_payment(&pool, &repo, m, 20_00, PaymentKind::Membership, one_month_ago).await;
+    insert_completed_payment(
+        &pool,
+        &repo,
+        m,
+        10_00,
+        PaymentKind::Membership,
+        three_months_ago,
+    )
+    .await;
+    insert_completed_payment(
+        &pool,
+        &repo,
+        m,
+        20_00,
+        PaymentKind::Membership,
+        one_month_ago,
+    )
+    .await;
 
     let buckets = repo.revenue_by_month(12).await.unwrap();
     // Two distinct months, two buckets — newer first.
@@ -169,7 +185,10 @@ async fn revenue_by_month_orders_newest_first() {
     assert!(
         (first.year, first.month) > (second.year, second.month),
         "newer month must come first: got {:?}/{:?} then {:?}/{:?}",
-        first.year, first.month, second.year, second.month,
+        first.year,
+        first.month,
+        second.year,
+        second.month,
     );
 }
 
@@ -189,7 +208,10 @@ async fn revenue_by_month_horizon_drops_old_payments() {
 
     let buckets = repo.revenue_by_month(12).await.unwrap();
     let total_cents: i64 = buckets.iter().map(|b| b.total_cents).sum();
-    assert_eq!(total_cents, 50_00, "old payment must be excluded by horizon");
+    assert_eq!(
+        total_cents, 50_00,
+        "old payment must be excluded by horizon"
+    );
 }
 
 // --------------------------------------------------------------------
@@ -204,9 +226,10 @@ async fn list_failures_since_returns_only_failed_in_window() {
 
     let member_id = make_member(&pool).await;
     // Use the seeded membership_type_id from migration 001.
-    let mt_id_str: String = sqlx::query_scalar(
-        "SELECT id FROM membership_types LIMIT 1"
-    ).fetch_one(&pool).await.unwrap();
+    let mt_id_str: String = sqlx::query_scalar("SELECT id FROM membership_types LIMIT 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     let mt_id = Uuid::parse_str(&mt_id_str).unwrap();
 
     // Helper to create + transition a scheduled payment.
@@ -247,7 +270,9 @@ async fn list_failures_since_returns_only_failed_in_window() {
             .bind(status.as_str())
             .bind(last_attempt_at.map(|d| d.naive_utc()))
             .bind(row.id.to_string())
-            .execute(pool).await.unwrap();
+            .execute(pool)
+            .await
+            .unwrap();
         }
         row.id
     }
@@ -256,21 +281,41 @@ async fn list_failures_since_returns_only_failed_in_window() {
     let stale = Utc::now() - Duration::days(120);
 
     let recent_fail = insert_scheduled(
-        &sched_repo, &pool, member_id, mt_id,
-        ScheduledPaymentStatus::Failed, Some(recent),
-    ).await;
+        &sched_repo,
+        &pool,
+        member_id,
+        mt_id,
+        ScheduledPaymentStatus::Failed,
+        Some(recent),
+    )
+    .await;
     let _stale_fail = insert_scheduled(
-        &sched_repo, &pool, member_id, mt_id,
-        ScheduledPaymentStatus::Failed, Some(stale),
-    ).await;
+        &sched_repo,
+        &pool,
+        member_id,
+        mt_id,
+        ScheduledPaymentStatus::Failed,
+        Some(stale),
+    )
+    .await;
     let _completed = insert_scheduled(
-        &sched_repo, &pool, member_id, mt_id,
-        ScheduledPaymentStatus::Completed, Some(recent),
-    ).await;
+        &sched_repo,
+        &pool,
+        member_id,
+        mt_id,
+        ScheduledPaymentStatus::Completed,
+        Some(recent),
+    )
+    .await;
     let _pending = insert_scheduled(
-        &sched_repo, &pool, member_id, mt_id,
-        ScheduledPaymentStatus::Pending, None,
-    ).await;
+        &sched_repo,
+        &pool,
+        member_id,
+        mt_id,
+        ScheduledPaymentStatus::Pending,
+        None,
+    )
+    .await;
 
     let since = Utc::now() - Duration::days(90);
     let failures = sched_repo.list_failures_since(since).await.unwrap();
@@ -290,7 +335,9 @@ async fn list_failures_since_orders_newest_first() {
         Arc::new(SqliteScheduledPaymentRepository::new(pool.clone()));
     let member_id = make_member(&pool).await;
     let mt_id_str: String = sqlx::query_scalar("SELECT id FROM membership_types LIMIT 1")
-        .fetch_one(&pool).await.unwrap();
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     let mt_id = Uuid::parse_str(&mt_id_str).unwrap();
 
     // Insert two failed rows with different last_attempt_at.
@@ -317,7 +364,9 @@ async fn list_failures_since_orders_newest_first() {
         )
         .bind(ts.naive_utc())
         .bind(row.id.to_string())
-        .execute(&pool).await.unwrap();
+        .execute(&pool)
+        .await
+        .unwrap();
     }
 
     let since = Utc::now() - Duration::days(90);

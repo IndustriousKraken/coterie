@@ -18,15 +18,17 @@ use coterie::{
     integrations::IntegrationManager,
     repository::{
         EventRepository, MemberRepository, SqliteEventRepository, SqliteMemberRepository,
-        SqliteSavedCardRepository, SqliteScheduledPaymentRepository, SqlitePaymentRepository,
+        SqlitePaymentRepository, SqliteSavedCardRepository, SqliteScheduledPaymentRepository,
     },
     service::{
-        billing_service::BillingService,
-        membership_type_service::MembershipTypeService,
+        billing_service::BillingService, membership_type_service::MembershipTypeService,
         settings_service::SettingsService,
     },
 };
-use sqlx::{Executor, SqlitePool};
+use sqlx::SqlitePool;
+
+mod common;
+use common::fresh_pool;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -41,10 +43,16 @@ struct FakeEmailSender {
 
 impl FakeEmailSender {
     fn ok() -> Arc<Self> {
-        Arc::new(Self { sent: Mutex::new(Vec::new()), fail: false })
+        Arc::new(Self {
+            sent: Mutex::new(Vec::new()),
+            fail: false,
+        })
     }
     fn failing() -> Arc<Self> {
-        Arc::new(Self { sent: Mutex::new(Vec::new()), fail: true })
+        Arc::new(Self {
+            sent: Mutex::new(Vec::new()),
+            fail: true,
+        })
     }
     async fn count(&self) -> usize {
         self.sent.lock().await.len()
@@ -69,22 +77,6 @@ impl EmailSender for FakeEmailSender {
 // Harness
 // ---------------------------------------------------------------------
 
-async fn fresh_pool() -> SqlitePool {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .after_connect(|conn, _| {
-            Box::pin(async move {
-                conn.execute("PRAGMA foreign_keys = ON").await?;
-                Ok(())
-            })
-        })
-        .connect("sqlite::memory:")
-        .await
-        .expect("connect to :memory:");
-    sqlx::migrate!("./migrations").run(&pool).await.expect("migrate");
-    pool
-}
-
 struct H {
     pool: SqlitePool,
     billing: BillingService,
@@ -96,21 +88,18 @@ struct H {
 /// Build a harness with the email sender of choice. Pre-seeds a
 /// member, an event at `event_start`, and an attendance row in the
 /// given `status` (typically "Registered").
-async fn build_with(
-    email: Arc<FakeEmailSender>,
-    event_start: DateTime<Utc>,
-    status: &str,
-) -> H {
+async fn build_with(email: Arc<FakeEmailSender>, event_start: DateTime<Utc>, status: &str) -> H {
     let pool = fresh_pool().await;
 
     let member_repo: Arc<dyn MemberRepository> =
         Arc::new(SqliteMemberRepository::new(pool.clone()));
-    let event_repo: Arc<dyn EventRepository> =
-        Arc::new(SqliteEventRepository::new(pool.clone()));
+    let event_repo: Arc<dyn EventRepository> = Arc::new(SqliteEventRepository::new(pool.clone()));
     let payment_repo = Arc::new(SqlitePaymentRepository::new(pool.clone()));
     let saved_card_repo = Arc::new(SqliteSavedCardRepository::new(pool.clone()));
     let scheduled_repo = Arc::new(SqliteScheduledPaymentRepository::new(pool.clone()));
-    let mt_repo = Arc::new(coterie::repository::SqliteMembershipTypeRepository::new(pool.clone()));
+    let mt_repo = Arc::new(coterie::repository::SqliteMembershipTypeRepository::new(
+        pool.clone(),
+    ));
     let mt_service = Arc::new(MembershipTypeService::new(mt_repo));
     let crypto = Arc::new(SecretCrypto::new("test-secret-please-ignore"));
     let settings = Arc::new(SettingsService::new(pool.clone(), crypto));
@@ -226,16 +215,27 @@ async fn event_in_window_sends_email_and_stamps_row() {
     assert_eq!(email.count().await, 1);
     let msg = email.first().await.unwrap();
     assert_eq!(msg.to, "rsvp@example.com");
-    assert!(msg.subject.contains("Quarterly Meetup"), "subject was: {:?}", msg.subject);
+    assert!(
+        msg.subject.contains("Quarterly Meetup"),
+        "subject was: {:?}",
+        msg.subject
+    );
     assert!(msg.subject.starts_with("Reminder:"));
-    assert!(reminder_sent_at(&h.pool, h.event_id, h.member).await.is_some());
+    assert!(reminder_sent_at(&h.pool, h.event_id, h.member)
+        .await
+        .is_some());
 }
 
 #[tokio::test]
 async fn event_outside_window_skipped() {
     let email = FakeEmailSender::ok();
     // Default lead is 24h; an event in 48h is well outside.
-    let h = build_with(email.clone(), Utc::now() + Duration::hours(48), "Registered").await;
+    let h = build_with(
+        email.clone(),
+        Utc::now() + Duration::hours(48),
+        "Registered",
+    )
+    .await;
 
     let sent = h
         .billing
@@ -246,7 +246,9 @@ async fn event_outside_window_skipped() {
 
     assert_eq!(sent, 0);
     assert_eq!(email.count().await, 0);
-    assert!(reminder_sent_at(&h.pool, h.event_id, h.member).await.is_none());
+    assert!(reminder_sent_at(&h.pool, h.event_id, h.member)
+        .await
+        .is_none());
 }
 
 #[tokio::test]
@@ -294,10 +296,16 @@ async fn send_failure_keeps_row_stamped() {
         .expect("call returns Ok even when individual send errors");
 
     assert_eq!(sent, 0, "no successful sends");
-    assert_eq!(email.count().await, 0, "fake sender records nothing on failure");
+    assert_eq!(
+        email.count().await,
+        0,
+        "fake sender records nothing on failure"
+    );
     // The row IS stamped — that's the documented trade-off.
     assert!(
-        reminder_sent_at(&h.pool, h.event_id, h.member).await.is_some(),
+        reminder_sent_at(&h.pool, h.event_id, h.member)
+            .await
+            .is_some(),
         "row should stay stamped after a failed send",
     );
 

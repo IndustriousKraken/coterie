@@ -12,8 +12,6 @@
 //! `authenticate(...)` core: if any wrapper's reject behavior drifts,
 //! the corresponding row of the matrix fails loudly.
 
-use std::sync::Arc;
-
 use axum::{
     body::Body,
     http::{header, Request, StatusCode},
@@ -22,144 +20,19 @@ use axum::{
 };
 use coterie::{
     api::{
-        middleware::{
-            auth::{
-                require_admin_redirect, require_auth, require_auth_redirect,
-                require_restorable,
-            },
-            bot_challenge::DisabledVerifier,
+        middleware::auth::{
+            require_admin_redirect, require_auth, require_auth_redirect, require_restorable,
         },
-        state::{AppState, MoneyLimiter, RateLimiter},
+        state::AppState,
     },
-    auth::{AuthService, CsrfService, PendingLoginService, SecretCrypto, TotpService},
-    config::Settings,
     domain::{CreateMemberRequest, MemberStatus, UpdateMemberRequest},
-    email::LogSender,
-    integrations::IntegrationManager,
-    repository::{
-        AnnouncementRepository, EventRepository, MemberRepository, PaymentRepository,
-        SqliteAnnouncementRepository, SqliteEventRepository, SqliteMemberRepository,
-        SqlitePaymentRepository,
-    },
-    service::{settings_service::SettingsService, ServiceContext},
 };
-use sqlx::{Executor, SqlitePool};
+use sqlx::SqlitePool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn fresh_pool() -> SqlitePool {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .after_connect(|conn, _| {
-            Box::pin(async move {
-                conn.execute("PRAGMA foreign_keys = ON").await?;
-                Ok(())
-            })
-        })
-        .connect("sqlite::memory:")
-        .await
-        .expect("connect to :memory:");
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .expect("migrate");
-    pool
-}
-
-async fn build_app_state(pool: SqlitePool) -> AppState {
-    let settings = Settings {
-        server: coterie::config::ServerConfig {
-            host: "127.0.0.1".to_string(),
-            port: 0,
-            base_url: "http://127.0.0.1".to_string(),
-            data_dir: "./data".to_string(),
-            uploads_dir: None,
-            secure_cookies: Some(false),
-            cors_origins: None,
-            trust_forwarded_for: Some(false),
-        },
-        database: coterie::config::DatabaseConfig {
-            url: "sqlite::memory:".to_string(),
-            max_connections: 1,
-        },
-        auth: coterie::config::AuthConfig {
-            session_secret: "test-session-secret-please-ignore".to_string(),
-            session_duration_hours: 24,
-            totp_issuer: "Coterie Test".to_string(),
-        },
-        stripe: Default::default(),
-        integrations: Default::default(),
-        seed: Default::default(),
-        bot_challenge: Default::default(),
-    };
-    let settings = Arc::new(settings);
-
-    let member_repo: Arc<dyn MemberRepository> =
-        Arc::new(SqliteMemberRepository::new(pool.clone()));
-    let event_repo: Arc<dyn EventRepository> =
-        Arc::new(SqliteEventRepository::new(pool.clone()));
-    let announcement_repo: Arc<dyn AnnouncementRepository> =
-        Arc::new(SqliteAnnouncementRepository::new(pool.clone()));
-    let payment_repo: Arc<dyn PaymentRepository> =
-        Arc::new(SqlitePaymentRepository::new(pool.clone()));
-
-    let crypto = Arc::new(SecretCrypto::new("test-secret-please-ignore"));
-    let auth_service = Arc::new(AuthService::new(
-        pool.clone(),
-        settings.auth.session_secret.clone(),
-    ));
-    let csrf_service = Arc::new(CsrfService::new(&settings.auth.session_secret));
-    let totp_service = Arc::new(TotpService::new(
-        pool.clone(),
-        crypto.clone(),
-        "Coterie".to_string(),
-    ));
-    let pending_login_service = Arc::new(PendingLoginService::new(pool.clone()));
-    let settings_service = Arc::new(SettingsService::new(pool.clone(), crypto));
-
-    let email_sender = Arc::new(LogSender::new(
-        "test@example.com".to_string(),
-        "Test".to_string(),
-    ));
-    let integration_manager = Arc::new(IntegrationManager::new());
-
-    let money_limiter = MoneyLimiter(RateLimiter::new(
-        10,
-        std::time::Duration::from_secs(60),
-    ));
-
-    let service_context = Arc::new(ServiceContext::new(
-        member_repo,
-        event_repo,
-        announcement_repo,
-        payment_repo,
-        integration_manager,
-        auth_service,
-        email_sender,
-        settings_service,
-        csrf_service,
-        totp_service,
-        pending_login_service,
-        None, // stripe_client not needed for these tests
-        money_limiter.clone(),
-        settings.server.base_url.clone(),
-        pool.clone(),
-    ));
-
-    let billing_service = Arc::new(
-        service_context.billing_service(None, settings.server.base_url.clone()),
-    );
-
-    AppState::new(
-        service_context,
-        None,
-        None,
-        billing_service,
-        settings,
-        Arc::new(DisabledVerifier),
-        money_limiter,
-    )
-}
+mod common;
+use common::{build_app_state, fresh_pool};
 
 /// Create a member with the requested status / admin flag and mint a
 /// fresh session for them. Returns the bare session token (cookie
@@ -292,11 +165,7 @@ enum Expected {
     Redirect(&'static str),
 }
 
-async fn run_one(
-    state: &AppState,
-    mw: MiddlewareKind,
-    token: Option<&str>,
-) -> Expected {
+async fn run_one(state: &AppState, mw: MiddlewareKind, token: Option<&str>) -> Expected {
     let app = ok_router(state.clone(), mw);
     let resp = app.oneshot(req_with_cookie(token)).await.unwrap();
     match resp.status() {
@@ -323,12 +192,10 @@ async fn access_policy_matrix() {
 
     // Seed one member per status; admin permutations on top of Active.
     let (_, tok_pending) = make_member_with_session(&state, MemberStatus::Pending, false).await;
-    let (_, tok_suspended) =
-        make_member_with_session(&state, MemberStatus::Suspended, false).await;
+    let (_, tok_suspended) = make_member_with_session(&state, MemberStatus::Suspended, false).await;
     let (_, tok_expired) = make_member_with_session(&state, MemberStatus::Expired, false).await;
     let (_, tok_active) = make_member_with_session(&state, MemberStatus::Active, false).await;
-    let (admin_id, tok_admin) =
-        make_member_with_session(&state, MemberStatus::Active, true).await;
+    let (admin_id, tok_admin) = make_member_with_session(&state, MemberStatus::Active, true).await;
 
     // ---- require_auth: JSON-style 401/403, never redirects ----
     let mw = MiddlewareKind::RequireAuth;

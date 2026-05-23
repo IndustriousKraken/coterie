@@ -32,9 +32,7 @@ use coterie::{
     domain::{CreateMemberRequest, SavedCard},
     email::LogSender,
     integrations::IntegrationManager,
-    payments::{
-        fake_gateway::FakeStripeGateway, gateway::StripeGateway, StripeClient,
-    },
+    payments::{fake_gateway::FakeStripeGateway, gateway::StripeGateway, StripeClient},
     repository::{
         AnnouncementRepository, EventRepository, MemberRepository, PaymentRepository,
         SavedCardRepository, SqliteAnnouncementRepository, SqliteEventRepository,
@@ -42,9 +40,12 @@ use coterie::{
     },
     service::{settings_service::SettingsService, ServiceContext},
 };
-use sqlx::{Executor, SqlitePool};
+use sqlx::SqlitePool;
 use tower::ServiceExt;
 use uuid::Uuid;
+
+mod common;
+use common::fresh_pool;
 
 // ---------------------------------------------------------------------
 // Harness
@@ -63,25 +64,6 @@ struct Harness {
     member_id: Uuid,
     session_cookie: String,
     csrf_token: String,
-}
-
-async fn fresh_pool() -> SqlitePool {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .after_connect(|conn, _| {
-            Box::pin(async move {
-                conn.execute("PRAGMA foreign_keys = ON").await?;
-                Ok(())
-            })
-        })
-        .connect("sqlite::memory:")
-        .await
-        .expect("connect to :memory:");
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .expect("migrate");
-    pool
 }
 
 /// Build the merged app exactly the way `main.rs` does — both the
@@ -119,8 +101,7 @@ async fn build_harness() -> Harness {
 
     let member_repo: Arc<dyn MemberRepository> =
         Arc::new(SqliteMemberRepository::new(pool.clone()));
-    let event_repo: Arc<dyn EventRepository> =
-        Arc::new(SqliteEventRepository::new(pool.clone()));
+    let event_repo: Arc<dyn EventRepository> = Arc::new(SqliteEventRepository::new(pool.clone()));
     let announcement_repo: Arc<dyn AnnouncementRepository> =
         Arc::new(SqliteAnnouncementRepository::new(pool.clone()));
     let payment_repo: Arc<dyn PaymentRepository> =
@@ -148,10 +129,7 @@ async fn build_harness() -> Harness {
     ));
     let integration_manager = Arc::new(IntegrationManager::new());
 
-    let money_limiter = MoneyLimiter(RateLimiter::new(
-        10,
-        std::time::Duration::from_secs(60),
-    ));
+    let money_limiter = MoneyLimiter(RateLimiter::new(10, std::time::Duration::from_secs(60)));
 
     let service_context = Arc::new(ServiceContext::new(
         member_repo.clone(),
@@ -383,10 +361,12 @@ async fn setup_intent_flow_still_works() {
     // The fake gateway should have recorded a CreateSetupIntent call,
     // confirming the request actually flowed through StripeClient and
     // wasn't short-circuited.
-    let setup_intent_calls = h.fake.count_where(|c| matches!(
-        c,
-        coterie::payments::fake_gateway::FakeCall::CreateSetupIntent(_)
-    ));
+    let setup_intent_calls = h.fake.count_where(|c| {
+        matches!(
+            c,
+            coterie::payments::fake_gateway::FakeCall::CreateSetupIntent(_)
+        )
+    });
     assert_eq!(
         setup_intent_calls, 1,
         "exactly one CreateSetupIntent call expected on the fake gateway"

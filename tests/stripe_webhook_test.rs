@@ -14,11 +14,12 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use chrono::{Duration, Utc};
 use coterie::{
     auth::SecretCrypto,
     domain::{
-        BillingMode, CreateMemberRequest, Payer, Payment, PaymentKind,
-        PaymentMethod, PaymentStatus, StripeRef,
+        BillingMode, CreateMemberRequest, Payer, Payment, PaymentKind, PaymentMethod,
+        PaymentStatus, StripeRef,
     },
     email::LogSender,
     error::Result as CoterieResult,
@@ -36,10 +37,12 @@ use coterie::{
         settings_service::SettingsService,
     },
 };
-use chrono::{Duration, Utc};
 use serde_json::json;
-use sqlx::{Executor, SqlitePool};
+use sqlx::SqlitePool;
 use uuid::Uuid;
+
+mod common;
+use common::fresh_pool;
 
 // ---------------------------------------------------------------------
 // RecordingIntegration — test-only Integration impl that captures every
@@ -85,22 +88,6 @@ fn admin_alert_subjects(events: &Arc<Mutex<Vec<IntegrationEvent>>>) -> Vec<Strin
 // Setup helpers
 // ---------------------------------------------------------------------
 
-async fn fresh_pool() -> SqlitePool {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .after_connect(|conn, _| {
-            Box::pin(async move {
-                conn.execute("PRAGMA foreign_keys = ON").await?;
-                Ok(())
-            })
-        })
-        .connect("sqlite::memory:")
-        .await
-        .expect("connect to :memory:");
-    sqlx::migrate!("./migrations").run(&pool).await.expect("migrate");
-    pool
-}
-
 struct Harness {
     #[allow(dead_code)]
     client: StripeClient,
@@ -119,11 +106,12 @@ async fn build_harness() -> Harness {
         Arc::new(SqlitePaymentRepository::new(pool.clone()));
     let member_repo: Arc<dyn MemberRepository> =
         Arc::new(SqliteMemberRepository::new(pool.clone()));
-    let event_repo: Arc<dyn EventRepository> =
-        Arc::new(SqliteEventRepository::new(pool.clone()));
+    let event_repo: Arc<dyn EventRepository> = Arc::new(SqliteEventRepository::new(pool.clone()));
     let scheduled_repo = Arc::new(SqliteScheduledPaymentRepository::new(pool.clone()));
     let saved_card_repo = Arc::new(SqliteSavedCardRepository::new(pool.clone()));
-    let mt_repo = Arc::new(coterie::repository::SqliteMembershipTypeRepository::new(pool.clone()));
+    let mt_repo = Arc::new(coterie::repository::SqliteMembershipTypeRepository::new(
+        pool.clone(),
+    ));
     let mt_service = Arc::new(MembershipTypeService::new(mt_repo));
     let crypto = Arc::new(SecretCrypto::new("test-secret-please-ignore"));
     let settings = Arc::new(SettingsService::new(pool.clone(), crypto));
@@ -132,8 +120,7 @@ async fn build_harness() -> Harness {
         "Test".to_string(),
     ));
     let integrations = Arc::new(IntegrationManager::new());
-    let recorded_events: Arc<Mutex<Vec<IntegrationEvent>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let recorded_events: Arc<Mutex<Vec<IntegrationEvent>>> = Arc::new(Mutex::new(Vec::new()));
     integrations
         .register(Arc::new(RecordingIntegration {
             events: recorded_events.clone(),
@@ -141,13 +128,10 @@ async fn build_harness() -> Harness {
         .await;
 
     let gw: Arc<dyn StripeGateway> = fake.clone();
-    let client = StripeClient::with_gateway(
-        gw.clone(),
-        payment_repo.clone(),
-        member_repo.clone(),
+    let client = StripeClient::with_gateway(gw.clone(), payment_repo.clone(), member_repo.clone());
+    let processed_events_repo: Arc<dyn coterie::repository::ProcessedEventsRepository> = Arc::new(
+        coterie::repository::SqliteProcessedEventsRepository::new(pool.clone()),
     );
-    let processed_events_repo: Arc<dyn coterie::repository::ProcessedEventsRepository> =
-        Arc::new(coterie::repository::SqliteProcessedEventsRepository::new(pool.clone()));
     let dispatcher = WebhookDispatcher::new(
         gw,
         "whsec_test_dummy".to_string(),
@@ -239,7 +223,10 @@ async fn insert_pending_payment(pool: &SqlitePool, payment: Payment) {
     repo.create(payment).await.expect("insert payment");
 }
 
-async fn payment_dues_extended_at(pool: &SqlitePool, payment_id: Uuid) -> Option<chrono::NaiveDateTime> {
+async fn payment_dues_extended_at(
+    pool: &SqlitePool,
+    payment_id: Uuid,
+) -> Option<chrono::NaiveDateTime> {
     sqlx::query_scalar::<_, Option<chrono::NaiveDateTime>>(
         "SELECT dues_extended_at FROM payments WHERE id = ?",
     )
@@ -447,9 +434,11 @@ async fn pi_succeeded_retry_does_not_double_extend_dues() {
         .expect("first dispatch ok");
 
     assert_eq!(payment_status(&h.pool, payment_id).await, "Completed");
-    let extended_at_first = payment_dues_extended_at(&h.pool, payment_id).await
+    let extended_at_first = payment_dues_extended_at(&h.pool, payment_id)
+        .await
         .expect("dues_extended_at must be set after first run");
-    let dues_after_first = member_dues_paid_until(&h.pool, member_id).await
+    let dues_after_first = member_dues_paid_until(&h.pool, member_id)
+        .await
         .expect("dues_paid_until must be set after first run");
 
     // Second dispatch with a fresh PaymentIntent (same payment_id metadata)
@@ -461,14 +450,16 @@ async fn pi_succeeded_retry_does_not_double_extend_dues() {
         .await
         .expect("second dispatch ok");
 
-    let extended_at_second = payment_dues_extended_at(&h.pool, payment_id).await
+    let extended_at_second = payment_dues_extended_at(&h.pool, payment_id)
+        .await
         .expect("dues_extended_at still set");
     assert_eq!(
         extended_at_first, extended_at_second,
         "dues_extended_at must NOT be re-stamped on retry — that's the per-payment claim"
     );
 
-    let dues_after_second = member_dues_paid_until(&h.pool, member_id).await
+    let dues_after_second = member_dues_paid_until(&h.pool, member_id)
+        .await
         .expect("dues_paid_until still set");
     assert_eq!(
         dues_after_first, dues_after_second,
@@ -509,13 +500,12 @@ async fn charge_refunded_echo_for_already_refunded_row_is_noop() {
     )
     .await;
 
-    let updated_at_before: chrono::NaiveDateTime = sqlx::query_scalar(
-        "SELECT updated_at FROM payments WHERE id = ?",
-    )
-    .bind(payment_id.to_string())
-    .fetch_one(&h.pool)
-    .await
-    .expect("updated_at before");
+    let updated_at_before: chrono::NaiveDateTime =
+        sqlx::query_scalar("SELECT updated_at FROM payments WHERE id = ?")
+            .bind(payment_id.to_string())
+            .fetch_one(&h.pool)
+            .await
+            .expect("updated_at before");
 
     let charge = build_charge("ch_refund_echo", 100_00, 100_00, Some(pi_id));
     h.dispatcher
@@ -529,13 +519,12 @@ async fn charge_refunded_echo_for_already_refunded_row_is_noop() {
         "row stays Refunded"
     );
 
-    let updated_at_after: chrono::NaiveDateTime = sqlx::query_scalar(
-        "SELECT updated_at FROM payments WHERE id = ?",
-    )
-    .bind(payment_id.to_string())
-    .fetch_one(&h.pool)
-    .await
-    .expect("updated_at after");
+    let updated_at_after: chrono::NaiveDateTime =
+        sqlx::query_scalar("SELECT updated_at FROM payments WHERE id = ?")
+            .bind(payment_id.to_string())
+            .fetch_one(&h.pool)
+            .await
+            .expect("updated_at after");
 
     assert_eq!(
         updated_at_before, updated_at_after,
@@ -682,20 +671,21 @@ async fn public_donation_checkout_completion_marks_payment_completed() {
     // The donation path must NOT touch dues_extended_at — there's no
     // membership to extend.
     assert!(
-        payment_dues_extended_at(&h.pool, payment_id).await.is_none(),
+        payment_dues_extended_at(&h.pool, payment_id)
+            .await
+            .is_none(),
         "donation completion must not stamp dues_extended_at"
     );
 
     // And the stripe_payment_id should have been upgraded from the
     // cs_ session to the pi_ from the expanded payment_intent — that's
     // what handle_successful_payment does so charge.refunded can match.
-    let stripe_id: Option<String> = sqlx::query_scalar(
-        "SELECT stripe_payment_id FROM payments WHERE id = ?",
-    )
-    .bind(payment_id.to_string())
-    .fetch_one(&h.pool)
-    .await
-    .expect("query stripe_payment_id");
+    let stripe_id: Option<String> =
+        sqlx::query_scalar("SELECT stripe_payment_id FROM payments WHERE id = ?")
+            .bind(payment_id.to_string())
+            .fetch_one(&h.pool)
+            .await
+            .expect("query stripe_payment_id");
     assert_eq!(stripe_id.as_deref(), Some("pi_public_donation"));
 }
 
@@ -812,23 +802,19 @@ async fn set_member_subscription_state(
 }
 
 async fn count_payments_by_stripe_id(pool: &SqlitePool, stripe_id: &str) -> i64 {
-    sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM payments WHERE stripe_payment_id = ?",
-    )
-    .bind(stripe_id)
-    .fetch_one(pool)
-    .await
-    .expect("count payments")
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM payments WHERE stripe_payment_id = ?")
+        .bind(stripe_id)
+        .fetch_one(pool)
+        .await
+        .expect("count payments")
 }
 
 async fn payment_status_by_stripe_id(pool: &SqlitePool, stripe_id: &str) -> Option<String> {
-    sqlx::query_scalar::<_, String>(
-        "SELECT status FROM payments WHERE stripe_payment_id = ?",
-    )
-    .bind(stripe_id)
-    .fetch_optional(pool)
-    .await
-    .expect("query status")
+    sqlx::query_scalar::<_, String>("SELECT status FROM payments WHERE stripe_payment_id = ?")
+        .bind(stripe_id)
+        .fetch_optional(pool)
+        .await
+        .expect("query status")
 }
 
 // ---------------------------------------------------------------------
@@ -870,13 +856,16 @@ async fn invoice_paid_extends_dues_for_stripe_subscription_member() {
     assert!(
         dues_after > seeded_dues,
         "dues_paid_until {} must advance past the seeded anchor {}",
-        dues_after, seeded_dues,
+        dues_after,
+        seeded_dues,
     );
 
     // Payment row exists for the invoice, status Completed.
     assert_eq!(count_payments_by_stripe_id(&h.pool, invoice_id).await, 1);
     assert_eq!(
-        payment_status_by_stripe_id(&h.pool, invoice_id).await.as_deref(),
+        payment_status_by_stripe_id(&h.pool, invoice_id)
+            .await
+            .as_deref(),
         Some("Completed"),
     );
 }
@@ -1017,7 +1006,9 @@ async fn invoice_payment_failed_dispatches_admin_alert() {
 
     let subjects = admin_alert_subjects(&h.recorded_events);
     assert!(
-        subjects.iter().any(|s| s.contains("Stripe subscription charge failed")),
+        subjects
+            .iter()
+            .any(|s| s.contains("Stripe subscription charge failed")),
         "expected AdminAlert subject containing 'Stripe subscription charge failed'; got {:?}",
         subjects,
     );

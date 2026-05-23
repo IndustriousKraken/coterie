@@ -16,34 +16,18 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Datelike, Duration, Utc, Weekday};
 use coterie::{
-    domain::{
-        CreateMemberRequest, Event, EventType, EventVisibility,
-        Recurrence, WeekdayCode,
-    },
+    domain::{CreateMemberRequest, Event, EventType, EventVisibility, Recurrence, WeekdayCode},
     repository::{
-        EventRepository, EventSeriesRepository, MemberRepository,
-        SqliteEventRepository, SqliteEventSeriesRepository, SqliteMemberRepository,
+        EventRepository, EventSeriesRepository, MemberRepository, SqliteEventRepository,
+        SqliteEventSeriesRepository, SqliteMemberRepository,
     },
     service::recurring_event_service::RecurringEventService,
 };
-use sqlx::{Executor, SqlitePool};
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
-async fn fresh_pool() -> SqlitePool {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .after_connect(|conn, _| {
-            Box::pin(async move {
-                conn.execute("PRAGMA foreign_keys = ON").await?;
-                Ok(())
-            })
-        })
-        .connect("sqlite::memory:")
-        .await
-        .expect("connect to :memory:");
-    sqlx::migrate!("./migrations").run(&pool).await.expect("migrate");
-    pool
-}
+mod common;
+use common::fresh_pool;
 
 struct H {
     pool: SqlitePool,
@@ -111,22 +95,20 @@ mod helper_tests {
         assert_eq!(anchor.hour(), 19);
         assert_eq!(anchor.minute(), 0);
         assert!(anchor > Utc::now());
-        assert!((8..=14).contains(&anchor.day()),
-            "2nd Wed must fall in days 8..=14, got day {}", anchor.day());
+        assert!(
+            (8..=14).contains(&anchor.day()),
+            "2nd Wed must fall in days 8..=14, got day {}",
+            anchor.day()
+        );
     }
 }
 
 async fn build() -> H {
     let pool = fresh_pool().await;
-    let event_repo: Arc<dyn EventRepository> =
-        Arc::new(SqliteEventRepository::new(pool.clone()));
+    let event_repo: Arc<dyn EventRepository> = Arc::new(SqliteEventRepository::new(pool.clone()));
     let series_repo: Arc<dyn EventSeriesRepository> =
         Arc::new(SqliteEventSeriesRepository::new(pool.clone()));
-    let service = RecurringEventService::new(
-        event_repo.clone(),
-        series_repo.clone(),
-        pool.clone(),
-    );
+    let service = RecurringEventService::new(event_repo.clone(), series_repo.clone(), pool.clone());
 
     // Need a member for `created_by`.
     let mr = SqliteMemberRepository::new(pool.clone());
@@ -142,7 +124,13 @@ async fn build() -> H {
         .await
         .unwrap();
 
-    H { pool, event_repo, series_repo, service, creator: m.id }
+    H {
+        pool,
+        event_repo,
+        series_repo,
+        service,
+        creator: m.id,
+    }
 }
 
 fn template(creator: Uuid, start: DateTime<Utc>) -> Event {
@@ -168,13 +156,11 @@ fn template(creator: Uuid, start: DateTime<Utc>) -> Event {
 }
 
 async fn count_in_series(pool: &SqlitePool, series_id: Uuid) -> i64 {
-    sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM events WHERE series_id = ?",
-    )
-    .bind(series_id.to_string())
-    .fetch_one(pool)
-    .await
-    .unwrap()
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM events WHERE series_id = ?")
+        .bind(series_id.to_string())
+        .fetch_one(pool)
+        .await
+        .unwrap()
 }
 
 // --------------------------------------------------------------------
@@ -190,17 +176,30 @@ async fn weekly_creates_about_52_occurrences() {
         weekdays: vec![WeekdayCode::Tue],
     };
 
-    let created = h.service.create_series_with_initial_materialization(
-        rule, template(h.creator, anchor), None, h.creator,
-    ).await.expect("create");
+    let created = h
+        .service
+        .create_series_with_initial_materialization(
+            rule,
+            template(h.creator, anchor),
+            None,
+            h.creator,
+        )
+        .await
+        .expect("create");
 
     // 52 weekly occurrences within 52 weeks ahead. Generation excludes
     // anything ≥ target, so the count is typically exactly 52.
     assert!(
         (50..=53).contains(&created.occurrences.len()),
-        "got {} occurrences", created.occurrences.len(),
+        "got {} occurrences",
+        created.occurrences.len(),
     );
-    let series = h.series_repo.find_by_id(created.series.id).await.unwrap().unwrap();
+    let series = h
+        .series_repo
+        .find_by_id(created.series.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(series.materialized_through > anchor);
     // First occurrence is the anchor.
     assert_eq!(created.occurrences[0].start_time, anchor);
@@ -213,10 +212,16 @@ async fn weekly_creates_about_52_occurrences() {
         assert_eq!(occ.end_time.unwrap() - occ.start_time, Duration::hours(2));
     }
     // Indices are 1..=N and contiguous.
-    let mut idxs: Vec<i32> = created.occurrences.iter()
-        .map(|o| o.occurrence_index.unwrap()).collect();
+    let mut idxs: Vec<i32> = created
+        .occurrences
+        .iter()
+        .map(|o| o.occurrence_index.unwrap())
+        .collect();
     idxs.sort();
-    assert_eq!(idxs, (1..=created.occurrences.len() as i32).collect::<Vec<_>>());
+    assert_eq!(
+        idxs,
+        (1..=created.occurrences.len() as i32).collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]
@@ -229,18 +234,30 @@ async fn until_date_caps_materialization() {
         weekdays: vec![WeekdayCode::Tue],
     };
 
-    let created = h.service.create_series_with_initial_materialization(
-        rule, template(h.creator, anchor), Some(until), h.creator,
-    ).await.unwrap();
+    let created = h
+        .service
+        .create_series_with_initial_materialization(
+            rule,
+            template(h.creator, anchor),
+            Some(until),
+            h.creator,
+        )
+        .await
+        .unwrap();
 
     // ~13 Tuesdays in May 5 → Aug 1.
     assert!(
         (10..=13).contains(&created.occurrences.len()),
-        "got {} occurrences with 3-month cap", created.occurrences.len(),
+        "got {} occurrences with 3-month cap",
+        created.occurrences.len(),
     );
     for occ in &created.occurrences {
-        assert!(occ.start_time < until,
-            "occurrence at {} crosses until_date {}", occ.start_time, until);
+        assert!(
+            occ.start_time < until,
+            "occurrence at {} crosses until_date {}",
+            occ.start_time,
+            until
+        );
     }
 }
 
@@ -254,13 +271,21 @@ async fn extend_horizon_adds_missing_tail() {
     let anchor = next_tuesday_anchor();
     let initial_until = weeks_after_anchor(13);
     let rule = Recurrence::WeeklyByDay {
-        interval: 1, weekdays: vec![WeekdayCode::Tue],
+        interval: 1,
+        weekdays: vec![WeekdayCode::Tue],
     };
 
     // Create with a 3-month cap so we can extend later.
-    let created = h.service.create_series_with_initial_materialization(
-        rule, template(h.creator, anchor), Some(initial_until), h.creator,
-    ).await.unwrap();
+    let created = h
+        .service
+        .create_series_with_initial_materialization(
+            rule,
+            template(h.creator, anchor),
+            Some(initial_until),
+            h.creator,
+        )
+        .await
+        .unwrap();
     let initial_count = created.occurrences.len();
 
     // Lift the cap by clearing until_date directly so extend_horizon
@@ -269,8 +294,15 @@ async fn extend_horizon_adds_missing_tail() {
     // a supported flow, but we test the underlying mechanic.)
     sqlx::query("UPDATE event_series SET until_date = NULL WHERE id = ?")
         .bind(created.series.id.to_string())
-        .execute(&h.pool).await.unwrap();
-    let series = h.series_repo.find_by_id(created.series.id).await.unwrap().unwrap();
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    let series = h
+        .series_repo
+        .find_by_id(created.series.id)
+        .await
+        .unwrap()
+        .unwrap();
 
     // Roll forward to a year past anchor — adds the missing 9 months.
     let target = anchor + Duration::weeks(52);
@@ -280,11 +312,19 @@ async fn extend_horizon_adds_missing_tail() {
     let total = count_in_series(&h.pool, created.series.id).await as usize;
     assert!(
         (initial_count + added as usize) == total,
-        "initial {} + added {} != total {}", initial_count, added, total,
+        "initial {} + added {} != total {}",
+        initial_count,
+        added,
+        total,
     );
 
     // Extending again with the same target is a no-op.
-    let series = h.series_repo.find_by_id(created.series.id).await.unwrap().unwrap();
+    let series = h
+        .series_repo
+        .find_by_id(created.series.id)
+        .await
+        .unwrap()
+        .unwrap();
     let added_again = h.service.extend_horizon(&series, target).await.unwrap();
     assert_eq!(added_again, 0, "horizon-extend must be idempotent");
 }
@@ -295,26 +335,41 @@ async fn extend_horizon_respects_until_date() {
     let anchor = next_tuesday_anchor();
     let until = weeks_after_anchor(8);
     let rule = Recurrence::WeeklyByDay {
-        interval: 1, weekdays: vec![WeekdayCode::Tue],
+        interval: 1,
+        weekdays: vec![WeekdayCode::Tue],
     };
-    let created = h.service.create_series_with_initial_materialization(
-        rule, template(h.creator, anchor), Some(until), h.creator,
-    ).await.unwrap();
+    let created = h
+        .service
+        .create_series_with_initial_materialization(
+            rule,
+            template(h.creator, anchor),
+            Some(until),
+            h.creator,
+        )
+        .await
+        .unwrap();
 
     // Try to extend past until_date — must be a no-op.
-    let series = h.series_repo.find_by_id(created.series.id).await.unwrap().unwrap();
-    let added = h.service.extend_horizon(
-        &series,
-        anchor + Duration::weeks(52),
-    ).await.unwrap();
+    let series = h
+        .series_repo
+        .find_by_id(created.series.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let added = h
+        .service
+        .extend_horizon(&series, anchor + Duration::weeks(52))
+        .await
+        .unwrap();
     assert_eq!(added, 0);
 
     // No occurrence past until_date.
-    let max_start: chrono::NaiveDateTime = sqlx::query_scalar(
-        "SELECT MAX(start_time) FROM events WHERE series_id = ?",
-    )
-    .bind(created.series.id.to_string())
-    .fetch_one(&h.pool).await.unwrap();
+    let max_start: chrono::NaiveDateTime =
+        sqlx::query_scalar("SELECT MAX(start_time) FROM events WHERE series_id = ?")
+            .bind(created.series.id.to_string())
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
     let max_start: DateTime<Utc> = DateTime::from_naive_utc_and_offset(max_start, Utc);
     assert!(max_start < until);
 }
@@ -328,13 +383,19 @@ async fn update_series_occurrences_from_only_touches_future_rows() {
     let h = build().await;
     let anchor = next_tuesday_anchor();
     let rule = Recurrence::WeeklyByDay {
-        interval: 1, weekdays: vec![WeekdayCode::Tue],
+        interval: 1,
+        weekdays: vec![WeekdayCode::Tue],
     };
-    let created = h.service.create_series_with_initial_materialization(
-        rule, template(h.creator, anchor),
-        Some(weeks_after_anchor(8)),
-        h.creator,
-    ).await.unwrap();
+    let created = h
+        .service
+        .create_series_with_initial_materialization(
+            rule,
+            template(h.creator, anchor),
+            Some(weeks_after_anchor(8)),
+            h.creator,
+        )
+        .await
+        .unwrap();
 
     // Pivot: the 3rd occurrence. Edit IT and onwards.
     let pivot_idx = 2; // 0-based — third occurrence
@@ -346,20 +407,30 @@ async fn update_series_occurrences_from_only_touches_future_rows() {
     updated.title = "Espresso Hour".to_string();
     updated.description = "Renamed".to_string();
 
-    let n = h.event_repo.update_series_occurrences_from(
-        created.series.id, pivot_start, &updated,
-    ).await.unwrap();
+    let n = h
+        .event_repo
+        .update_series_occurrences_from(created.series.id, pivot_start, &updated)
+        .await
+        .unwrap();
     assert!(n >= 1);
 
     // Pre-pivot rows must be untouched.
     for occ in &created.occurrences[..pivot_idx] {
         let cur = h.event_repo.find_by_id(occ.id).await.unwrap().unwrap();
-        assert_eq!(cur.title, "Tuesday Coffee", "pre-pivot {} got renamed", occ.id);
+        assert_eq!(
+            cur.title, "Tuesday Coffee",
+            "pre-pivot {} got renamed",
+            occ.id
+        );
     }
     // Pivot + post-pivot rows must reflect the new title.
     for occ in &created.occurrences[pivot_idx..] {
         let cur = h.event_repo.find_by_id(occ.id).await.unwrap().unwrap();
-        assert_eq!(cur.title, "Espresso Hour", "post-pivot {} not renamed", occ.id);
+        assert_eq!(
+            cur.title, "Espresso Hour",
+            "post-pivot {} not renamed",
+            occ.id
+        );
     }
 }
 
@@ -372,13 +443,19 @@ async fn delete_one_occurrence_leaves_siblings_intact() {
     let h = build().await;
     let anchor = next_tuesday_anchor();
     let rule = Recurrence::WeeklyByDay {
-        interval: 1, weekdays: vec![WeekdayCode::Tue],
+        interval: 1,
+        weekdays: vec![WeekdayCode::Tue],
     };
-    let created = h.service.create_series_with_initial_materialization(
-        rule, template(h.creator, anchor),
-        Some(weeks_after_anchor(8)),
-        h.creator,
-    ).await.unwrap();
+    let created = h
+        .service
+        .create_series_with_initial_materialization(
+            rule,
+            template(h.creator, anchor),
+            Some(weeks_after_anchor(8)),
+            h.creator,
+        )
+        .await
+        .unwrap();
     let initial = count_in_series(&h.pool, created.series.id).await;
 
     // Cancel one mid-series occurrence.
@@ -388,9 +465,18 @@ async fn delete_one_occurrence_leaves_siblings_intact() {
     let after = count_in_series(&h.pool, created.series.id).await;
     assert_eq!(after, initial - 1);
     // Series row is intact.
-    assert!(h.series_repo.find_by_id(created.series.id).await.unwrap().is_some());
+    assert!(h
+        .series_repo
+        .find_by_id(created.series.id)
+        .await
+        .unwrap()
+        .is_some());
     // Other occurrences still resolvable.
-    let neighbor = h.event_repo.find_by_id(created.occurrences[2].id).await.unwrap();
+    let neighbor = h
+        .event_repo
+        .find_by_id(created.occurrences[2].id)
+        .await
+        .unwrap();
     assert!(neighbor.is_some());
 }
 
@@ -403,21 +489,32 @@ async fn end_series_after_date_deletes_future_only() {
     let h = build().await;
     let anchor = next_tuesday_anchor();
     let rule = Recurrence::WeeklyByDay {
-        interval: 1, weekdays: vec![WeekdayCode::Tue],
+        interval: 1,
+        weekdays: vec![WeekdayCode::Tue],
     };
-    let created = h.service.create_series_with_initial_materialization(
-        rule, template(h.creator, anchor),
-        Some(weeks_after_anchor(52)),
-        h.creator,
-    ).await.unwrap();
+    let created = h
+        .service
+        .create_series_with_initial_materialization(
+            rule,
+            template(h.creator, anchor),
+            Some(weeks_after_anchor(52)),
+            h.creator,
+        )
+        .await
+        .unwrap();
     let total_before = count_in_series(&h.pool, created.series.id).await;
 
     // End the series after the 5th occurrence — only 5 stay.
     let cutoff = created.occurrences[4].start_time;
-    let deleted = h.event_repo
+    let deleted = h
+        .event_repo
         .delete_series_occurrences_after(created.series.id, cutoff)
-        .await.unwrap();
-    h.series_repo.set_until_date(created.series.id, cutoff).await.unwrap();
+        .await
+        .unwrap();
+    h.series_repo
+        .set_until_date(created.series.id, cutoff)
+        .await
+        .unwrap();
 
     let after = count_in_series(&h.pool, created.series.id).await;
     assert_eq!(after, 5, "expected exactly 5 surviving occurrences");
@@ -428,14 +525,21 @@ async fn end_series_after_date_deletes_future_only() {
         "SELECT start_time FROM events WHERE series_id = ? ORDER BY start_time ASC",
     )
     .bind(created.series.id.to_string())
-    .fetch_all(&h.pool).await.unwrap();
+    .fetch_all(&h.pool)
+    .await
+    .unwrap();
     for (i, naive) in surviving.iter().enumerate() {
         let dt = DateTime::<Utc>::from_naive_utc_and_offset(*naive, Utc);
         assert_eq!(dt, created.occurrences[i].start_time);
     }
 
     // Series row reflects the new cap.
-    let series = h.series_repo.find_by_id(created.series.id).await.unwrap().unwrap();
+    let series = h
+        .series_repo
+        .find_by_id(created.series.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(series.until_date, Some(cutoff));
 }
 
@@ -447,17 +551,30 @@ async fn end_series_after_date_deletes_future_only() {
 async fn delete_series_cascades_to_occurrences() {
     let h = build().await;
     let anchor = next_tuesday_anchor();
-    let rule = Recurrence::MonthlyByDayOfMonth { interval: 1, day: 5 };
-    let created = h.service.create_series_with_initial_materialization(
-        rule, template(h.creator, anchor),
-        Some(weeks_after_anchor(30)),
-        h.creator,
-    ).await.unwrap();
+    let rule = Recurrence::MonthlyByDayOfMonth {
+        interval: 1,
+        day: 5,
+    };
+    let created = h
+        .service
+        .create_series_with_initial_materialization(
+            rule,
+            template(h.creator, anchor),
+            Some(weeks_after_anchor(30)),
+            h.creator,
+        )
+        .await
+        .unwrap();
     assert!(count_in_series(&h.pool, created.series.id).await > 0);
 
     h.series_repo.delete(created.series.id).await.unwrap();
     assert_eq!(count_in_series(&h.pool, created.series.id).await, 0);
-    assert!(h.series_repo.find_by_id(created.series.id).await.unwrap().is_none());
+    assert!(h
+        .series_repo
+        .find_by_id(created.series.id)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 // --------------------------------------------------------------------
@@ -470,15 +587,24 @@ async fn second_wednesday_materializes_correctly() {
     let h = build().await;
     let anchor = next_2nd_wednesday_anchor();
     let rule = Recurrence::MonthlyByWeekdayOrdinal {
-        interval: 1, weekday: WeekdayCode::Wed, ordinal: 2,
+        interval: 1,
+        weekday: WeekdayCode::Wed,
+        ordinal: 2,
     };
     // 33 weeks (231 days) lands strictly between the 8th 2nd-Wed gap (≤217d)
     // and the 9th (≥238d), so the materializer yields exactly 8 occurrences
     // regardless of which calendar month the anchor lands in.
     let until = anchor + Duration::weeks(33);
-    let created = h.service.create_series_with_initial_materialization(
-        rule, template(h.creator, anchor), Some(until), h.creator,
-    ).await.unwrap();
+    let created = h
+        .service
+        .create_series_with_initial_materialization(
+            rule,
+            template(h.creator, anchor),
+            Some(until),
+            h.creator,
+        )
+        .await
+        .unwrap();
 
     // Eight consecutive months of 2nd Wednesdays starting at the anchor.
     assert_eq!(created.occurrences.len(), 8);
@@ -499,21 +625,29 @@ async fn extend_horizon_for_active_series_processes_every_series() {
 
     // Two series with short caps, both opened back up via NULL until_date.
     for _ in 0..2 {
-        let created = h.service.create_series_with_initial_materialization(
-            Recurrence::WeeklyByDay {
-                interval: 1, weekdays: vec![WeekdayCode::Tue],
-            },
-            template(h.creator, anchor),
-            Some(weeks_after_anchor(8)),
-            h.creator,
-        ).await.unwrap();
+        let created = h
+            .service
+            .create_series_with_initial_materialization(
+                Recurrence::WeeklyByDay {
+                    interval: 1,
+                    weekdays: vec![WeekdayCode::Tue],
+                },
+                template(h.creator, anchor),
+                Some(weeks_after_anchor(8)),
+                h.creator,
+            )
+            .await
+            .unwrap();
         sqlx::query("UPDATE event_series SET until_date = NULL WHERE id = ?")
             .bind(created.series.id.to_string())
-            .execute(&h.pool).await.unwrap();
+            .execute(&h.pool)
+            .await
+            .unwrap();
     }
 
-    let total_added = h.service
-        .extend_horizon_for_active_series().await.unwrap();
-    assert!(total_added > 0,
-        "bulk run must materialize some new occurrences");
+    let total_added = h.service.extend_horizon_for_active_series().await.unwrap();
+    assert!(
+        total_added > 0,
+        "bulk run must materialize some new occurrences"
+    );
 }
