@@ -175,8 +175,32 @@ See [TODO.md](TODO.md) for the full open-items list.
 
 ## Deployment
 
-Production deployment artifacts and walkthroughs live in
-[`deploy/`](deploy/):
+### Quick deploy (recommended)
+
+On a fresh Debian 13 host, as root:
+
+```bash
+curl -sfL https://raw.githubusercontent.com/IndustriousKraken/coterie/master/deploy/provision.sh \
+    -o /tmp/provision.sh
+sudo bash /tmp/provision.sh
+```
+
+The wizard prompts for your org name, portal domain, first admin
+credentials, and which integrations to enable (Stripe / Discord /
+UniFi / Caddy). Once it finishes, Coterie is running under systemd
+with the first admin already created and (optionally) Caddy serving
+with TLS. The wizard is idempotent — re-running it detects existing
+state and prompts before overwriting.
+
+Non-interactive (IaC / CI) mode: every prompt has a matching env var
+(`COTERIE_PROVISION_<NAME>`) and `--flag` argument. See
+`coterie-provision install --help` after the bootstrap downloads the
+binary, or read the source at
+[`deploy/coterie-provision/`](deploy/coterie-provision/).
+
+### Manual deploy (advanced)
+
+Walkthroughs for operators who'd rather drive each step themselves:
 
 - [`DEPLOY-DIGITALOCEAN.md`](deploy/DEPLOY-DIGITALOCEAN.md) —
   end-to-end DO droplet (Ubuntu, ~45 min)
