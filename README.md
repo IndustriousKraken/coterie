@@ -175,40 +175,12 @@ See [TODO.md](TODO.md) for the full open-items list.
 
 ## Deployment
 
-### Recommended: the provisioning wizard
-
-On a fresh Debian 13 host (DigitalOcean, AWS, bare metal — anywhere
-you can SSH in as root), one command takes you to a running Coterie
-with TLS, first admin created, and optional Stripe / Discord / UniFi
-configured:
-
-```bash
-curl -sfL https://raw.githubusercontent.com/IndustriousKraken/coterie/master/deploy/provision.sh \
-    -o /tmp/provision.sh
-sudo bash /tmp/provision.sh
-```
-
-The wizard prompts for org name, portal domain, admin credentials,
-and which integrations to enable. Every prompt has a matching
-`COTERIE_PROVISION_*` env var for non-interactive (IaC) runs — see
-`sudo bash /tmp/provision.sh --help` for the full list. Use
-`--dry-run` to print the plan without modifying the system.
-
-Re-running the wizard is safe: it detects existing state (`.env`,
-existing admin row, existing Caddyfile) and prompts before
-clobbering each piece. If something goes wrong, `deploy/uninstall.sh`
-is the recovery path; `deploy/uninstall.sh --all` returns the box
-to a fresh state.
-
-### Manual deploy (advanced)
-
-If you want to understand each step, run a non-Debian distro, or
-need to deviate from the happy path, the long-form walkthroughs are:
+Production deployment artifacts and walkthroughs live in
+[`deploy/`](deploy/):
 
 - [`DEPLOY-DIGITALOCEAN.md`](deploy/DEPLOY-DIGITALOCEAN.md) —
-  end-to-end DO droplet, with the wizard at step 5 and manual
-  fallbacks (build-from-source, rsync) below it
-- [`DEPLOY-AWS.md`](deploy/DEPLOY-AWS.md) — EC2 + EBS or Lightsail
+  end-to-end DO droplet (Ubuntu, ~45 min)
+- [`DEPLOY-AWS.md`](deploy/DEPLOY-AWS.md) — EC2 + EBS or Lightsail (Ubuntu)
 - [`DEPLOY-ALPINE.md`](deploy/DEPLOY-ALPINE.md) — Alpine Linux + OpenRC
 - [`MIGRATION.md`](deploy/MIGRATION.md) — moving between hosts
 - [`RESTORE.md`](deploy/RESTORE.md) — restoring from a backup
