@@ -22,11 +22,12 @@ use crate::{
     },
     auth::CsrfService,
     domain::{
-        BasicTypeKind, CreateBasicTypeRequest, CreateMembershipTypeRequest,
-        UpdateBasicTypeRequest, UpdateMembershipTypeRequest,
+        BasicTypeKind, CreateBasicTypeRequest, CreateMembershipTypeRequest, UpdateBasicTypeRequest,
+        UpdateMembershipTypeRequest,
     },
     service::{
-        basic_type_service::BasicTypeService, membership_type_service::MembershipTypeService,
+        audit_service::AuditService, basic_type_service::BasicTypeService,
+        membership_type_service::MembershipTypeService,
     },
     util::string::capitalize_first,
     web::{
@@ -99,7 +100,8 @@ pub async fn admin_types_page(
         event_types,
         announcement_types,
         membership_types,
-    }).into_response()
+    })
+    .into_response()
 }
 
 // =============================================================================
@@ -171,6 +173,14 @@ fn service_for<'a>(
     }
 }
 
+fn audit_strings_for_kind(kind: BasicTypeKind, op: &'static str) -> (String, &'static str) {
+    let entity_type = match kind {
+        BasicTypeKind::Event => "event_type",
+        BasicTypeKind::Announcement => "announcement_type",
+    };
+    (format!("{op}_{entity_type}"), entity_type)
+}
+
 pub async fn admin_new_basic_type_page(
     State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
@@ -213,12 +223,8 @@ pub async fn admin_edit_basic_type_page(
             .into_response()
         }
         Err(_) => {
-            return partials::admin_alert(
-                "error",
-                &format!("Error loading {}", kind_label),
-                false,
-            )
-            .into_response()
+            return partials::admin_alert("error", &format!("Error loading {}", kind_label), false)
+                .into_response()
         }
     };
 
@@ -254,7 +260,8 @@ pub struct BasicTypeForm {
 pub async fn admin_create_basic_type(
     State(event_type_service): State<EventBasicTypeService>,
     State(announcement_type_service): State<AnnouncementBasicTypeService>,
-    Extension(_current_user): Extension<CurrentUser>,
+    State(audit_service): State<Arc<AuditService>>,
+    Extension(current_user): Extension<CurrentUser>,
     Path(kind_str): Path<String>,
     axum::Form(form): axum::Form<BasicTypeForm>,
 ) -> Response {
@@ -271,7 +278,21 @@ pub async fn admin_create_basic_type(
 
     let svc = service_for(&event_type_service.0, &announcement_type_service.0, kind);
     match svc.create(request).await {
-        Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
+        Ok(created) => {
+            let (action, entity_type) = audit_strings_for_kind(kind, "create");
+            audit_service
+                .log(
+                    Some(current_user.member.id),
+                    &action,
+                    entity_type,
+                    &created.id.to_string(),
+                    None,
+                    Some(&created.name),
+                    None,
+                )
+                .await;
+            axum::response::Redirect::to("/portal/admin/types").into_response()
+        }
         Err(e) => partials::admin_alert(
             "error",
             &format!("Error creating {}: {}", kind.display_name(), e),
@@ -284,7 +305,8 @@ pub async fn admin_create_basic_type(
 pub async fn admin_update_basic_type(
     State(event_type_service): State<EventBasicTypeService>,
     State(announcement_type_service): State<AnnouncementBasicTypeService>,
-    Extension(_current_user): Extension<CurrentUser>,
+    State(audit_service): State<Arc<AuditService>>,
+    Extension(current_user): Extension<CurrentUser>,
     Path((kind_str, type_id)): Path<(String, String)>,
     axum::Form(form): axum::Form<BasicTypeForm>,
 ) -> Response {
@@ -296,6 +318,30 @@ pub async fn admin_update_basic_type(
         Err(_) => return partials::admin_alert("error", "Invalid type ID", false).into_response(),
     };
 
+    let svc = service_for(&event_type_service.0, &announcement_type_service.0, kind);
+
+    // Capture the existing name BEFORE mutating so the audit row's
+    // old_value carries the pre-change name.
+    let old_name = match svc.get(id).await {
+        Ok(Some(t)) => t.name,
+        Ok(None) => {
+            return partials::admin_alert(
+                "error",
+                &format!("{} not found", capitalize_first(kind.display_name())),
+                false,
+            )
+            .into_response()
+        }
+        Err(_) => {
+            return partials::admin_alert(
+                "error",
+                &format!("Error loading {}", kind.display_name()),
+                false,
+            )
+            .into_response()
+        }
+    };
+
     let request = UpdateBasicTypeRequest {
         name: Some(form.name),
         description: form.description,
@@ -305,9 +351,22 @@ pub async fn admin_update_basic_type(
         is_active: Some(form.is_active.is_some()),
     };
 
-    let svc = service_for(&event_type_service.0, &announcement_type_service.0, kind);
     match svc.update(id, request).await {
-        Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
+        Ok(updated) => {
+            let (action, entity_type) = audit_strings_for_kind(kind, "update");
+            audit_service
+                .log(
+                    Some(current_user.member.id),
+                    &action,
+                    entity_type,
+                    &id.to_string(),
+                    Some(&old_name),
+                    Some(&updated.name),
+                    None,
+                )
+                .await;
+            axum::response::Redirect::to("/portal/admin/types").into_response()
+        }
         Err(e) => partials::admin_alert(
             "error",
             &format!("Error updating {}: {}", kind.display_name(), e),
@@ -320,7 +379,8 @@ pub async fn admin_update_basic_type(
 pub async fn admin_delete_basic_type(
     State(event_type_service): State<EventBasicTypeService>,
     State(announcement_type_service): State<AnnouncementBasicTypeService>,
-    Extension(_current_user): Extension<CurrentUser>,
+    State(audit_service): State<Arc<AuditService>>,
+    Extension(current_user): Extension<CurrentUser>,
     Path((kind_str, type_id)): Path<(String, String)>,
 ) -> Response {
     let Some(kind) = parse_kind(&kind_str) else {
@@ -332,8 +392,45 @@ pub async fn admin_delete_basic_type(
     };
 
     let svc = service_for(&event_type_service.0, &announcement_type_service.0, kind);
+
+    // Capture the name BEFORE deleting so the audit row records
+    // what was removed.
+    let old_name = match svc.get(id).await {
+        Ok(Some(t)) => t.name,
+        Ok(None) => {
+            return partials::admin_alert(
+                "error",
+                &format!("{} not found", capitalize_first(kind.display_name())),
+                false,
+            )
+            .into_response()
+        }
+        Err(_) => {
+            return partials::admin_alert(
+                "error",
+                &format!("Error loading {}", kind.display_name()),
+                false,
+            )
+            .into_response()
+        }
+    };
+
     match svc.delete(id).await {
-        Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
+        Ok(_) => {
+            let (action, entity_type) = audit_strings_for_kind(kind, "delete");
+            audit_service
+                .log(
+                    Some(current_user.member.id),
+                    &action,
+                    entity_type,
+                    &id.to_string(),
+                    Some(&old_name),
+                    None,
+                    None,
+                )
+                .await;
+            axum::response::Redirect::to("/portal/admin/types").into_response()
+        }
         Err(e) => partials::admin_alert(
             "error",
             &format!("Error deleting {}: {}", kind.display_name(), e),
@@ -364,7 +461,8 @@ pub async fn admin_new_membership_type_page(
         base: BaseContext::for_member(&csrf_service, &current_user, &session_info).await,
         membership_type: None,
         is_edit: false,
-    }).into_response()
+    })
+    .into_response()
 }
 
 pub async fn admin_edit_membership_type_page(
@@ -381,8 +479,14 @@ pub async fn admin_edit_membership_type_page(
 
     let membership_type = match membership_type_service.get(id).await {
         Ok(Some(t)) => t,
-        Ok(None) => return partials::admin_alert("error", "Membership type not found", false).into_response(),
-        Err(_) => return partials::admin_alert("error", "Error loading membership type", false).into_response(),
+        Ok(None) => {
+            return partials::admin_alert("error", "Membership type not found", false)
+                .into_response()
+        }
+        Err(_) => {
+            return partials::admin_alert("error", "Error loading membership type", false)
+                .into_response()
+        }
     };
 
     let base = BaseContext::for_member(&csrf_service, &current_user, &session_info).await;
@@ -407,7 +511,8 @@ pub async fn admin_edit_membership_type_page(
         base,
         membership_type: Some(type_info),
         is_edit: true,
-    }).into_response()
+    })
+    .into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -424,15 +529,25 @@ pub struct MembershipTypeForm {
 
 pub async fn admin_create_membership_type(
     State(membership_type_service): State<Arc<MembershipTypeService>>,
-    Extension(_current_user): Extension<CurrentUser>,
+    State(audit_service): State<Arc<AuditService>>,
+    Extension(current_user): Extension<CurrentUser>,
     axum::Form(form): axum::Form<MembershipTypeForm>,
 ) -> impl IntoResponse {
     let fee_cents = match form.fee_dollars.parse::<f64>() {
         Ok(dollars) if dollars.is_finite() && dollars >= 0.0 && dollars <= 999_999.99 => {
             (dollars * 100.0).round() as i32
         }
-        Ok(_) => return partials::admin_alert("error", "Fee must be between $0.00 and $999,999.99", false).into_response(),
-        Err(_) => return partials::admin_alert("error", "Invalid fee amount", false).into_response(),
+        Ok(_) => {
+            return partials::admin_alert(
+                "error",
+                "Fee must be between $0.00 and $999,999.99",
+                false,
+            )
+            .into_response()
+        }
+        Err(_) => {
+            return partials::admin_alert("error", "Invalid fee amount", false).into_response()
+        }
     };
 
     let request = CreateMembershipTypeRequest {
@@ -446,14 +561,33 @@ pub async fn admin_create_membership_type(
     };
 
     match membership_type_service.create(request).await {
-        Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => partials::admin_alert("error", &format!("Error creating membership type: {}", e), false).into_response(),
+        Ok(created) => {
+            audit_service
+                .log(
+                    Some(current_user.member.id),
+                    "create_membership_type",
+                    "membership_type",
+                    &created.id.to_string(),
+                    None,
+                    Some(&created.name),
+                    None,
+                )
+                .await;
+            axum::response::Redirect::to("/portal/admin/types").into_response()
+        }
+        Err(e) => partials::admin_alert(
+            "error",
+            &format!("Error creating membership type: {}", e),
+            false,
+        )
+        .into_response(),
     }
 }
 
 pub async fn admin_update_membership_type(
     State(membership_type_service): State<Arc<MembershipTypeService>>,
-    Extension(_current_user): Extension<CurrentUser>,
+    State(audit_service): State<Arc<AuditService>>,
+    Extension(current_user): Extension<CurrentUser>,
     Path(type_id): Path<String>,
     axum::Form(form): axum::Form<MembershipTypeForm>,
 ) -> impl IntoResponse {
@@ -466,8 +600,30 @@ pub async fn admin_update_membership_type(
         Ok(dollars) if dollars.is_finite() && dollars >= 0.0 && dollars <= 999_999.99 => {
             (dollars * 100.0).round() as i32
         }
-        Ok(_) => return partials::admin_alert("error", "Fee must be between $0.00 and $999,999.99", false).into_response(),
-        Err(_) => return partials::admin_alert("error", "Invalid fee amount", false).into_response(),
+        Ok(_) => {
+            return partials::admin_alert(
+                "error",
+                "Fee must be between $0.00 and $999,999.99",
+                false,
+            )
+            .into_response()
+        }
+        Err(_) => {
+            return partials::admin_alert("error", "Invalid fee amount", false).into_response()
+        }
+    };
+
+    // Capture pre-mutation name for the audit row's old_value.
+    let old_name = match membership_type_service.get(id).await {
+        Ok(Some(t)) => t.name,
+        Ok(None) => {
+            return partials::admin_alert("error", "Membership type not found", false)
+                .into_response()
+        }
+        Err(_) => {
+            return partials::admin_alert("error", "Error loading membership type", false)
+                .into_response()
+        }
     };
 
     let request = UpdateMembershipTypeRequest {
@@ -482,14 +638,33 @@ pub async fn admin_update_membership_type(
     };
 
     match membership_type_service.update(id, request).await {
-        Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => partials::admin_alert("error", &format!("Error updating membership type: {}", e), false).into_response(),
+        Ok(updated) => {
+            audit_service
+                .log(
+                    Some(current_user.member.id),
+                    "update_membership_type",
+                    "membership_type",
+                    &id.to_string(),
+                    Some(&old_name),
+                    Some(&updated.name),
+                    None,
+                )
+                .await;
+            axum::response::Redirect::to("/portal/admin/types").into_response()
+        }
+        Err(e) => partials::admin_alert(
+            "error",
+            &format!("Error updating membership type: {}", e),
+            false,
+        )
+        .into_response(),
     }
 }
 
 pub async fn admin_delete_membership_type(
     State(membership_type_service): State<Arc<MembershipTypeService>>,
-    Extension(_current_user): Extension<CurrentUser>,
+    State(audit_service): State<Arc<AuditService>>,
+    Extension(current_user): Extension<CurrentUser>,
     Path(type_id): Path<String>,
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&type_id) {
@@ -497,9 +672,40 @@ pub async fn admin_delete_membership_type(
         Err(_) => return partials::admin_alert("error", "Invalid type ID", false).into_response(),
     };
 
+    // Capture name BEFORE deleting so we record what was removed.
+    let old_name = match membership_type_service.get(id).await {
+        Ok(Some(t)) => t.name,
+        Ok(None) => {
+            return partials::admin_alert("error", "Membership type not found", false)
+                .into_response()
+        }
+        Err(_) => {
+            return partials::admin_alert("error", "Error loading membership type", false)
+                .into_response()
+        }
+    };
+
     match membership_type_service.delete(id).await {
-        Ok(_) => axum::response::Redirect::to("/portal/admin/types").into_response(),
-        Err(e) => partials::admin_alert("error", &format!("Error deleting membership type: {}", e), false).into_response(),
+        Ok(_) => {
+            audit_service
+                .log(
+                    Some(current_user.member.id),
+                    "delete_membership_type",
+                    "membership_type",
+                    &id.to_string(),
+                    Some(&old_name),
+                    None,
+                    None,
+                )
+                .await;
+            axum::response::Redirect::to("/portal/admin/types").into_response()
+        }
+        Err(e) => partials::admin_alert(
+            "error",
+            &format!("Error deleting membership type: {}", e),
+            false,
+        )
+        .into_response(),
     }
 }
 
@@ -507,10 +713,7 @@ pub async fn admin_delete_membership_type(
 // Helper Functions
 // =============================================================================
 
-async fn fetch_basic_types(
-    service: &BasicTypeService,
-    include_inactive: bool,
-) -> Vec<TypeInfo> {
+async fn fetch_basic_types(service: &BasicTypeService, include_inactive: bool) -> Vec<TypeInfo> {
     service
         .list(include_inactive)
         .await
