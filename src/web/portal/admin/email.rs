@@ -24,7 +24,7 @@ use crate::{
         audit_service::AuditService,
         settings_service::{SettingsService, UpdateEmailConfig},
     },
-    web::templates::{BaseContext, HtmlTemplate},
+    web::{portal::admin::test_result::test_result_html, templates::{BaseContext, HtmlTemplate}},
 };
 
 #[derive(Template)]
@@ -262,7 +262,7 @@ pub async fn send_test_email(
             // Cheap validation — a real RFC 5322 parser is overkill here,
             // and lettre will reject malformed addresses downstream.
             if !other.contains('@') || other.contains(|c: char| c.is_whitespace()) {
-                return test_result_html(false, "Invalid email address.");
+                return test_result_html("test-result", false, "Invalid email address.");
             }
             other.to_string()
         }
@@ -300,7 +300,7 @@ pub async fn send_test_email(
         &text,
     ) {
         Ok(m) => m,
-        Err(e) => return test_result_html(false, &format!("Template error: {}", e)),
+        Err(e) => return test_result_html("test-result", false, &format!("Template error: {}", e)),
     };
 
     let (ok, error_text) = match email_sender.send(&message).await {
@@ -319,23 +319,8 @@ pub async fn send_test_email(
     }
 
     if ok {
-        test_result_html(true, &format!("Test email sent to {}.", admin_email))
+        test_result_html("test-result", true, &format!("Test email sent to {}.", admin_email))
     } else {
-        test_result_html(false, &error_text)
+        test_result_html("test-result", false, &error_text)
     }
-}
-
-fn test_result_html(ok: bool, detail: &str) -> axum::response::Html<String> {
-    let escaped = crate::web::escape_html(detail);
-    let (bg, fg, icon) = if ok {
-        ("bg-green-50", "text-green-900",
-         r#"<svg class="h-5 w-5 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>"#)
-    } else {
-        ("bg-red-50", "text-red-900",
-         r#"<svg class="h-5 w-5 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>"#)
-    };
-    axum::response::Html(format!(
-        r#"<div id="test-result" class="mt-2 p-3 {bg} {fg} rounded-md text-sm">{icon} {detail}</div>"#,
-        bg = bg, fg = fg, icon = icon, detail = escaped,
-    ))
 }

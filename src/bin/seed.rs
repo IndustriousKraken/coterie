@@ -160,6 +160,9 @@ fn slug_to_id(slug: &str, types: &[DbMembershipTypeConfig]) -> Uuid {
         .unwrap_or_else(|| types[0].id)
 }
 
+// Permissive parsing for seed fixtures — falls back to Pending on
+// unknown input. For runtime parsing that errors on invalid input,
+// see MemberRepository::parse_member_status.
 fn parse_member_status(s: &str) -> MemberStatus {
     match s.to_lowercase().as_str() {
         "active" => MemberStatus::Active,

@@ -10,4 +10,5 @@ pub mod jobs;
 pub mod payments;
 pub mod repository;
 pub mod service;
+pub mod util;
 pub mod web;

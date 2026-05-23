@@ -24,7 +24,7 @@ use crate::{
         audit_service::AuditService,
         settings_service::{SettingsService, UpdateDiscordConfig},
     },
-    web::templates::{BaseContext, HtmlTemplate},
+    web::{portal::admin::test_result::test_result_html, templates::{BaseContext, HtmlTemplate}},
 };
 
 #[derive(Template)]
@@ -243,12 +243,12 @@ pub async fn test_discord_connection(
         Ok(c) => c,
         Err(e) => {
             // Most likely the token can't be decrypted (session_secret rotated).
-            return test_result_html(false, &format!("Couldn't load Discord config: {}", e));
+            return test_result_html("discord-test-result", false, &format!("Couldn't load Discord config: {}", e));
         }
     };
 
     if cfg.bot_token.is_empty() {
-        return test_result_html(false, "No bot token configured. Paste one above and save first.");
+        return test_result_html("discord-test-result", false, "No bot token configured. Paste one above and save first.");
     }
 
     let client = DiscordClient::new(cfg.bot_token);
@@ -270,22 +270,7 @@ pub async fn test_discord_connection(
         tracing::warn!("Discord test completed but result wasn't persisted: {}", e);
     }
 
-    test_result_html(ok, &detail)
-}
-
-fn test_result_html(ok: bool, detail: &str) -> axum::response::Html<String> {
-    let escaped = crate::web::escape_html(detail);
-    let (bg, fg, icon) = if ok {
-        ("bg-green-50", "text-green-900",
-         r#"<svg class="h-5 w-5 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>"#)
-    } else {
-        ("bg-red-50", "text-red-900",
-         r#"<svg class="h-5 w-5 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>"#)
-    };
-    axum::response::Html(format!(
-        r#"<div id="discord-test-result" class="mt-2 p-3 {bg} {fg} rounded-md text-sm">{icon} {detail}</div>"#,
-        bg = bg, fg = fg, icon = icon, detail = escaped,
-    ))
+    test_result_html("discord-test-result", ok, &detail)
 }
 
 /// Reconcile every member's Discord roles against their current
@@ -305,10 +290,10 @@ pub async fn reconcile_roles(
 
     let cfg = match settings_service.get_discord_config().await {
         Ok(c) => c,
-        Err(e) => return test_result_html(false, &format!("Couldn't load Discord config: {}", e)),
+        Err(e) => return test_result_html("discord-test-result", false, &format!("Couldn't load Discord config: {}", e)),
     };
     if !cfg.enabled || cfg.bot_token.is_empty() || cfg.guild_id.is_empty() {
-        return test_result_html(false, "Discord integration isn't enabled or configured.");
+        return test_result_html("discord-test-result", false, "Discord integration isn't enabled or configured.");
     }
 
     let integration = DiscordIntegration::new(
@@ -331,5 +316,5 @@ pub async fn reconcile_roles(
         "Reconciled {} member(s). Skipped {} with invalid Discord ID, {} pending.",
         summary.processed, summary.skipped_invalid_id, summary.skipped_pending,
     );
-    test_result_html(true, &detail)
+    test_result_html("discord-test-result", true, &detail)
 }

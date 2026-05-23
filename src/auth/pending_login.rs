@@ -18,6 +18,7 @@ use cookie::{Cookie, SameSite};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
+use super::tokens::{generate_token, hash_token};
 use crate::error::{AppError, Result};
 
 pub const COOKIE_NAME: &str = "pending_login";
@@ -181,18 +182,4 @@ pub fn create_clear_cookie() -> Cookie<'static> {
         .http_only(true)
         .max_age(cookie::time::Duration::seconds(0))
         .build()
-}
-
-fn generate_token() -> String {
-    use rand::RngCore;
-    let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    hex::encode(bytes)
-}
-
-fn hash_token(token: &str) -> String {
-    use sha2::Digest;
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(token.as_bytes());
-    hex::encode(hasher.finalize())
 }

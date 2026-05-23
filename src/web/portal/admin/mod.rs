@@ -9,4 +9,5 @@ pub mod members;
 pub mod partials;
 pub mod payments;
 pub mod settings;
+pub mod test_result;
 pub mod types;
