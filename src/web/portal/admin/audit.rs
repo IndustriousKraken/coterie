@@ -18,7 +18,10 @@ use crate::{
     api::middleware::auth::{CurrentUser, SessionInfo},
     auth::CsrfService,
     service::audit_service::AuditService,
-    web::{portal::admin::csv::push_csv, templates::{BaseContext, HtmlTemplate}},
+    web::{
+        portal::admin::csv::push_csv,
+        templates::{BaseContext, HtmlTemplate},
+    },
 };
 
 #[derive(Template)]
@@ -75,7 +78,8 @@ pub async fn audit_log_page(
         target_filter: query.target,
         limit,
         export_qs,
-    }).into_response()
+    })
+    .into_response()
 }
 
 /// Apply filters over the recent audit entries. Used by both the HTML
@@ -98,15 +102,19 @@ async fn filtered_entries(
         .filter(|e| action_filter.is_empty() || e.action.to_lowercase().contains(&action_filter))
         .filter(|e| {
             actor_filter.is_empty()
-                || e.actor_name.as_deref().unwrap_or("").to_lowercase().contains(&actor_filter)
+                || e.actor_name
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&actor_filter)
         })
-        .filter(|e| {
-            target_filter.is_empty()
-                || e.entity_id.to_lowercase().contains(&target_filter)
-        })
+        .filter(|e| target_filter.is_empty() || e.entity_id.to_lowercase().contains(&target_filter))
         .take(limit as usize)
         .map(|e| AuditEntryDisplay {
-            actor: e.actor_name.clone().unwrap_or_else(|| "(system)".to_string()),
+            actor: e
+                .actor_name
+                .clone()
+                .unwrap_or_else(|| "(system)".to_string()),
             action: pretty_action(&e.action),
             entity: format!("{} {}", e.entity_type, short_id(&e.entity_id)),
             detail: format_detail(e.old_value.as_deref(), e.new_value.as_deref()),
@@ -130,7 +138,11 @@ fn format_detail(old: Option<&str>, new: Option<&str>) -> String {
 
 fn truncate(s: &str) -> &str {
     const MAX: usize = 120;
-    if s.len() <= MAX { s } else { &s[..MAX] }
+    if s.len() <= MAX {
+        s
+    } else {
+        &s[..MAX]
+    }
 }
 
 fn build_export_qs(q: &AuditLogQuery) -> String {
@@ -166,19 +178,23 @@ pub async fn audit_log_export(
     // the DB directly.
     let limit = query.limit.unwrap_or(5000).clamp(1, 50_000);
 
-    let raw = audit_service
-        .recent(limit * 3)
-        .await
-        .unwrap_or_default();
+    let raw = audit_service.recent(limit * 3).await.unwrap_or_default();
 
     let action_filter = query.action.to_lowercase();
     let actor_filter = query.actor.to_lowercase();
     let target_filter = query.target.to_lowercase();
 
-    let rows = raw.into_iter()
+    let rows = raw
+        .into_iter()
         .filter(|e| action_filter.is_empty() || e.action.to_lowercase().contains(&action_filter))
-        .filter(|e| actor_filter.is_empty()
-            || e.actor_name.as_deref().unwrap_or("").to_lowercase().contains(&actor_filter))
+        .filter(|e| {
+            actor_filter.is_empty()
+                || e.actor_name
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&actor_filter)
+        })
         .filter(|e| target_filter.is_empty() || e.entity_id.to_lowercase().contains(&target_filter))
         .take(limit as usize);
 
@@ -192,7 +208,10 @@ pub async fn audit_log_export(
     for e in rows {
         push_csv(&mut out, &e.created_at.to_rfc3339());
         out.push(',');
-        push_csv(&mut out, &e.actor_id.map(|u| u.to_string()).unwrap_or_default());
+        push_csv(
+            &mut out,
+            &e.actor_id.map(|u| u.to_string()).unwrap_or_default(),
+        );
         out.push(',');
         push_csv(&mut out, e.actor_name.as_deref().unwrap_or(""));
         out.push(',');
@@ -215,10 +234,14 @@ pub async fn audit_log_export(
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "text/csv; charset=utf-8".to_string()),
-            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", filename)),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", filename),
+            ),
         ],
         out,
-    ).into_response()
+    )
+        .into_response()
 }
 
 fn pretty_action(action: &str) -> String {

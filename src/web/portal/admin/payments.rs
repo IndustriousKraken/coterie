@@ -16,8 +16,7 @@ use axum::{
 };
 
 use crate::{
-    api::middleware::auth::CurrentUser,
-    config::Settings,
+    api::middleware::auth::CurrentUser, config::Settings,
     service::payment_admin_service::PaymentAdminService,
 };
 
@@ -58,6 +57,9 @@ fn refund_result_html(ok: bool, detail: &str) -> Html<String> {
     };
     Html(format!(
         r#"<div class="mt-2 p-3 {bg} {fg} rounded-md text-sm">{escaped}</div>{suffix}"#,
-        bg = bg, fg = fg, escaped = escaped, suffix = suffix,
+        bg = bg,
+        fg = fg,
+        escaped = escaped,
+        suffix = suffix,
     ))
 }

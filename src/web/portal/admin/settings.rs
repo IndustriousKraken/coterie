@@ -4,8 +4,7 @@ use askama::Template;
 use axum::{
     extract::State,
     response::{IntoResponse, Response},
-    Extension,
-    Form,
+    Extension, Form,
 };
 use serde::Deserialize;
 
@@ -78,7 +77,8 @@ pub async fn admin_settings_page(
         &session_info,
         None,
         None,
-    ).await
+    )
+    .await
 }
 
 async fn admin_settings_page_inner(
@@ -98,7 +98,8 @@ async fn admin_settings_page_inner(
         categories,
         success_message,
         error_message,
-    }).into_response()
+    })
+    .into_response()
 }
 
 pub async fn admin_update_setting(
@@ -123,16 +124,14 @@ pub async fn admin_update_setting(
             &session_info,
             None,
             Some("Invalid CSRF token. Please try again.".to_string()),
-        ).await;
+        )
+        .await;
     }
 
     // Capture the old value (before the update) so the audit-log diff
     // shows "was X, now Y". Sensitive settings get [REDACTED] on both
     // sides — we don't want SMTP passwords or similar in the log.
-    let prior = settings_service
-        .get_setting(&form.setting_key)
-        .await
-        .ok();
+    let prior = settings_service.get_setting(&form.setting_key).await.ok();
     let is_sensitive = prior.as_ref().map(|s| s.is_sensitive).unwrap_or(false);
     let old_value: String = if is_sensitive {
         "[REDACTED]".to_string()
@@ -156,20 +155,26 @@ pub async fn admin_update_setting(
         .await
     {
         Ok(_) => {
-            let display_name = form.setting_key.split('.').last().unwrap_or(&form.setting_key);
+            let display_name = form
+                .setting_key
+                .split('.')
+                .last()
+                .unwrap_or(&form.setting_key);
             // Log to unified audit_logs with both before and after so
             // the audit page can render the diff inline. (settings_audit
             // also keeps the same data for richer queries; this row is
             // for the unified view.)
-            audit_service.log(
-                Some(current_user.member.id),
-                "update_setting",
-                "setting",
-                &form.setting_key,
-                Some(&old_value),
-                Some(&new_value_for_audit),
-                None,
-            ).await;
+            audit_service
+                .log(
+                    Some(current_user.member.id),
+                    "update_setting",
+                    "setting",
+                    &form.setting_key,
+                    Some(&old_value),
+                    Some(&new_value_for_audit),
+                    None,
+                )
+                .await;
             admin_settings_page_inner(
                 &settings_service,
                 &csrf_service,
@@ -177,7 +182,8 @@ pub async fn admin_update_setting(
                 &session_info,
                 Some(format!("Updated '{}'", display_name)),
                 None,
-            ).await
+            )
+            .await
         }
         Err(e) => {
             tracing::error!("Failed to update setting {}: {:?}", form.setting_key, e);
@@ -188,7 +194,8 @@ pub async fn admin_update_setting(
                 &session_info,
                 None,
                 Some(format!("Failed to update setting: {}", e)),
-            ).await
+            )
+            .await
         }
     }
 }
@@ -197,18 +204,36 @@ pub async fn admin_update_setting(
 // Helper Functions
 // =============================================================================
 
-async fn fetch_settings_by_category(settings_service: &SettingsService) -> Vec<SettingsCategoryInfo> {
+async fn fetch_settings_by_category(
+    settings_service: &SettingsService,
+) -> Vec<SettingsCategoryInfo> {
     let all_categories = settings_service
         .get_all_settings()
         .await
         .unwrap_or_default();
 
     let category_meta = [
-        ("organization", "Organization", "Basic organization information"),
-        ("membership", "Membership", "Membership approval and duration settings"),
+        (
+            "organization",
+            "Organization",
+            "Basic organization information",
+        ),
+        (
+            "membership",
+            "Membership",
+            "Membership approval and duration settings",
+        ),
         ("payment", "Payment", "Payment amounts and timing"),
-        ("features", "Features", "Enable or disable application features"),
-        ("integrations", "Integrations", "Third-party service connections"),
+        (
+            "features",
+            "Features",
+            "Enable or disable application features",
+        ),
+        (
+            "integrations",
+            "Integrations",
+            "Third-party service connections",
+        ),
         ("audit", "Audit", "Audit log retention"),
         ("auth", "Authentication", "Login policy and access controls"),
     ];
@@ -217,7 +242,9 @@ async fn fetch_settings_by_category(settings_service: &SettingsService) -> Vec<S
 
     for (name, display_name, description) in category_meta {
         if let Some(category) = all_categories.iter().find(|c| c.name == name) {
-            let settings: Vec<SettingInfo> = category.settings.iter()
+            let settings: Vec<SettingInfo> = category
+                .settings
+                .iter()
                 .map(|s| setting_to_info(s))
                 .collect();
 
@@ -237,7 +264,8 @@ async fn fetch_settings_by_category(settings_service: &SettingsService) -> Vec<S
 
 fn setting_to_info(setting: &AppSetting) -> SettingInfo {
     // Extract display name from key (e.g., "org.name" -> "Name")
-    let display_name = setting.key
+    let display_name = setting
+        .key
         .split('.')
         .last()
         .unwrap_or(&setting.key)

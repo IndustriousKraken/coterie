@@ -10,8 +10,7 @@ use askama::Template;
 use axum::{
     extract::State,
     response::{IntoResponse, Response},
-    Extension,
-    Form,
+    Extension, Form,
 };
 use serde::Deserialize;
 
@@ -19,12 +18,19 @@ use crate::{
     api::middleware::auth::{CurrentUser, SessionInfo},
     auth::CsrfService,
     config::Settings,
-    email::{self, templates::{WelcomeHtml, WelcomeText}, EmailSender},
+    email::{
+        self,
+        templates::{WelcomeHtml, WelcomeText},
+        EmailSender,
+    },
     service::{
         audit_service::AuditService,
         settings_service::{SettingsService, UpdateEmailConfig},
     },
-    web::{portal::admin::test_result::test_result_html, templates::{BaseContext, HtmlTemplate}},
+    web::{
+        portal::admin::test_result::test_result_html,
+        templates::{BaseContext, HtmlTemplate},
+    },
 };
 
 #[derive(Template)]
@@ -65,7 +71,8 @@ pub async fn email_settings_page(
         &session_info,
         None,
         None,
-    ).await
+    )
+    .await
 }
 
 async fn render_page(
@@ -81,8 +88,7 @@ async fn render_page(
     // If the password is undecryptable (session_secret rotated), we
     // still want to show the page — fall back to default config so
     // the admin can see the warning banner and re-enter credentials.
-    let password_undecryptable = settings_service
-        .smtp_password_undecryptable().await;
+    let password_undecryptable = settings_service.smtp_password_undecryptable().await;
 
     let cfg = settings_service
         .get_email_config()
@@ -90,11 +96,17 @@ async fn render_page(
         .unwrap_or_default();
 
     let last_test_at = settings_service
-        .get_value("email.last_test_at").await.unwrap_or_default();
+        .get_value("email.last_test_at")
+        .await
+        .unwrap_or_default();
     let last_test_ok = settings_service
-        .get_bool("email.last_test_ok").await.unwrap_or(false);
+        .get_bool("email.last_test_ok")
+        .await
+        .unwrap_or(false);
     let last_test_error = settings_service
-        .get_value("email.last_test_error").await.unwrap_or_default();
+        .get_value("email.last_test_error")
+        .await
+        .unwrap_or_default();
 
     let last_test_status = if last_test_at.is_empty() {
         "never"
@@ -102,7 +114,8 @@ async fn render_page(
         "ok"
     } else {
         "failed"
-    }.to_string();
+    }
+    .to_string();
 
     HtmlTemplate(AdminEmailSettingsTemplate {
         base,
@@ -119,7 +132,8 @@ async fn render_page(
         password_undecryptable,
         flash_success,
         flash_error,
-    }).into_response()
+    })
+    .into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -153,29 +167,44 @@ pub async fn update_email_settings(
         .unwrap_or(false);
     if !csrf_valid {
         return render_page(
-            &settings_service, &csrf_service, &current_user, &session_info,
+            &settings_service,
+            &csrf_service,
+            &current_user,
+            &session_info,
             None,
             Some("Invalid CSRF token. Please reload and try again.".to_string()),
-        ).await;
+        )
+        .await;
     }
 
     // Validate inputs
     if form.mode != "log" && form.mode != "smtp" {
         return render_page(
-            &settings_service, &csrf_service, &current_user, &session_info,
+            &settings_service,
+            &csrf_service,
+            &current_user,
+            &session_info,
             None,
             Some("Mode must be 'log' or 'smtp'.".to_string()),
-        ).await;
+        )
+        .await;
     }
 
     let smtp_port: u16 = match form.smtp_port.parse() {
         Ok(p) if p > 0 => p,
         _ => {
             return render_page(
-                &settings_service, &csrf_service, &current_user, &session_info,
+                &settings_service,
+                &csrf_service,
+                &current_user,
+                &session_info,
                 None,
-                Some("SMTP port must be a positive number (common values: 587, 465, 25).".to_string()),
-            ).await;
+                Some(
+                    "SMTP port must be a positive number (common values: 587, 465, 25)."
+                        .to_string(),
+                ),
+            )
+            .await;
         }
     };
 
@@ -208,28 +237,38 @@ pub async fn update_email_settings(
             // new values (they include an SMTP password in plaintext
             // form on the way in — the audit row would defeat the
             // encryption-at-rest we do for the settings table).
-            audit_service.log(
-                Some(current_user.member.id),
-                "update_email_config",
-                "settings",
-                "email",
-                None,
-                None,
-                None,
-            ).await;
+            audit_service
+                .log(
+                    Some(current_user.member.id),
+                    "update_email_config",
+                    "settings",
+                    "email",
+                    None,
+                    None,
+                    None,
+                )
+                .await;
             render_page(
-                &settings_service, &csrf_service, &current_user, &session_info,
+                &settings_service,
+                &csrf_service,
+                &current_user,
+                &session_info,
                 Some("Email settings saved.".to_string()),
                 None,
-            ).await
+            )
+            .await
         }
         Err(e) => {
             tracing::error!("update_email_config failed: {}", e);
             render_page(
-                &settings_service, &csrf_service, &current_user, &session_info,
+                &settings_service,
+                &csrf_service,
+                &current_user,
+                &session_info,
                 None,
                 Some(format!("Failed to save settings: {}", e)),
-            ).await
+            )
+            .await
         }
     }
 }
@@ -254,7 +293,6 @@ pub async fn send_test_email(
     Extension(current_user): Extension<CurrentUser>,
     Form(form): Form<TestEmailForm>,
 ) -> impl IntoResponse {
-
     // Prefer the override, fall back to the admin's own address.
     let admin_email = match form.to.trim() {
         "" => current_user.member.email.clone(),
@@ -271,8 +309,10 @@ pub async fn send_test_email(
 
     // Look up org name for the subject line / body.
     let org_name = settings_service
-        .get_value("org.name").await
-        .ok().filter(|s| !s.is_empty())
+        .get_value("org.name")
+        .await
+        .ok()
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Coterie".to_string());
 
     let portal_url = format!(
@@ -286,11 +326,15 @@ pub async fn send_test_email(
     // Test message: never includes the Discord-invite line — it's just
     // a "your SMTP works" smoke test, not an actual welcome.
     let html = WelcomeHtml {
-        full_name: &full_name, org_name: &org_name, portal_url: &portal_url,
+        full_name: &full_name,
+        org_name: &org_name,
+        portal_url: &portal_url,
         discord_invite: None,
     };
     let text = WelcomeText {
-        full_name: &full_name, org_name: &org_name, portal_url: &portal_url,
+        full_name: &full_name,
+        org_name: &org_name,
+        portal_url: &portal_url,
         discord_invite: None,
     };
     let message = match email::message_from_templates(
@@ -319,7 +363,11 @@ pub async fn send_test_email(
     }
 
     if ok {
-        test_result_html("test-result", true, &format!("Test email sent to {}.", admin_email))
+        test_result_html(
+            "test-result",
+            true,
+            &format!("Test email sent to {}.", admin_email),
+        )
     } else {
         test_result_html("test-result", false, &error_text)
     }

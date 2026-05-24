@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use askama::Template;
 use axum::{
-    extract::{Path, State, Query},
+    extract::{Path, Query, State},
     response::IntoResponse,
     Extension,
 };
@@ -50,15 +50,13 @@ pub async fn events_list_api(
     let member_id = current_user.member.id;
 
     // Get upcoming events (past events not currently supported)
-    let events = event_repo
-        .list_upcoming(50)
-        .await
-        .unwrap_or_default();
+    let events = event_repo.list_upcoming(50).await.unwrap_or_default();
 
     let now = chrono::Utc::now();
 
     // Filter events by type (past events not currently supported by repository)
-    let filtered_events: Vec<_> = events.into_iter()
+    let filtered_events: Vec<_> = events
+        .into_iter()
         .filter(|e| {
             // Filter by type
             if let Some(ref event_type) = query.event_type {
@@ -74,7 +72,8 @@ pub async fn events_list_api(
         return axum::response::Html(
             r#"<div class="bg-white rounded-lg shadow-sm p-6 text-center text-gray-500">
                 No events found matching your criteria
-            </div>"#.to_string()
+            </div>"#
+                .to_string(),
         );
     }
 
@@ -135,12 +134,19 @@ pub async fn events_list_api(
             image_html,
             type_badge_color,
             event.event_type,
-            if is_past { r#"<span class="text-xs text-gray-500">Past event</span>"# } else { "" },
+            if is_past {
+                r#"<span class="text-xs text-gray-500">Past event</span>"#
+            } else {
+                ""
+            },
             crate::web::escape_html(&event.title),
             crate::web::escape_html(&event.description),
             event.start_time.format("%B %d, %Y"),
             event.start_time.format("%l:%M %p"),
-            event.location.map(|l| format!(r#"<p>Location: {}</p>"#, crate::web::escape_html(&l))).unwrap_or_default(),
+            event
+                .location
+                .map(|l| format!(r#"<p>Location: {}</p>"#, crate::web::escape_html(&l)))
+                .unwrap_or_default(),
             rsvp_button,
         ));
     }
@@ -203,10 +209,7 @@ pub async fn rsvp_event(
     let member_id = current_user.member.id;
 
     // Register attendance
-    if let Err(e) = event_repo
-        .register_attendance(event_id, member_id)
-        .await
-    {
+    if let Err(e) = event_repo.register_attendance(event_id, member_id).await {
         return axum::response::Html(format!(
             r#"<div class="text-red-600 text-sm">Error: {}</div>"#,
             crate::web::escape_html(&e.to_string())
@@ -229,10 +232,7 @@ pub async fn cancel_rsvp_event(
     let member_id = current_user.member.id;
 
     // Cancel attendance
-    if let Err(e) = event_repo
-        .cancel_attendance(event_id, member_id)
-        .await
-    {
+    if let Err(e) = event_repo.cancel_attendance(event_id, member_id).await {
         return axum::response::Html(format!(
             r#"<div class="text-red-600 text-sm">Error: {}</div>"#,
             crate::web::escape_html(&e.to_string())
@@ -240,8 +240,5 @@ pub async fn cancel_rsvp_event(
     }
 
     // Return updated button (shows RSVP button again)
-    axum::response::Html(render_rsvp_button(
-        &event_id.to_string(),
-        None,
-    ))
+    axum::response::Html(render_rsvp_button(&event_id.to_string(), None))
 }

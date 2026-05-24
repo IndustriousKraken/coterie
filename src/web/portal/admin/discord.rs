@@ -9,8 +9,7 @@ use askama::Template;
 use axum::{
     extract::State,
     response::{IntoResponse, Response},
-    Extension,
-    Form,
+    Extension, Form,
 };
 use serde::Deserialize;
 
@@ -24,7 +23,10 @@ use crate::{
         audit_service::AuditService,
         settings_service::{SettingsService, UpdateDiscordConfig},
     },
-    web::{portal::admin::test_result::test_result_html, templates::{BaseContext, HtmlTemplate}},
+    web::{
+        portal::admin::test_result::test_result_html,
+        templates::{BaseContext, HtmlTemplate},
+    },
 };
 
 #[derive(Template)]
@@ -57,7 +59,15 @@ pub async fn discord_settings_page(
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
 ) -> Response {
-    render_page(&settings_service, &csrf_service, &current_user, &session_info, None, None).await
+    render_page(
+        &settings_service,
+        &csrf_service,
+        &current_user,
+        &session_info,
+        None,
+        None,
+    )
+    .await
 }
 
 async fn render_page(
@@ -70,19 +80,25 @@ async fn render_page(
 ) -> Response {
     let base = BaseContext::for_member(csrf_service, current_user, session_info).await;
 
-    let token_undecryptable = settings_service
-        .discord_token_undecryptable().await;
+    let token_undecryptable = settings_service.discord_token_undecryptable().await;
 
     let cfg = settings_service
-        .get_discord_config().await
+        .get_discord_config()
+        .await
         .unwrap_or_default();
 
     let last_test_at = settings_service
-        .get_value("discord.last_test_at").await.unwrap_or_default();
+        .get_value("discord.last_test_at")
+        .await
+        .unwrap_or_default();
     let last_test_ok = settings_service
-        .get_bool("discord.last_test_ok").await.unwrap_or(false);
+        .get_bool("discord.last_test_ok")
+        .await
+        .unwrap_or(false);
     let last_test_error = settings_service
-        .get_value("discord.last_test_error").await.unwrap_or_default();
+        .get_value("discord.last_test_error")
+        .await
+        .unwrap_or_default();
 
     let last_test_status = if last_test_at.is_empty() {
         "never"
@@ -90,7 +106,8 @@ async fn render_page(
         "ok"
     } else {
         "failed"
-    }.to_string();
+    }
+    .to_string();
 
     HtmlTemplate(DiscordSettingsTemplate {
         base,
@@ -109,7 +126,8 @@ async fn render_page(
         last_test_error,
         flash_success,
         flash_error,
-    }).into_response()
+    })
+    .into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,10 +163,14 @@ pub async fn update_discord_settings(
         .unwrap_or(false);
     if !csrf_valid {
         return render_page(
-            &settings_service, &csrf_service, &current_user, &session_info,
+            &settings_service,
+            &csrf_service,
+            &current_user,
+            &session_info,
             None,
             Some("Invalid CSRF token. Reload and try again.".to_string()),
-        ).await;
+        )
+        .await;
     }
 
     // Validate any provided snowflakes (empty is OK — means "not configured").
@@ -160,7 +182,15 @@ pub async fn update_discord_settings(
         ("Announcements channel ID", &form.announcements_channel_id),
         ("Admin alerts channel ID", &form.admin_alerts_channel_id),
     ]) {
-        return render_page(&settings_service, &csrf_service, &current_user, &session_info, None, Some(err)).await;
+        return render_page(
+            &settings_service,
+            &csrf_service,
+            &current_user,
+            &session_info,
+            None,
+            Some(err),
+        )
+        .await;
     }
 
     // Invite URL: if non-empty, must look like https://discord.gg/... or .com.
@@ -169,10 +199,17 @@ pub async fn update_discord_settings(
             || form.invite_url.starts_with("https://discord.com/invite/"))
     {
         return render_page(
-            &settings_service, &csrf_service, &current_user, &session_info,
+            &settings_service,
+            &csrf_service,
+            &current_user,
+            &session_info,
             None,
-            Some("Invite URL should start with https://discord.gg/ or https://discord.com/invite/".to_string()),
-        ).await;
+            Some(
+                "Invite URL should start with https://discord.gg/ or https://discord.com/invite/"
+                    .to_string(),
+            ),
+        )
+        .await;
     }
 
     let bot_token = match form.bot_token.as_str() {
@@ -200,20 +237,38 @@ pub async fn update_discord_settings(
         Ok(_) => {
             // Audit but don't include bot token in the row (it'd be
             // plaintext from the form — defeats the encryption-at-rest).
-            audit_service.log(
-                Some(current_user.member.id),
-                "update_discord_config",
-                "settings",
-                "discord",
-                None, None, None,
-            ).await;
-            render_page(&settings_service, &csrf_service, &current_user, &session_info,
-                Some("Discord settings saved.".to_string()), None).await
+            audit_service
+                .log(
+                    Some(current_user.member.id),
+                    "update_discord_config",
+                    "settings",
+                    "discord",
+                    None,
+                    None,
+                    None,
+                )
+                .await;
+            render_page(
+                &settings_service,
+                &csrf_service,
+                &current_user,
+                &session_info,
+                Some("Discord settings saved.".to_string()),
+                None,
+            )
+            .await
         }
         Err(e) => {
             tracing::error!("update_discord_config failed: {}", e);
-            render_page(&settings_service, &csrf_service, &current_user, &session_info,
-                None, Some(format!("Failed to save: {}", e))).await
+            render_page(
+                &settings_service,
+                &csrf_service,
+                &current_user,
+                &session_info,
+                None,
+                Some(format!("Failed to save: {}", e)),
+            )
+            .await
         }
     }
 }
@@ -238,17 +293,24 @@ pub async fn test_discord_connection(
     State(settings_service): State<Arc<SettingsService>>,
     Extension(current_user): Extension<CurrentUser>,
 ) -> impl IntoResponse {
-
     let cfg = match settings_service.get_discord_config().await {
         Ok(c) => c,
         Err(e) => {
             // Most likely the token can't be decrypted (session_secret rotated).
-            return test_result_html("discord-test-result", false, &format!("Couldn't load Discord config: {}", e));
+            return test_result_html(
+                "discord-test-result",
+                false,
+                &format!("Couldn't load Discord config: {}", e),
+            );
         }
     };
 
     if cfg.bot_token.is_empty() {
-        return test_result_html("discord-test-result", false, "No bot token configured. Paste one above and save first.");
+        return test_result_html(
+            "discord-test-result",
+            false,
+            "No bot token configured. Paste one above and save first.",
+        );
     }
 
     let client = DiscordClient::new(cfg.bot_token);
@@ -258,7 +320,10 @@ pub async fn test_discord_connection(
                 Some(d) if !d.is_empty() && d != "0" => format!("{}#{}", user.username, d),
                 _ => user.username,
             };
-            (true, format!("Connected as Discord bot: {} (id: {})", identity, user.id))
+            (
+                true,
+                format!("Connected as Discord bot: {} (id: {})", identity, user.id),
+            )
         }
         Err(e) => (false, e.to_string()),
     };
@@ -287,30 +352,39 @@ pub async fn reconcile_roles(
     State(member_repo): State<Arc<dyn MemberRepository>>,
     Extension(current_user): Extension<CurrentUser>,
 ) -> impl IntoResponse {
-
     let cfg = match settings_service.get_discord_config().await {
         Ok(c) => c,
-        Err(e) => return test_result_html("discord-test-result", false, &format!("Couldn't load Discord config: {}", e)),
+        Err(e) => {
+            return test_result_html(
+                "discord-test-result",
+                false,
+                &format!("Couldn't load Discord config: {}", e),
+            )
+        }
     };
     if !cfg.enabled || cfg.bot_token.is_empty() || cfg.guild_id.is_empty() {
-        return test_result_html("discord-test-result", false, "Discord integration isn't enabled or configured.");
+        return test_result_html(
+            "discord-test-result",
+            false,
+            "Discord integration isn't enabled or configured.",
+        );
     }
 
-    let integration = DiscordIntegration::new(
-        settings_service.clone(),
-        settings.server.base_url.clone(),
-    );
-    let summary = integration
-        .reconcile_all(member_repo.clone())
-        .await;
+    let integration =
+        DiscordIntegration::new(settings_service.clone(), settings.server.base_url.clone());
+    let summary = integration.reconcile_all(member_repo.clone()).await;
 
-    audit_service.log(
-        Some(current_user.member.id),
-        "discord_reconcile_manual",
-        "settings",
-        "discord",
-        None, None, None,
-    ).await;
+    audit_service
+        .log(
+            Some(current_user.member.id),
+            "discord_reconcile_manual",
+            "settings",
+            "discord",
+            None,
+            None,
+            None,
+        )
+        .await;
 
     let detail = format!(
         "Reconciled {} member(s). Skipped {} with invalid Discord ID, {} pending.",

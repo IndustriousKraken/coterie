@@ -18,6 +18,7 @@ use axum::{
 use serde::Deserialize;
 use sqlx::SqlitePool;
 
+use super::{is_admin, MemberInfo};
 use crate::{
     api::middleware::auth::{CurrentUser, SessionInfo},
     auth::{CsrfService, TotpService},
@@ -27,7 +28,6 @@ use crate::{
     },
     web::templates::{BaseContext, HtmlTemplate},
 };
-use super::{MemberInfo, is_admin};
 
 #[derive(Template)]
 #[template(path = "portal/security.html")]
@@ -86,11 +86,12 @@ pub async fn security_page(
         .unwrap_or(false);
 
     let remaining = if totp_enabled {
-        crate::auth::recovery_codes::remaining_count(
-            &db_pool,
-            current_user.member.id,
-        ).await.unwrap_or(0)
-    } else { 0 };
+        crate::auth::recovery_codes::remaining_count(&db_pool, current_user.member.id)
+            .await
+            .unwrap_or(0)
+    } else {
+        0
+    };
 
     // Banner conditions: admin, no TOTP, and either the toggle is on
     // OR the user just got bounced here (?reason=admin_totp_required).
@@ -98,18 +99,19 @@ pub async fn security_page(
     // bounce) means an admin who navigates here directly can see why
     // they're being asked to enroll.
     let enforce = settings_service
-        .get_setting("auth.require_totp_for_admins").await
+        .get_setting("auth.require_totp_for_admins")
+        .await
         .ok()
         .map(|s| s.value == "true")
         .unwrap_or(false);
     let bounced = query.reason.as_deref() == Some("admin_totp_required");
-    let admin_must_enroll = is_admin(&current_user.member)
-        && !totp_enabled
-        && (enforce || bounced);
+    let admin_must_enroll = is_admin(&current_user.member) && !totp_enabled && (enforce || bounced);
 
     let membership_type_name = membership_type_service
-        .get(current_user.member.membership_type_id).await
-        .ok().flatten()
+        .get(current_user.member.membership_type_id)
+        .await
+        .ok()
+        .flatten()
         .map(|mt| mt.name)
         .unwrap_or_else(|| "(unknown)".to_string());
 
@@ -150,31 +152,36 @@ pub async fn enroll_start(
     // overwrite the existing secret. Re-enrollment goes via disable
     // → enroll deliberately.
     let already = totp_service
-        .is_enabled(current_user.member.id).await.unwrap_or(false);
+        .is_enabled(current_user.member.id)
+        .await
+        .unwrap_or(false);
     if already {
         return Html(
             r#"<div class="p-3 bg-yellow-50 text-yellow-800 rounded-md text-sm">
                 Two-factor authentication is already enabled.
-            </div>"#.to_string()
-        ).into_response();
+            </div>"#
+                .to_string(),
+        )
+        .into_response();
     }
 
-    let init = match totp_service
-        .begin_enrollment(&current_user.member.email)
-    {
+    let init = match totp_service.begin_enrollment(&current_user.member.email) {
         Ok(i) => i,
         Err(e) => {
             tracing::error!("begin_enrollment failed: {}", e);
             return Html(
                 r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">
                     Couldn't start enrollment. Please try again.
-                </div>"#.to_string()
-            ).into_response();
+                </div>"#
+                    .to_string(),
+            )
+            .into_response();
         }
     };
 
     let csrf_token = csrf_service
-        .generate_token(&session_info.session_id).await
+        .generate_token(&session_info.session_id)
+        .await
         .unwrap_or_else(|_| String::new());
 
     HtmlTemplate(EnrollQrTemplate {
@@ -182,7 +189,8 @@ pub async fn enroll_start(
         secret_base32: init.secret_base32,
         qr_svg: init.qr_svg,
         error: None,
-    }).into_response()
+    })
+    .into_response()
 }
 
 // --------------------------------------------------------------------
@@ -214,7 +222,8 @@ pub async fn enroll_confirm(
             &form.secret_base32,
             &form.code,
             &current_user.member.email,
-        ).await
+        )
+        .await
     {
         Ok(b) => b,
         Err(e) => {
@@ -224,7 +233,8 @@ pub async fn enroll_confirm(
     };
 
     let csrf_token = csrf_service
-        .generate_token(&session_info.session_id).await
+        .generate_token(&session_info.session_id)
+        .await
         .unwrap_or_else(|_| String::new());
 
     if !ok {
@@ -235,43 +245,47 @@ pub async fn enroll_confirm(
             secret_base32: form.secret_base32,
             qr_svg: String::new(), // QR isn't needed on retry — secret unchanged
             error: Some("Code didn't match — try the next one your app shows.".to_string()),
-        }).into_response();
+        })
+        .into_response();
     }
 
     // Code accepted. Issue recovery codes (this is the ONLY time the
     // user sees them) and render the codes-display fragment.
-    let codes = match crate::auth::recovery_codes::issue_for_member(
-        &db_pool,
-        current_user.member.id,
-    ).await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("issue_for_member failed: {}", e);
-            // Roll back enrollment so we don't leave the member in a
-            // half-state with no recovery codes — they'd be locked out
-            // if their authenticator app got wiped.
-            let _ = totp_service
-                .disable(current_user.member.id).await;
-            return error_html("Couldn't finalize 2FA setup. Please try again.");
-        }
-    };
+    let codes =
+        match crate::auth::recovery_codes::issue_for_member(&db_pool, current_user.member.id).await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("issue_for_member failed: {}", e);
+                // Roll back enrollment so we don't leave the member in a
+                // half-state with no recovery codes — they'd be locked out
+                // if their authenticator app got wiped.
+                let _ = totp_service.disable(current_user.member.id).await;
+                return error_html("Couldn't finalize 2FA setup. Please try again.");
+            }
+        };
 
-    audit_service.log(
-        Some(current_user.member.id),
-        "totp_enroll",
-        "member",
-        &current_user.member.id.to_string(),
-        None, None, None,
-    ).await;
+    audit_service
+        .log(
+            Some(current_user.member.id),
+            "totp_enroll",
+            "member",
+            &current_user.member.id.to_string(),
+            None,
+            None,
+            None,
+        )
+        .await;
 
     HtmlTemplate(RecoveryCodesTemplate {
         codes,
         heading: "Two-factor authentication enabled".to_string(),
-        subheading:
-            "Save these recovery codes somewhere safe. Each works exactly once \
+        subheading: "Save these recovery codes somewhere safe. Each works exactly once \
              if you ever lose access to your authenticator app. Coterie can't \
-             show them again.".to_string(),
-    }).into_response()
+             show them again."
+            .to_string(),
+    })
+    .into_response()
 }
 
 // --------------------------------------------------------------------
@@ -295,16 +309,19 @@ pub async fn disable(
     axum::Form(form): axum::Form<DisableRequest>,
 ) -> Response {
     let totp_ok = totp_service
-        .verify_for_member(current_user.member.id, &form.code, &current_user.member.email)
-        .await.unwrap_or(false);
+        .verify_for_member(
+            current_user.member.id,
+            &form.code,
+            &current_user.member.email,
+        )
+        .await
+        .unwrap_or(false);
     let recovery_ok = if totp_ok {
         false
     } else {
-        crate::auth::recovery_codes::try_consume(
-            &db_pool,
-            current_user.member.id,
-            &form.code,
-        ).await.unwrap_or(false)
+        crate::auth::recovery_codes::try_consume(&db_pool, current_user.member.id, &form.code)
+            .await
+            .unwrap_or(false)
     };
     if !totp_ok && !recovery_ok {
         return error_html("Code didn't match. 2FA is still enabled.");
@@ -315,13 +332,17 @@ pub async fn disable(
         return error_html("Couldn't disable 2FA. Please try again.");
     }
 
-    audit_service.log(
-        Some(current_user.member.id),
-        "totp_disable",
-        "member",
-        &current_user.member.id.to_string(),
-        None, None, None,
-    ).await;
+    audit_service
+        .log(
+            Some(current_user.member.id),
+            "totp_disable",
+            "member",
+            &current_user.member.id.to_string(),
+            None,
+            None,
+            None,
+        )
+        .await;
 
     // Tell HTMX to reload the page so the buttons / status flip back.
     let mut headers = axum::http::HeaderMap::new();
@@ -351,58 +372,68 @@ pub async fn regenerate_recovery_codes(
 ) -> Response {
     // Must already be enrolled — regenerate is meaningless otherwise.
     let enabled = totp_service
-        .is_enabled(current_user.member.id).await.unwrap_or(false);
+        .is_enabled(current_user.member.id)
+        .await
+        .unwrap_or(false);
     if !enabled {
         return error_html("Two-factor authentication isn't enabled.");
     }
 
     let totp_ok = totp_service
-        .verify_for_member(current_user.member.id, &form.code, &current_user.member.email)
-        .await.unwrap_or(false);
+        .verify_for_member(
+            current_user.member.id,
+            &form.code,
+            &current_user.member.email,
+        )
+        .await
+        .unwrap_or(false);
     let recovery_ok = if totp_ok {
         false
     } else {
-        crate::auth::recovery_codes::try_consume(
-            &db_pool,
-            current_user.member.id,
-            &form.code,
-        ).await.unwrap_or(false)
+        crate::auth::recovery_codes::try_consume(&db_pool, current_user.member.id, &form.code)
+            .await
+            .unwrap_or(false)
     };
     if !totp_ok && !recovery_ok {
         return error_html("Code didn't match. Recovery codes were not regenerated.");
     }
 
-    let codes = match crate::auth::recovery_codes::issue_for_member(
-        &db_pool,
-        current_user.member.id,
-    ).await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("issue_for_member (regenerate) failed: {}", e);
-            return error_html("Couldn't generate new codes. Please try again.");
-        }
-    };
+    let codes =
+        match crate::auth::recovery_codes::issue_for_member(&db_pool, current_user.member.id).await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("issue_for_member (regenerate) failed: {}", e);
+                return error_html("Couldn't generate new codes. Please try again.");
+            }
+        };
 
-    audit_service.log(
-        Some(current_user.member.id),
-        "totp_recovery_regenerate",
-        "member",
-        &current_user.member.id.to_string(),
-        None, None, None,
-    ).await;
+    audit_service
+        .log(
+            Some(current_user.member.id),
+            "totp_recovery_regenerate",
+            "member",
+            &current_user.member.id.to_string(),
+            None,
+            None,
+            None,
+        )
+        .await;
 
     HtmlTemplate(RecoveryCodesTemplate {
         codes,
         heading: "New recovery codes generated".to_string(),
-        subheading:
-            "Your old codes no longer work. Save these somewhere safe — \
-             each works exactly once.".to_string(),
-    }).into_response()
+        subheading: "Your old codes no longer work. Save these somewhere safe — \
+             each works exactly once."
+            .to_string(),
+    })
+    .into_response()
 }
 
 fn error_html(msg: &str) -> Response {
     Html(format!(
         r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">{}</div>"#,
         crate::web::escape_html(msg),
-    )).into_response()
+    ))
+    .into_response()
 }

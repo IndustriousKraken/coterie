@@ -1,22 +1,18 @@
 use std::sync::Arc;
 
 use askama::Template;
-use axum::{
-    extract::State,
-    response::IntoResponse,
-    Extension,
-};
+use axum::{extract::State, response::IntoResponse, Extension};
 use serde::Deserialize;
 use sqlx::SqlitePool;
 
+use super::MemberInfo;
 use crate::{
     api::middleware::auth::{CurrentUser, SessionInfo},
     auth::CsrfService,
     repository::MemberRepository,
     service::membership_type_service::MembershipTypeService,
-    web::templates::{BaseContext, HtmlTemplate, filters},
+    web::templates::{filters, BaseContext, HtmlTemplate},
 };
-use super::MemberInfo;
 
 #[derive(Template)]
 #[template(path = "portal/profile.html")]
@@ -32,8 +28,10 @@ pub async fn profile_page(
     Extension(session_info): Extension<SessionInfo>,
 ) -> impl IntoResponse {
     let membership_type_name = membership_type_service
-        .get(current_user.member.membership_type_id).await
-        .ok().flatten()
+        .get(current_user.member.membership_type_id)
+        .await
+        .ok()
+        .flatten()
         .map(|mt| mt.name)
         .unwrap_or_else(|| "(unknown)".to_string());
 
@@ -81,7 +79,10 @@ pub async fn update_profile(
             axum::response::Response::builder()
                 .status(200)
                 .header("HX-Redirect", "/portal/profile")
-                .header("X-Toast", r#"{"message":"Profile updated successfully!","type":"success"}"#)
+                .header(
+                    "X-Toast",
+                    r#"{"message":"Profile updated successfully!","type":"success"}"#,
+                )
                 .body(axum::body::Body::empty())
                 .unwrap()
         }
@@ -115,7 +116,8 @@ pub async fn update_password(
         return axum::response::Html(
             r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">
                 New passwords do not match
-            </div>"#.to_string()
+            </div>"#
+                .to_string(),
         );
     }
 
@@ -128,10 +130,10 @@ pub async fn update_password(
     }
 
     // Verify current password
-    let password_hash = crate::auth::get_password_hash(
-        &db_pool,
-        &current_user.member.email
-    ).await.ok().flatten();
+    let password_hash = crate::auth::get_password_hash(&db_pool, &current_user.member.email)
+        .await
+        .ok()
+        .flatten();
 
     let password_valid = if let Some(hash) = password_hash {
         crate::auth::AuthService::verify_password(&form.current_password, &hash)
@@ -145,13 +147,14 @@ pub async fn update_password(
         return axum::response::Html(
             r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">
                 Current password is incorrect
-            </div>"#.to_string()
+            </div>"#
+                .to_string(),
         );
     }
 
     // Hash new password and update
+    use argon2::password_hash::{rand_core::OsRng, SaltString};
     use argon2::{Argon2, PasswordHasher};
-    use argon2::password_hash::{SaltString, rand_core::OsRng};
 
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
@@ -162,7 +165,8 @@ pub async fn update_password(
             return axum::response::Html(
                 r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">
                     Failed to update password
-                </div>"#.to_string()
+                </div>"#
+                    .to_string(),
             );
         }
     };
@@ -176,12 +180,14 @@ pub async fn update_password(
         Ok(()) => axum::response::Html(
             r#"<div class="p-3 bg-green-50 text-green-800 rounded-md text-sm">
                 Password updated successfully!
-            </div>"#.to_string()
+            </div>"#
+                .to_string(),
         ),
         Err(_) => axum::response::Html(
             r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">
                 Failed to update password
-            </div>"#.to_string()
+            </div>"#
+                .to_string(),
         ),
     }
 }

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use askama::Template;
 use axum::{
-    extract::{State, Query, Path, Multipart},
+    extract::{Multipart, Path, Query, State},
     response::IntoResponse,
     Extension,
 };
@@ -113,22 +113,26 @@ pub async fn admin_events_page(
     let type_filter = query.event_type.clone().unwrap_or_default();
     let visibility_filter = query.visibility.clone().unwrap_or_default();
     let time_filter = query.time.clone().unwrap_or_else(|| "upcoming".to_string());
-    let sort_field = query.sort.clone().unwrap_or_else(|| "start_time".to_string());
+    let sort_field = query
+        .sort
+        .clone()
+        .unwrap_or_else(|| "start_time".to_string());
     let sort_order = query.order.clone().unwrap_or_else(|| "asc".to_string());
 
-    let all_events = event_repo
-        .list(1000, 0)
-        .await
-        .unwrap_or_default();
+    let all_events = event_repo.list(1000, 0).await.unwrap_or_default();
 
     let now = chrono::Utc::now();
 
-    let mut filtered_events: Vec<_> = all_events.into_iter()
+    let mut filtered_events: Vec<_> = all_events
+        .into_iter()
         .filter(|e| {
             if !search_query.is_empty() {
                 let matches = e.title.to_lowercase().contains(&search_query)
                     || e.description.to_lowercase().contains(&search_query)
-                    || e.location.as_ref().map(|l| l.to_lowercase().contains(&search_query)).unwrap_or(false);
+                    || e.location
+                        .as_ref()
+                        .map(|l| l.to_lowercase().contains(&search_query))
+                        .unwrap_or(false);
                 if !matches {
                     return false;
                 }
@@ -154,18 +158,23 @@ pub async fn admin_events_page(
             "visibility" => format!("{:?}", a.visibility).cmp(&format!("{:?}", b.visibility)),
             "start_time" | _ => a.start_time.cmp(&b.start_time),
         };
-        if sort_order == "desc" { cmp.reverse() } else { cmp }
+        if sort_order == "desc" {
+            cmp.reverse()
+        } else {
+            cmp
+        }
     });
 
     let total_events = filtered_events.len() as i64;
     let total_pages = (total_events + per_page - 1) / per_page;
 
     let mut paginated_events = Vec::new();
-    for e in filtered_events.into_iter().skip(offset as usize).take(per_page as usize) {
-        let attendee_count = event_repo
-            .get_attendee_count(e.id)
-            .await
-            .unwrap_or(0);
+    for e in filtered_events
+        .into_iter()
+        .skip(offset as usize)
+        .take(per_page as usize)
+    {
+        let attendee_count = event_repo.get_attendee_count(e.id).await.unwrap_or(0);
 
         paginated_events.push(AdminEventInfo {
             id: e.id.to_string(),
@@ -201,7 +210,8 @@ pub async fn admin_events_page(
             time_filter,
             sort_field,
             sort_order,
-        }).into_response()
+        })
+        .into_response()
     } else {
         HtmlTemplate(AdminEventsTemplate {
             base,
@@ -216,7 +226,8 @@ pub async fn admin_events_page(
             time_filter,
             sort_field,
             sort_order,
-        }).into_response()
+        })
+        .into_response()
     }
 }
 
@@ -271,14 +282,15 @@ pub async fn admin_event_detail_page(
 
     let event = match event_repo.find_by_id(id).await {
         Ok(Some(e)) => e,
-        Ok(None) => return partials::admin_alert("error", "Event not found", false).into_response(),
-        Err(_) => return partials::admin_alert("error", "Error loading event", false).into_response(),
+        Ok(None) => {
+            return partials::admin_alert("error", "Event not found", false).into_response()
+        }
+        Err(_) => {
+            return partials::admin_alert("error", "Error loading event", false).into_response()
+        }
     };
 
-    let attendee_count = event_repo
-        .get_attendee_count(event.id)
-        .await
-        .unwrap_or(0);
+    let attendee_count = event_repo.get_attendee_count(event.id).await.unwrap_or(0);
 
     let now = chrono::Utc::now();
 
@@ -290,8 +302,12 @@ pub async fn admin_event_detail_page(
         visibility: format!("{:?}", event.visibility),
         start_time: event.start_time.format("%b %d, %Y %H:%M").to_string(),
         start_time_input: event.start_time.format("%Y-%m-%dT%H:%M").to_string(),
-        end_time: event.end_time.map(|t| t.format("%b %d, %Y %H:%M").to_string()),
-        end_time_input: event.end_time.map(|t| t.format("%Y-%m-%dT%H:%M").to_string()),
+        end_time: event
+            .end_time
+            .map(|t| t.format("%b %d, %Y %H:%M").to_string()),
+        end_time_input: event
+            .end_time
+            .map(|t| t.format("%Y-%m-%dT%H:%M").to_string()),
         location: event.location,
         max_attendees: event.max_attendees,
         rsvp_required: event.rsvp_required,
@@ -305,7 +321,8 @@ pub async fn admin_event_detail_page(
     };
 
     // Fetch active event types for the dropdown
-    let event_types = event_type_service.0
+    let event_types = event_type_service
+        .0
         .list(false)
         .await
         .unwrap_or_default()
@@ -322,7 +339,8 @@ pub async fn admin_event_detail_page(
         base,
         event: detail,
         event_types,
-    }).into_response()
+    })
+    .into_response()
 }
 
 #[derive(Template)]
@@ -341,7 +359,8 @@ pub async fn admin_new_event_page(
     let base = BaseContext::for_member(&csrf_service, &current_user, &session_info).await;
 
     // Fetch active event types for the dropdown
-    let event_types = event_type_service.0
+    let event_types = event_type_service
+        .0
         .list(false)
         .await
         .unwrap_or_default()
@@ -354,10 +373,7 @@ pub async fn admin_new_event_page(
         })
         .collect();
 
-    HtmlTemplate(AdminNewEventTemplate {
-        base,
-        event_types,
-    }).into_response()
+    HtmlTemplate(AdminNewEventTemplate { base, event_types }).into_response()
 }
 
 pub async fn admin_create_event(
@@ -393,7 +409,9 @@ pub async fn admin_create_event(
         let name = field.name().unwrap_or("").to_string();
 
         match name.as_str() {
-            "csrf_token" => { let _ = field.text().await; }
+            "csrf_token" => {
+                let _ = field.text().await;
+            }
             "title" => title = field.text().await.unwrap_or_default(),
             "description" => description = field.text().await.unwrap_or_default(),
             "event_type" => event_type_str = field.text().await.unwrap_or_default(),
@@ -413,7 +431,9 @@ pub async fn admin_create_event(
             "repeat_kind" => repeat_kind = field.text().await.unwrap_or_default(),
             "repeat_interval" => {
                 if let Ok(text) = field.text().await {
-                    if let Ok(n) = text.parse() { repeat_interval = n; }
+                    if let Ok(n) = text.parse() {
+                        repeat_interval = n;
+                    }
                 }
             }
             "repeat_weekdays" => {
@@ -430,7 +450,9 @@ pub async fn admin_create_event(
             "repeat_weekday" => repeat_weekday = field.text().await.unwrap_or_default(),
             "repeat_ordinal" => {
                 if let Ok(text) = field.text().await {
-                    if let Ok(n) = text.parse() { repeat_ordinal = n; }
+                    if let Ok(n) = text.parse() {
+                        repeat_ordinal = n;
+                    }
                 }
             }
             "repeat_until" => repeat_until_str = field.text().await.unwrap_or_default(),
@@ -439,15 +461,30 @@ pub async fn admin_create_event(
                 if !filename.is_empty() {
                     if let Ok(data) = field.bytes().await {
                         if !data.is_empty() {
-                            match save_uploaded_file(&settings.server.uploads_path(), &filename, &data).await {
+                            match save_uploaded_file(
+                                &settings.server.uploads_path(),
+                                &filename,
+                                &data,
+                            )
+                            .await
+                            {
                                 Ok(path) => image_url = Some(path),
-                                Err(e) => return partials::admin_alert("error", &format!("Error uploading image: {}", e), false).into_response(),
+                                Err(e) => {
+                                    return partials::admin_alert(
+                                        "error",
+                                        &format!("Error uploading image: {}", e),
+                                        false,
+                                    )
+                                    .into_response()
+                                }
                             }
                         }
                     }
                 }
             }
-            _ => { let _ = field.bytes().await; }
+            _ => {
+                let _ = field.bytes().await;
+            }
         }
     }
 
@@ -467,9 +504,12 @@ pub async fn admin_create_event(
         _ => EventVisibility::MembersOnly,
     };
 
-    let start_time = match chrono::NaiveDateTime::parse_from_str(&start_time_str, "%Y-%m-%dT%H:%M") {
+    let start_time = match chrono::NaiveDateTime::parse_from_str(&start_time_str, "%Y-%m-%dT%H:%M")
+    {
         Ok(dt) => chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc),
-        Err(_) => return partials::admin_alert("error", "Invalid start time", false).into_response(),
+        Err(_) => {
+            return partials::admin_alert("error", "Invalid start time", false).into_response()
+        }
     };
 
     let end_time = if end_time_str.is_empty() {
@@ -484,13 +524,22 @@ pub async fn admin_create_event(
     // service decides series-vs-single by inspecting input.recurrence.
     let recurrence = if repeat_kind != "none" && !repeat_kind.is_empty() {
         match build_recurrence(
-            &repeat_kind, repeat_interval, &repeat_weekdays,
-            repeat_day, &repeat_weekday, repeat_ordinal,
+            &repeat_kind,
+            repeat_interval,
+            &repeat_weekdays,
+            repeat_day,
+            &repeat_weekday,
+            repeat_ordinal,
         ) {
             Ok(r) => Some(r),
-            Err(msg) => return partials::admin_alert(
-                "error", &format!("Invalid recurrence: {}", msg), false,
-            ).into_response(),
+            Err(msg) => {
+                return partials::admin_alert(
+                    "error",
+                    &format!("Invalid recurrence: {}", msg),
+                    false,
+                )
+                .into_response()
+            }
         }
     } else {
         None
@@ -509,7 +558,11 @@ pub async fn admin_create_event(
         visibility,
         start_time,
         end_time,
-        location: if location_str.is_empty() { None } else { Some(location_str) },
+        location: if location_str.is_empty() {
+            None
+        } else {
+            Some(location_str)
+        },
         max_attendees,
         rsvp_required,
         image_url,
@@ -517,15 +570,16 @@ pub async fn admin_create_event(
         recurrence_until,
     };
 
-    match event_admin_service.create(current_user.member.id, input).await {
+    match event_admin_service
+        .create(current_user.member.id, input)
+        .await
+    {
         Ok(created) => {
-            axum::response::Redirect::to(
-                &format!("/portal/admin/events/{}", created.id),
-            ).into_response()
+            axum::response::Redirect::to(&format!("/portal/admin/events/{}", created.id))
+                .into_response()
         }
-        Err(e) => partials::admin_alert(
-            "error", &format!("Error creating event: {}", e), false,
-        ).into_response(),
+        Err(e) => partials::admin_alert("error", &format!("Error creating event: {}", e), false)
+            .into_response(),
     }
 }
 
@@ -556,10 +610,14 @@ fn build_recurrence(
 
     let rule = match kind {
         "weekly" => {
-            let parsed = weekdays.iter()
+            let parsed = weekdays
+                .iter()
                 .map(|s| parse_wd(s))
                 .collect::<std::result::Result<Vec<_>, _>>()?;
-            Recurrence::WeeklyByDay { interval, weekdays: parsed }
+            Recurrence::WeeklyByDay {
+                interval,
+                weekdays: parsed,
+            }
         }
         "monthly_dom" => {
             let day = day.ok_or("day-of-month is required")?;
@@ -567,7 +625,11 @@ fn build_recurrence(
         }
         "monthly_weekday" => {
             let weekday = parse_wd(weekday)?;
-            Recurrence::MonthlyByWeekdayOrdinal { interval, weekday, ordinal }
+            Recurrence::MonthlyByWeekdayOrdinal {
+                interval,
+                weekday,
+                ordinal,
+            }
         }
         _ => return Err("unknown recurrence kind"),
     };
@@ -601,8 +663,12 @@ pub async fn admin_update_event(
 
     let existing = match event_repo.find_by_id(id).await {
         Ok(Some(e)) => e,
-        Ok(None) => return partials::admin_alert("error", "Event not found", false).into_response(),
-        Err(_) => return partials::admin_alert("error", "Error loading event", false).into_response(),
+        Ok(None) => {
+            return partials::admin_alert("error", "Event not found", false).into_response()
+        }
+        Err(_) => {
+            return partials::admin_alert("error", "Error loading event", false).into_response()
+        }
     };
 
     // Parse multipart form
@@ -625,7 +691,9 @@ pub async fn admin_update_event(
         let name = field.name().unwrap_or("").to_string();
 
         match name.as_str() {
-            "csrf_token" => { let _ = field.text().await; }
+            "csrf_token" => {
+                let _ = field.text().await;
+            }
             "title" => title = field.text().await.unwrap_or_default(),
             "description" => description = field.text().await.unwrap_or_default(),
             "event_type" => event_type_str = field.text().await.unwrap_or_default(),
@@ -652,15 +720,30 @@ pub async fn admin_update_event(
                 if !filename.is_empty() {
                     if let Ok(data) = field.bytes().await {
                         if !data.is_empty() {
-                            match save_uploaded_file(&settings.server.uploads_path(), &filename, &data).await {
+                            match save_uploaded_file(
+                                &settings.server.uploads_path(),
+                                &filename,
+                                &data,
+                            )
+                            .await
+                            {
                                 Ok(path) => new_image_url = Some(path),
-                                Err(e) => return partials::admin_alert("error", &format!("Error uploading image: {}", e), false).into_response(),
+                                Err(e) => {
+                                    return partials::admin_alert(
+                                        "error",
+                                        &format!("Error uploading image: {}", e),
+                                        false,
+                                    )
+                                    .into_response()
+                                }
                             }
                         }
                     }
                 }
             }
-            _ => { let _ = field.bytes().await; }
+            _ => {
+                let _ = field.bytes().await;
+            }
         }
     }
 
@@ -704,7 +787,11 @@ pub async fn admin_update_event(
         old_image.clone()
     };
     // Old file should be dropped when we either replaced it or removed it.
-    let image_to_delete = if image_url != old_image { old_image } else { None };
+    let image_to_delete = if image_url != old_image {
+        old_image
+    } else {
+        None
+    };
 
     let input = UpdateEventInput {
         title,
@@ -714,7 +801,11 @@ pub async fn admin_update_event(
         visibility,
         start_time,
         end_time,
-        location: if location_str.is_empty() { None } else { Some(location_str) },
+        location: if location_str.is_empty() {
+            None
+        } else {
+            Some(location_str)
+        },
         max_attendees,
         rsvp_required,
         image_url,
@@ -729,15 +820,15 @@ pub async fn admin_update_event(
     {
         Ok(u) => u,
         Err(e) => {
-            return partials::admin_alert(
-                "error", &format!("Error updating event: {}", e), false,
-            ).into_response();
+            return partials::admin_alert("error", &format!("Error updating event: {}", e), false)
+                .into_response();
         }
     };
     crate::web::uploads::delete_if_upload(
         &settings.server.uploads_path(),
         image_to_delete.as_deref(),
-    ).await;
+    )
+    .await;
 
     // Series-aware "edit this and all future" path: apply the same
     // mutable subset to every later occurrence in the series.
@@ -745,20 +836,20 @@ pub async fn admin_update_event(
     if edit_scope == "this_and_future" {
         if let Some(series_id) = existing.series_id {
             match event_admin_service
-                .update_series_from(
-                    current_user.member.id, series_id, updated.start_time, input,
-                ).await
+                .update_series_from(current_user.member.id, series_id, updated.start_time, input)
+                .await
             {
                 Ok(n) => future_count = n,
-                Err(e) => tracing::error!(
-                    "edit-this-and-future failed for event {}: {}", id, e,
-                ),
+                Err(e) => tracing::error!("edit-this-and-future failed for event {}: {}", id, e,),
             }
         }
     }
 
     let msg = if edit_scope == "this_and_future" {
-        format!("Event updated. {} future occurrences also updated.", future_count.saturating_sub(1))
+        format!(
+            "Event updated. {} future occurrences also updated.",
+            future_count.saturating_sub(1)
+        )
     } else {
         "Event updated successfully".to_string()
     };
@@ -780,8 +871,12 @@ pub async fn admin_delete_event(
 
     let event = match event_repo.find_by_id(id).await {
         Ok(Some(e)) => e,
-        Ok(None) => return partials::admin_alert("error", "Event not found", false).into_response(),
-        Err(_) => return partials::admin_alert("error", "Error loading event", false).into_response(),
+        Ok(None) => {
+            return partials::admin_alert("error", "Event not found", false).into_response()
+        }
+        Err(_) => {
+            return partials::admin_alert("error", "Error loading event", false).into_response()
+        }
     };
 
     // Series-aware delete scope. "this" is the default and behaves
@@ -800,41 +895,54 @@ pub async fn admin_delete_event(
                 .await
             {
                 Ok(_) => {
-                    return axum::response::Redirect::to(
-                        &format!("/portal/admin/events/{}", id),
-                    ).into_response();
+                    return axum::response::Redirect::to(&format!("/portal/admin/events/{}", id))
+                        .into_response();
                 }
                 Err(e) => {
                     return partials::admin_alert(
-                        "error", &format!("Error ending series: {}", e), false,
-                    ).into_response();
+                        "error",
+                        &format!("Error ending series: {}", e),
+                        false,
+                    )
+                    .into_response();
                 }
             }
         }
 
-        match event_admin_service.delete_series(current_user.member.id, sid).await {
+        match event_admin_service
+            .delete_series(current_user.member.id, sid)
+            .await
+        {
             Ok(_) => {
                 return axum::response::Redirect::to("/portal/admin/events").into_response();
             }
             Err(e) => {
                 return partials::admin_alert(
-                    "error", &format!("Error deleting series: {}", e), false,
-                ).into_response();
+                    "error",
+                    &format!("Error deleting series: {}", e),
+                    false,
+                )
+                .into_response();
             }
         }
     }
 
     // Default: delete this single row, scope=="this".
     let image_to_delete = event.image_url.clone();
-    match event_admin_service.delete_one(current_user.member.id, id).await {
+    match event_admin_service
+        .delete_one(current_user.member.id, id)
+        .await
+    {
         Ok(_) => {
             crate::web::uploads::delete_if_upload(
                 &settings.server.uploads_path(),
                 image_to_delete.as_deref(),
-            ).await;
+            )
+            .await;
             axum::response::Redirect::to("/portal/admin/events").into_response()
         }
-        Err(e) => partials::admin_alert("error", &format!("Error deleting event: {}", e), false).into_response(),
+        Err(e) => partials::admin_alert("error", &format!("Error deleting event: {}", e), false)
+            .into_response(),
     }
 }
 

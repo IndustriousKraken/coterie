@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use askama::Template;
 use axum::{
-    extract::{State, Query, Path, Multipart},
+    extract::{Multipart, Path, Query, State},
     response::IntoResponse,
     Extension,
 };
@@ -39,7 +39,10 @@ fn parse_scheduled_publish_at(raw: &str) -> Option<chrono::DateTime<chrono::Utc>
     let parsed = chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%dT%H:%M")
         .or_else(|_| chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%dT%H:%M:%S"))
         .ok()?;
-    Some(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(parsed, chrono::Utc))
+    Some(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+        parsed,
+        chrono::Utc,
+    ))
 }
 
 /// Simple struct for type options in dropdowns
@@ -124,15 +127,16 @@ pub async fn admin_announcements_page(
     let search_query = query.q.clone().unwrap_or_default().to_lowercase();
     let type_filter = query.announcement_type.clone().unwrap_or_default();
     let status_filter = query.status.clone().unwrap_or_default();
-    let sort_field = query.sort.clone().unwrap_or_else(|| "created_at".to_string());
+    let sort_field = query
+        .sort
+        .clone()
+        .unwrap_or_else(|| "created_at".to_string());
     let sort_order = query.order.clone().unwrap_or_else(|| "desc".to_string());
 
-    let all_announcements = announcement_repo
-        .list(1000, 0)
-        .await
-        .unwrap_or_default();
+    let all_announcements = announcement_repo.list(1000, 0).await.unwrap_or_default();
 
-    let mut filtered_announcements: Vec<_> = all_announcements.into_iter()
+    let mut filtered_announcements: Vec<_> = all_announcements
+        .into_iter()
         .filter(|a| {
             if !search_query.is_empty() {
                 let matches = a.title.to_lowercase().contains(&search_query)
@@ -147,10 +151,26 @@ pub async fn admin_announcements_page(
             if !status_filter.is_empty() {
                 let is_published = a.published_at.is_some();
                 match status_filter.as_str() {
-                    "published" => if !is_published { return false; },
-                    "draft" => if is_published { return false; },
-                    "featured" => if !a.featured { return false; },
-                    "public" => if !a.is_public { return false; },
+                    "published" => {
+                        if !is_published {
+                            return false;
+                        }
+                    }
+                    "draft" => {
+                        if is_published {
+                            return false;
+                        }
+                    }
+                    "featured" => {
+                        if !a.featured {
+                            return false;
+                        }
+                    }
+                    "public" => {
+                        if !a.is_public {
+                            return false;
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -218,7 +238,9 @@ pub async fn admin_announcements_page(
                 announcement_type: format!("{:?}", a.announcement_type),
                 is_public: a.is_public,
                 featured: a.featured,
-                published_at: a.published_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+                published_at: a
+                    .published_at
+                    .map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
                 is_published: a.published_at.is_some(),
                 created_at: a.created_at.format("%b %d, %Y").to_string(),
                 content_preview,
@@ -243,7 +265,8 @@ pub async fn admin_announcements_page(
             status_filter: status_filter_val,
             sort_field,
             sort_order,
-        }).into_response()
+        })
+        .into_response()
     } else {
         HtmlTemplate(AdminAnnouncementsTemplate {
             base,
@@ -257,7 +280,8 @@ pub async fn admin_announcements_page(
             status_filter: status_filter_val,
             sort_field,
             sort_order,
-        }).into_response()
+        })
+        .into_response()
     }
 }
 
@@ -298,21 +322,30 @@ pub async fn admin_announcement_detail_page(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&announcement_id) {
         Ok(id) => id,
-        Err(_) => return partials::admin_alert("error", "Invalid announcement ID", false).into_response(),
+        Err(_) => {
+            return partials::admin_alert("error", "Invalid announcement ID", false).into_response()
+        }
     };
 
     let announcement = match announcement_repo.find_by_id(id).await {
         Ok(Some(a)) => a,
-        Ok(None) => return partials::admin_alert("error", "Announcement not found", false).into_response(),
-        Err(_) => return partials::admin_alert("error", "Error loading announcement", false).into_response(),
+        Ok(None) => {
+            return partials::admin_alert("error", "Announcement not found", false).into_response()
+        }
+        Err(_) => {
+            return partials::admin_alert("error", "Error loading announcement", false)
+                .into_response()
+        }
     };
 
     let base = BaseContext::for_member(&csrf_service, &current_user, &session_info).await;
 
-    let scheduled_publish_at_input = announcement.scheduled_publish_at
+    let scheduled_publish_at_input = announcement
+        .scheduled_publish_at
         .map(|dt| dt.format("%Y-%m-%dT%H:%M").to_string())
         .unwrap_or_default();
-    let scheduled_publish_at_display = announcement.scheduled_publish_at
+    let scheduled_publish_at_display = announcement
+        .scheduled_publish_at
         .map(|dt| dt.format("%b %d, %Y %H:%M UTC").to_string());
 
     let detail = AdminAnnouncementDetail {
@@ -323,16 +356,25 @@ pub async fn admin_announcement_detail_page(
         is_public: announcement.is_public,
         featured: announcement.featured,
         image_url: announcement.image_url,
-        published_at: announcement.published_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+        published_at: announcement
+            .published_at
+            .map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
         is_published: announcement.published_at.is_some(),
-        created_at: announcement.created_at.format("%b %d, %Y %H:%M").to_string(),
-        updated_at: announcement.updated_at.format("%b %d, %Y %H:%M").to_string(),
+        created_at: announcement
+            .created_at
+            .format("%b %d, %Y %H:%M")
+            .to_string(),
+        updated_at: announcement
+            .updated_at
+            .format("%b %d, %Y %H:%M")
+            .to_string(),
         scheduled_publish_at_input,
         scheduled_publish_at_display,
     };
 
     // Fetch active announcement types for the dropdown
-    let announcement_types = announcement_type_service.0
+    let announcement_types = announcement_type_service
+        .0
         .list(false)
         .await
         .unwrap_or_default()
@@ -349,7 +391,8 @@ pub async fn admin_announcement_detail_page(
         base,
         announcement: detail,
         announcement_types,
-    }).into_response()
+    })
+    .into_response()
 }
 
 #[derive(Template)]
@@ -368,7 +411,8 @@ pub async fn admin_new_announcement_page(
     let base = BaseContext::for_member(&csrf_service, &current_user, &session_info).await;
 
     // Fetch active announcement types for the dropdown
-    let announcement_types = announcement_type_service.0
+    let announcement_types = announcement_type_service
+        .0
         .list(false)
         .await
         .unwrap_or_default()
@@ -384,7 +428,8 @@ pub async fn admin_new_announcement_page(
     HtmlTemplate(AdminNewAnnouncementTemplate {
         base,
         announcement_types,
-    }).into_response()
+    })
+    .into_response()
 }
 
 pub async fn admin_create_announcement(
@@ -409,7 +454,9 @@ pub async fn admin_create_announcement(
         let name = field.name().unwrap_or("").to_string();
 
         match name.as_str() {
-            "csrf_token" => { let _ = field.text().await; }
+            "csrf_token" => {
+                let _ = field.text().await;
+            }
             "title" => title = field.text().await.unwrap_or_default(),
             "content" => content = field.text().await.unwrap_or_default(),
             "announcement_type" => announcement_type_str = field.text().await.unwrap_or_default(),
@@ -433,15 +480,30 @@ pub async fn admin_create_announcement(
                 if !filename.is_empty() {
                     if let Ok(data) = field.bytes().await {
                         if !data.is_empty() {
-                            match save_uploaded_file(&settings.server.uploads_path(), &filename, &data).await {
+                            match save_uploaded_file(
+                                &settings.server.uploads_path(),
+                                &filename,
+                                &data,
+                            )
+                            .await
+                            {
                                 Ok(path) => image_url = Some(path),
-                                Err(e) => return partials::admin_alert("error", &format!("Error uploading image: {}", e), false).into_response(),
+                                Err(e) => {
+                                    return partials::admin_alert(
+                                        "error",
+                                        &format!("Error uploading image: {}", e),
+                                        false,
+                                    )
+                                    .into_response()
+                                }
                             }
                         }
                     }
                 }
             }
-            _ => { let _ = field.bytes().await; }
+            _ => {
+                let _ = field.bytes().await;
+            }
         }
     }
 
@@ -468,9 +530,20 @@ pub async fn admin_create_announcement(
         scheduled_publish_at,
     };
 
-    match announcement_admin_service.create(current_user.member.id, input).await {
-        Ok(created) => axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", created.id)).into_response(),
-        Err(e) => partials::admin_alert("error", &format!("Error creating announcement: {}", e), false).into_response(),
+    match announcement_admin_service
+        .create(current_user.member.id, input)
+        .await
+    {
+        Ok(created) => {
+            axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", created.id))
+                .into_response()
+        }
+        Err(e) => partials::admin_alert(
+            "error",
+            &format!("Error creating announcement: {}", e),
+            false,
+        )
+        .into_response(),
     }
 }
 
@@ -486,13 +559,20 @@ pub async fn admin_update_announcement(
 
     let id = match uuid::Uuid::parse_str(&announcement_id) {
         Ok(id) => id,
-        Err(_) => return partials::admin_alert("error", "Invalid announcement ID", false).into_response(),
+        Err(_) => {
+            return partials::admin_alert("error", "Invalid announcement ID", false).into_response()
+        }
     };
 
     let existing = match announcement_repo.find_by_id(id).await {
         Ok(Some(a)) => a,
-        Ok(None) => return partials::admin_alert("error", "Announcement not found", false).into_response(),
-        Err(_) => return partials::admin_alert("error", "Error loading announcement", false).into_response(),
+        Ok(None) => {
+            return partials::admin_alert("error", "Announcement not found", false).into_response()
+        }
+        Err(_) => {
+            return partials::admin_alert("error", "Error loading announcement", false)
+                .into_response()
+        }
     };
 
     // Parse multipart form
@@ -509,7 +589,9 @@ pub async fn admin_update_announcement(
         let name = field.name().unwrap_or("").to_string();
 
         match name.as_str() {
-            "csrf_token" => { let _ = field.text().await; }
+            "csrf_token" => {
+                let _ = field.text().await;
+            }
             "title" => title = field.text().await.unwrap_or_default(),
             "content" => content = field.text().await.unwrap_or_default(),
             "announcement_type" => announcement_type_str = field.text().await.unwrap_or_default(),
@@ -533,15 +615,30 @@ pub async fn admin_update_announcement(
                 if !filename.is_empty() {
                     if let Ok(data) = field.bytes().await {
                         if !data.is_empty() {
-                            match save_uploaded_file(&settings.server.uploads_path(), &filename, &data).await {
+                            match save_uploaded_file(
+                                &settings.server.uploads_path(),
+                                &filename,
+                                &data,
+                            )
+                            .await
+                            {
                                 Ok(path) => new_image_url = Some(path),
-                                Err(e) => return partials::admin_alert("error", &format!("Error uploading image: {}", e), false).into_response(),
+                                Err(e) => {
+                                    return partials::admin_alert(
+                                        "error",
+                                        &format!("Error uploading image: {}", e),
+                                        false,
+                                    )
+                                    .into_response()
+                                }
                             }
                         }
                     }
                 }
             }
-            _ => { let _ = field.bytes().await; }
+            _ => {
+                let _ = field.bytes().await;
+            }
         }
     }
 
@@ -564,7 +661,11 @@ pub async fn admin_update_announcement(
     } else {
         old_image.clone()
     };
-    let image_to_delete = if image_url != old_image { old_image } else { None };
+    let image_to_delete = if image_url != old_image {
+        old_image
+    } else {
+        None
+    };
 
     let scheduled_publish_at = parse_scheduled_publish_at(&scheduled_publish_at_str);
 
@@ -579,17 +680,24 @@ pub async fn admin_update_announcement(
         scheduled_publish_at,
     };
 
-    match announcement_admin_service.update(current_user.member.id, id, input).await {
+    match announcement_admin_service
+        .update(current_user.member.id, id, input)
+        .await
+    {
         Ok(_) => {
             crate::web::uploads::delete_if_upload(
                 &settings.server.uploads_path(),
                 image_to_delete.as_deref(),
-            ).await;
+            )
+            .await;
             axum::response::Html(r#"<div class="px-4 py-3 bg-green-100 text-green-800 rounded-md text-sm">Announcement updated successfully</div>"#.to_string()).into_response()
         }
-        Err(e) => {
-            partials::admin_alert("error", &format!("Error updating announcement: {}", e), false).into_response()
-        }
+        Err(e) => partials::admin_alert(
+            "error",
+            &format!("Error updating announcement: {}", e),
+            false,
+        )
+        .into_response(),
     }
 }
 
@@ -602,22 +710,36 @@ pub async fn admin_delete_announcement(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&announcement_id) {
         Ok(id) => id,
-        Err(_) => return partials::admin_alert("error", "Invalid announcement ID", false).into_response(),
+        Err(_) => {
+            return partials::admin_alert("error", "Invalid announcement ID", false).into_response()
+        }
     };
 
     let image_to_delete = announcement_repo
-        .find_by_id(id).await.ok().flatten()
+        .find_by_id(id)
+        .await
+        .ok()
+        .flatten()
         .and_then(|a| a.image_url);
 
-    match announcement_admin_service.delete(current_user.member.id, id).await {
+    match announcement_admin_service
+        .delete(current_user.member.id, id)
+        .await
+    {
         Ok(_) => {
             crate::web::uploads::delete_if_upload(
                 &settings.server.uploads_path(),
                 image_to_delete.as_deref(),
-            ).await;
+            )
+            .await;
             axum::response::Redirect::to("/portal/admin/announcements").into_response()
         }
-        Err(e) => partials::admin_alert("error", &format!("Error deleting announcement: {}", e), false).into_response(),
+        Err(e) => partials::admin_alert(
+            "error",
+            &format!("Error deleting announcement: {}", e),
+            false,
+        )
+        .into_response(),
     }
 }
 
@@ -628,12 +750,23 @@ pub async fn admin_publish_announcement(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&announcement_id) {
         Ok(id) => id,
-        Err(_) => return partials::admin_alert("error", "Invalid announcement ID", false).into_response(),
+        Err(_) => {
+            return partials::admin_alert("error", "Invalid announcement ID", false).into_response()
+        }
     };
 
-    match announcement_admin_service.publish(current_user.member.id, id).await {
-        Ok(_) => axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", id)).into_response(),
-        Err(e) => partials::admin_alert("error", &format!("Error publishing announcement: {}", e), false).into_response(),
+    match announcement_admin_service
+        .publish(current_user.member.id, id)
+        .await
+    {
+        Ok(_) => axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", id))
+            .into_response(),
+        Err(e) => partials::admin_alert(
+            "error",
+            &format!("Error publishing announcement: {}", e),
+            false,
+        )
+        .into_response(),
     }
 }
 
@@ -644,11 +777,22 @@ pub async fn admin_unpublish_announcement(
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&announcement_id) {
         Ok(id) => id,
-        Err(_) => return partials::admin_alert("error", "Invalid announcement ID", false).into_response(),
+        Err(_) => {
+            return partials::admin_alert("error", "Invalid announcement ID", false).into_response()
+        }
     };
 
-    match announcement_admin_service.unpublish(current_user.member.id, id).await {
-        Ok(_) => axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", id)).into_response(),
-        Err(e) => partials::admin_alert("error", &format!("Error unpublishing announcement: {}", e), false).into_response(),
+    match announcement_admin_service
+        .unpublish(current_user.member.id, id)
+        .await
+    {
+        Ok(_) => axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", id))
+            .into_response(),
+        Err(e) => partials::admin_alert(
+            "error",
+            &format!("Error unpublishing announcement: {}", e),
+            false,
+        )
+        .into_response(),
     }
 }
