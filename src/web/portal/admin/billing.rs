@@ -43,9 +43,14 @@ pub async fn billing_settings_page(
     Extension(session_info): Extension<SessionInfo>,
 ) -> Response {
     render_page(
-        &csrf_service, &member_repo, stripe_client.is_some(),
-        &current_user, &session_info, RenderArgs::default(),
-    ).await
+        &csrf_service,
+        &member_repo,
+        stripe_client.is_some(),
+        &current_user,
+        &session_info,
+        RenderArgs::default(),
+    )
+    .await
 }
 
 #[derive(Default)]
@@ -81,7 +86,8 @@ async fn render_page(
         last_succeeded: args.last_succeeded,
         last_skipped: args.last_skipped,
         last_failed: args.last_failed,
-    }).into_response()
+    })
+    .into_response()
 }
 
 /// Run the bulk migration of every member on `stripe_subscription`
@@ -101,31 +107,42 @@ pub async fn bulk_migrate_stripe_subs(
     let stripe_enabled = stripe_client.is_some();
     if !stripe_enabled {
         return render_page(
-            &csrf_service, &member_repo, stripe_enabled,
-            &current_user, &session_info,
+            &csrf_service,
+            &member_repo,
+            stripe_enabled,
+            &current_user,
+            &session_info,
             RenderArgs {
                 flash_error: Some(
-                    "Stripe isn't configured. Add credentials before running migration.".into()
+                    "Stripe isn't configured. Add credentials before running migration.".into(),
                 ),
                 ..Default::default()
             },
-        ).await;
+        )
+        .await;
     }
 
-    let summary = billing_service.auto_renew.bulk_migrate_stripe_subscriptions().await;
+    let summary = billing_service
+        .auto_renew
+        .bulk_migrate_stripe_subscriptions()
+        .await;
 
-    audit_service.log(
-        Some(current_user.member.id),
-        "bulk_migrate_stripe_subscriptions",
-        "billing",
-        "all",
-        None,
-        Some(&format!(
-            "succeeded={}, skipped={}, failed={}",
-            summary.succeeded, summary.skipped, summary.failed.len(),
-        )),
-        None,
-    ).await;
+    audit_service
+        .log(
+            Some(current_user.member.id),
+            "bulk_migrate_stripe_subscriptions",
+            "billing",
+            "all",
+            None,
+            Some(&format!(
+                "succeeded={}, skipped={}, failed={}",
+                summary.succeeded,
+                summary.skipped,
+                summary.failed.len(),
+            )),
+            None,
+        )
+        .await;
 
     let flash_success = if summary.failed.is_empty() {
         Some(format!(
@@ -138,20 +155,25 @@ pub async fn bulk_migrate_stripe_subs(
     let flash_error = if !summary.failed.is_empty() {
         Some(format!(
             "{} member(s) migrated, but {} failed — see details below.",
-            summary.succeeded, summary.failed.len(),
+            summary.succeeded,
+            summary.failed.len(),
         ))
     } else {
         None
     };
 
-    let last_failed: Vec<(String, String)> = summary.failed
+    let last_failed: Vec<(String, String)> = summary
+        .failed
         .into_iter()
         .map(|(id, err)| (id.to_string(), err))
         .collect();
 
     render_page(
-        &csrf_service, &member_repo, stripe_enabled,
-        &current_user, &session_info,
+        &csrf_service,
+        &member_repo,
+        stripe_enabled,
+        &current_user,
+        &session_info,
         RenderArgs {
             flash_success,
             flash_error,
@@ -159,7 +181,8 @@ pub async fn bulk_migrate_stripe_subs(
             last_skipped: Some(summary.skipped),
             last_failed,
         },
-    ).await
+    )
+    .await
 }
 
 // =====================================================================
@@ -235,7 +258,8 @@ pub async fn billing_dashboard_page(
     let now = chrono::Utc::now();
     let upcoming_cutoff = (now + chrono::Duration::days(UPCOMING_WINDOW_DAYS)).date_naive();
     let upcoming_raw = scheduled_payment_repo
-        .find_pending_due_before(upcoming_cutoff).await
+        .find_pending_due_before(upcoming_cutoff)
+        .await
         .unwrap_or_default();
     let mut upcoming = Vec::with_capacity(upcoming_raw.len());
     for sp in upcoming_raw {
@@ -259,7 +283,8 @@ pub async fn billing_dashboard_page(
     // ---- Section 2: recent failures (last 90 days) ----
     let failure_since = now - chrono::Duration::days(FAILURE_WINDOW_DAYS);
     let failures_raw = scheduled_payment_repo
-        .list_failures_since(failure_since).await
+        .list_failures_since(failure_since)
+        .await
         .unwrap_or_default();
     let mut failures = Vec::with_capacity(failures_raw.len());
     for sp in failures_raw {
@@ -267,7 +292,8 @@ pub async fn billing_dashboard_page(
         failures.push(FailedScheduledRow {
             member_id: sp.member_id.to_string(),
             member_name: name,
-            last_attempt_display: sp.last_attempt_at
+            last_attempt_display: sp
+                .last_attempt_at
                 .map(|d| d.format("%b %d, %Y %H:%M UTC").to_string())
                 .unwrap_or_else(|| "—".to_string()),
             amount_display: format!("${:.2}", sp.amount_cents as f64 / 100.0),
@@ -278,7 +304,8 @@ pub async fn billing_dashboard_page(
 
     // ---- Section 3: revenue by month (12 months) ----
     let buckets = payment_repo
-        .revenue_by_month(REVENUE_WINDOW_MONTHS).await
+        .revenue_by_month(REVENUE_WINDOW_MONTHS)
+        .await
         .unwrap_or_default();
     let months = fold_revenue_buckets(buckets);
 
@@ -290,16 +317,23 @@ pub async fn billing_dashboard_page(
         upcoming_window_days: UPCOMING_WINDOW_DAYS,
         failure_window_days: FAILURE_WINDOW_DAYS,
         revenue_window_months: REVENUE_WINDOW_MONTHS,
-    }).into_response()
+    })
+    .into_response()
 }
 
 /// Look up a member's display name. Falls back to the UUID prefix on
 /// missing rows — a deleted member may still have outstanding
 /// scheduled-payment rows referencing them, and the dashboard should
 /// degrade gracefully rather than 500.
-async fn lookup_member_name(member_repo: &Arc<dyn MemberRepository>, member_id: uuid::Uuid) -> String {
+async fn lookup_member_name(
+    member_repo: &Arc<dyn MemberRepository>,
+    member_id: uuid::Uuid,
+) -> String {
     member_repo
-        .find_by_id(member_id).await.ok().flatten()
+        .find_by_id(member_id)
+        .await
+        .ok()
+        .flatten()
         .map(|m| m.full_name)
         .unwrap_or_else(|| format!("(deleted member {})", &member_id.to_string()[..8]))
 }
@@ -335,26 +369,39 @@ fn fold_revenue_buckets(buckets: Vec<crate::repository::MonthlyRevenue>) -> Vec<
     }
 
     // Render newest-first. BTreeMap iterates ascending, so reverse.
-    accum.into_iter().rev().map(|((year, month), [dc, dn, oc, on])| {
-        let dollars = |c: i64| format!("${:.2}", c as f64 / 100.0);
-        let total = dc + oc;
-        MonthlyRevenueRow {
-            month_key: format!("{:04}-{:02}", year, month),
-            month_label: format!("{} {}", month_name(month), year),
-            dues_dollars: dollars(dc),
-            dues_count: dn,
-            donations_dollars: dollars(oc),
-            donations_count: on,
-            total_dollars: dollars(total),
-        }
-    }).collect()
+    accum
+        .into_iter()
+        .rev()
+        .map(|((year, month), [dc, dn, oc, on])| {
+            let dollars = |c: i64| format!("${:.2}", c as f64 / 100.0);
+            let total = dc + oc;
+            MonthlyRevenueRow {
+                month_key: format!("{:04}-{:02}", year, month),
+                month_label: format!("{} {}", month_name(month), year),
+                dues_dollars: dollars(dc),
+                dues_count: dn,
+                donations_dollars: dollars(oc),
+                donations_count: on,
+                total_dollars: dollars(total),
+            }
+        })
+        .collect()
 }
 
 fn month_name(m: u32) -> &'static str {
     match m {
-        1 => "January", 2 => "February", 3 => "March", 4 => "April",
-        5 => "May", 6 => "June", 7 => "July", 8 => "August",
-        9 => "September", 10 => "October", 11 => "November", 12 => "December",
+        1 => "January",
+        2 => "February",
+        3 => "March",
+        4 => "April",
+        5 => "May",
+        6 => "June",
+        7 => "July",
+        8 => "August",
+        9 => "September",
+        10 => "October",
+        11 => "November",
+        12 => "December",
         _ => "—",
     }
 }

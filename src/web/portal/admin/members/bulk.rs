@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use askama::Template;
 use axum::{
-    extract::{State, Query, Multipart},
+    extract::{Multipart, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     Extension,
@@ -12,10 +12,7 @@ use crate::{
     api::middleware::auth::{CurrentUser, SessionInfo},
     auth::CsrfService,
     repository::MemberRepository,
-    service::{
-        member_service::MemberService,
-        membership_type_service::MembershipTypeService,
-    },
+    service::{member_service::MemberService, membership_type_service::MembershipTypeService},
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -39,9 +36,10 @@ pub async fn admin_members_export(
 ) -> Response {
     use crate::repository::{MemberQuery, MemberSortField, SortOrder};
 
-    let all_types = membership_type_service
-        .list(true).await.unwrap_or_default();
-    let type_filter_id = query.member_type.as_deref()
+    let all_types = membership_type_service.list(true).await.unwrap_or_default();
+    let type_filter_id = query
+        .member_type
+        .as_deref()
         .and_then(|slug| all_types.iter().find(|t| t.slug == slug).map(|t| t.id));
 
     let sort_field = query.sort.as_deref().unwrap_or("name");
@@ -49,7 +47,10 @@ pub async fn admin_members_export(
 
     let typed_query = MemberQuery {
         search: query.q.clone().filter(|s| !s.is_empty()),
-        status: query.status.as_deref().and_then(crate::domain::MemberStatus::from_str),
+        status: query
+            .status
+            .as_deref()
+            .and_then(crate::domain::MemberStatus::from_str),
         membership_type_id: type_filter_id,
         sort: match sort_field {
             "status" => MemberSortField::Status,
@@ -58,7 +59,11 @@ pub async fn admin_members_export(
             "dues" => MemberSortField::DuesPaidUntil,
             _ => MemberSortField::Name,
         },
-        order: if sort_order == "desc" { SortOrder::Desc } else { SortOrder::Asc },
+        order: if sort_order == "desc" {
+            SortOrder::Desc
+        } else {
+            SortOrder::Asc
+        },
         // Ignored by `export_rows`, but the field is non-optional.
         limit: 0,
         offset: 0,
@@ -71,7 +76,8 @@ pub async fn admin_members_export(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to build export. Check server logs.",
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -96,10 +102,14 @@ pub async fn admin_members_export(
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "text/csv; charset=utf-8".to_string()),
-            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", filename)),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", filename),
+            ),
         ],
         body,
-    ).into_response()
+    )
+        .into_response()
 }
 
 /// Assemble the CSV body: a header row followed by one row per
@@ -131,7 +141,9 @@ fn build_members_csv(rows: &[crate::repository::MemberExportRow]) -> String {
         out.push(',');
         push_csv(
             &mut out,
-            &r.dues_paid_until.map(|d| d.to_rfc3339()).unwrap_or_default(),
+            &r.dues_paid_until
+                .map(|d| d.to_rfc3339())
+                .unwrap_or_default(),
         );
         out.push(',');
         push_csv(&mut out, if r.is_admin { "true" } else { "false" });
@@ -142,7 +154,9 @@ fn build_members_csv(rows: &[crate::repository::MemberExportRow]) -> String {
         out.push(',');
         push_csv(
             &mut out,
-            &r.email_verified_at.map(|d| d.to_rfc3339()).unwrap_or_default(),
+            &r.email_verified_at
+                .map(|d| d.to_rfc3339())
+                .unwrap_or_default(),
         );
         out.push(',');
         push_csv(&mut out, r.notes.as_deref().unwrap_or(""));
@@ -164,7 +178,12 @@ fn build_filter_summary(q: &AdminMembersQuery) -> String {
     if let Some(s) = q.status.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         parts.push(format!("status={}", s));
     }
-    if let Some(s) = q.member_type.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(s) = q
+        .member_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         parts.push(format!("type={}", s));
     }
     parts.join(",")
@@ -230,14 +249,14 @@ pub async fn admin_members_import(
     Extension(current_user): Extension<CurrentUser>,
     mut multipart: Multipart,
 ) -> Response {
-    
-
     let mut file_bytes: Option<Vec<u8>> = None;
     let mut file_name = String::new();
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name().unwrap_or("") {
-            "csrf_token" => { let _ = field.text().await; }
+            "csrf_token" => {
+                let _ = field.text().await;
+            }
             "file" => {
                 file_name = field.file_name().unwrap_or("members.csv").to_string();
                 match field.bytes().await {
@@ -247,7 +266,8 @@ pub async fn admin_members_import(
                                 "File too large ({} bytes). Maximum is {} MB.",
                                 b.len(),
                                 IMPORT_FILE_MAX_BYTES / (1024 * 1024),
-                            )).into_response();
+                            ))
+                            .into_response();
                         }
                         file_bytes = Some(b.to_vec());
                     }
@@ -255,11 +275,14 @@ pub async fn admin_members_import(
                         return import_error_fragment(&format!(
                             "Failed to read uploaded file: {}",
                             e,
-                        )).into_response();
+                        ))
+                        .into_response();
                     }
                 }
             }
-            _ => { let _ = field.bytes().await; }
+            _ => {
+                let _ = field.bytes().await;
+            }
         }
     }
 
@@ -268,7 +291,8 @@ pub async fn admin_members_import(
         _ => {
             return import_error_fragment(
                 "No CSV file was uploaded. Please select a file and try again.",
-            ).into_response();
+            )
+            .into_response();
         }
     };
 
@@ -283,10 +307,7 @@ pub async fn admin_members_import(
     {
         Ok(s) => s,
         Err(e) => {
-            return import_error_fragment(&format!(
-                "Import failed: {}",
-                e,
-            )).into_response();
+            return import_error_fragment(&format!("Import failed: {}", e,)).into_response();
         }
     };
 
@@ -305,7 +326,8 @@ pub async fn admin_members_import(
         succeeded: summary.succeeded,
         failed: summary.failed,
         failures,
-    }).into_response()
+    })
+    .into_response()
 }
 
 /// Parse the raw CSV bytes into `Vec<ImportRow>`. Returns Err with a
@@ -317,9 +339,11 @@ pub async fn admin_members_import(
 /// service can fail them per-row rather than aborting the batch — but
 /// truly unrecoverable parse errors (the file isn't CSV, the header is
 /// missing the `email` column) abort here.
-fn parse_import_csv(bytes: &[u8]) -> std::result::Result<Vec<crate::service::member_service::ImportRow>, String> {
-    use chrono::{DateTime, NaiveDate, Utc};
+fn parse_import_csv(
+    bytes: &[u8],
+) -> std::result::Result<Vec<crate::service::member_service::ImportRow>, String> {
     use crate::service::member_service::ImportRow;
+    use chrono::{DateTime, NaiveDate, Utc};
 
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(true)
@@ -340,15 +364,12 @@ fn parse_import_csv(bytes: &[u8]) -> std::result::Result<Vec<crate::service::mem
             .position(|h| h.trim().eq_ignore_ascii_case(name))
     };
 
-    let email_idx = col("email").ok_or_else(|| {
-        "Missing required column 'email' in CSV header.".to_string()
-    })?;
-    let username_idx = col("username").ok_or_else(|| {
-        "Missing required column 'username' in CSV header.".to_string()
-    })?;
-    let full_name_idx = col("full_name").ok_or_else(|| {
-        "Missing required column 'full_name' in CSV header.".to_string()
-    })?;
+    let email_idx =
+        col("email").ok_or_else(|| "Missing required column 'email' in CSV header.".to_string())?;
+    let username_idx = col("username")
+        .ok_or_else(|| "Missing required column 'username' in CSV header.".to_string())?;
+    let full_name_idx = col("full_name")
+        .ok_or_else(|| "Missing required column 'full_name' in CSV header.".to_string())?;
     let mtype_idx = col("membership_type_slug").ok_or_else(|| {
         "Missing required column 'membership_type_slug' in CSV header.".to_string()
     })?;
@@ -367,9 +388,10 @@ fn parse_import_csv(bytes: &[u8]) -> std::result::Result<Vec<crate::service::mem
     // `YYYY-MM-DD` (interpreted as midnight UTC). Empty cell → `None`.
     // On parse failure, the caller sets `parse_error` on the row so
     // `bulk_import` rejects it with the documented reason.
-    fn parse_timestamp(field: &str, cell: &str)
-        -> std::result::Result<Option<DateTime<Utc>>, String>
-    {
+    fn parse_timestamp(
+        field: &str,
+        cell: &str,
+    ) -> std::result::Result<Option<DateTime<Utc>>, String> {
         let trimmed = cell.trim();
         if trimmed.is_empty() {
             return Ok(None);
@@ -391,11 +413,11 @@ fn parse_import_csv(bytes: &[u8]) -> std::result::Result<Vec<crate::service::mem
             Err(e) => return Err(format!("Malformed CSV row: {}", e)),
         };
 
-        let get = |i: usize| -> String {
-            rec.get(i).unwrap_or("").to_string()
-        };
+        let get = |i: usize| -> String { rec.get(i).unwrap_or("").to_string() };
         let get_opt = |i: Option<usize>| -> Option<String> {
-            i.and_then(|idx| rec.get(idx)).map(|s| s.to_string()).filter(|s| !s.is_empty())
+            i.and_then(|idx| rec.get(idx))
+                .map(|s| s.to_string())
+                .filter(|s| !s.is_empty())
         };
         // Like `get_opt` but also trims and treats trim-empty as None.
         // Used for the Stripe ID columns (trimmed strings, blank = None).
@@ -405,25 +427,31 @@ fn parse_import_csv(bytes: &[u8]) -> std::result::Result<Vec<crate::service::mem
                 .filter(|s| !s.is_empty())
         };
 
-        let status = get_opt(status_idx).and_then(|s| crate::domain::MemberStatus::from_str(s.trim()));
+        let status =
+            get_opt(status_idx).and_then(|s| crate::domain::MemberStatus::from_str(s.trim()));
 
         // Parse the three optional timestamps; the first failure wins
         // and stamps `parse_error` so the row fails downstream rather
         // than being silently dropped.
-        let cell_for = |idx: Option<usize>| -> &str {
-            idx.and_then(|i| rec.get(i)).unwrap_or("")
-        };
+        let cell_for = |idx: Option<usize>| -> &str { idx.and_then(|i| rec.get(i)).unwrap_or("") };
         let mut parse_error: Option<String> = None;
-        let dues_paid_until = match parse_timestamp("dues_paid_until", cell_for(dues_paid_until_idx)) {
-            Ok(opt) => opt,
-            Err(e) => { parse_error = Some(e); None }
-        };
+        let dues_paid_until =
+            match parse_timestamp("dues_paid_until", cell_for(dues_paid_until_idx)) {
+                Ok(opt) => opt,
+                Err(e) => {
+                    parse_error = Some(e);
+                    None
+                }
+            };
         let joined_at = if parse_error.is_some() {
             None
         } else {
             match parse_timestamp("joined_at", cell_for(joined_at_idx)) {
                 Ok(opt) => opt,
-                Err(e) => { parse_error = Some(e); None }
+                Err(e) => {
+                    parse_error = Some(e);
+                    None
+                }
             }
         };
         let email_verified_at = if parse_error.is_some() {
@@ -431,7 +459,10 @@ fn parse_import_csv(bytes: &[u8]) -> std::result::Result<Vec<crate::service::mem
         } else {
             match parse_timestamp("email_verified_at", cell_for(email_verified_at_idx)) {
                 Ok(opt) => opt,
-                Err(e) => { parse_error = Some(e); None }
+                Err(e) => {
+                    parse_error = Some(e);
+                    None
+                }
             }
         };
 

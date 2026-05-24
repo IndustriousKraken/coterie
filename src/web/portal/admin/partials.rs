@@ -24,13 +24,20 @@ pub struct AdminAlertTemplate<'a> {
 /// Render an admin-alert fragment. Used as the HTMX response body
 /// for handlers whose only job is to flash success/failure.
 pub fn admin_alert(kind: &'static str, message: &str, autoreload: bool) -> Html<String> {
-    let tmpl = AdminAlertTemplate { kind, message, autoreload };
+    let tmpl = AdminAlertTemplate {
+        kind,
+        message,
+        autoreload,
+    };
     Html(tmpl.render().unwrap_or_else(|e| {
         // Render failure on a fragment is operator-fatal but caller-
         // benign — log it and ship a plain-text fallback so the user
         // sees *something* go through.
         tracing::error!("admin_alert template render failed: {}", e);
-        format!("<div class=\"p-3 bg-red-50 text-red-800 rounded-md text-sm\">{}</div>", message)
+        format!(
+            "<div class=\"p-3 bg-red-50 text-red-800 rounded-md text-sm\">{}</div>",
+            message
+        )
     }))
 }
 
@@ -72,7 +79,8 @@ pub fn member_row_flash(
     membership_type_name: String,
     flash: &'static str,
 ) -> Html<String> {
-    let initials: String = member.full_name
+    let initials: String = member
+        .full_name
         .split_whitespace()
         .filter_map(|word| word.chars().next())
         .take(2)
@@ -88,16 +96,15 @@ pub fn member_row_flash(
         status: member.status.as_str().to_string(),
         membership_type: membership_type_name,
         joined_at: member.joined_at.format("%b %d, %Y").to_string(),
-        dues_paid_until: member.dues_paid_until
+        dues_paid_until: member
+            .dues_paid_until
             .map(|d| d.format("%b %d, %Y").to_string())
             .unwrap_or_else(|| "—".to_string()),
     };
 
     Html(tmpl.render().unwrap_or_else(|e| {
         tracing::error!("member_row_flash template render failed: {}", e);
-        format!(
-            "<tr><td colspan='6' class='px-6 py-4 text-red-600'>Render error</td></tr>"
-        )
+        format!("<tr><td colspan='6' class='px-6 py-4 text-red-600'>Render error</td></tr>")
     }))
 }
 

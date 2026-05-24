@@ -1,16 +1,11 @@
 use std::sync::Arc;
 
 use askama::Template;
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    Extension,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Extension, Json};
 use serde::Deserialize;
 use uuid::Uuid;
 
+use super::payments::flow::SavedCardDisplay;
 use crate::{
     api::{
         middleware::auth::{CurrentUser, SessionInfo},
@@ -24,7 +19,6 @@ use crate::{
     repository::{DonationCampaignRepository, PaymentRepository, SavedCardRepository},
     web::templates::{BaseContext, HtmlTemplate},
 };
-use super::payments::SavedCardDisplay;
 
 #[derive(Template)]
 #[template(path = "portal/donate.html")]
@@ -57,9 +51,7 @@ pub async fn donate_page(
     let base = BaseContext::for_member(&csrf_service, &current_user, &session_info).await;
 
     let stripe_enabled = stripe_client.is_some();
-    let stripe_publishable_key = settings.stripe.publishable_key
-        .clone()
-        .unwrap_or_default();
+    let stripe_publishable_key = settings.stripe.publishable_key.clone().unwrap_or_default();
 
     let saved_cards = saved_card_repo
         .find_by_member(current_user.member.id)
@@ -88,7 +80,11 @@ pub async fn donate_page(
             .unwrap_or(0);
 
         let (goal_display, progress_pct) = if let Some(goal) = c.goal_cents {
-            let pct = if goal > 0 { ((raised as f64 / goal as f64) * 100.0).min(100.0) as u32 } else { 0 };
+            let pct = if goal > 0 {
+                ((raised as f64 / goal as f64) * 100.0).min(100.0) as u32
+            } else {
+                0
+            };
             (Some(format!("{:.2}", goal as f64 / 100.0)), pct)
         } else {
             (None, 0)
@@ -157,9 +153,7 @@ pub async fn donate_api(
     // donation" — recorded but not attributed to any campaign.
     let (campaign_id, campaign_name) = match request.campaign_slug.as_deref() {
         Some(slug) if !slug.is_empty() => {
-            match donation_campaign_repo
-                .find_by_slug(slug).await?
-            {
+            match donation_campaign_repo.find_by_slug(slug).await? {
                 // Inactive campaigns aren't accepting donations.
                 // Without this filter a member who knows the slug of
                 // an archived campaign (cached pages, old emails)
@@ -185,8 +179,9 @@ pub async fn donate_api(
 
     // If saved card provided, charge directly
     if let Some(card_id_str) = &request.saved_card_id {
-        let stripe_client = stripe_client.as_ref()
-            .ok_or_else(|| AppError::ServiceUnavailable("Payment processing not configured".to_string()))?;
+        let stripe_client = stripe_client.as_ref().ok_or_else(|| {
+            AppError::ServiceUnavailable("Payment processing not configured".to_string())
+        })?;
 
         let card_id = Uuid::parse_str(card_id_str)
             .map_err(|_| AppError::BadRequest("Invalid card ID".to_string()))?;
@@ -200,7 +195,9 @@ pub async fn donate_api(
             return Err(AppError::Forbidden);
         }
 
-        let idempotency_key = request.idempotency_key.clone()
+        let idempotency_key = request
+            .idempotency_key
+            .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         // Pending-first: insert local row before charging Stripe, so
@@ -224,14 +221,17 @@ pub async fn donate_api(
         };
         payment_repo.create(pending).await?;
 
-        let stripe_payment_id = match stripe_client.charge_saved_card(
-            current_user.member.id,
-            &card.stripe_payment_method_id,
-            request.amount_cents,
-            &description,
-            &idempotency_key,
-            payment_id,
-        ).await {
+        let stripe_payment_id = match stripe_client
+            .charge_saved_card(
+                current_user.member.id,
+                &card.stripe_payment_method_id,
+                request.amount_cents,
+                &description,
+                &idempotency_key,
+                payment_id,
+            )
+            .await
+        {
             Ok(id) => id,
             Err(e) => {
                 let _ = payment_repo.fail_pending_payment(payment_id).await;
@@ -246,10 +246,13 @@ pub async fn donate_api(
             .complete_pending_payment(payment_id, &stripe_payment_id)
             .await?;
 
-        return Ok((StatusCode::OK, Json(serde_json::json!({
-            "payment_id": payment_id,
-            "status": "completed",
-        }))));
+        return Ok((
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "payment_id": payment_id,
+                "status": "completed",
+            })),
+        ));
     }
 
     // No saved card → Stripe Checkout. Use the dedicated donation
@@ -257,20 +260,26 @@ pub async fn donate_api(
     // old code routed donations through the membership helper, which
     // worked only because the webhook's NotFound on slug "donation"
     // caused Stripe-retry-until-idempotent-skip side effects.
-    let stripe_client = stripe_client.as_ref()
-        .ok_or_else(|| AppError::ServiceUnavailable("Payment processing not configured".to_string()))?;
+    let stripe_client = stripe_client.as_ref().ok_or_else(|| {
+        AppError::ServiceUnavailable("Payment processing not configured".to_string())
+    })?;
 
-    let (checkout_url, payment_id) = stripe_client.create_donation_checkout_session(
-        current_user.member.id,
-        &campaign_name,
-        campaign_id,
-        request.amount_cents,
-        format!("{}/portal/payments/success", settings.server.base_url),
-        format!("{}/portal/payments/cancel", settings.server.base_url),
-    ).await?;
+    let (checkout_url, payment_id) = stripe_client
+        .create_donation_checkout_session(
+            current_user.member.id,
+            &campaign_name,
+            campaign_id,
+            request.amount_cents,
+            format!("{}/portal/payments/success", settings.server.base_url),
+            format!("{}/portal/payments/cancel", settings.server.base_url),
+        )
+        .await?;
 
-    Ok((StatusCode::OK, Json(serde_json::json!({
-        "payment_id": payment_id,
-        "checkout_url": checkout_url,
-    }))))
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "payment_id": payment_id,
+            "checkout_url": checkout_url,
+        })),
+    ))
 }

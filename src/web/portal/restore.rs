@@ -35,7 +35,9 @@ pub async fn restore_page(
         return Redirect::to("/portal/dashboard").into_response();
     }
 
-    let expired_on = current_user.member.dues_paid_until
+    let expired_on = current_user
+        .member
+        .dues_paid_until
         .map(|d| d.format("%B %d, %Y").to_string());
 
     let template = RestoreTemplate {

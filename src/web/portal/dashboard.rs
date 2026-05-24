@@ -1,22 +1,18 @@
 use std::sync::Arc;
 
 use askama::Template;
-use axum::{
-    extract::State,
-    response::IntoResponse,
-    Extension,
-};
+use axum::{extract::State, response::IntoResponse, Extension};
 use serde::Serialize;
 
+use super::MemberInfo;
 use crate::{
     api::middleware::auth::{CurrentUser, SessionInfo},
     auth::CsrfService,
     domain::AttendanceStatus,
     repository::{EventRepository, PaymentRepository},
     service::membership_type_service::MembershipTypeService,
-    web::templates::{BaseContext, HtmlTemplate, filters},
+    web::templates::{filters, BaseContext, HtmlTemplate},
 };
-use super::MemberInfo;
 
 #[derive(Template)]
 #[template(path = "dashboard/member.html")]
@@ -30,9 +26,7 @@ pub struct MemberDashboardTemplate {
 /// still Active). Returns empty HTML when dues are current or the
 /// member is already Expired (their dedicated /portal/restore page
 /// already tells them).
-pub async fn dues_warning(
-    Extension(current_user): Extension<CurrentUser>,
-) -> impl IntoResponse {
+pub async fn dues_warning(Extension(current_user): Extension<CurrentUser>) -> impl IntoResponse {
     use crate::domain::MemberStatus;
 
     let member = &current_user.member;
@@ -85,8 +79,10 @@ pub async fn member_dashboard(
     Extension(session): Extension<SessionInfo>,
 ) -> impl IntoResponse {
     let membership_type_name = membership_type_service
-        .get(current_user.member.membership_type_id).await
-        .ok().flatten()
+        .get(current_user.member.membership_type_id)
+        .await
+        .ok()
+        .flatten()
         .map(|mt| mt.name)
         .unwrap_or_else(|| "(unknown)".to_string());
 
@@ -128,10 +124,7 @@ pub async fn upcoming_events(
     // Authenticated members see both public and members-only events;
     // visibility filtering is per-event inside the template, not at
     // the repo layer.
-    let events = event_repo
-        .list_upcoming(5)
-        .await
-        .unwrap_or_default();
+    let events = event_repo.list_upcoming(5).await.unwrap_or_default();
 
     // Transform to our summary format, checking attendance for each event
     let member_id = current_user.member.id;
@@ -222,7 +215,8 @@ pub async fn recent_payments(
     payments.truncate(5);
 
     // Transform to our summary format
-    let recent_payments: Vec<PaymentSummary> = payments.into_iter()
+    let recent_payments: Vec<PaymentSummary> = payments
+        .into_iter()
         .map(|p| PaymentSummary {
             id: p.id.to_string(),
             amount: format!("${:.2}", p.amount_cents as f64 / 100.0),
@@ -262,11 +256,7 @@ pub async fn recent_payments(
                     </div>
                 </div>
                 "#,
-                payment.description,
-                payment.date,
-                payment.amount,
-                status_class,
-                payment.status
+                payment.description, payment.date, payment.amount, status_class, payment.status
             ));
         }
         html.push_str("</div>");

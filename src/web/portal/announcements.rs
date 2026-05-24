@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use askama::Template;
 use axum::{
-    extract::{State, Query},
+    extract::{Query, State},
     response::IntoResponse,
     Extension,
 };
@@ -45,17 +45,24 @@ pub async fn announcements_list_api(
     Query(query): Query<AnnouncementsListQuery>,
 ) -> impl IntoResponse {
     // Get all published announcements (both public and private - members can see all)
-    let limit = if query.show_all.unwrap_or(false) { 100 } else { 20 };
+    let limit = if query.show_all.unwrap_or(false) {
+        100
+    } else {
+        20
+    };
     let announcements = announcement_repo
         .list_recent(limit)
         .await
         .unwrap_or_default();
 
     // Filter by type if specified
-    let filtered_announcements: Vec<_> = announcements.into_iter()
+    let filtered_announcements: Vec<_> = announcements
+        .into_iter()
         .filter(|a| {
             if let Some(ref announcement_type) = query.announcement_type {
-                if !announcement_type.is_empty() && format!("{:?}", a.announcement_type) != *announcement_type {
+                if !announcement_type.is_empty()
+                    && format!("{:?}", a.announcement_type) != *announcement_type
+                {
                     return false;
                 }
             }
@@ -67,7 +74,8 @@ pub async fn announcements_list_api(
         return axum::response::Html(
             r#"<div class="bg-white rounded-lg shadow-sm p-6 text-center text-gray-500">
                 No announcements found
-            </div>"#.to_string()
+            </div>"#
+                .to_string(),
         );
     }
 
@@ -100,7 +108,8 @@ pub async fn announcements_list_api(
             format!(r#"<div class="bg-gray-100 rounded-t-lg -mt-6 -mx-6 mb-4 overflow-hidden" style="width: calc(100% + 3rem);"><img src="/{}" alt="" class="w-full h-40 object-contain"></div>"#, crate::web::escape_html(url))
         }).unwrap_or_default();
 
-        let published_date = announcement.published_at
+        let published_date = announcement
+            .published_at
             .map(|dt| dt.format("%B %d, %Y").to_string())
             .unwrap_or_default();
 
