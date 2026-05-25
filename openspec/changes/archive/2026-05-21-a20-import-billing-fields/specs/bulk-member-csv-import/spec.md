@@ -54,7 +54,7 @@ A row with `stripe_subscription_id` set but `stripe_customer_id` empty is malfor
 
 ### Requirement: email_verified_at present skips verification email
 
-If an imported row supplies `email_verified_at`, the member is created with that verification timestamp AND the verification email is NOT sent. If the row omits `email_verified_at`, the verification email is sent as before.
+If an imported row supplies `email_verified_at`, the member SHALL be created with that verification timestamp AND the verification email SHALL NOT be sent. If the row omits `email_verified_at`, the verification email SHALL be sent as before.
 
 #### Scenario: Pre-verified member skips email
 

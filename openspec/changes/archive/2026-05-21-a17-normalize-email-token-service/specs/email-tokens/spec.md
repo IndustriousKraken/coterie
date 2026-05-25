@@ -1,3 +1,8 @@
+## RENAMED Requirements
+
+- FROM: `### Requirement: Cross-purpose protection is enforced by separate tables`
+- TO: `### Requirement: Cross-purpose protection is enforced by separate tables and kind-specific functions`
+
 ## MODIFIED Requirements
 
 ### Requirement: Cross-purpose protection is enforced by separate tables and kind-specific functions

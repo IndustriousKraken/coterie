@@ -1,3 +1,8 @@
+## RENAMED Requirements
+
+- FROM: `### Requirement: Saved-card management uses /api/* JSON for Stripe.js`
+- TO: `### Requirement: Saved-card management uses /api/* JSON only for Stripe.js, HTMX HTML for everything else`
+
 ## MODIFIED Requirements
 
 ### Requirement: Saved-card management uses /api/* JSON only for Stripe.js, HTMX HTML for everything else

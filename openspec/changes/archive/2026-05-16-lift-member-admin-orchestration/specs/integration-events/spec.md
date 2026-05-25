@@ -1,3 +1,8 @@
+## RENAMED Requirements
+
+- FROM: `### Requirement: Events are dispatched from handlers (not services) for member operations`
+- TO: `### Requirement: Locus of integration-event dispatch varies by domain`
+
 ## MODIFIED Requirements
 
 ### Requirement: Locus of integration-event dispatch varies by domain
