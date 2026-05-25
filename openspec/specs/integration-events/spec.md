@@ -40,24 +40,6 @@ Adding a new variant SHALL force every consumer match to be updated, preventing 
 - **WHEN** an integration's `is_enabled()` returns `false` at registration time
 - **THEN** it SHALL NOT be added to the manager's list; subsequent events SHALL skip it
 
-### Requirement: Events are dispatched from handlers (not services) for member operations
-
-For member-mutation operations (`activate`, `suspend`, `update`, etc.), the **handler** in `src/web/portal/admin/members.rs` SHALL call `state.service_context.integration_manager.handle_event(...)` after the repo update. There is no `MemberService` wrapping these calls.
-
-For payment operations, integration events (where applicable) SHALL be dispatched from `PaymentService`. (As of this change, payments do not produce `IntegrationEvent` variants directly; admin alerts on billing failures are dispatched by `BillingService`.)
-
-This is observed behavior. The CLAUDE.md "side-effects in services" rule is aspirational; payments follow it, member operations do not.
-
-#### Scenario: New member-mutation handler must dispatch events explicitly
-
-- **WHEN** a contributor adds a new member-mutation route
-- **THEN** the handler MUST explicitly call `integration_manager.handle_event(...)` after the repo update; no service-layer wrapper does so on its behalf
-
-#### Scenario: BillingService dispatches AdminAlert on dunning
-
-- **WHEN** the billing runner records the configured threshold of consecutive failures for a member
-- **THEN** `BillingService` (not the handler) SHALL dispatch `IntegrationEvent::AdminAlert` so the admin-alert email integration sends a notification
-
 ### Requirement: Event consumers do not block the originating call
 
 `handle_event` is `async` but called from handlers WITHOUT spawning. Consumers SHALL be implemented to be reasonably fast (millisecond-scale typical) so they do not noticeably extend handler latency. A consumer SHALL NOT roll back the originating action on failure; failures SHALL be logged and surfaced through admin-visible channels.
@@ -75,4 +57,27 @@ Variants like `MemberActivated(Member)` and `MemberUpdated { old, new }` SHALL c
 
 - **WHEN** a `MemberUpdated { old, new }` event reaches the Discord integration
 - **THEN** the integration SHALL compute role differences from the carried snapshots WITHOUT issuing additional DB reads
+
+### Requirement: Events for member operations are dispatched from MemberService
+
+For member-mutation operations (`activate`, `suspend`, `update`, `expire_now`, `update_discord_id`, `resend_verification`, `create`, `bulk_import`, etc.), the **service** in `src/service/member_service.rs` SHALL call `self.integration_manager.handle_event(...)` after the repo update. The handler in `src/web/portal/admin/members/` SHALL NOT dispatch member-mutation events directly; the handler's only job is HTTP shape (extract inputs, call the service, render the response).
+
+For payment operations, integration events (where applicable) SHALL be dispatched from `PaymentService` or `BillingService`. Payments do not produce `IntegrationEvent` variants directly today; admin alerts on billing failures are dispatched by `BillingService`.
+
+This change aligns with the CLAUDE.md "side-effects in services" rule — both member operations and payments now follow it.
+
+#### Scenario: New member-mutation method must dispatch events from the service
+
+- **WHEN** a contributor adds a new member-mutation method to `MemberService`
+- **THEN** the method MUST explicitly call `self.integration_manager.handle_event(...)` after the repo update; the handler does NOT (and SHALL NOT) dispatch events on its behalf
+
+#### Scenario: Handler skips event dispatch by design
+
+- **WHEN** a member-mutation handler is reviewed
+- **THEN** the handler SHALL NOT contain any `integration_manager.handle_event` call for member events; that responsibility lives in the service
+
+#### Scenario: BillingService dispatches AdminAlert on dunning
+
+- **WHEN** the billing runner records the configured threshold of consecutive failures for a member
+- **THEN** `BillingService` (not the handler) SHALL dispatch `IntegrationEvent::AdminAlert` so the admin-alert email integration sends a notification
 
