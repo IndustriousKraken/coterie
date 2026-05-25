@@ -23,39 +23,49 @@ Each `audit_logs` row SHALL include:
 
 - `id` (UUID v4)
 - `actor_id` (Option<UUID>) — the acting member, or NULL for system-initiated entries
-- `action` (string) — e.g., `activate_member`, `suspend_member`, `update_member`, `record_payment`, `refund_payment`, `update_setting`, `logout`, `migrate_stripe_subs`
+- `action` (string) — e.g., `activate_member`, `suspend_member`, `update_member`, `record_payment`, `refund_payment`, `update_setting`, `logout`, `migrate_stripe_subs`, `export_members`, `import_member`, `import_members_batch`
 - `entity_type` (string) — e.g., `member`, `payment`, `setting`, `session`
-- `entity_id` (string) — the UUID or other identifier of the target
-- `old_value` (Option<string>) — opaque before-state, often a name/email or JSON blob
-- `new_value` (Option<string>)
+- `entity_id` (string) — the UUID or other identifier of the target. For aggregate batch actions (`export_members`, `import_members_batch`), the value `"*"` SHALL be used.
+- `old_value` (Option<string>) — opaque before-state
+- `new_value` (Option<string>) — opaque after-state, OR for aggregate actions a brief filter+count summary
 - `ip_address` (Option<string>)
 - `created_at` (timestamp, set by DB default)
 
-#### Scenario: Activate-member entry carries member email as new_value
+#### Scenario: import_member row carries new-member email
 
-- **WHEN** an admin activates a member
-- **THEN** the inserted row SHALL have `action = "activate_member"`, `entity_type = "member"`, `entity_id = <member uuid>`, and `new_value` holding the member's email for human readability
+- **WHEN** a row is successfully imported via bulk import
+- **THEN** the inserted `audit_logs` row SHALL have `action = "import_member"`, `entity_type = "member"`, `entity_id = <new member uuid>`, and `new_value = Some(email)`
+
+#### Scenario: import_members_batch row summarizes the batch
+
+- **WHEN** a bulk import completes (regardless of partial failures)
+- **THEN** the inserted aggregate row SHALL have `action = "import_members_batch"`, `entity_type = "member"`, `entity_id = "*"`, and `new_value` of the form `"file=<name>,succeeded=N,failed=M"`
 
 ### Requirement: Locus of audit emission varies by domain
 
 Audit-log emission SHALL live EITHER in the service layer OR in the handler, depending on the domain:
 
-- **Payments**: emitted from `PaymentService` (e.g., `record_manual` calls `audit_service.log` internally). Adding a new payment-recording call site WITHOUT going through `PaymentService` would skip the audit.
-- **Member operations** (activate, suspend, update, extend-dues, set-dues, expire-now, create, update-discord-id, resend-verification): emitted from the **handler** in `src/web/portal/admin/members.rs` AFTER calling `member_repo` directly. There is no `MemberService` wrapping these calls.
-- **Settings, types, announcements, events**: emitted from the handler.
+- **Payments**: emitted from `PaymentService::record_manual` and from the per-event handlers inside `WebhookDispatcher`. Adding a new payment-recording call site WITHOUT going through one of these would skip the audit; the `payment-recording` capability spec lists the three permitted entry points.
+- **Member operations** (activate, suspend, update, extend-dues, set-dues, expire-now, create, update-discord-id, resend-verification, bulk-import): emitted from `MemberService` in `src/service/member_service.rs`. The handler in `src/web/portal/admin/members/` SHALL NOT emit audit logs directly for these operations; the service handles it.
+- **Settings, types, announcements, events**: emitted from the handler. (The `admin-types` capability's audit emission is a real bug today — the spec says the handler audits, but the code doesn't. A separate change adds the missing calls.)
 - **Logout**: emitted from the handler in `src/api/handlers/auth.rs`.
 
-This is observed behavior. The CLAUDE.md "side-effects live in services" rule is aspirational; payments follow it, the rest do not.
+This reflects current code structure: member operations and payments follow the CLAUDE.md "side-effects in services" rule; type/setting/announcement/event ops have audit in handlers.
 
-#### Scenario: New member-mutation handler must emit its own audit row
+#### Scenario: New member-mutation method must emit its own audit row from the service
 
-- **WHEN** a contributor adds a new member-mutation route to `src/web/portal/admin/members.rs`
-- **THEN** the handler MUST explicitly call `state.service_context.audit_service.log(...)` because no member-service wrapper does so on its behalf
+- **WHEN** a contributor adds a new member-mutation method to `MemberService`
+- **THEN** the method MUST explicitly call `self.audit_service.log(...)` after the repo update; no handler-side audit wrapper exists for member operations
 
-#### Scenario: New payment recording site routes through PaymentService
+#### Scenario: New payment recording site routes through one of the three entry points
 
 - **WHEN** a contributor adds a new code path that records a payment
-- **THEN** it SHALL call `PaymentService::record_manual` (or the equivalent service entry point), which emits the audit row internally
+- **THEN** it SHALL call one of `PaymentService::record_manual`, `WebhookDispatcher::handle_*`, or `BillingService::process_scheduled_payment` — each emits the audit row internally; direct `payment_repo.create` calls are forbidden
+
+#### Scenario: Handler does not emit duplicate audit for member operations
+
+- **WHEN** an admin-member handler is reviewed
+- **THEN** it SHALL NOT contain a direct `audit_service.log` call for member-mutation actions; the service emits the row
 
 ### Requirement: Audit log is append-only at the application layer
 
