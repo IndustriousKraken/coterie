@@ -254,7 +254,8 @@ where
     let new_env = rewrite_env(&current_env, &creds.pk, &creds.sk, &creds.whsec);
     fs.write(&paths.env_new, new_env.as_bytes())?;
     fs.chmod(&paths.env_new, 0o640)?;
-    fs.chown(&paths.env_new, "coterie", "coterie").ok();
+    fs.chown(&paths.env_new, "coterie", "coterie")
+        .with_context(|| format!("chown coterie:coterie {}", paths.env_new.display()))?;
     fs.rename(&paths.env_new, &paths.env)?;
 
     // --- 10. Remove .env.live if it existed ---------------------------
