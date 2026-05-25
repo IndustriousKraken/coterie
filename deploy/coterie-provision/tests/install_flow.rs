@@ -6,9 +6,11 @@ use coterie_provision::caddyfile;
 use coterie_provision::checklist::TEST_MODE_CHECKLIST;
 use coterie_provision::install::{self, detect_state, InstallArgs, StripeMode};
 use coterie_provision::output::CaptureOutput;
+use coterie_provision::system::CommandOutput;
 use coterie_provision::test_support::{FakeFs, FakeSystem, MockPrompter};
 use secrecy::SecretString;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 fn base_args() -> InstallArgs {
     InstallArgs {
@@ -336,5 +338,167 @@ fn test_mode_rejects_wrong_prefix() {
     assert!(
         err.to_string().contains("pk_test_"),
         "expected pk_test_ in error, got: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------
+// a34: tightened error handling
+// ---------------------------------------------------------------------
+
+/// Base non-dry-run args without Stripe/Discord/UniFi/Caddy noise so
+/// the install path executes end-to-end and surfaces a single failure
+/// at a time. Smoke-test timing is overridden for fast runs.
+fn live_run_args() -> InstallArgs {
+    let mut args = base_args();
+    args.enable_caddy = Some(false);
+    args.dry_run = false;
+    args.overwrite_env = true;
+    args.skip_root_check = true;
+    // Keep the smoke-test polling loop fast in tests. Production
+    // defaults (1s interval / 30s budget) are far too slow.
+    args.smoke_test_interval = Some(Duration::from_millis(1));
+    args.smoke_test_budget = Some(Duration::from_millis(50));
+    args
+}
+
+#[test]
+fn chown_failure_aborts_wizard() {
+    let args = live_run_args();
+    let sys = FakeSystem::new();
+    let fs = FakeFs::new();
+    stage_fake_install_state(&fs);
+    // Configure FakeFs to fail the chown on `.env`.
+    fs.fail_chown_on(Path::new("/opt/coterie/.env"));
+
+    let prompts = MockPrompter::new();
+    let err = install::run(args, &sys, &fs, &prompts, &CaptureOutput::new()).unwrap_err();
+
+    // anyhow chains the inner FakeFs error under the with_context
+    // wrapper. Both `chown` (from the wrapper) and `.env` (from both
+    // the wrapper and the inner error) must appear somewhere in the
+    // formatted chain.
+    let chain = format!("{err:#}");
+    assert!(
+        chain.contains("chown"),
+        "error chain must mention `chown`; got: {chain}"
+    );
+    assert!(
+        chain.contains(".env"),
+        "error chain must mention `.env`; got: {chain}"
+    );
+}
+
+#[test]
+fn unexpected_create_admin_code_aborts() {
+    let args = live_run_args();
+    let sys = FakeSystem::new();
+    let fs = FakeFs::new();
+    stage_fake_install_state(&fs);
+    // create_admin's args include a dynamic tempfile path, so match
+    // by command name.
+    sys.respond_to_cmd(
+        "/opt/coterie/create_admin",
+        CommandOutput {
+            status: 3,
+            stdout: String::new(),
+            stderr: "validation failed (hypothetical)".to_string(),
+        },
+    );
+
+    let prompts = MockPrompter::new();
+    let err = install::run(args, &sys, &fs, &prompts, &CaptureOutput::new()).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unexpectedly"),
+        "error message must contain `unexpectedly`; got: {msg}"
+    );
+    assert!(
+        msg.contains('3'),
+        "error message must contain the exit code `3`; got: {msg}"
+    );
+}
+
+#[test]
+fn smoke_test_retries_through_startup() {
+    let args = live_run_args();
+    let sys = FakeSystem::new();
+    let fs = FakeFs::new();
+    stage_fake_install_state(&fs);
+    // First 2 curl /health calls fail (status 7 = connection refused),
+    // 3rd returns 200.
+    sys.respond_to_sequence(
+        "curl",
+        &["-fsSL", "http://127.0.0.1:8080/health"],
+        vec![
+            CommandOutput {
+                status: 7,
+                stdout: String::new(),
+                stderr: "curl: (7) Failed to connect".to_string(),
+            },
+            CommandOutput {
+                status: 7,
+                stdout: String::new(),
+                stderr: "curl: (7) Failed to connect".to_string(),
+            },
+            CommandOutput {
+                status: 0,
+                stdout: "{\"status\":\"ok\"}".to_string(),
+                stderr: String::new(),
+            },
+        ],
+    );
+
+    let prompts = MockPrompter::new();
+    install::run(args, &sys, &fs, &prompts, &CaptureOutput::new())
+        .expect("wizard should succeed once /health comes up");
+
+    let curl_calls = sys
+        .calls
+        .borrow()
+        .iter()
+        .filter(|c| c.cmd == "curl")
+        .count();
+    assert!(
+        curl_calls >= 3,
+        "expected at least 3 curl calls; got {curl_calls}"
+    );
+}
+
+#[test]
+fn smoke_test_fails_after_budget_with_last_error() {
+    let args = live_run_args();
+    let sys = FakeSystem::new();
+    let fs = FakeFs::new();
+    stage_fake_install_state(&fs);
+    // Every curl call returns a 500. With -f, curl exits 22 on >=400.
+    sys.respond_to(
+        "curl",
+        &["-fsSL", "http://127.0.0.1:8080/health"],
+        CommandOutput {
+            status: 22,
+            stdout: String::new(),
+            stderr: "curl: (22) The requested URL returned error: 500".to_string(),
+        },
+    );
+
+    let started = Instant::now();
+    let prompts = MockPrompter::new();
+    let err = install::run(args, &sys, &fs, &prompts, &CaptureOutput::new()).unwrap_err();
+    let elapsed = started.elapsed();
+
+    // Confirm the test-friendly budget (50ms) was honored; this would
+    // be 30s in production. Allow generous slack for scheduling.
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "test budget must be honored; elapsed = {elapsed:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("500"),
+        "error message must surface the 500 from the last attempt; got: {msg}"
+    );
+    assert!(
+        msg.contains("smoke test failed"),
+        "error message must say smoke test failed; got: {msg}"
     );
 }

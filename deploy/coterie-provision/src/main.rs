@@ -237,6 +237,8 @@ impl TryFrom<InstallCli> for InstallArgs {
             dry_run: c.dry_run,
             overwrite_env: c.overwrite_env,
             skip_root_check: false,
+            smoke_test_interval: None,
+            smoke_test_budget: None,
         })
     }
 }

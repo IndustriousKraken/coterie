@@ -5,6 +5,8 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 use crate::caddyfile;
 use crate::checklist::TEST_MODE_CHECKLIST;
@@ -23,6 +25,11 @@ const CADDYFILE_PATH: &str = "/etc/caddy/Caddyfile";
 const CADDYFILE_EXAMPLE_PATH: &str = "/opt/coterie/deploy/Caddyfile.example";
 const CADDY_LOG_DIR: &str = "/var/log/caddy";
 const RELEASE_DEPLOY_PATH: &str = "/usr/local/bin/coterie-release-deploy";
+
+/// Production per-iteration sleep between `/health` polls.
+pub(crate) const SMOKE_TEST_INTERVAL: Duration = Duration::from_secs(1);
+/// Production total budget for the `/health` poll loop.
+pub(crate) const SMOKE_TEST_BUDGET: Duration = Duration::from_secs(30);
 
 /// Which Stripe mode the wizard is configuring for. Default: `Live`
 /// (matches a24 baseline behavior).
@@ -110,6 +117,14 @@ pub struct InstallArgs {
     /// write path without being root.
     #[doc(hidden)]
     pub skip_root_check: bool,
+    /// Test-only override for `smoke_test`'s per-iteration sleep.
+    /// Production uses `SMOKE_TEST_INTERVAL` (1s) when this is None.
+    #[doc(hidden)]
+    pub smoke_test_interval: Option<Duration>,
+    /// Test-only override for `smoke_test`'s total budget.
+    /// Production uses `SMOKE_TEST_BUDGET` (30s) when this is None.
+    #[doc(hidden)]
+    pub smoke_test_budget: Option<Duration>,
 }
 
 /// Idempotency findings detected at the start of the install.
@@ -164,6 +179,8 @@ pub fn run<S: SystemCommand, F: FileSystem, P: Prompter, O: Output>(
         sys,
         fs,
         dry_run: args.dry_run,
+        smoke_test_interval: args.smoke_test_interval.unwrap_or(SMOKE_TEST_INTERVAL),
+        smoke_test_budget: args.smoke_test_budget.unwrap_or(SMOKE_TEST_BUDGET),
     };
 
     exec.apt_update()?;
@@ -749,6 +766,8 @@ struct Executor<'a, S: SystemCommand, F: FileSystem> {
     sys: &'a S,
     fs: &'a F,
     dry_run: bool,
+    smoke_test_interval: Duration,
+    smoke_test_budget: Duration,
 }
 
 impl<'a, S: SystemCommand, F: FileSystem> Executor<'a, S, F> {
@@ -772,29 +791,6 @@ impl<'a, S: SystemCommand, F: FileSystem> Executor<'a, S, F> {
             ));
         }
         Ok(())
-    }
-
-    fn run_allow_codes(
-        &self,
-        cmd: &str,
-        args: &[&str],
-        description: &str,
-        allowed_codes: &[i32],
-    ) -> Result<i32> {
-        self.announce(&format!("{description}: {cmd} {}", args.join(" ")));
-        if self.dry_run {
-            return Ok(0);
-        }
-        let out = self.sys.run(cmd, args)?;
-        if !allowed_codes.contains(&out.status) {
-            return Err(anyhow!(
-                "{description} failed (exit {}): {}\n{}",
-                out.status,
-                out.stdout,
-                out.stderr
-            ));
-        }
-        Ok(out.status)
     }
 
     fn apt_update(&self) -> Result<()> {
@@ -968,7 +964,7 @@ impl<'a, S: SystemCommand, F: FileSystem> Executor<'a, S, F> {
         self.fs.chmod(Path::new(ENV_PATH), 0o640)?;
         self.fs
             .chown(Path::new(ENV_PATH), "coterie", "coterie")
-            .ok();
+            .with_context(|| format!("chown coterie:coterie {ENV_PATH}"))?;
         Ok(())
     }
 
@@ -1004,7 +1000,7 @@ impl<'a, S: SystemCommand, F: FileSystem> Executor<'a, S, F> {
         self.fs.chmod(Path::new(ENV_LIVE_PATH), 0o640)?;
         self.fs
             .chown(Path::new(ENV_LIVE_PATH), "coterie", "coterie")
-            .ok();
+            .with_context(|| format!("chown coterie:coterie {ENV_LIVE_PATH}"))?;
         Ok(())
     }
 
@@ -1031,7 +1027,11 @@ impl<'a, S: SystemCommand, F: FileSystem> Executor<'a, S, F> {
         let tmp_path_owned = tmp.path().to_path_buf();
         let tmp_path = tmp_path_owned.to_string_lossy();
 
-        let exit_code = self.run_allow_codes(
+        // Call sys.run directly (rather than run_allow_codes) so we can
+        // produce the spec-required "exited unexpectedly with code N"
+        // message for any non-{0,2} exit code, instead of bouncing off
+        // the run_allow_codes whitelist with a generic "failed" string.
+        let result = self.sys.run(
             "/opt/coterie/create_admin",
             &[
                 "--password-file",
@@ -1043,27 +1043,33 @@ impl<'a, S: SystemCommand, F: FileSystem> Executor<'a, S, F> {
                 "--full-name",
                 inputs.admin_full_name.as_str(),
             ],
-            "create_admin",
-            &[0, 2],
         );
 
         // Always shred-then-drop, regardless of create_admin's exit code.
         let _ = overwrite_with_zeros(tmp.path());
         drop(tmp);
 
-        match exit_code {
-            Ok(0) => {
+        let out = result.context("running create_admin")?;
+        match out.status {
+            0 => {
                 self.announce("first admin created");
                 Ok(())
             }
-            Ok(2) => {
+            2 => {
                 self.announce("admin already exists — skipping create_admin (idempotent)");
                 Ok(())
             }
-            Ok(other) => Err(anyhow!(
-                "create_admin returned unexpected exit code {other}"
+            // RealSystem maps signal-terminated children to -1.
+            -1 => Err(anyhow!(
+                "create_admin terminated by signal; stdout: {}\nstderr: {}",
+                out.stdout,
+                out.stderr
             )),
-            Err(e) => Err(e),
+            other => Err(anyhow!(
+                "create_admin exited unexpectedly with code {other}; stdout: {}\nstderr: {}",
+                out.stdout,
+                out.stderr
+            )),
         }
     }
 
@@ -1085,7 +1091,7 @@ impl<'a, S: SystemCommand, F: FileSystem> Executor<'a, S, F> {
             self.fs.create_dir_all(Path::new(CADDY_LOG_DIR))?;
             self.fs
                 .chown(Path::new(CADDY_LOG_DIR), "caddy", "caddy")
-                .ok();
+                .with_context(|| format!("chown caddy:caddy {CADDY_LOG_DIR}"))?;
         }
 
         self.announce(&format!("writing {}", CADDYFILE_PATH));
@@ -1124,11 +1130,37 @@ impl<'a, S: SystemCommand, F: FileSystem> Executor<'a, S, F> {
         // Use curl for the smoke test so it routes through the
         // SystemCommand trait and is mockable in tests. -fsSL gives us
         // a non-zero exit on HTTP error.
-        self.run(
-            "curl",
-            &["-fsSL", "http://127.0.0.1:8080/health"],
-            "smoke test GET /health",
-        )
+        //
+        // Poll until a 2xx response or the budget exhausts. The gap
+        // between systemd reporting `active` and the HTTP listener
+        // binding is the documented race condition (sqlx pool init,
+        // first-connection migrations, address binding).
+        self.announce(&format!(
+            "smoke test GET /health (polling up to {}s)",
+            self.smoke_test_budget.as_secs()
+        ));
+        let deadline = Instant::now() + self.smoke_test_budget;
+        loop {
+            let last_error = match self
+                .sys
+                .run("curl", &["-fsSL", "http://127.0.0.1:8080/health"])
+            {
+                Ok(out) if out.success() => return Ok(()),
+                Ok(out) => format!(
+                    "status={}, stdout={}, stderr={}",
+                    out.status, out.stdout, out.stderr
+                ),
+                Err(e) => format!("{e}"),
+            };
+            if Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "smoke test failed after {}s: {}",
+                    self.smoke_test_budget.as_secs(),
+                    last_error
+                ));
+            }
+            sleep(self.smoke_test_interval);
+        }
     }
 }
 

@@ -16,6 +16,59 @@ use std::path::Path;
 
 // --- Helpers ---------------------------------------------------------
 
+/// Test-only filesystem that delegates everything to `RealFs` except
+/// `chown`, which it no-ops. CI test boxes have no `coterie:coterie`
+/// user, so a real chown call always fails there — the previous code
+/// masked this with `.ok()`, but a34 now correctly propagates chown
+/// errors. These end-to-end tests still want RealFs for rusqlite and
+/// real rename ops; the chown is the only call that needs stubbing.
+struct NoopChownFs(coterie_provision::fs_ops::RealFs);
+
+impl NoopChownFs {
+    fn new() -> Self {
+        Self(coterie_provision::fs_ops::RealFs::new())
+    }
+}
+
+impl coterie_provision::fs_ops::FileSystem for NoopChownFs {
+    fn read_to_string(&self, path: &std::path::Path) -> anyhow::Result<String> {
+        self.0.read_to_string(path)
+    }
+    fn write(&self, path: &std::path::Path, contents: &[u8]) -> anyhow::Result<()> {
+        self.0.write(path, contents)
+    }
+    fn append(&self, path: &std::path::Path, contents: &[u8]) -> anyhow::Result<()> {
+        self.0.append(path, contents)
+    }
+    fn create_dir_all(&self, path: &std::path::Path) -> anyhow::Result<()> {
+        self.0.create_dir_all(path)
+    }
+    fn chmod(&self, path: &std::path::Path, mode: u32) -> anyhow::Result<()> {
+        self.0.chmod(path, mode)
+    }
+    fn chown(&self, _path: &std::path::Path, _user: &str, _group: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn exists(&self, path: &std::path::Path) -> bool {
+        self.0.exists(path)
+    }
+    fn is_file(&self, path: &std::path::Path) -> bool {
+        self.0.is_file(path)
+    }
+    fn is_dir(&self, path: &std::path::Path) -> bool {
+        self.0.is_dir(path)
+    }
+    fn rename(&self, from: &std::path::Path, to: &std::path::Path) -> anyhow::Result<()> {
+        self.0.rename(from, to)
+    }
+    fn remove_file(&self, path: &std::path::Path) -> anyhow::Result<()> {
+        self.0.remove_file(path)
+    }
+    fn remove_dir_all(&self, path: &std::path::Path) -> anyhow::Result<()> {
+        self.0.remove_dir_all(path)
+    }
+}
+
 const SAMPLE_TEST_ENV: &str = "\
 COTERIE__SERVER__PORT=8080
 COTERIE__SERVER__BASE_URL=https://coterie.example.com
@@ -374,7 +427,7 @@ fn paths_in(dir: &Path) -> Paths {
 fn happy_path_archive_branch_end_to_end() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths_in(dir.path());
-    let fs = coterie_provision::fs_ops::RealFs::new();
+    let fs = NoopChownFs::new();
 
     // Seed test-mode state.
     std::fs::write(&paths.env, SAMPLE_TEST_ENV).unwrap();
@@ -477,7 +530,7 @@ fn happy_path_archive_branch_end_to_end() {
 fn happy_path_discard_branch_removes_test_db() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths_in(dir.path());
-    let fs = coterie_provision::fs_ops::RealFs::new();
+    let fs = NoopChownFs::new();
 
     std::fs::write(&paths.env, SAMPLE_TEST_ENV).unwrap();
     pre_seed_test_db(&paths.coterie_test_db);
@@ -537,7 +590,7 @@ fn happy_path_discard_branch_removes_test_db() {
 fn happy_path_consumes_env_live_and_removes_it() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths_in(dir.path());
-    let fs = coterie_provision::fs_ops::RealFs::new();
+    let fs = NoopChownFs::new();
 
     std::fs::write(&paths.env, SAMPLE_TEST_ENV).unwrap();
     std::fs::write(
