@@ -40,24 +40,6 @@ Adding a new variant SHALL force every consumer match to be updated, preventing 
 - **WHEN** an integration's `is_enabled()` returns `false` at registration time
 - **THEN** it SHALL NOT be added to the manager's list; subsequent events SHALL skip it
 
-### Requirement: Events are dispatched from handlers (not services) for member operations
-
-For member-mutation operations (`activate`, `suspend`, `update`, etc.), the **handler** in `src/web/portal/admin/members.rs` SHALL call `state.service_context.integration_manager.handle_event(...)` after the repo update. There is no `MemberService` wrapping these calls.
-
-For payment operations, integration events (where applicable) SHALL be dispatched from `PaymentService`. (As of this change, payments do not produce `IntegrationEvent` variants directly; admin alerts on billing failures are dispatched by `BillingService`.)
-
-This is observed behavior. The CLAUDE.md "side-effects in services" rule is aspirational; payments follow it, member operations do not.
-
-#### Scenario: New member-mutation handler must dispatch events explicitly
-
-- **WHEN** a contributor adds a new member-mutation route
-- **THEN** the handler MUST explicitly call `integration_manager.handle_event(...)` after the repo update; no service-layer wrapper does so on its behalf
-
-#### Scenario: BillingService dispatches AdminAlert on dunning
-
-- **WHEN** the billing runner records the configured threshold of consecutive failures for a member
-- **THEN** `BillingService` (not the handler) SHALL dispatch `IntegrationEvent::AdminAlert` so the admin-alert email integration sends a notification
-
 ### Requirement: Event consumers do not block the originating call
 
 `handle_event` is `async` but called from handlers WITHOUT spawning. Consumers SHALL be implemented to be reasonably fast (millisecond-scale typical) so they do not noticeably extend handler latency. A consumer SHALL NOT roll back the originating action on failure; failures SHALL be logged and surfaced through admin-visible channels.
@@ -75,4 +57,22 @@ Variants like `MemberActivated(Member)` and `MemberUpdated { old, new }` SHALL c
 
 - **WHEN** a `MemberUpdated { old, new }` event reaches the Discord integration
 - **THEN** the integration SHALL compute role differences from the carried snapshots WITHOUT issuing additional DB reads
+
+### Requirement: Locus of integration-event dispatch varies by domain
+
+`IntegrationManager::handle_event` SHALL be called from EITHER the service layer OR the handler, depending on the domain:
+
+- **Member operations**: dispatched from `MemberService`.
+- **Event operations**: dispatched from `EventAdminService`.
+- **Announcement operations**: dispatched from `AnnouncementAdminService`.
+- **Payment / billing operations**:
+  - Stripe-managed charge failures and subscription deletions: dispatched from `BillingService::Notifications` via `notify_subscription_payment_failed` and `notify_subscription_cancelled`.
+  - Coterie-managed terminal charge failures: dispatched from `BillingService::AutoRenew::process_scheduled_payment`. (Per-retry transients are silent on the integration channel.)
+  - Refunds: dispatched from `PaymentAdminService::refund`.
+- **System notifications**: any subsystem MAY dispatch `IntegrationEvent::AdminAlert` directly.
+
+#### Scenario: Coterie-managed terminal failure dispatches via AutoRenew
+
+- **WHEN** a Coterie-managed scheduled payment hits the max-retries cap and transitions to `Failed`
+- **THEN** the integration dispatch SHALL come from `AutoRenew::process_scheduled_payment`, not from a handler or another service
 
