@@ -4,7 +4,8 @@ Items still to do. Completed work lives in git history.
 
 ## Authentication
 
-- [ ] TOTP/2FA support
+- [x] **TOTP/2FA support** — shipped. UI flow in `src/web/portal/security.rs`
+      wired to `TotpService`; `totp-2fa` capability spec captures the contract.
 
 ## Member Portal
 
@@ -30,17 +31,26 @@ Items still to do. Completed work lives in git history.
 
 ## Admin
 
-- [ ] Billing dashboard: upcoming scheduled payments, recent failures,
-      revenue metrics. Plan-stripe-billing called for this; current
-      admin/billing.rs is just a settings page.
-- [ ] Recurring events (recurrence patterns, custom rules like
-      "2nd Wednesday", repeat count or end date, edit single vs.
-      future occurrences, cancel single occurrence)
+- [x] **Billing dashboard** — shipped. `GET /portal/admin/billing/dashboard`
+      renders upcoming scheduled charges, recent failures, and revenue by
+      month (see `src/web/portal/admin/billing.rs:189+`, `admin-billing-dashboard`
+      capability spec).
+- [x] **Recurring events (core)** — shipped. `RecurringEventService` with
+      `Recurrence::{WeeklyByDay, MonthlyByDayOfMonth, MonthlyByWeekdayOrdinal}`
+      covers weekly, monthly-day-of-month, and ordinal-weekday (e.g. "2nd
+      Wednesday", "last Friday") patterns. 52-week rolling horizon with daily
+      roll-forward; `until_date` for end dates; series-level edit affects only
+      future occurrences. See `event-admin-service` capability spec.
+- [ ] **Recurring events — per-occurrence exceptions**: cancel a single
+      occurrence (e.g., this Tuesday's meeting is canceled for the holiday)
+      and override a single occurrence (e.g., this Tuesday moves to Wednesday)
+      without affecting the rest of the series. Spec'd as `a35-recurring-event-exceptions`.
 - [ ] Announcement distribution
   - [x] Push to Discord channel on publish — shipped (single org-level
         channel via discord.announcements_channel_id setting; per-
         announcement override deferred)
-  - [ ] Scheduled delivery (publish now vs. schedule for later)
+  - [x] **Scheduled delivery** (publish now vs. schedule for later) — shipped
+        via `a11-scheduled-announcement-publish`.
   - [ ] Support for other chat APIs (Slack, Matrix)
 
 ## Integrations
@@ -64,35 +74,21 @@ Items still to do. Completed work lives in git history.
 - [ ] CI/CD pipeline (GitHub Actions) — staging-only flow exists in
       `deploy/SETUP.md`; full release pipeline still TBD
 - [ ] Pre-commit hooks
-- [ ] **Full Debian provisioning script** — wrap the manual steps in
-      `DEPLOY-DIGITALOCEAN.md` into a single idempotent
-      `deploy/provision-debian.sh` that takes a fresh droplet from
-      bare to "Coterie running with Caddy + TLS" without manual
-      intervention. Steps to automate:
-      - `apt-get update && apt-get install -y` the prereqs (curl,
-        python3, tar, sqlite3, caddy, awscli, ca-certificates)
-      - Mount the attached block volume + add the fstab entry
-        (detect the by-id path; cope with the volume already being
-        mounted if re-run)
-      - Run `release-deploy.sh` (which itself runs `install.sh`)
-      - Drop the Caddyfile in place from `Caddyfile.example` with
-        domain substitution + `mkdir -p /var/log/caddy &&
-        chown -R caddy:caddy /var/log/caddy` so a botched first run
-        doesn't leave root-owned log files behind
-      - Stage `.env` from `.env.example` with `openssl rand -hex 32`
-        already substituted into `SESSION_SECRET`
-      - Print a "still-to-do" summary at the end (Stripe keys,
-        Discord, DNS, `/setup` wizard)
-
-      Goal: a single command turns a fresh droplet into a running
-      Coterie. Critical for disaster recovery and for the per-org
-      provisioning model if Coterie ever becomes a hosted product.
-      Manual deploy is fine the first time; the second time it's a
-      chore worth scripting.
+- [x] **Full Debian provisioning script** — shipped via `a24-provisioning-wizard`
+      as the `coterie-provision` Rust binary + thin `deploy/provision.sh` bash
+      bootstrap. One command (`curl ... provision.sh | bash`) takes a fresh
+      Debian 13 droplet to "Coterie running with Caddy + TLS, first admin
+      created, integrations configured." Different mechanism than the original
+      `deploy/provision-debian.sh` plan, same goal. See `provisioning-wizard`
+      capability spec.
 
 ## Documentation
 
-- [ ] API documentation (OpenAPI/Swagger)
+- [x] **API documentation (OpenAPI/Swagger)** — shipped for the public surface
+      via `utoipa` in `src/api/docs.rs`. Portal/admin routes are intentionally
+      excluded by design (per the docs.rs module comment) so this is "done for
+      the surface that needs it." Add a separate item if internal-route docs
+      are ever wanted.
 - [ ] Administrator guide
 - [ ] Installation guide
 - [ ] Contributing guidelines
@@ -107,8 +103,11 @@ Items still to do. Completed work lives in git history.
   - Skills directory, blog aggregation from RSS, achievement badges,
     equipment checkout, voting/polls
 - [ ] Communication
-  - Welcome emails for new members, event reminders, announcement
-    digests (current emails are payment-related only)
-- [ ] Bulk member import/export
+  - [x] **Event reminders** — shipped via `a10-event-reminder-emails`.
+  - [ ] Welcome emails for new members
+  - [ ] Announcement digests (rollup of recent announcements via email)
+- [x] **Bulk member import/export** — shipped. Export via
+      `a12-bulk-member-csv-export`, import via `a13-bulk-member-csv-import`
+      with billing-field columns added by `a20-import-billing-fields`.
 - [ ] Custom fields for members
 - [ ] Report builder
