@@ -17,7 +17,10 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::{
-    domain::{Event, EventSeries, Recurrence, generate_occurrences},
+    domain::{
+        generate_occurrences, Event, EventSeries, OccurrenceExceptionKind, OccurrenceOverride,
+        Recurrence,
+    },
     error::{AppError, Result},
     repository::{EventRepository, EventSeriesRepository},
 };
@@ -53,7 +56,11 @@ impl RecurringEventService {
         series_repo: Arc<dyn EventSeriesRepository>,
         pool: SqlitePool,
     ) -> Self {
-        Self { event_repo, series_repo, pool }
+        Self {
+            event_repo,
+            series_repo,
+            pool,
+        }
     }
 
     /// Persist a series + its first 12 months of occurrences.
@@ -73,11 +80,12 @@ impl RecurringEventService {
         until_date: Option<DateTime<Utc>>,
         created_by: Uuid,
     ) -> Result<CreatedSeries> {
-        rule.validate().map_err(|m| AppError::BadRequest(m.to_string()))?;
+        rule.validate()
+            .map_err(|m| AppError::BadRequest(m.to_string()))?;
 
         let now = Utc::now();
-        let target_horizon = (now + DEFAULT_HORIZON)
-            .min(until_date.unwrap_or(DateTime::<Utc>::MAX_UTC));
+        let target_horizon =
+            (now + DEFAULT_HORIZON).min(until_date.unwrap_or(DateTime::<Utc>::MAX_UTC));
 
         let rule_json = serde_json::to_string(&rule)
             .map_err(|e| AppError::Internal(format!("rule serialize: {}", e)))?;
@@ -96,7 +104,7 @@ impl RecurringEventService {
 
         if occurrence_times.is_empty() {
             return Err(AppError::BadRequest(
-                "Recurrence rule produced no occurrences before the cutoff".to_string()
+                "Recurrence rule produced no occurrences before the cutoff".to_string(),
             ));
         }
 
@@ -118,11 +126,28 @@ impl RecurringEventService {
         // Insert each occurrence, copying the template fields.
         // duration carries over: end_time is preserved as a Duration
         // offset from start_time.
-        let original_duration = template.end_time
-            .map(|e| e - template.start_time);
+        //
+        // Consult the exception table per-index — on a brand-new series
+        // this is virtually always empty, but the same code path runs
+        // for the "create, then immediately cancel one, then call
+        // materializer again" scenario covered by tests.
+        let original_duration = template.end_time.map(|e| e - template.start_time);
         let mut inserted = Vec::with_capacity(occurrence_times.len());
         for (idx, start) in occurrence_times.iter().enumerate() {
-            let occurrence = Event {
+            let occurrence_index = (idx + 1) as i32;
+            let exception = self
+                .series_repo
+                .find_exception(series_id, occurrence_index)
+                .await?;
+
+            if matches!(
+                exception.as_ref().map(|e| e.kind),
+                Some(OccurrenceExceptionKind::Cancelled),
+            ) {
+                continue;
+            }
+
+            let mut occurrence = Event {
                 id: Uuid::new_v4(),
                 title: template.title.clone(),
                 description: template.description.clone(),
@@ -139,23 +164,29 @@ impl RecurringEventService {
                 created_at: now,
                 updated_at: now,
                 series_id: Some(series_id),
-                occurrence_index: Some((idx + 1) as i32),
+                occurrence_index: Some(occurrence_index),
             };
+
+            if let Some(ex) = exception {
+                if ex.kind == OccurrenceExceptionKind::Overridden {
+                    apply_payload(&ex.override_payload, &mut occurrence)?;
+                }
+            }
+
             inserted.push(self.event_repo.create(occurrence).await?);
         }
 
-        Ok(CreatedSeries { series, occurrences: inserted })
+        Ok(CreatedSeries {
+            series,
+            occurrences: inserted,
+        })
     }
 
     /// Materialize occurrences from `series.materialized_through`
     /// (exclusive) up to `target` (exclusive), capped at `until_date`.
     /// Idempotent: calling repeatedly with a non-advancing target is a
     /// no-op. Returns the count inserted.
-    pub async fn extend_horizon(
-        &self,
-        series: &EventSeries,
-        target: DateTime<Utc>,
-    ) -> Result<u64> {
+    pub async fn extend_horizon(&self, series: &EventSeries, target: DateTime<Utc>) -> Result<u64> {
         let cap = series.until_date.unwrap_or(DateTime::<Utc>::MAX_UTC);
         let target = target.min(cap);
         if target <= series.materialized_through {
@@ -169,13 +200,12 @@ impl RecurringEventService {
         // generator stays consistent across calls. Pulling the anchor
         // from the series row would require persisting it — using
         // events.start_time avoids that extra column.
-        let first_occurrence_start: Option<chrono::NaiveDateTime> = sqlx::query_scalar(
-            "SELECT MIN(start_time) FROM events WHERE series_id = ?",
-        )
-        .bind(series.id.to_string())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(AppError::Database)?;
+        let first_occurrence_start: Option<chrono::NaiveDateTime> =
+            sqlx::query_scalar("SELECT MIN(start_time) FROM events WHERE series_id = ?")
+                .bind(series.id.to_string())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(AppError::Database)?;
 
         let anchor = match first_occurrence_start {
             Some(naive) => DateTime::from_naive_utc_and_offset(naive, Utc),
@@ -196,12 +226,16 @@ impl RecurringEventService {
             // Still bump materialized_through to `target` so the next
             // run doesn't re-scan the same window. Otherwise an
             // empty-but-advancing window is a no-op forever.
-            self.series_repo.set_materialized_through(series.id, target).await?;
+            self.series_repo
+                .set_materialized_through(series.id, target)
+                .await?;
             return Ok(0);
         }
 
-        let next_index = self.event_repo
-            .max_occurrence_index_for_series(series.id).await?
+        let next_index = self
+            .event_repo
+            .max_occurrence_index_for_series(series.id)
+            .await?
             .unwrap_or(0);
 
         // Use the first existing occurrence as the prototype for
@@ -211,6 +245,19 @@ impl RecurringEventService {
 
         let mut count = 0u64;
         for (i, start) in new_times.iter().enumerate() {
+            let occurrence_index = next_index + (i as i32) + 1;
+            let exception = self
+                .series_repo
+                .find_exception(series.id, occurrence_index)
+                .await?;
+
+            if matches!(
+                exception.as_ref().map(|e| e.kind),
+                Some(OccurrenceExceptionKind::Cancelled),
+            ) {
+                continue;
+            }
+
             let mut occ = prototype.clone();
             occ.id = Uuid::new_v4();
             // Preserve duration of the prototype.
@@ -219,17 +266,119 @@ impl RecurringEventService {
             occ.end_time = dur.map(|d| *start + d);
             occ.created_at = Utc::now();
             occ.updated_at = Utc::now();
-            occ.occurrence_index = Some(next_index + (i as i32) + 1);
+            occ.occurrence_index = Some(occurrence_index);
+
+            if let Some(ex) = exception {
+                if ex.kind == OccurrenceExceptionKind::Overridden {
+                    apply_payload(&ex.override_payload, &mut occ)?;
+                }
+            }
+
             self.event_repo.create(occ).await?;
             count += 1;
         }
 
         let new_through = *new_times.last().expect("non-empty");
-        self.series_repo.set_materialized_through(
-            series.id,
-            new_through.max(target),
-        ).await?;
+        self.series_repo
+            .set_materialized_through(series.id, new_through.max(target))
+            .await?;
         Ok(count)
+    }
+
+    /// Compute the start_time for a specific `occurrence_index` of a
+    /// series. Used to re-create a single cancelled occurrence on
+    /// restore.
+    ///
+    /// Anchor inference matches `extend_horizon`'s approach: take
+    /// `MIN(start_time)` over the series's existing events as the
+    /// anchor. If the series has no events at all this fails — there's
+    /// nothing to extrapolate from. If occurrence 1 itself has been
+    /// cancelled the inferred anchor is slightly off, but cancelling
+    /// the very first occurrence of a series and then restoring a
+    /// later index is rare enough that v1 accepts the edge case rather
+    /// than schema-changing to store the anchor explicitly.
+    pub async fn compute_occurrence_start_time(
+        &self,
+        series: &EventSeries,
+        occurrence_index: i32,
+    ) -> Result<chrono::DateTime<Utc>> {
+        if occurrence_index < 1 {
+            return Err(AppError::BadRequest(
+                "occurrence_index must be >= 1".to_string(),
+            ));
+        }
+
+        let rule: Recurrence = serde_json::from_str(&series.rule_json)
+            .map_err(|e| AppError::Internal(format!("rule parse: {}", e)))?;
+
+        let first_occurrence_start: Option<chrono::NaiveDateTime> =
+            sqlx::query_scalar("SELECT MIN(start_time) FROM events WHERE series_id = ?")
+                .bind(series.id.to_string())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(AppError::Database)?;
+
+        let anchor = match first_occurrence_start {
+            Some(naive) => DateTime::from_naive_utc_and_offset(naive, Utc),
+            None => {
+                return Err(AppError::Internal(
+                    "cannot infer series anchor — no occurrences exist".to_string(),
+                ));
+            }
+        };
+
+        // Materialize a far-enough horizon to be confident the index is
+        // within reach. We cap generate_occurrences internally at 10_000
+        // entries — for a weekly rule that's ~190 years; for monthly
+        // ~830 years. Both well past any realistic occurrence_index.
+        let horizon = anchor + Duration::weeks(52 * 200);
+        let times = generate_occurrences(anchor, &rule, anchor, horizon);
+        let idx = (occurrence_index - 1) as usize;
+        times.get(idx).copied().ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "occurrence_index {} is beyond the series's generated occurrences",
+                occurrence_index,
+            ))
+        })
+    }
+
+    /// Re-create a single occurrence row for a series at a specific
+    /// index, applying any pending `Overridden` exception. Used by the
+    /// restore-cancelled service path.
+    ///
+    /// Returns the inserted event. If a row at this `(series, index)`
+    /// already exists the caller should not call this — there's no
+    /// resurrect-or-overwrite semantic baked in.
+    pub async fn materialize_single_occurrence(
+        &self,
+        series: &EventSeries,
+        occurrence_index: i32,
+    ) -> Result<Event> {
+        let start = self
+            .compute_occurrence_start_time(series, occurrence_index)
+            .await?;
+        let prototype = self.fetch_series_prototype(series.id).await?;
+        let duration = prototype.end_time.map(|e| e - prototype.start_time);
+
+        let mut occ = prototype.clone();
+        occ.id = Uuid::new_v4();
+        occ.start_time = start;
+        occ.end_time = duration.map(|d| start + d);
+        occ.created_at = Utc::now();
+        occ.updated_at = Utc::now();
+        occ.occurrence_index = Some(occurrence_index);
+
+        if let Some(ex) = self
+            .series_repo
+            .find_exception(series.id, occurrence_index)
+            .await?
+        {
+            if ex.kind == OccurrenceExceptionKind::Overridden {
+                apply_payload(&ex.override_payload, &mut occ)?;
+            }
+        }
+
+        self.event_repo.create(occ).await
     }
 
     /// Roll every active series forward to (now + DEFAULT_HORIZON).
@@ -245,18 +394,16 @@ impl RecurringEventService {
         for series in active {
             match self.extend_horizon(&series, target).await {
                 Ok(n) => total += n,
-                Err(e) => tracing::error!(
-                    "horizon-extend failed for series {}: {}",
-                    series.id, e,
-                ),
+                Err(e) => tracing::error!("horizon-extend failed for series {}: {}", series.id, e,),
             }
         }
         Ok(total)
     }
 
     /// Internal: fetch any one occurrence and use it as the prototype
-    /// for new occurrences. We pick the most recent past occurrence —
-    /// that's the closest reflection of the operator's intent.
+    /// for new occurrences. We pick the earliest existing occurrence —
+    /// stable across cancel/restore cycles and the closest reflection
+    /// of the series's intended fields.
     async fn fetch_series_prototype(&self, series_id: Uuid) -> Result<Event> {
         // Read directly via sqlx since the trait doesn't have a
         // "find one in series" method (and adding one for this single
@@ -274,11 +421,23 @@ impl RecurringEventService {
             .ok_or_else(|| AppError::NotFound("series has no occurrences".to_string()))?
             .try_get("id")
             .map_err(AppError::Database)?;
-        let id = Uuid::parse_str(&id_str)
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-        self.event_repo.find_by_id(id).await?.ok_or_else(|| {
-            AppError::Internal("prototype occurrence vanished".to_string())
-        })
+        let id = Uuid::parse_str(&id_str).map_err(|e| AppError::Internal(e.to_string()))?;
+        self.event_repo
+            .find_by_id(id)
+            .await?
+            .ok_or_else(|| AppError::Internal("prototype occurrence vanished".to_string()))
     }
+}
 
+/// Parse a stored `override_payload` JSON blob and apply its non-null
+/// fields onto `target`. `None` payload (shouldn't happen for an
+/// Overridden exception, but handled defensively) is a no-op.
+fn apply_payload(payload: &Option<String>, target: &mut Event) -> Result<()> {
+    let Some(json) = payload.as_deref() else {
+        return Ok(());
+    };
+    let ov: OccurrenceOverride = serde_json::from_str(json)
+        .map_err(|e| AppError::Internal(format!("override_payload parse: {}", e)))?;
+    ov.apply(target);
+    Ok(())
 }

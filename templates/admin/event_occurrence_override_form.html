@@ -1,0 +1,103 @@
+<div class="fixed inset-0 z-40 flex items-center justify-center bg-black bg-opacity-40">
+    <div class="bg-white w-full max-w-2xl rounded-lg shadow-lg max-h-screen overflow-y-auto">
+        <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+            <h2 class="text-lg font-semibold text-gray-900">Edit occurrence #{{ occurrence_index }}</h2>
+            <button type="button"
+                    class="text-gray-400 hover:text-gray-700"
+                    onclick="document.getElementById('override-modal').innerHTML='';">
+                &times;
+            </button>
+        </div>
+        <form hx-post="/portal/admin/events/series/{{ series_id }}/occurrences/{{ occurrence_index }}/override"
+              hx-target="#occurrence-{{ occurrence_index }}"
+              hx-swap="outerHTML"
+              hx-encoding="multipart/form-data"
+              hx-on::after-request="if(event.detail.successful){document.getElementById('override-modal').innerHTML='';}"
+              class="p-6 space-y-4">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+            <p class="text-xs text-gray-500">
+                Leave a field blank to keep the series template's value.
+                Changes apply ONLY to this single occurrence and survive
+                future series-level edits.
+            </p>
+
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Title</label>
+                <input type="text" name="title" value="{{ event.title }}"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md">
+            </div>
+
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                <textarea name="description" rows="3"
+                          class="w-full px-3 py-2 border border-gray-300 rounded-md">{{ event.description }}</textarea>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Start Time</label>
+                    <input type="datetime-local" name="start_time"
+                           value="{{ event.start_time_input }}"
+                           class="w-full px-3 py-2 border border-gray-300 rounded-md">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">End Time</label>
+                    <input type="datetime-local" name="end_time"
+                           value="{% if let Some(end) = event.end_time_input.as_ref() %}{{ end }}{% endif %}"
+                           class="w-full px-3 py-2 border border-gray-300 rounded-md">
+                </div>
+            </div>
+
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Location</label>
+                <input type="text" name="location"
+                       value="{% if let Some(loc) = event.location.as_ref() %}{{ loc }}{% endif %}"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md">
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Max Attendees</label>
+                    <input type="number" name="max_attendees" min="1"
+                           value="{% if let Some(max) = event.max_attendees %}{{ max }}{% endif %}"
+                           class="w-full px-3 py-2 border border-gray-300 rounded-md">
+                </div>
+                <div class="flex items-center pt-6">
+                    <label class="flex items-center gap-2">
+                        <input type="checkbox" name="rsvp_required" value="true"
+                               {% if event.rsvp_required %}checked{% endif %}
+                               class="h-4 w-4 text-blue-600 rounded border-gray-300">
+                        <span class="text-sm text-gray-700">RSVP Required</span>
+                    </label>
+                </div>
+            </div>
+
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Image URL</label>
+                <input type="text" name="image_url"
+                       value="{% if let Some(url) = event.image_url.as_ref() %}{{ url }}{% endif %}"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md">
+            </div>
+
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Reason (optional)</label>
+                <input type="text" name="reason"
+                       placeholder="e.g., one-time room change"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md">
+            </div>
+
+            <div class="pt-4 border-t flex justify-end gap-2">
+                <button type="button"
+                        class="px-4 py-2 text-sm text-gray-700 border border-gray-300 rounded-md"
+                        onclick="document.getElementById('override-modal').innerHTML='';">
+                    Cancel
+                </button>
+                <button type="submit"
+                        class="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
+                    Save Override
+                </button>
+            </div>
+        </form>
+    </div>
+</div>

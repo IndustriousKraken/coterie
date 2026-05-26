@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use chrono::{DateTime, Utc, NaiveDateTime};
-use sqlx::{SqlitePool, FromRow};
+use chrono::{DateTime, NaiveDateTime, Utc};
+use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
 
 use crate::{
@@ -37,7 +37,11 @@ pub trait EventRepository: Send + Sync {
     async fn register_attendance(&self, event_id: Uuid, member_id: Uuid) -> Result<()>;
     async fn cancel_attendance(&self, event_id: Uuid, member_id: Uuid) -> Result<()>;
     async fn get_attendee_count(&self, event_id: Uuid) -> Result<i64>;
-    async fn get_member_attendance_status(&self, event_id: Uuid, member_id: Uuid) -> Result<Option<AttendanceStatus>>;
+    async fn get_member_attendance_status(
+        &self,
+        event_id: Uuid,
+        member_id: Uuid,
+    ) -> Result<Option<AttendanceStatus>>;
 
     // ---- Event-reminder support ---------------------------------------
 
@@ -62,6 +66,14 @@ pub trait EventRepository: Send + Sync {
     /// or `None` if the series has no rows yet. Used by the materializer
     /// to continue numbering on horizon-extension passes.
     async fn max_occurrence_index_for_series(&self, series_id: Uuid) -> Result<Option<i32>>;
+    /// Look up the concrete event row for a `(series_id, occurrence_index)`
+    /// pair. Used by per-occurrence exception flows (cancel deletes this
+    /// row, override updates it).
+    async fn find_by_series_and_index(
+        &self,
+        series_id: Uuid,
+        occurrence_index: i32,
+    ) -> Result<Option<Event>>;
     /// Hard-delete every occurrence in the series whose `start_time`
     /// is strictly greater than `after`. Returns the count deleted.
     /// Used by "end the series after this date" and by the
@@ -115,12 +127,14 @@ impl SqliteEventRepository {
     }
 
     fn row_to_event(row: EventRow) -> Result<Event> {
-        let event_type_id = row.event_type_id
+        let event_type_id = row
+            .event_type_id
             .as_ref()
             .map(|id| Uuid::parse_str(id))
             .transpose()
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        let series_id = row.series_id
+        let series_id = row
+            .series_id
             .as_ref()
             .map(|id| Uuid::parse_str(id))
             .transpose()
@@ -134,12 +148,15 @@ impl SqliteEventRepository {
             event_type_id,
             visibility: Self::parse_visibility(&row.visibility)?,
             start_time: DateTime::from_naive_utc_and_offset(row.start_time, Utc),
-            end_time: row.end_time.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
+            end_time: row
+                .end_time
+                .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
             location: row.location,
             max_attendees: row.max_attendees,
             rsvp_required: row.rsvp_required != 0,
             image_url: row.image_url,
-            created_by: Uuid::parse_str(&row.created_by).map_err(|e| AppError::Internal(e.to_string()))?,
+            created_by: Uuid::parse_str(&row.created_by)
+                .map_err(|e| AppError::Internal(e.to_string()))?,
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
             updated_at: DateTime::from_naive_utc_and_offset(row.updated_at, Utc),
             series_id,
@@ -212,7 +229,7 @@ impl EventRepository for SqliteEventRepository {
                 image_url, created_by, created_at, updated_at,
                 series_id, occurrence_index
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#
+            "#,
         )
         .bind(&id_str)
         .bind(&event.title)
@@ -235,9 +252,9 @@ impl EventRepository for SqliteEventRepository {
         .await
         .map_err(AppError::Database)?;
 
-        self.find_by_id(event.id).await?.ok_or_else(|| {
-            AppError::Internal("Failed to retrieve created event".to_string())
-        })
+        self.find_by_id(event.id)
+            .await?
+            .ok_or_else(|| AppError::Internal("Failed to retrieve created event".to_string()))
     }
 
     async fn find_by_id(&self, id: Uuid) -> Result<Option<Event>> {
@@ -250,7 +267,7 @@ impl EventRepository for SqliteEventRepository {
                    series_id, occurrence_index
             FROM events
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(id_str)
         .fetch_optional(&self.pool)
@@ -259,7 +276,7 @@ impl EventRepository for SqliteEventRepository {
 
         match row {
             Some(r) => Ok(Some(Self::row_to_event(r)?)),
-            None => Ok(None)
+            None => Ok(None),
         }
     }
 
@@ -273,7 +290,7 @@ impl EventRepository for SqliteEventRepository {
             FROM events
             ORDER BY start_time DESC
             LIMIT ? OFFSET ?
-            "#
+            "#,
         )
         .bind(limit)
         .bind(offset)
@@ -281,9 +298,7 @@ impl EventRepository for SqliteEventRepository {
         .await
         .map_err(AppError::Database)?;
 
-        rows.into_iter()
-            .map(Self::row_to_event)
-            .collect()
+        rows.into_iter().map(Self::row_to_event).collect()
     }
 
     async fn list_upcoming(&self, limit: i64) -> Result<Vec<Event>> {
@@ -299,7 +314,7 @@ impl EventRepository for SqliteEventRepository {
             WHERE start_time > ?
             ORDER BY start_time ASC
             LIMIT ?
-            "#
+            "#,
         )
         .bind(now)
         .bind(limit)
@@ -307,9 +322,7 @@ impl EventRepository for SqliteEventRepository {
         .await
         .map_err(AppError::Database)?;
 
-        rows.into_iter()
-            .map(Self::row_to_event)
-            .collect()
+        rows.into_iter().map(Self::row_to_event).collect()
     }
 
     async fn list_public(&self) -> Result<Vec<Event>> {
@@ -324,16 +337,14 @@ impl EventRepository for SqliteEventRepository {
             FROM events
             WHERE visibility = ?
             ORDER BY start_time DESC
-            "#
+            "#,
         )
         .bind(visibility_str)
         .fetch_all(&self.pool)
         .await
         .map_err(AppError::Database)?;
 
-        rows.into_iter()
-            .map(Self::row_to_event)
-            .collect()
+        rows.into_iter().map(Self::row_to_event).collect()
     }
 
     async fn list_members_only(&self) -> Result<Vec<Event>> {
@@ -348,16 +359,14 @@ impl EventRepository for SqliteEventRepository {
             FROM events
             WHERE visibility = ?
             ORDER BY start_time DESC
-            "#
+            "#,
         )
         .bind(visibility_str)
         .fetch_all(&self.pool)
         .await
         .map_err(AppError::Database)?;
 
-        rows.into_iter()
-            .map(Self::row_to_event)
-            .collect()
+        rows.into_iter().map(Self::row_to_event).collect()
     }
 
     async fn count_members_only_upcoming(&self) -> Result<i64> {
@@ -369,7 +378,7 @@ impl EventRepository for SqliteEventRepository {
             SELECT COUNT(*) as count
             FROM events
             WHERE visibility = ? AND start_time > ?
-            "#
+            "#,
         )
         .bind(visibility_str)
         .bind(now)
@@ -398,7 +407,7 @@ impl EventRepository for SqliteEventRepository {
                 start_time = ?, end_time = ?, location = ?, max_attendees = ?,
                 rsvp_required = ?, image_url = ?, updated_at = ?
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(&event.title)
         .bind(&event.description)
@@ -417,9 +426,9 @@ impl EventRepository for SqliteEventRepository {
         .await
         .map_err(AppError::Database)?;
 
-        self.find_by_id(id).await?.ok_or_else(|| {
-            AppError::Internal("Failed to retrieve updated event".to_string())
-        })
+        self.find_by_id(id)
+            .await?
+            .ok_or_else(|| AppError::Internal("Failed to retrieve updated event".to_string()))
     }
 
     async fn delete(&self, id: Uuid) -> Result<()> {
@@ -436,14 +445,14 @@ impl EventRepository for SqliteEventRepository {
     async fn register_attendance(&self, event_id: Uuid, member_id: Uuid) -> Result<()> {
         let event_id_str = event_id.to_string();
         let member_id_str = member_id.to_string();
-        
+
         sqlx::query(
             r#"
             INSERT INTO event_attendance (event_id, member_id, status, registered_at)
             VALUES (?, ?, 'Registered', CURRENT_TIMESTAMP)
             ON CONFLICT (event_id, member_id) 
             DO UPDATE SET status = 'Registered', registered_at = CURRENT_TIMESTAMP
-            "#
+            "#,
         )
         .bind(&event_id_str)
         .bind(&member_id_str)
@@ -463,7 +472,7 @@ impl EventRepository for SqliteEventRepository {
             UPDATE event_attendance
             SET status = 'Cancelled'
             WHERE event_id = ? AND member_id = ?
-            "#
+            "#,
         )
         .bind(&event_id_str)
         .bind(&member_id_str)
@@ -482,7 +491,7 @@ impl EventRepository for SqliteEventRepository {
             SELECT COUNT(*) as count
             FROM event_attendance
             WHERE event_id = ? AND status = 'Registered'
-            "#
+            "#,
         )
         .bind(&event_id_str)
         .fetch_one(&self.pool)
@@ -492,7 +501,11 @@ impl EventRepository for SqliteEventRepository {
         Ok(row.0)
     }
 
-    async fn get_member_attendance_status(&self, event_id: Uuid, member_id: Uuid) -> Result<Option<AttendanceStatus>> {
+    async fn get_member_attendance_status(
+        &self,
+        event_id: Uuid,
+        member_id: Uuid,
+    ) -> Result<Option<AttendanceStatus>> {
         let event_id_str = event_id.to_string();
         let member_id_str = member_id.to_string();
 
@@ -501,7 +514,7 @@ impl EventRepository for SqliteEventRepository {
             SELECT status
             FROM event_attendance
             WHERE event_id = ? AND member_id = ?
-            "#
+            "#,
         )
         .bind(&event_id_str)
         .bind(&member_id_str)
@@ -515,7 +528,12 @@ impl EventRepository for SqliteEventRepository {
                     "Registered" => AttendanceStatus::Registered,
                     "Waitlisted" => AttendanceStatus::Waitlisted,
                     "Cancelled" => AttendanceStatus::Cancelled,
-                    _ => return Err(AppError::Internal(format!("Invalid attendance status: {}", status))),
+                    _ => {
+                        return Err(AppError::Internal(format!(
+                            "Invalid attendance status: {}",
+                            status
+                        )))
+                    }
                 };
                 Ok(Some(attendance_status))
             }
@@ -524,14 +542,40 @@ impl EventRepository for SqliteEventRepository {
     }
 
     async fn max_occurrence_index_for_series(&self, series_id: Uuid) -> Result<Option<i32>> {
-        let max: Option<i32> = sqlx::query_scalar(
-            "SELECT MAX(occurrence_index) FROM events WHERE series_id = ?",
+        let max: Option<i32> =
+            sqlx::query_scalar("SELECT MAX(occurrence_index) FROM events WHERE series_id = ?")
+                .bind(series_id.to_string())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(AppError::Database)?;
+        Ok(max)
+    }
+
+    async fn find_by_series_and_index(
+        &self,
+        series_id: Uuid,
+        occurrence_index: i32,
+    ) -> Result<Option<Event>> {
+        let row = sqlx::query_as::<_, EventRow>(
+            r#"
+            SELECT id, title, description, event_type, event_type_id, visibility,
+                   start_time, end_time, location, max_attendees, rsvp_required,
+                   image_url, created_by, created_at, updated_at,
+                   series_id, occurrence_index
+            FROM events
+            WHERE series_id = ? AND occurrence_index = ?
+            "#,
         )
         .bind(series_id.to_string())
-        .fetch_one(&self.pool)
+        .bind(occurrence_index)
+        .fetch_optional(&self.pool)
         .await
         .map_err(AppError::Database)?;
-        Ok(max)
+
+        match row {
+            Some(r) => Ok(Some(Self::row_to_event(r)?)),
+            None => Ok(None),
+        }
     }
 
     async fn delete_series_occurrences_after(
@@ -539,14 +583,12 @@ impl EventRepository for SqliteEventRepository {
         series_id: Uuid,
         after: DateTime<Utc>,
     ) -> Result<u64> {
-        let result = sqlx::query(
-            "DELETE FROM events WHERE series_id = ? AND start_time > ?",
-        )
-        .bind(series_id.to_string())
-        .bind(after.naive_utc())
-        .execute(&self.pool)
-        .await
-        .map_err(AppError::Database)?;
+        let result = sqlx::query("DELETE FROM events WHERE series_id = ? AND start_time > ?")
+            .bind(series_id.to_string())
+            .bind(after.naive_utc())
+            .execute(&self.pool)
+            .await
+            .map_err(AppError::Database)?;
         Ok(result.rows_affected())
     }
 
@@ -601,9 +643,16 @@ impl EventRepository for SqliteEventRepository {
         now: DateTime<Utc>,
         until: DateTime<Utc>,
     ) -> Result<Vec<EventReminderRow>> {
-        let rows: Vec<(String, String, NaiveDateTime, Option<String>, String, String, String)> =
-            sqlx::query_as(
-                r#"
+        let rows: Vec<(
+            String,
+            String,
+            NaiveDateTime,
+            Option<String>,
+            String,
+            String,
+            String,
+        )> = sqlx::query_as(
+            r#"
                 SELECT e.id, e.title, e.start_time, e.location,
                        m.id, m.email, m.full_name
                 FROM event_attendance ea
@@ -614,21 +663,23 @@ impl EventRepository for SqliteEventRepository {
                   AND e.start_time > ?
                   AND e.start_time <= ?
                 "#,
-            )
-            .bind(now.naive_utc())
-            .bind(until.naive_utc())
-            .fetch_all(&self.pool)
-            .await
-            .map_err(AppError::Database)?;
+        )
+        .bind(now.naive_utc())
+        .bind(until.naive_utc())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
 
         rows.into_iter()
             .map(|(eid, title, start, location, mid, email, full_name)| {
                 Ok(EventReminderRow {
-                    event_id: Uuid::parse_str(&eid).map_err(|e| AppError::Internal(e.to_string()))?,
+                    event_id: Uuid::parse_str(&eid)
+                        .map_err(|e| AppError::Internal(e.to_string()))?,
                     event_title: title,
                     event_start: DateTime::from_naive_utc_and_offset(start, Utc),
                     event_location: location,
-                    member_id: Uuid::parse_str(&mid).map_err(|e| AppError::Internal(e.to_string()))?,
+                    member_id: Uuid::parse_str(&mid)
+                        .map_err(|e| AppError::Internal(e.to_string()))?,
                     member_email: email,
                     member_full_name: full_name,
                 })
