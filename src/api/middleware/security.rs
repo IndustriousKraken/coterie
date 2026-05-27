@@ -68,6 +68,13 @@ use crate::{
 ///   CSRF" tokens is a future improvement, not part of the
 ///   state-changing-action CSRF contract this layer enforces.
 ///
+/// * **`POST /auth/login/totp`** — same reason as `/auth/login`: the
+///   caller has only a `pending_login` cookie at this point, not a
+///   `session` cookie, so there's no session id to bind a CSRF token
+///   to. The `pending_login` cookie itself is SameSite=Lax + HttpOnly
+///   and lives for 5 minutes; that, the bot rate limit, and the
+///   per-member TOTP code requirement are the auth model here.
+///
 /// `POST /auth/logout` and `POST /logout` are NOT exempt — every
 /// authenticated page renders a CSRF meta tag (via `BaseContext`),
 /// HTMX stamps the token on every request, and a forced logout is
@@ -77,6 +84,7 @@ const CSRF_EXEMPT_PATHS: &[(&str, &str)] = &[
     ("POST", "/public/signup"),
     ("POST", "/public/donate"),
     ("POST", "/auth/login"),
+    ("POST", "/auth/login/totp"),
 ];
 
 fn is_exempt(method: &Method, path: &str) -> bool {
