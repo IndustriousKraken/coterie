@@ -17,15 +17,19 @@ use crate::{
     integrations::IntegrationManager,
     payments::{StripeClient, WebhookDispatcher},
     repository::{
-        AnnouncementRepository, BasicTypeRepository, DonationCampaignRepository, EventRepository,
-        EventSeriesRepository, MemberRepository, MembershipTypeRepository, PaymentRepository,
-        ProcessedEventsRepository, SavedCardRepository, ScheduledPaymentRepository,
+        AnnouncementRepository, BasicTypeRepository, DonationCampaignRepository,
+        EventRepository, EventSeriesRepository, ExpenseAccountRepository,
+        ExpenseCategoryRepository, ExpenseRepository, MemberRepository,
+        MembershipTypeRepository, PaymentRepository, ProcessedEventsRepository,
+        SavedCardRepository, ScheduledPaymentRepository,
     },
     service::{
         announcement_admin_service::AnnouncementAdminService, audit_service::AuditService,
         basic_type_service::BasicTypeService, billing_service::BillingService,
-        event_admin_service::EventAdminService, member_service::MemberService,
-        membership_type_service::MembershipTypeService,
+        event_admin_service::EventAdminService,
+        expense_account_service::ExpenseAccountService,
+        expense_category_service::ExpenseCategoryService, expense_service::ExpenseService,
+        member_service::MemberService, membership_type_service::MembershipTypeService,
         payment_admin_service::PaymentAdminService, payment_service::PaymentService,
         recurring_event_service::RecurringEventService, settings_service::SettingsService,
         ServiceContext,
@@ -267,6 +271,24 @@ impl FromRef<AppState> for Arc<dyn ProcessedEventsRepository> {
     }
 }
 
+impl FromRef<AppState> for Arc<dyn ExpenseRepository> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.expense_repo.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<dyn ExpenseCategoryRepository> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.expense_category_repo.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<dyn ExpenseAccountRepository> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.expense_account_repo.clone()
+    }
+}
+
 // --- Services ---
 
 impl FromRef<AppState> for Arc<AuthService> {
@@ -365,6 +387,24 @@ impl FromRef<AppState> for Arc<AnnouncementAdminService> {
 impl FromRef<AppState> for Arc<PaymentAdminService> {
     fn from_ref(state: &AppState) -> Self {
         state.service_context.payment_admin_service.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<ExpenseService> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.expense_service.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<ExpenseCategoryService> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.expense_category_service.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<ExpenseAccountService> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.expense_account_service.clone()
     }
 }
 

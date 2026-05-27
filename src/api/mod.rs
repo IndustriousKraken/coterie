@@ -46,6 +46,7 @@ pub fn create_app(app_state: AppState) -> Router {
 
         // Auth routes
         .route("/auth/login", post(handlers::auth::login))
+        .route("/auth/login/totp", post(handlers::auth::login_totp))
         .route("/auth/logout", post(handlers::auth::logout))
 
         // API routes — narrowly scoped to:

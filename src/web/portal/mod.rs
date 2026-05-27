@@ -247,6 +247,115 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
             "/billing/dashboard",
             get(admin::billing::billing_dashboard_page),
         )
+        // Finance — expense ledger CRUD + reconciliation reports.
+        //
+        // NOTE: the `money_limiter` rate limiter is intentionally NOT
+        // applied here. That limiter exists for endpoints that
+        // initiate Stripe charges; recording an internal expense or
+        // viewing a report doesn't move money in the
+        // payment-processor sense. The shared admin gate +
+        // require_admin_redirect + CSRF middleware tree already
+        // covers these routes.
+        .route(
+            "/finance/expenses",
+            get(admin::finance::expenses::list_page),
+        )
+        .route(
+            "/finance/expenses/new",
+            get(admin::finance::expenses::new_page),
+        )
+        .route(
+            "/finance/expenses",
+            post(admin::finance::expenses::create),
+        )
+        .route(
+            "/finance/expenses/:id/edit",
+            get(admin::finance::expenses::edit_page),
+        )
+        .route(
+            "/finance/expenses/:id",
+            post(admin::finance::expenses::update),
+        )
+        .route(
+            "/finance/expenses/:id/delete",
+            post(admin::finance::expenses::delete),
+        )
+        .route(
+            "/finance/categories",
+            get(admin::finance::categories::list_page),
+        )
+        .route(
+            "/finance/categories/new",
+            get(admin::finance::categories::new_page),
+        )
+        .route(
+            "/finance/categories",
+            post(admin::finance::categories::create),
+        )
+        .route(
+            "/finance/categories/:id/edit",
+            get(admin::finance::categories::edit_page),
+        )
+        .route(
+            "/finance/categories/:id",
+            post(admin::finance::categories::update),
+        )
+        .route(
+            "/finance/categories/:id/delete",
+            post(admin::finance::categories::delete),
+        )
+        .route(
+            "/finance/categories/:id/activate",
+            post(admin::finance::categories::activate),
+        )
+        .route(
+            "/finance/categories/:id/deactivate",
+            post(admin::finance::categories::deactivate),
+        )
+        .route(
+            "/finance/accounts",
+            get(admin::finance::accounts::list_page),
+        )
+        .route(
+            "/finance/accounts/new",
+            get(admin::finance::accounts::new_page),
+        )
+        .route(
+            "/finance/accounts",
+            post(admin::finance::accounts::create),
+        )
+        .route(
+            "/finance/accounts/:id/edit",
+            get(admin::finance::accounts::edit_page),
+        )
+        .route(
+            "/finance/accounts/:id",
+            post(admin::finance::accounts::update),
+        )
+        .route(
+            "/finance/accounts/:id/delete",
+            post(admin::finance::accounts::delete),
+        )
+        .route(
+            "/finance/accounts/:id/activate",
+            post(admin::finance::accounts::activate),
+        )
+        .route(
+            "/finance/accounts/:id/deactivate",
+            post(admin::finance::accounts::deactivate),
+        )
+        .route(
+            "/finance/reports/monthly",
+            get(admin::finance::reports::monthly_report),
+        )
+        .route(
+            "/finance/reports/annual",
+            get(admin::finance::reports::annual_report),
+        )
+        .route(
+            "/finance/reports/tax-prep",
+            get(admin::finance::reports::tax_prep_csv),
+        )
         // Audit log viewer + CSV export
         .route("/audit", get(admin::audit::audit_log_page))
         .route("/audit/export", get(admin::audit::audit_log_export))
