@@ -182,8 +182,13 @@ impl AnnouncementAdminService {
         Ok(result)
     }
 
-    /// Delete an announcement. Audits `delete_announcement`.
+    /// Delete an announcement. Audits `delete_announcement`. Returns
+    /// `AppError::NotFound` (without writing audit) if the id does not
+    /// exist, so a concurrent-delete from another tab surfaces as a
+    /// 4xx and does not produce a phantom audit row.
     pub async fn delete(&self, actor_id: Uuid, announcement_id: Uuid) -> Result<()> {
+        let _existing = self.announcement_repo.find_by_id(announcement_id).await?
+            .ok_or_else(|| AppError::NotFound("Announcement not found".to_string()))?;
         self.announcement_repo.delete(announcement_id).await?;
         self.audit_service.log(
             Some(actor_id),
@@ -526,5 +531,106 @@ mod tests {
         let result = svc.unpublish(actor, announcement.id).await.unwrap();
         assert!(result.published_at.is_none(), "unpublish should clear published_at");
         assert_eq!(audit_count(&pool, "unpublish_announcement", &announcement.id.to_string()).await, 1);
+    }
+
+    fn update_input() -> UpdateAnnouncementInput {
+        UpdateAnnouncementInput {
+            title: "Renamed".to_string(),
+            content: "New body".to_string(),
+            announcement_type: AnnouncementType::News,
+            announcement_type_id: None,
+            is_public: true,
+            featured: true,
+            image_url: None,
+            scheduled_publish_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn update_errors_when_announcement_id_not_found() {
+        let pool = fresh_pool().await;
+        let svc = make_service(pool.clone());
+        let actor = make_actor(&pool).await;
+        let missing_id = Uuid::new_v4();
+
+        let err = svc.update(actor, missing_id, update_input()).await.unwrap_err();
+        match err {
+            AppError::NotFound(msg) => {
+                assert!(msg.contains("Announcement not found"), "expected NotFound message, got {:?}", msg);
+            }
+            other => panic!("expected AppError::NotFound, got {:?}", other),
+        }
+
+        assert_eq!(
+            audit_count(&pool, "update_announcement", &missing_id.to_string()).await,
+            0,
+            "missing-id update must not write an audit row",
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_errors_when_announcement_id_not_found() {
+        let pool = fresh_pool().await;
+        let svc = make_service(pool.clone());
+        let actor = make_actor(&pool).await;
+        let missing_id = Uuid::new_v4();
+
+        let err = svc.delete(actor, missing_id).await.unwrap_err();
+        match err {
+            AppError::NotFound(msg) => {
+                assert!(msg.contains("Announcement not found"), "expected NotFound message, got {:?}", msg);
+            }
+            other => panic!("expected AppError::NotFound, got {:?}", other),
+        }
+
+        assert_eq!(
+            audit_count(&pool, "delete_announcement", &missing_id.to_string()).await,
+            0,
+            "missing-id delete must not write an audit row",
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_errors_when_announcement_id_not_found() {
+        let pool = fresh_pool().await;
+        let svc = make_service(pool.clone());
+        let actor = make_actor(&pool).await;
+        let missing_id = Uuid::new_v4();
+
+        let err = svc.publish(actor, missing_id).await.unwrap_err();
+        match err {
+            AppError::NotFound(msg) => {
+                assert!(msg.contains("Announcement not found"), "expected NotFound message, got {:?}", msg);
+            }
+            other => panic!("expected AppError::NotFound, got {:?}", other),
+        }
+
+        assert_eq!(
+            audit_count(&pool, "publish_announcement", &missing_id.to_string()).await,
+            0,
+            "missing-id publish must not write an audit row",
+        );
+    }
+
+    #[tokio::test]
+    async fn unpublish_errors_when_announcement_id_not_found() {
+        let pool = fresh_pool().await;
+        let svc = make_service(pool.clone());
+        let actor = make_actor(&pool).await;
+        let missing_id = Uuid::new_v4();
+
+        let err = svc.unpublish(actor, missing_id).await.unwrap_err();
+        match err {
+            AppError::NotFound(msg) => {
+                assert!(msg.contains("Announcement not found"), "expected NotFound message, got {:?}", msg);
+            }
+            other => panic!("expected AppError::NotFound, got {:?}", other),
+        }
+
+        assert_eq!(
+            audit_count(&pool, "unpublish_announcement", &missing_id.to_string()).await,
+            0,
+            "missing-id unpublish must not write an audit row",
+        );
     }
 }
