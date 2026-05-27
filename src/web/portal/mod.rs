@@ -107,6 +107,28 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
             "/events/:id/delete",
             post(admin::events::admin_delete_event),
         )
+        // Per-occurrence exception handlers (cancel / override /
+        // restore one occurrence within a recurring series).
+        .route(
+            "/events/series/:id",
+            get(admin::events::admin_event_series_detail_page),
+        )
+        .route(
+            "/events/series/:id/occurrences/:index/override",
+            get(admin::events::admin_occurrence_override_form),
+        )
+        .route(
+            "/events/series/:id/occurrences/:index/cancel",
+            post(admin::events::admin_cancel_event_occurrence),
+        )
+        .route(
+            "/events/series/:id/occurrences/:index/override",
+            post(admin::events::admin_override_event_occurrence),
+        )
+        .route(
+            "/events/series/:id/occurrences/:index/restore",
+            post(admin::events::admin_restore_event_occurrence),
+        )
         // Announcements
         .route(
             "/announcements",
