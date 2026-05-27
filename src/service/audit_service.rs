@@ -133,3 +133,104 @@ impl AuditService {
         }).collect())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::{Executor, Row};
+
+    async fn fresh_pool() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    conn.execute("PRAGMA foreign_keys = ON").await?;
+                    Ok(())
+                })
+            })
+            .connect("sqlite::memory:")
+            .await
+            .expect(":memory:");
+        sqlx::migrate!("./migrations").run(&pool).await.expect("migrate");
+        pool
+    }
+
+    async fn insert_row(pool: &SqlitePool) {
+        let id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO audit_logs \
+             (id, action, entity_type, entity_id) \
+             VALUES (?, 'test.action', 'test', 'test-entity')"
+        )
+        .bind(&id)
+        .execute(pool)
+        .await
+        .expect("insert audit row");
+    }
+
+    async fn count_rows(pool: &SqlitePool) -> i64 {
+        let row = sqlx::query("SELECT COUNT(*) as c FROM audit_logs")
+            .fetch_one(pool)
+            .await
+            .expect("count");
+        row.get::<i64, _>("c")
+    }
+
+    #[tokio::test]
+    async fn prune_older_than_clamps_below_one_day() {
+        let pool = fresh_pool().await;
+        insert_row(&pool).await;
+        let svc = AuditService::new(pool.clone());
+
+        let removed = svc.prune_older_than(0).await.expect("prune returns Ok");
+        assert_eq!(removed, 0, "clamp must lift 0 to 1 day so today's row is not deleted");
+        assert_eq!(count_rows(&pool).await, 1, "row inserted now must NOT be wiped");
+    }
+
+    #[tokio::test]
+    async fn prune_older_than_clamps_above_3650() {
+        let pool = fresh_pool().await;
+        let svc = AuditService::new(pool.clone());
+
+        let removed = svc
+            .prune_older_than(i64::MAX)
+            .await
+            .expect("prune must clamp i64::MAX and not propagate SQL overflow");
+        assert_eq!(removed, 0, "empty table — nothing to delete after clamp to 3650");
+    }
+
+    #[tokio::test]
+    async fn recent_clamps_limit_below_one() {
+        let pool = fresh_pool().await;
+        for _ in 0..3 {
+            insert_row(&pool).await;
+        }
+        let svc = AuditService::new(pool.clone());
+
+        let rows = svc.recent(0).await.expect("recent returns Ok");
+        assert_eq!(rows.len(), 1, "clamp must lift LIMIT 0 to LIMIT 1");
+    }
+
+    #[tokio::test]
+    async fn recent_clamps_limit_above_500() {
+        let pool = fresh_pool().await;
+        let mut tx = pool.begin().await.expect("begin tx");
+        for _ in 0..600 {
+            let id = Uuid::new_v4().to_string();
+            sqlx::query(
+                "INSERT INTO audit_logs \
+                 (id, action, entity_type, entity_id) \
+                 VALUES (?, 'test.action', 'test', 'test-entity')"
+            )
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .expect("insert");
+        }
+        tx.commit().await.expect("commit");
+        let svc = AuditService::new(pool.clone());
+
+        let rows = svc.recent(10_000).await.expect("recent returns Ok");
+        assert_eq!(rows.len(), 500, "clamp must hold LIMIT at 500");
+    }
+}
