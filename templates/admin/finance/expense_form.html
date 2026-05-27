@@ -1,0 +1,99 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}{% if is_edit %}Edit{% else %}New{% endif %} Expense - Coterie Admin{% endblock %}
+
+{% block head %}
+<meta name="csrf-token" content="{{ base.csrf_token }}">
+{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="mb-6">
+        <div class="flex items-center gap-2 text-sm text-gray-500 mb-2">
+            <span>Admin</span>
+            <span>/</span>
+            <a href="/portal/admin/finance/expenses" class="hover:text-gray-700">Expenses</a>
+            <span>/</span>
+            <span>{% if is_edit %}Edit{% else %}New{% endif %}</span>
+        </div>
+        <h1 class="text-2xl font-bold text-gray-900">{% if is_edit %}Edit expense{% else %}Record expense{% endif %}</h1>
+    </div>
+
+    <div class="max-w-2xl">
+        <div class="bg-white rounded-lg shadow-sm">
+            <form action="{% if is_edit %}/portal/admin/finance/expenses/{{ expense_id }}{% else %}/portal/admin/finance/expenses{% endif %}"
+                  method="POST"
+                  class="p-6 space-y-4">
+                <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Date *</label>
+                        <input type="date" name="spent_at" required
+                               value="{{ spent_at }}"
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Amount (USD) *</label>
+                        <input type="number" name="amount_dollars" required step="0.01" min="0"
+                               value="{{ amount_dollars }}"
+                               placeholder="0.00"
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Description *</label>
+                    <input type="text" name="description" required
+                           value="{{ description }}"
+                           placeholder="e.g., Office supplies, AWS subscription"
+                           class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Category *</label>
+                        <select name="category_id" required
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <option value="">Select…</option>
+                            {% for c in categories %}
+                            {% if c.is_active || c.id == category_id %}
+                            <option value="{{ c.id }}" {% if c.id == category_id %}selected{% endif %}>{{ c.name }}{% if !c.is_active %} (inactive){% endif %}</option>
+                            {% endif %}
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Account *</label>
+                        <select name="account_id" required
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <option value="">Select…</option>
+                            {% for a in accounts %}
+                            {% if a.is_active || a.id == account_id %}
+                            <option value="{{ a.id }}" {% if a.id == account_id %}selected{% endif %}>{{ a.name }}{% if !a.is_active %} (inactive){% endif %}</option>
+                            {% endif %}
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Notes</label>
+                    <textarea name="notes" rows="3"
+                              placeholder="Optional internal notes"
+                              class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">{{ notes }}</textarea>
+                </div>
+
+                <div class="pt-4 border-t flex gap-3">
+                    <button type="submit" class="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
+                        {% if is_edit %}Save changes{% else %}Record expense{% endif %}
+                    </button>
+                    <a href="/portal/admin/finance/expenses" class="px-4 py-2 bg-gray-100 text-gray-700 text-sm rounded-md hover:bg-gray-200">
+                        Cancel
+                    </a>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

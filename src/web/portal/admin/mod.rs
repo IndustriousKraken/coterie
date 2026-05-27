@@ -5,6 +5,7 @@ pub mod csv;
 pub mod discord;
 pub mod email;
 pub mod events;
+pub mod finance;
 pub mod members;
 pub mod partials;
 pub mod payments;

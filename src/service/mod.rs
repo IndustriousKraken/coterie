@@ -4,6 +4,9 @@ pub mod billing_service;
 pub mod configurable_types;
 pub mod basic_type_service;
 pub mod event_admin_service;
+pub mod expense_account_service;
+pub mod expense_category_service;
+pub mod expense_service;
 pub mod member_service;
 pub mod payment_admin_service;
 pub mod payment_service;
@@ -23,6 +26,9 @@ use crate::payments::StripeClient;
 use announcement_admin_service::AnnouncementAdminService;
 use audit_service::AuditService;
 use event_admin_service::EventAdminService;
+use expense_account_service::ExpenseAccountService;
+use expense_category_service::ExpenseCategoryService;
+use expense_service::ExpenseService;
 use member_service::MemberService;
 use payment_admin_service::PaymentAdminService;
 use payment_service::PaymentService;
@@ -44,6 +50,9 @@ pub struct ServiceContext {
     pub basic_type_repo: Arc<dyn BasicTypeRepository>,
     pub membership_type_repo: Arc<dyn MembershipTypeRepository>,
     pub processed_events_repo: Arc<dyn ProcessedEventsRepository>,
+    pub expense_repo: Arc<dyn ExpenseRepository>,
+    pub expense_category_repo: Arc<dyn ExpenseCategoryRepository>,
+    pub expense_account_repo: Arc<dyn ExpenseAccountRepository>,
     pub integration_manager: Arc<IntegrationManager>,
     pub auth_service: Arc<AuthService>,
     pub csrf_service: Arc<CsrfService>,
@@ -60,6 +69,9 @@ pub struct ServiceContext {
     pub event_admin_service: Arc<EventAdminService>,
     pub announcement_admin_service: Arc<AnnouncementAdminService>,
     pub payment_admin_service: Arc<PaymentAdminService>,
+    pub expense_service: Arc<ExpenseService>,
+    pub expense_category_service: Arc<ExpenseCategoryService>,
+    pub expense_account_service: Arc<ExpenseAccountService>,
     pub db_pool: SqlitePool,
 }
 
@@ -103,6 +115,14 @@ impl ServiceContext {
         let saved_card_repo: Arc<dyn SavedCardRepository> = Arc::new(SqliteSavedCardRepository::new(db_pool.clone()));
         let scheduled_payment_repo: Arc<dyn ScheduledPaymentRepository> = Arc::new(SqliteScheduledPaymentRepository::new(db_pool.clone()));
         let donation_campaign_repo: Arc<dyn DonationCampaignRepository> = Arc::new(SqliteDonationCampaignRepository::new(db_pool.clone()));
+
+        // Expense ledger repositories — see expense-tracking capability.
+        let expense_repo: Arc<dyn ExpenseRepository> =
+            Arc::new(SqliteExpenseRepository::new(db_pool.clone()));
+        let expense_category_repo: Arc<dyn ExpenseCategoryRepository> =
+            Arc::new(SqliteExpenseCategoryRepository::new(db_pool.clone()));
+        let expense_account_repo: Arc<dyn ExpenseAccountRepository> =
+            Arc::new(SqliteExpenseAccountRepository::new(db_pool.clone()));
 
         // Create type services. Two BasicTypeService instances share the
         // basic-type repo Arc; each bakes in its own BasicTypeKind so call
@@ -158,6 +178,21 @@ impl ServiceContext {
             money_limiter,
         ));
 
+        let expense_service = Arc::new(ExpenseService::new(
+            expense_repo.clone(),
+            expense_category_repo.clone(),
+            expense_account_repo.clone(),
+            audit_service.clone(),
+        ));
+        let expense_category_service = Arc::new(ExpenseCategoryService::new(
+            expense_category_repo.clone(),
+            audit_service.clone(),
+        ));
+        let expense_account_service = Arc::new(ExpenseAccountService::new(
+            expense_account_repo.clone(),
+            audit_service.clone(),
+        ));
+
         Self {
             member_repo,
             event_repo,
@@ -187,6 +222,12 @@ impl ServiceContext {
             event_admin_service,
             announcement_admin_service,
             payment_admin_service,
+            expense_repo,
+            expense_category_repo,
+            expense_account_repo,
+            expense_service,
+            expense_category_service,
+            expense_account_service,
             db_pool,
         }
     }

@@ -9,6 +9,9 @@ pub mod donation_repository;
 pub mod basic_type_repository;
 pub mod membership_type_repository;
 pub mod processed_events_repository;
+pub mod expense_repository;
+pub mod expense_category_repository;
+pub mod expense_account_repository;
 
 pub use member_repository::{
     MemberRepository, SqliteMemberRepository,
@@ -24,3 +27,12 @@ pub use donation_repository::{DonationCampaignRepository, SqliteDonationCampaign
 pub use basic_type_repository::{BasicTypeRepository, SqliteBasicTypeRepository};
 pub use membership_type_repository::{MembershipTypeRepository, SqliteMembershipTypeRepository};
 pub use processed_events_repository::{ProcessedEventsRepository, SqliteProcessedEventsRepository};
+pub use expense_repository::{
+    DateRange, ExpenseFilter, ExpenseRepository, SqliteExpenseRepository,
+};
+pub use expense_category_repository::{
+    ExpenseCategoryRepository, SqliteExpenseCategoryRepository,
+};
+pub use expense_account_repository::{
+    ExpenseAccountRepository, SqliteExpenseAccountRepository,
+};
