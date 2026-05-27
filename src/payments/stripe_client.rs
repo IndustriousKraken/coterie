@@ -1,14 +1,13 @@
 use chrono::Utc;
-use uuid::Uuid;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::{
     domain::{Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus, StripeRef},
     error::{AppError, Result},
     payments::gateway::{
-        CreateCheckoutInput, CreateCustomerInput, CreatePaymentIntentInput,
-        CreateRefundInput, CreateSetupIntentInput, LineItemInput,
-        PaymentIntentResult, StripeGateway,
+        CreateCheckoutInput, CreateCustomerInput, CreatePaymentIntentInput, CreateRefundInput,
+        CreateSetupIntentInput, LineItemInput, PaymentIntentResult, StripeGateway,
     },
     repository::{MemberRepository, PaymentRepository},
 };
@@ -46,7 +45,11 @@ impl StripeClient {
         payment_repo: Arc<dyn PaymentRepository>,
         member_repo: Arc<dyn MemberRepository>,
     ) -> Self {
-        Self { gateway, payment_repo, member_repo }
+        Self {
+            gateway,
+            payment_repo,
+            member_repo,
+        }
     }
 
     /// Borrow the underlying gateway. Used to share the same gateway
@@ -72,21 +75,30 @@ impl StripeClient {
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("member_id".to_string(), member_id.to_string());
         metadata.insert("payment_type".to_string(), "membership".to_string());
-        metadata.insert("membership_type".to_string(), membership_type_name.to_string());
-        metadata.insert("membership_type_slug".to_string(), membership_type_slug.to_string());
+        metadata.insert(
+            "membership_type".to_string(),
+            membership_type_name.to_string(),
+        );
+        metadata.insert(
+            "membership_type_slug".to_string(),
+            membership_type_slug.to_string(),
+        );
 
-        let session = self.gateway.create_checkout_session(CreateCheckoutInput {
-            success_url,
-            cancel_url,
-            line_items: vec![LineItemInput {
-                amount_cents,
-                product_name: format!("{} Membership", membership_type_name),
-                product_description: Some(format!("{} membership dues", membership_type_name)),
-            }],
-            metadata,
-            client_reference_id: Some(member_id.to_string()),
-            customer_email: None,
-        }).await?;
+        let session = self
+            .gateway
+            .create_checkout_session(CreateCheckoutInput {
+                success_url,
+                cancel_url,
+                line_items: vec![LineItemInput {
+                    amount_cents,
+                    product_name: format!("{} Membership", membership_type_name),
+                    product_description: Some(format!("{} membership dues", membership_type_name)),
+                }],
+                metadata,
+                client_reference_id: Some(member_id.to_string()),
+                customer_email: None,
+            })
+            .await?;
 
         // Create pending payment record
         let payment_id = Uuid::new_v4();
@@ -138,18 +150,21 @@ impl StripeClient {
             metadata.insert("donation_campaign_id".to_string(), cid.to_string());
         }
 
-        let session = self.gateway.create_checkout_session(CreateCheckoutInput {
-            success_url,
-            cancel_url,
-            line_items: vec![LineItemInput {
-                amount_cents,
-                product_name: product_name.clone(),
-                product_description: Some(product_name.clone()),
-            }],
-            metadata,
-            client_reference_id: Some(member_id.to_string()),
-            customer_email: None,
-        }).await?;
+        let session = self
+            .gateway
+            .create_checkout_session(CreateCheckoutInput {
+                success_url,
+                cancel_url,
+                line_items: vec![LineItemInput {
+                    amount_cents,
+                    product_name: product_name.clone(),
+                    product_description: Some(product_name.clone()),
+                }],
+                metadata,
+                client_reference_id: Some(member_id.to_string()),
+                customer_email: None,
+            })
+            .await?;
 
         let payment_id = Uuid::new_v4();
         let payment = Payment {
@@ -207,20 +222,23 @@ impl StripeClient {
             metadata.insert("donation_campaign_id".to_string(), cid.to_string());
         }
 
-        let session = self.gateway.create_checkout_session(CreateCheckoutInput {
-            success_url,
-            cancel_url,
-            line_items: vec![LineItemInput {
-                amount_cents,
-                product_name: product_name.clone(),
-                product_description: Some(product_name.clone()),
-            }],
-            metadata,
-            client_reference_id: None,
-            // Pre-fill the email on the hosted Checkout page. Stripe also
-            // sends the receipt to whatever email the donor confirms.
-            customer_email: Some(donor_email.to_string()),
-        }).await?;
+        let session = self
+            .gateway
+            .create_checkout_session(CreateCheckoutInput {
+                success_url,
+                cancel_url,
+                line_items: vec![LineItemInput {
+                    amount_cents,
+                    product_name: product_name.clone(),
+                    product_description: Some(product_name.clone()),
+                }],
+                metadata,
+                client_reference_id: None,
+                // Pre-fill the email on the hosted Checkout page. Stripe also
+                // sends the receipt to whatever email the donor confirms.
+                customer_email: Some(donor_email.to_string()),
+            })
+            .await?;
 
         let payment_id = Uuid::new_v4();
         let payment = Payment {
@@ -263,18 +281,25 @@ impl StripeClient {
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("member_id".to_string(), member_id.to_string());
 
-        let customer_id = self.gateway.create_customer(CreateCustomerInput {
-            email: email.to_string(),
-            name: Some(name.to_string()),
-            metadata,
-        }).await?;
+        let customer_id = self
+            .gateway
+            .create_customer(CreateCustomerInput {
+                email: email.to_string(),
+                name: Some(name.to_string()),
+                metadata,
+            })
+            .await?;
 
         // Store in member record
         self.member_repo
             .set_stripe_customer_id(member_id, &customer_id)
             .await?;
 
-        tracing::info!("Created Stripe customer {} for member {}", customer_id, member_id);
+        tracing::info!(
+            "Created Stripe customer {} for member {}",
+            customer_id,
+            member_id
+        );
         Ok(customer_id)
     }
 
@@ -291,10 +316,13 @@ impl StripeClient {
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("member_id".to_string(), member_id.to_string());
 
-        let out = self.gateway.create_setup_intent(CreateSetupIntentInput {
-            customer_id,
-            metadata,
-        }).await?;
+        let out = self
+            .gateway
+            .create_setup_intent(CreateSetupIntentInput {
+                customer_id,
+                metadata,
+            })
+            .await?;
 
         Ok(out.client_secret)
     }
@@ -324,7 +352,10 @@ impl StripeClient {
         payment_id: Uuid,
     ) -> Result<String> {
         // Get the member's stripe_customer_id
-        let customer_id = self.member_repo.find_by_id(member_id).await?
+        let customer_id = self
+            .member_repo
+            .find_by_id(member_id)
+            .await?
             .and_then(|m| m.stripe_customer_id)
             .ok_or_else(|| AppError::BadRequest("Member has no Stripe customer".to_string()))?;
 
@@ -332,26 +363,34 @@ impl StripeClient {
         metadata.insert("member_id".to_string(), member_id.to_string());
         metadata.insert("payment_id".to_string(), payment_id.to_string());
 
-        let result = self.gateway.create_payment_intent(CreatePaymentIntentInput {
-            amount_cents,
-            customer_id,
-            payment_method_id: stripe_payment_method_id.to_string(),
-            description: description.to_string(),
-            metadata,
-            idempotency_key: idempotency_key.to_string(),
-        }).await?;
+        let result = self
+            .gateway
+            .create_payment_intent(CreatePaymentIntentInput {
+                amount_cents,
+                customer_id,
+                payment_method_id: stripe_payment_method_id.to_string(),
+                description: description.to_string(),
+                metadata,
+                idempotency_key: idempotency_key.to_string(),
+            })
+            .await?;
 
         match result {
             PaymentIntentResult::Succeeded { id } => {
-                tracing::info!("Successfully charged {} for member {}", amount_cents, member_id);
+                tracing::info!(
+                    "Successfully charged {} for member {}",
+                    amount_cents,
+                    member_id
+                );
                 Ok(id)
             }
-            PaymentIntentResult::RequiresAction { .. } => {
-                Err(AppError::External("Payment requires additional authentication".to_string()))
-            }
-            PaymentIntentResult::Other { status, .. } => {
-                Err(AppError::External(format!("Payment failed with status: {}", status)))
-            }
+            PaymentIntentResult::RequiresAction { .. } => Err(AppError::External(
+                "Payment requires additional authentication".to_string(),
+            )),
+            PaymentIntentResult::Other { status, .. } => Err(AppError::External(format!(
+                "Payment failed with status: {}",
+                status
+            ))),
         }
     }
 
@@ -364,10 +403,7 @@ impl StripeClient {
     /// Returns an empty list if the customer has no cards on file.
     /// Bails on Stripe API errors — caller should treat that as
     /// "don't migrate this member yet."
-    pub async fn list_customer_cards(
-        &self,
-        customer_id: &str,
-    ) -> Result<Vec<CustomerCardSummary>> {
+    pub async fn list_customer_cards(&self, customer_id: &str) -> Result<Vec<CustomerCardSummary>> {
         // Retrieve the customer once so we can identify which PM is the
         // invoice-default; the gateway's list call returns the cards
         // themselves.
@@ -376,16 +412,17 @@ impl StripeClient {
 
         let pms = self.gateway.list_payment_methods(customer_id).await?;
 
-        let mut out: Vec<CustomerCardSummary> = pms.into_iter().map(|pm| {
-            CustomerCardSummary {
+        let mut out: Vec<CustomerCardSummary> = pms
+            .into_iter()
+            .map(|pm| CustomerCardSummary {
                 is_default: default_pm_id.as_deref() == Some(pm.id.as_str()),
                 payment_method_id: pm.id,
                 last_four: pm.last4,
                 brand: pm.brand,
                 exp_month: pm.exp_month,
                 exp_year: pm.exp_year,
-            }
-        }).collect();
+            })
+            .collect();
 
         // Defensive: if Stripe didn't tell us which is default and we
         // got exactly one, treat it as default. (Stripe sometimes
@@ -420,26 +457,36 @@ impl StripeClient {
             StripeRef::PaymentIntent(id) => id.clone(),
             StripeRef::CheckoutSession(id) => {
                 let session = self.gateway.retrieve_checkout_session(id).await?;
-                session.payment_intent_id.ok_or_else(|| AppError::BadRequest(
-                    "Checkout session has no PaymentIntent — not a charge that can be refunded".to_string()
-                ))?
+                session.payment_intent_id.ok_or_else(|| {
+                    AppError::BadRequest(
+                        "Checkout session has no PaymentIntent — not a charge that can be refunded"
+                            .to_string(),
+                    )
+                })?
             }
             StripeRef::Invoice(id) => {
                 let invoice = self.gateway.retrieve_invoice(id).await?;
-                invoice.payment_intent_id.ok_or_else(|| AppError::BadRequest(
-                    "Invoice has no PaymentIntent — not a charge that can be refunded".to_string()
-                ))?
+                invoice.payment_intent_id.ok_or_else(|| {
+                    AppError::BadRequest(
+                        "Invoice has no PaymentIntent — not a charge that can be refunded"
+                            .to_string(),
+                    )
+                })?
             }
         };
 
-        let refund = self.gateway.create_refund(CreateRefundInput {
-            payment_intent_id: payment_intent_id.clone(),
-            idempotency_key: idempotency_key.to_string(),
-        }).await?;
+        let refund = self
+            .gateway
+            .create_refund(CreateRefundInput {
+                payment_intent_id: payment_intent_id.clone(),
+                idempotency_key: idempotency_key.to_string(),
+            })
+            .await?;
 
         tracing::info!(
             "Refunded PaymentIntent {} → Refund {}",
-            payment_intent_id, refund.id,
+            payment_intent_id,
+            refund.id,
         );
         Ok(refund.id)
     }
@@ -474,11 +521,11 @@ impl StripeClient {
     /// member's `stripe_customer_id` — otherwise a member who learns
     /// another's PM ID could attach it to their own saved-cards UI
     /// and learn the brand + last four (info disclosure).
-    pub async fn get_payment_method_details(
-        &self,
-        payment_method_id: &str,
-    ) -> Result<CardDetails> {
-        let pm = self.gateway.retrieve_payment_method(payment_method_id).await?;
+    pub async fn get_payment_method_details(&self, payment_method_id: &str) -> Result<CardDetails> {
+        let pm = self
+            .gateway
+            .retrieve_payment_method(payment_method_id)
+            .await?;
         Ok(CardDetails {
             last_four: pm.last4,
             brand: pm.brand,

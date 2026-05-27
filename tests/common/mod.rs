@@ -83,6 +83,24 @@ pub async fn fresh_pool_no_seeded_basic_types() -> anyhow::Result<SqlitePool> {
 /// caller was already constructing inline; `stripe_client` is `None`
 /// because no router-test path needs the real Stripe surface.
 pub async fn build_app_state(pool: SqlitePool) -> AppState {
+    let crypto = Arc::new(SecretCrypto::new("test-secret-please-ignore"));
+    let totp_service = Arc::new(TotpService::new(
+        pool.clone(),
+        crypto,
+        "Coterie".to_string(),
+    ));
+    build_app_state_with_totp(pool, totp_service).await
+}
+
+/// Variant of [`build_app_state`] that lets the caller inject a custom
+/// `TotpService` — useful for tests that need to force the enrollment
+/// query to fail (point the service at a closed pool). All other
+/// services keep the main `pool` so password lookup, session create,
+/// member repo, etc. continue to work.
+pub async fn build_app_state_with_totp(
+    pool: SqlitePool,
+    totp_service: Arc<TotpService>,
+) -> AppState {
     let settings = Settings {
         server: coterie::config::ServerConfig {
             host: "127.0.0.1".to_string(),
@@ -124,11 +142,6 @@ pub async fn build_app_state(pool: SqlitePool) -> AppState {
         settings.auth.session_secret.clone(),
     ));
     let csrf_service = Arc::new(CsrfService::new(&settings.auth.session_secret));
-    let totp_service = Arc::new(TotpService::new(
-        pool.clone(),
-        crypto.clone(),
-        "Coterie".to_string(),
-    ));
     let pending_login_service = Arc::new(PendingLoginService::new(pool.clone()));
     let settings_service = Arc::new(SettingsService::new(pool.clone(), crypto));
 
@@ -170,6 +183,22 @@ pub async fn build_app_state(pool: SqlitePool) -> AppState {
         Arc::new(DisabledVerifier),
         money_limiter,
     )
+}
+
+/// Build a `TotpService` whose backing pool has already been closed.
+/// Any query through it (including `is_enabled`) will return a sqlx
+/// pool-closed error — the test driver uses this to force the
+/// fail-closed branch in the login handlers without dropping the
+/// shared pool that the rest of the harness needs.
+pub async fn failing_totp_service() -> Arc<TotpService> {
+    let bad_pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("connect bad pool");
+    bad_pool.close().await;
+    let crypto = Arc::new(SecretCrypto::new("test-secret-please-ignore"));
+    Arc::new(TotpService::new(bad_pool, crypto, "Coterie".to_string()))
 }
 
 /// Insert a fresh test member through `SqliteMemberRepository::create`

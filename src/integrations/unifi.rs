@@ -1,9 +1,9 @@
-use async_trait::async_trait;
 use crate::{
     config::UnifiConfig,
     error::{AppError, Result},
-    integrations::{Integration, IntegrationEvent, BaseIntegration},
+    integrations::{BaseIntegration, Integration, IntegrationEvent},
 };
+use async_trait::async_trait;
 
 pub struct UnifiIntegration {
     base: BaseIntegration,
@@ -65,7 +65,9 @@ impl Integration for UnifiIntegration {
     async fn health_check(&self) -> Result<()> {
         // In real implementation, would check Unifi API connectivity
         if self.config.controller_url.is_empty() {
-            return Err(AppError::Integration("Unifi controller URL not configured".to_string()));
+            return Err(AppError::Integration(
+                "Unifi controller URL not configured".to_string(),
+            ));
         }
         Ok(())
     }

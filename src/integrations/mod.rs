@@ -1,8 +1,8 @@
+use crate::domain::{Announcement, Event, Member};
+use crate::error::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use crate::domain::{Announcement, Event, Member};
-use crate::error::Result;
 
 pub mod admin_alert_email;
 pub mod discord;
@@ -13,7 +13,10 @@ pub mod unifi;
 pub enum IntegrationEvent {
     MemberActivated(Member),
     MemberExpired(Member),
-    MemberUpdated { old: Member, new: Member },
+    MemberUpdated {
+        old: Member,
+        new: Member,
+    },
     /// An event was created or made visible. Visibility decides which
     /// Discord channel (if any) the integration routes this to —
     /// AdminOnly events go to the admin-alerts channel, others to the
@@ -25,7 +28,10 @@ pub enum IntegrationEvent {
     /// Operational notification for admins. Free-form subject/body so
     /// any subsystem can dispatch one without coordinating with the
     /// integration layer's enums.
-    AdminAlert { subject: String, body: String },
+    AdminAlert {
+        subject: String,
+        body: String,
+    },
 }
 
 #[async_trait]
@@ -51,13 +57,16 @@ impl IntegrationManager {
         if integration.is_enabled() {
             let mut integrations = self.integrations.write().await;
             integrations.push(integration);
-            tracing::info!("Registered integration: {}", integrations.last().unwrap().name());
+            tracing::info!(
+                "Registered integration: {}",
+                integrations.last().unwrap().name()
+            );
         }
     }
 
     pub async fn handle_event(&self, event: IntegrationEvent) {
         let integrations = self.integrations.read().await;
-        
+
         for integration in integrations.iter() {
             if !integration.is_enabled() {
                 continue;

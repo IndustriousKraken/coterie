@@ -50,14 +50,12 @@ fn detect_image_format(data: &[u8]) -> Option<&'static str> {
 
 /// Save an uploaded file to the uploads directory.
 /// Returns the relative path to the file (e.g., "uploads/abc123.jpg")
-pub async fn save_uploaded_file(
-    uploads_dir: &str,
-    filename: &str,
-    data: &[u8],
-) -> Result<String> {
+pub async fn save_uploaded_file(uploads_dir: &str, filename: &str, data: &[u8]) -> Result<String> {
     // Validate file size
     if data.len() > MAX_FILE_SIZE {
-        return Err(AppError::Validation("File too large (max 10 MB)".to_string()));
+        return Err(AppError::Validation(
+            "File too large (max 10 MB)".to_string(),
+        ));
     }
 
     // Extract and validate extension
@@ -81,7 +79,7 @@ pub async fn save_uploaded_file(
     // some contexts even with nosniff).
     let detected = detect_image_format(data).ok_or_else(|| {
         AppError::Validation(
-            "File content is not a recognized image (JPEG, PNG, GIF, or WebP).".to_string()
+            "File content is not a recognized image (JPEG, PNG, GIF, or WebP).".to_string(),
         )
     })?;
 
@@ -89,7 +87,11 @@ pub async fn save_uploaded_file(
     // security issue on its own (we'll serve what the file actually is)
     // but catches mismatches up front rather than letting them confuse
     // downstream consumers. `jpeg` is accepted as an alias for `jpg`.
-    let ext_canonical = if extension == "jpeg" { "jpg" } else { extension.as_str() };
+    let ext_canonical = if extension == "jpeg" {
+        "jpg"
+    } else {
+        extension.as_str()
+    };
     if detected != ext_canonical {
         return Err(AppError::Validation(format!(
             "File extension .{} doesn't match actual format ({}).",
@@ -99,22 +101,22 @@ pub async fn save_uploaded_file(
 
     // Ensure uploads directory exists
     let uploads_path = PathBuf::from(uploads_dir);
-    fs::create_dir_all(&uploads_path).await.map_err(|e| {
-        AppError::Internal(format!("Failed to create uploads directory: {}", e))
-    })?;
+    fs::create_dir_all(&uploads_path)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to create uploads directory: {}", e)))?;
 
     // Generate unique filename
     let new_filename = format!("{}.{}", Uuid::new_v4(), extension);
     let file_path = uploads_path.join(&new_filename);
 
     // Write file
-    let mut file = fs::File::create(&file_path).await.map_err(|e| {
-        AppError::Internal(format!("Failed to create file: {}", e))
-    })?;
+    let mut file = fs::File::create(&file_path)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to create file: {}", e)))?;
 
-    file.write_all(data).await.map_err(|e| {
-        AppError::Internal(format!("Failed to write file: {}", e))
-    })?;
+    file.write_all(data)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to write file: {}", e)))?;
 
     // Return relative path for storing in database
     Ok(format!("uploads/{}", new_filename))
@@ -173,7 +175,7 @@ async fn is_private_image(db_pool: &SqlitePool, image_path: &str) -> bool {
         SELECT 1 FROM events
         WHERE image_url = ? AND visibility != 'Public'
         LIMIT 1
-        "#
+        "#,
     )
     .bind(&full_path)
     .fetch_optional(db_pool)
@@ -191,7 +193,7 @@ async fn is_private_image(db_pool: &SqlitePool, image_path: &str) -> bool {
         SELECT 1 FROM announcements
         WHERE image_url = ? AND is_public = 0
         LIMIT 1
-        "#
+        "#,
     )
     .bind(&full_path)
     .fetch_optional(db_pool)
@@ -262,11 +264,7 @@ pub async fn serve_upload(
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
 
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, content_type)],
-        body,
-    ).into_response()
+    (StatusCode::OK, [(header::CONTENT_TYPE, content_type)], body).into_response()
 }
 
 #[cfg(test)]
@@ -275,7 +273,10 @@ mod tests {
 
     #[test]
     fn detects_real_images() {
-        assert_eq!(detect_image_format(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0]), Some("jpg"));
+        assert_eq!(
+            detect_image_format(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0]),
+            Some("jpg")
+        );
         assert_eq!(
             detect_image_format(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0]),
             Some("png")

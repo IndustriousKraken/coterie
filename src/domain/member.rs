@@ -85,11 +85,21 @@ impl MemberStatus {
         }
     }
 
-    pub fn is_active(self) -> bool { matches!(self, MemberStatus::Active) }
-    pub fn is_pending(self) -> bool { matches!(self, MemberStatus::Pending) }
-    pub fn is_expired(self) -> bool { matches!(self, MemberStatus::Expired) }
-    pub fn is_suspended(self) -> bool { matches!(self, MemberStatus::Suspended) }
-    pub fn is_honorary(self) -> bool { matches!(self, MemberStatus::Honorary) }
+    pub fn is_active(self) -> bool {
+        matches!(self, MemberStatus::Active)
+    }
+    pub fn is_pending(self) -> bool {
+        matches!(self, MemberStatus::Pending)
+    }
+    pub fn is_expired(self) -> bool {
+        matches!(self, MemberStatus::Expired)
+    }
+    pub fn is_suspended(self) -> bool {
+        matches!(self, MemberStatus::Suspended)
+    }
+    pub fn is_honorary(self) -> bool {
+        matches!(self, MemberStatus::Honorary)
+    }
 }
 
 #[cfg(test)]

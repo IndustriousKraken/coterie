@@ -13,7 +13,10 @@ pub struct LogSender {
 
 impl LogSender {
     pub fn new(from_address: String, from_name: String) -> Self {
-        Self { from_address, from_name }
+        Self {
+            from_address,
+            from_name,
+        }
     }
 }
 
@@ -27,7 +30,8 @@ impl EmailSender for LogSender {
              Subject: {}\n\
              ---- Text body ----\n{}\n\
              ========================",
-            self.from_name, self.from_address,
+            self.from_name,
+            self.from_address,
             message.to,
             message.subject,
             message.text_body,

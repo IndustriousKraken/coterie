@@ -10,10 +10,7 @@ use axum::{extract::State, Json};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::{
-    error::Result,
-    repository::AnnouncementRepository,
-};
+use crate::{error::Result, repository::AnnouncementRepository};
 
 #[derive(Serialize, ToSchema)]
 pub struct PrivateAnnouncementCount {
@@ -34,9 +31,7 @@ pub struct PrivateAnnouncementCount {
 pub async fn private_count(
     State(announcement_repo): State<Arc<dyn AnnouncementRepository>>,
 ) -> Result<Json<PrivateAnnouncementCount>> {
-    let count = announcement_repo
-        .count_private_published()
-        .await?;
+    let count = announcement_repo.count_private_published().await?;
 
     Ok(Json(PrivateAnnouncementCount { count }))
 }

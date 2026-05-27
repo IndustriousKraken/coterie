@@ -1,32 +1,28 @@
+use chrono::{Duration, Utc};
 use clap::Parser;
 use config::{Config, File};
 use coterie::{
     domain::{
-        CreateMemberRequest, MemberStatus, UpdateMemberRequest,
-        BasicTypeKind, CreateBasicTypeRequest, CreateMembershipTypeRequest,
-        MembershipTypeConfig as DbMembershipTypeConfig,
-        Event, EventType, EventVisibility,
-        Announcement, AnnouncementType,
-        Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus, StripeRef,
+        Announcement, AnnouncementType, BasicTypeKind, CreateBasicTypeRequest, CreateMemberRequest,
+        CreateMembershipTypeRequest, Event, EventType, EventVisibility, MemberStatus,
+        MembershipTypeConfig as DbMembershipTypeConfig, Payer, Payment, PaymentKind, PaymentMethod,
+        PaymentStatus, StripeRef, UpdateMemberRequest,
     },
     repository::{
-        MemberRepository, SqliteMemberRepository,
-        EventRepository, SqliteEventRepository,
-        AnnouncementRepository, SqliteAnnouncementRepository,
-        PaymentRepository, SqlitePaymentRepository,
-        BasicTypeRepository, SqliteBasicTypeRepository,
-        MembershipTypeRepository, SqliteMembershipTypeRepository,
+        AnnouncementRepository, BasicTypeRepository, EventRepository, MemberRepository,
+        MembershipTypeRepository, PaymentRepository, SqliteAnnouncementRepository,
+        SqliteBasicTypeRepository, SqliteEventRepository, SqliteMemberRepository,
+        SqliteMembershipTypeRepository, SqlitePaymentRepository,
     },
 };
-use chrono::{Utc, Duration};
+use fake::faker::name::en::{FirstName, LastName};
+use fake::Fake;
+use rand::seq::SliceRandom;
+use rand::Rng;
 use serde::Deserialize;
 use sqlx::sqlite::SqlitePoolOptions;
 use std::path::PathBuf;
 use uuid::Uuid;
-use fake::Fake;
-use fake::faker::name::en::{FirstName, LastName};
-use rand::Rng;
-use rand::seq::SliceRandom;
 
 /// Seed the Coterie database with example data
 #[derive(Parser, Debug)]
@@ -112,29 +108,33 @@ struct AnnouncementTypeConfig {
 struct EventConfig {
     title: String,
     description: String,
-    event_type: String,  // slug of the event type
+    event_type: String, // slug of the event type
     #[serde(default)]
-    days_offset: i64,    // positive = future, negative = past
+    days_offset: i64, // positive = future, negative = past
     #[serde(default = "default_duration")]
     duration_hours: i64,
     #[serde(default)]
     location: Option<String>,
     #[serde(default = "default_visibility")]
-    visibility: String,  // "public" or "members_only"
+    visibility: String, // "public" or "members_only"
     #[serde(default)]
     max_attendees: Option<i32>,
     #[serde(default)]
     image_url: Option<String>,
 }
 
-fn default_duration() -> i64 { 2 }
-fn default_visibility() -> String { "members_only".to_string() }
+fn default_duration() -> i64 {
+    2
+}
+fn default_visibility() -> String {
+    "members_only".to_string()
+}
 
 #[derive(Debug, Deserialize)]
 struct AnnouncementConfig {
     title: String,
     content: String,
-    announcement_type: String,  // slug of the announcement type
+    announcement_type: String, // slug of the announcement type
     #[serde(default)]
     days_ago: i64,
     #[serde(default)]
@@ -187,12 +187,20 @@ fn make_payment(
     let external_id = if method == PaymentMethod::Stripe {
         Some(StripeRef::PaymentIntent(format!(
             "pi_seed_{}",
-            Uuid::new_v4().to_string().chars().take(8).collect::<String>(),
+            Uuid::new_v4()
+                .to_string()
+                .chars()
+                .take(8)
+                .collect::<String>(),
         )))
     } else {
         None
     };
-    let paid_at = if status == PaymentStatus::Completed { Some(created) } else { None };
+    let paid_at = if status == PaymentStatus::Completed {
+        Some(created)
+    } else {
+        None
+    };
 
     Payment {
         id: Uuid::new_v4(),
@@ -247,10 +255,18 @@ fn make_event(
 /// Generate a unique username from a name
 fn make_username(first: &str, last: &str, rng: &mut impl Rng) -> String {
     let styles = [
-        format!("{}{}", first.to_lowercase(), last.to_lowercase().chars().next().unwrap_or('x')),
+        format!(
+            "{}{}",
+            first.to_lowercase(),
+            last.to_lowercase().chars().next().unwrap_or('x')
+        ),
         format!("{}.{}", first.to_lowercase(), last.to_lowercase()),
         format!("{}_{}", first.to_lowercase(), rng.gen_range(10..99)),
-        format!("{}{}", first.to_lowercase().chars().next().unwrap_or('x'), last.to_lowercase()),
+        format!(
+            "{}{}",
+            first.to_lowercase().chars().next().unwrap_or('x'),
+            last.to_lowercase()
+        ),
     ];
     styles.choose(rng).unwrap().clone()
 }
@@ -336,8 +352,8 @@ async fn main() -> anyhow::Result<()> {
     let mut rng = rand::thread_rng();
 
     // Initialize database connection
-    let database_url = std::env::var("COTERIE__DATABASE__URL")
-        .unwrap_or_else(|_| "sqlite:coterie.db".to_string());
+    let database_url =
+        std::env::var("COTERIE__DATABASE__URL").unwrap_or_else(|_| "sqlite:coterie.db".to_string());
 
     let db_pool = SqlitePoolOptions::new()
         .max_connections(5)
@@ -346,24 +362,40 @@ async fn main() -> anyhow::Result<()> {
 
     // Run migrations first
     println!("  Running migrations...");
-    sqlx::migrate!("./migrations")
-        .run(&db_pool)
-        .await?;
+    sqlx::migrate!("./migrations").run(&db_pool).await?;
 
     // Clear existing data (including defaults from migrations)
     println!("  Clearing any existing data...");
-    sqlx::query("DELETE FROM payments").execute(&db_pool).await?;
-    sqlx::query("DELETE FROM event_attendance").execute(&db_pool).await?;
+    sqlx::query("DELETE FROM payments")
+        .execute(&db_pool)
+        .await?;
+    sqlx::query("DELETE FROM event_attendance")
+        .execute(&db_pool)
+        .await?;
     sqlx::query("DELETE FROM events").execute(&db_pool).await?;
-    sqlx::query("DELETE FROM announcements").execute(&db_pool).await?;
-    sqlx::query("DELETE FROM sessions").execute(&db_pool).await?;
-    sqlx::query("DELETE FROM csrf_tokens").execute(&db_pool).await?;
-    sqlx::query("DELETE FROM member_profiles").execute(&db_pool).await?;
+    sqlx::query("DELETE FROM announcements")
+        .execute(&db_pool)
+        .await?;
+    sqlx::query("DELETE FROM sessions")
+        .execute(&db_pool)
+        .await?;
+    sqlx::query("DELETE FROM csrf_tokens")
+        .execute(&db_pool)
+        .await?;
+    sqlx::query("DELETE FROM member_profiles")
+        .execute(&db_pool)
+        .await?;
     sqlx::query("DELETE FROM members").execute(&db_pool).await?;
     // Also clear types so we can seed fresh (migrations create defaults)
-    sqlx::query("DELETE FROM event_types").execute(&db_pool).await?;
-    sqlx::query("DELETE FROM announcement_types").execute(&db_pool).await?;
-    sqlx::query("DELETE FROM membership_types").execute(&db_pool).await?;
+    sqlx::query("DELETE FROM event_types")
+        .execute(&db_pool)
+        .await?;
+    sqlx::query("DELETE FROM announcement_types")
+        .execute(&db_pool)
+        .await?;
+    sqlx::query("DELETE FROM membership_types")
+        .execute(&db_pool)
+        .await?;
 
     // Initialize repositories
     let member_repo = SqliteMemberRepository::new(db_pool.clone());
@@ -380,41 +412,59 @@ async fn main() -> anyhow::Result<()> {
 
     // Seed event types from config
     for et in &config.event_types {
-        basic_type_repo.create(BasicTypeKind::Event, CreateBasicTypeRequest {
-            name: et.name.clone(),
-            slug: Some(et.slug.clone()),
-            description: None,
-            color: Some(et.color.clone()),
-            icon: et.icon.clone(),
-        }).await?;
+        basic_type_repo
+            .create(
+                BasicTypeKind::Event,
+                CreateBasicTypeRequest {
+                    name: et.name.clone(),
+                    slug: Some(et.slug.clone()),
+                    description: None,
+                    color: Some(et.color.clone()),
+                    icon: et.icon.clone(),
+                },
+            )
+            .await?;
     }
     println!("    Created {} event types", config.event_types.len());
 
     // Seed announcement types from config
     for at in &config.announcement_types {
-        basic_type_repo.create(BasicTypeKind::Announcement, CreateBasicTypeRequest {
-            name: at.name.clone(),
-            slug: Some(at.slug.clone()),
-            description: None,
-            color: Some(at.color.clone()),
-            icon: None,
-        }).await?;
+        basic_type_repo
+            .create(
+                BasicTypeKind::Announcement,
+                CreateBasicTypeRequest {
+                    name: at.name.clone(),
+                    slug: Some(at.slug.clone()),
+                    description: None,
+                    color: Some(at.color.clone()),
+                    icon: None,
+                },
+            )
+            .await?;
     }
-    println!("    Created {} announcement types", config.announcement_types.len());
+    println!(
+        "    Created {} announcement types",
+        config.announcement_types.len()
+    );
 
     // Seed membership types from config
     for mt in &config.membership_types {
-        membership_type_repo.create(CreateMembershipTypeRequest {
-            name: mt.name.clone(),
-            slug: Some(mt.slug.clone()),
-            description: None,
-            color: Some(mt.color.clone()),
-            icon: None,
-            fee_cents: mt.fee_cents,
-            billing_period: mt.billing_frequency.clone(),
-        }).await?;
+        membership_type_repo
+            .create(CreateMembershipTypeRequest {
+                name: mt.name.clone(),
+                slug: Some(mt.slug.clone()),
+                description: None,
+                color: Some(mt.color.clone()),
+                icon: None,
+                fee_cents: mt.fee_cents,
+                billing_period: mt.billing_frequency.clone(),
+            })
+            .await?;
     }
-    println!("    Created {} membership types", config.membership_types.len());
+    println!(
+        "    Created {} membership types",
+        config.membership_types.len()
+    );
 
     // =========================================================================
     // MEMBERS
@@ -439,40 +489,52 @@ async fn main() -> anyhow::Result<()> {
     // dues) is now expressed by `bypass_dues: true` below — the type
     // pick just needs to be valid.
     let admin_type_id = slug_to_id("life-member", &active_types);
-    let admin = member_repo.create(CreateMemberRequest {
-        email: config.admin.email.clone(),
-        username: config.admin.username.clone(),
-        full_name: config.admin.full_name.clone(),
-        password: config.admin.password.clone(),
-        membership_type_id: Some(admin_type_id),
-        ..Default::default()
-    }).await?;
+    let admin = member_repo
+        .create(CreateMemberRequest {
+            email: config.admin.email.clone(),
+            username: config.admin.username.clone(),
+            full_name: config.admin.full_name.clone(),
+            password: config.admin.password.clone(),
+            membership_type_id: Some(admin_type_id),
+            ..Default::default()
+        })
+        .await?;
 
-    member_repo.update(admin.id, UpdateMemberRequest {
-        status: Some(MemberStatus::Active),
-        notes: Some("System administrator".to_string()),
-        bypass_dues: Some(true),
-        ..Default::default()
-    }).await?;
+    member_repo
+        .update(
+            admin.id,
+            UpdateMemberRequest {
+                status: Some(MemberStatus::Active),
+                notes: Some("System administrator".to_string()),
+                bypass_dues: Some(true),
+                ..Default::default()
+            },
+        )
+        .await?;
     member_repo.set_admin(admin.id, true).await?;
 
     used_usernames.insert(config.admin.username.clone());
     used_emails.insert(config.admin.email.clone());
-    println!("    Created admin user ({} / {})", config.admin.email, config.admin.password);
+    println!(
+        "    Created admin user ({} / {})",
+        config.admin.email, config.admin.password
+    );
 
     // Create test users from config
     for user_config in &config.test_users {
         let mem_type_id = slug_to_id(&user_config.membership_type, &active_types);
         let status = parse_member_status(&user_config.status);
 
-        let member = member_repo.create(CreateMemberRequest {
-            email: user_config.email.clone(),
-            username: user_config.username.clone(),
-            full_name: user_config.full_name.clone(),
-            password: user_config.password.clone(),
-            membership_type_id: Some(mem_type_id),
-            ..Default::default()
-        }).await?;
+        let member = member_repo
+            .create(CreateMemberRequest {
+                email: user_config.email.clone(),
+                username: user_config.username.clone(),
+                full_name: user_config.full_name.clone(),
+                password: user_config.password.clone(),
+                membership_type_id: Some(mem_type_id),
+                ..Default::default()
+            })
+            .await?;
 
         let dues_until = if status == MemberStatus::Active {
             Some(Utc::now() + Duration::days(30))
@@ -493,20 +555,25 @@ async fn main() -> anyhow::Result<()> {
             .execute(&db_pool)
             .await?;
 
-        all_members.push((member.id, MemberGenConfig {
-            status: status.clone(),
-            membership_type_id: mem_type_id,
-            months_active: user_config.months_active,
-            bypass_dues: user_config.bypass_dues,
-            notes: None,
-        }));
+        all_members.push((
+            member.id,
+            MemberGenConfig {
+                status: status.clone(),
+                membership_type_id: mem_type_id,
+                months_active: user_config.months_active,
+                bypass_dues: user_config.bypass_dues,
+                notes: None,
+            },
+        ));
         used_usernames.insert(user_config.username.clone());
         used_emails.insert(user_config.email.clone());
     }
     println!("    Created {} test users", config.test_users.len());
 
     // Generate random members
-    let random_count = args.member_count.saturating_sub(1 + config.test_users.len());
+    let random_count = args
+        .member_count
+        .saturating_sub(1 + config.test_users.len());
     let mut generated = 0;
     let mut attempts = 0;
     const MAX_ATTEMPTS: usize = 1000;
@@ -526,11 +593,22 @@ async fn main() -> anyhow::Result<()> {
             continue;
         }
 
-        let email_domains = ["example.com", "test.local", "mail.test", "demo.org", "sample.net"];
+        let email_domains = [
+            "example.com",
+            "test.local",
+            "mail.test",
+            "demo.org",
+            "sample.net",
+        ];
         let domain = email_domains.choose(&mut rng).unwrap();
         let mut email = format!("{}@{}", username, domain);
         if used_emails.contains(&email) {
-            email = format!("{}.{}@{}", first_name.to_lowercase(), last_name.to_lowercase(), domain);
+            email = format!(
+                "{}.{}@{}",
+                first_name.to_lowercase(),
+                last_name.to_lowercase(),
+                domain
+            );
         }
         if used_emails.contains(&email) {
             continue;
@@ -538,14 +616,16 @@ async fn main() -> anyhow::Result<()> {
 
         let gen_config = generate_member_config(&mut rng, &active_types);
 
-        let member = member_repo.create(CreateMemberRequest {
-            email: email.clone(),
-            username: username.clone(),
-            full_name,
-            password: "password123".to_string(),
-            membership_type_id: Some(gen_config.membership_type_id),
-            ..Default::default()
-        }).await?;
+        let member = member_repo
+            .create(CreateMemberRequest {
+                email: email.clone(),
+                username: username.clone(),
+                full_name,
+                password: "password123".to_string(),
+                membership_type_id: Some(gen_config.membership_type_id),
+                ..Default::default()
+            })
+            .await?;
 
         let months_ago = gen_config.months_active;
         let joined = Utc::now() - Duration::days(months_ago * 30 + rng.gen_range(0..30));
@@ -558,9 +638,7 @@ async fn main() -> anyhow::Result<()> {
                     Some(Utc::now() + Duration::days(rng.gen_range(7..90)))
                 }
             }
-            MemberStatus::Expired => {
-                Some(Utc::now() - Duration::days(rng.gen_range(1..90)))
-            }
+            MemberStatus::Expired => Some(Utc::now() - Duration::days(rng.gen_range(1..90))),
             _ => None,
         };
 
@@ -626,7 +704,9 @@ async fn main() -> anyhow::Result<()> {
             let mut shuffled: Vec<_> = all_members.iter().collect();
             shuffled.shuffle(&mut rng);
             for (member_id, _) in shuffled.iter().take(attendee_count) {
-                let _ = event_repo.register_attendance(created_event.id, *member_id).await;
+                let _ = event_repo
+                    .register_attendance(created_event.id, *member_id)
+                    .await;
             }
         }
     }
@@ -637,7 +717,10 @@ async fn main() -> anyhow::Result<()> {
         for month in 0..3 {
             let days_ahead = month * 30 + 7;
             let event = make_event(
-                &format!("Monthly Meeting - {}", (Utc::now() + Duration::days(days_ahead)).format("%B %Y")),
+                &format!(
+                    "Monthly Meeting - {}",
+                    (Utc::now() + Duration::days(days_ahead)).format("%B %Y")
+                ),
                 "Monthly gathering to discuss club business and updates.",
                 EventType::Meeting,
                 EventVisibility::MembersOnly,
@@ -718,7 +801,9 @@ async fn main() -> anyhow::Result<()> {
     let mut payment_count = 0;
 
     // Get default dues amount from first membership type in config
-    let default_dues = config.membership_types.first()
+    let default_dues = config
+        .membership_types
+        .first()
         .map(|mt| mt.fee_cents as i64)
         .unwrap_or(5000);
 
@@ -745,14 +830,21 @@ async fn main() -> anyhow::Result<()> {
         let months = gen_config.months_active.min(24);
         for month in 0..months {
             let days_ago = month * 30 + rng.gen_range(1..10);
-            let method = if rng.gen_bool(0.85) { PaymentMethod::Stripe } else { PaymentMethod::Manual };
+            let method = if rng.gen_bool(0.85) {
+                PaymentMethod::Stripe
+            } else {
+                PaymentMethod::Manual
+            };
 
             let payment = make_payment(
                 *member_id,
                 default_dues,
                 PaymentStatus::Completed,
                 method,
-                &format!("Monthly dues - {}", (Utc::now() - Duration::days(days_ago)).format("%B %Y")),
+                &format!(
+                    "Monthly dues - {}",
+                    (Utc::now() - Duration::days(days_ago)).format("%B %Y")
+                ),
                 days_ago,
             );
             payment_repo.create(payment).await?;
@@ -791,14 +883,23 @@ async fn main() -> anyhow::Result<()> {
     println!("   Membership types: {}", config.membership_types.len());
 
     println!("\nCredentials:");
-    println!("   Admin: {} / {}", config.admin.email, config.admin.password);
+    println!(
+        "   Admin: {} / {}",
+        config.admin.email, config.admin.password
+    );
     if !config.test_users.is_empty() {
         println!("\n   Test users:");
         for user in &config.test_users {
-            println!("     {} - {}, {}", user.email, user.membership_type, user.status);
+            println!(
+                "     {} - {}, {}",
+                user.email, user.membership_type, user.status
+            );
         }
     }
-    println!("\n   Plus {} randomly generated members (password: password123)", generated);
+    println!(
+        "\n   Plus {} randomly generated members (password: password123)",
+        generated
+    );
 
     Ok(())
 }

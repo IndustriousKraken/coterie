@@ -43,10 +43,7 @@ pub enum Recurrence {
         weekdays: Vec<WeekdayCode>,
     },
     /// Day-of-month — 1..=31. Months without that day are SKIPPED.
-    MonthlyByDayOfMonth {
-        interval: u32,
-        day: u32,
-    },
+    MonthlyByDayOfMonth { interval: u32, day: u32 },
     /// Ordinal weekday in the month: "2nd Wednesday," "last Friday."
     /// `ordinal` is 1..=4 (first..fourth) or -1 (last).
     MonthlyByWeekdayOrdinal {
@@ -63,7 +60,13 @@ pub enum Recurrence {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum WeekdayCode {
-    Mon, Tue, Wed, Thu, Fri, Sat, Sun,
+    Mon,
+    Tue,
+    Wed,
+    Thu,
+    Fri,
+    Sat,
+    Sun,
 }
 
 impl WeekdayCode {
@@ -125,7 +128,9 @@ impl Recurrence {
                     return Err("day must be 1..=31");
                 }
             }
-            Self::MonthlyByWeekdayOrdinal { interval, ordinal, .. } => {
+            Self::MonthlyByWeekdayOrdinal {
+                interval, ordinal, ..
+            } => {
                 if *interval == 0 || *interval > 12 {
                     return Err("interval must be 1..=12 months");
                 }
@@ -183,11 +188,8 @@ pub fn generate_occurrences(
                     break;
                 }
                 for wd in weekdays.iter().copied() {
-                    let candidate = day_of_week_in_week(
-                        current_cycle_start,
-                        wd.to_chrono(),
-                        anchor,
-                    );
+                    let candidate =
+                        day_of_week_in_week(current_cycle_start, wd.to_chrono(), anchor);
                     if candidate >= to {
                         break 'outer;
                     }
@@ -215,7 +217,11 @@ pub fn generate_occurrences(
             }
         }
 
-        Recurrence::MonthlyByWeekdayOrdinal { interval, weekday, ordinal } => {
+        Recurrence::MonthlyByWeekdayOrdinal {
+            interval,
+            weekday,
+            ordinal,
+        } => {
             let mut cursor = first_of_month(anchor);
             while cursor < to && out.len() < MAX {
                 if let Some(d) = ordinal_weekday_of_month(
@@ -280,8 +286,8 @@ fn add_months(dt: DateTime<Utc>, months: i32) -> DateTime<Utc> {
 
     // For cursor purposes, snap to the 1st — we don't care about the
     // day, only the month/year.
-    let date = NaiveDate::from_ymd_opt(new_year, new_month, 1)
-        .expect("computed month always valid");
+    let date =
+        NaiveDate::from_ymd_opt(new_year, new_month, 1).expect("computed month always valid");
     Utc.from_utc_datetime(&date.and_time(dt.time()))
 }
 
@@ -370,11 +376,7 @@ mod tests {
             interval: 1,
             weekdays: vec![WeekdayCode::Mon, WeekdayCode::Wed, WeekdayCode::Fri],
         };
-        let occs = generate_occurrences(
-            anchor, &rule,
-            dt(2026, 5, 1, 0, 0),
-            dt(2026, 5, 18, 0, 0),
-        );
+        let occs = generate_occurrences(anchor, &rule, dt(2026, 5, 1, 0, 0), dt(2026, 5, 18, 0, 0));
         // Mon 4, Wed 6, Fri 8, Mon 11, Wed 13, Fri 15 = 6 occurrences
         assert_eq!(occs.len(), 6);
     }
@@ -386,11 +388,7 @@ mod tests {
             interval: 2,
             weekdays: vec![WeekdayCode::Mon],
         };
-        let occs = generate_occurrences(
-            anchor, &rule,
-            dt(2026, 5, 1, 0, 0),
-            dt(2026, 6, 30, 0, 0),
-        );
+        let occs = generate_occurrences(anchor, &rule, dt(2026, 5, 1, 0, 0), dt(2026, 6, 30, 0, 0));
         // 5/4, 5/18, 6/1, 6/15, 6/29 — 5 occurrences
         assert_eq!(occs.len(), 5);
         let mut last = occs[0];
@@ -403,12 +401,11 @@ mod tests {
     #[test]
     fn monthly_by_day_of_month_15th() {
         let anchor = dt(2026, 1, 15, 12, 0);
-        let rule = Recurrence::MonthlyByDayOfMonth { interval: 1, day: 15 };
-        let occs = generate_occurrences(
-            anchor, &rule,
-            dt(2026, 1, 1, 0, 0),
-            dt(2027, 1, 1, 0, 0),
-        );
+        let rule = Recurrence::MonthlyByDayOfMonth {
+            interval: 1,
+            day: 15,
+        };
+        let occs = generate_occurrences(anchor, &rule, dt(2026, 1, 1, 0, 0), dt(2027, 1, 1, 0, 0));
         assert_eq!(occs.len(), 12);
         for (i, o) in occs.iter().enumerate() {
             assert_eq!(o.day(), 15);
@@ -419,12 +416,11 @@ mod tests {
     #[test]
     fn monthly_by_day_31_skips_short_months() {
         let anchor = dt(2026, 1, 31, 9, 0);
-        let rule = Recurrence::MonthlyByDayOfMonth { interval: 1, day: 31 };
-        let occs = generate_occurrences(
-            anchor, &rule,
-            dt(2026, 1, 1, 0, 0),
-            dt(2027, 1, 1, 0, 0),
-        );
+        let rule = Recurrence::MonthlyByDayOfMonth {
+            interval: 1,
+            day: 31,
+        };
+        let occs = generate_occurrences(anchor, &rule, dt(2026, 1, 1, 0, 0), dt(2027, 1, 1, 0, 0));
         // Jan, Mar, May, Jul, Aug, Oct, Dec = 7 months with a 31st.
         // Feb, Apr, Jun, Sep, Nov skipped.
         assert_eq!(occs.len(), 7);
@@ -440,11 +436,7 @@ mod tests {
             weekday: WeekdayCode::Wed,
             ordinal: 2,
         };
-        let occs = generate_occurrences(
-            anchor, &rule,
-            dt(2026, 1, 1, 0, 0),
-            dt(2027, 1, 1, 0, 0),
-        );
+        let occs = generate_occurrences(anchor, &rule, dt(2026, 1, 1, 0, 0), dt(2027, 1, 1, 0, 0));
         assert_eq!(occs.len(), 12);
         for o in &occs {
             assert_eq!(o.weekday(), Weekday::Wed);
@@ -462,11 +454,7 @@ mod tests {
             weekday: WeekdayCode::Fri,
             ordinal: -1,
         };
-        let occs = generate_occurrences(
-            anchor, &rule,
-            dt(2026, 1, 1, 0, 0),
-            dt(2027, 1, 1, 0, 0),
-        );
+        let occs = generate_occurrences(anchor, &rule, dt(2026, 1, 1, 0, 0), dt(2027, 1, 1, 0, 0));
         assert_eq!(occs.len(), 12);
         for o in &occs {
             assert_eq!(o.weekday(), Weekday::Fri);
@@ -480,14 +468,11 @@ mod tests {
     fn occurrences_before_anchor_are_excluded() {
         let anchor = dt(2026, 6, 1, 12, 0); // Mon
         let rule = Recurrence::WeeklyByDay {
-            interval: 1, weekdays: vec![WeekdayCode::Mon],
+            interval: 1,
+            weekdays: vec![WeekdayCode::Mon],
         };
         // Window is wider than anchor — pre-anchor weeks must NOT appear.
-        let occs = generate_occurrences(
-            anchor, &rule,
-            dt(2026, 5, 1, 0, 0),
-            dt(2026, 7, 1, 0, 0),
-        );
+        let occs = generate_occurrences(anchor, &rule, dt(2026, 5, 1, 0, 0), dt(2026, 7, 1, 0, 0));
         for o in &occs {
             assert!(*o >= anchor, "{} < {}", o, anchor);
         }
@@ -497,7 +482,8 @@ mod tests {
     fn empty_window_returns_empty() {
         let anchor = dt(2026, 1, 1, 0, 0);
         let rule = Recurrence::WeeklyByDay {
-            interval: 1, weekdays: vec![WeekdayCode::Mon],
+            interval: 1,
+            weekdays: vec![WeekdayCode::Mon],
         };
         let same = dt(2026, 6, 1, 0, 0);
         assert!(generate_occurrences(anchor, &rule, same, same).is_empty());
@@ -505,20 +491,28 @@ mod tests {
 
     #[test]
     fn validate_catches_zero_interval() {
-        let r = Recurrence::WeeklyByDay { interval: 0, weekdays: vec![WeekdayCode::Mon] };
+        let r = Recurrence::WeeklyByDay {
+            interval: 0,
+            weekdays: vec![WeekdayCode::Mon],
+        };
         assert!(r.validate().is_err());
     }
 
     #[test]
     fn validate_catches_empty_weekdays() {
-        let r = Recurrence::WeeklyByDay { interval: 1, weekdays: vec![] };
+        let r = Recurrence::WeeklyByDay {
+            interval: 1,
+            weekdays: vec![],
+        };
         assert!(r.validate().is_err());
     }
 
     #[test]
     fn validate_catches_bad_ordinal() {
         let r = Recurrence::MonthlyByWeekdayOrdinal {
-            interval: 1, weekday: WeekdayCode::Wed, ordinal: 5,
+            interval: 1,
+            weekday: WeekdayCode::Wed,
+            ordinal: 5,
         };
         assert!(r.validate().is_err());
     }
@@ -540,17 +534,28 @@ mod tests {
     #[test]
     fn kind_str_matches_serde_tag() {
         assert_eq!(
-            Recurrence::WeeklyByDay { interval: 1, weekdays: vec![WeekdayCode::Mon] }.kind_str(),
+            Recurrence::WeeklyByDay {
+                interval: 1,
+                weekdays: vec![WeekdayCode::Mon]
+            }
+            .kind_str(),
             "weekly_by_day",
         );
         assert_eq!(
-            Recurrence::MonthlyByDayOfMonth { interval: 1, day: 1 }.kind_str(),
+            Recurrence::MonthlyByDayOfMonth {
+                interval: 1,
+                day: 1
+            }
+            .kind_str(),
             "monthly_by_dom",
         );
         assert_eq!(
             Recurrence::MonthlyByWeekdayOrdinal {
-                interval: 1, weekday: WeekdayCode::Mon, ordinal: 1,
-            }.kind_str(),
+                interval: 1,
+                weekday: WeekdayCode::Mon,
+                ordinal: 1,
+            }
+            .kind_str(),
             "monthly_by_weekday",
         );
     }

@@ -11,10 +11,10 @@
 //! intentional — it matches the behavior operators would expect
 //! when rotating the master key.
 
-use base64::{Engine, engine::general_purpose::STANDARD as B64};
+use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use chacha20poly1305::{
+    aead::{rand_core::RngCore, Aead, KeyInit, OsRng},
     ChaCha20Poly1305, Key, Nonce,
-    aead::{Aead, KeyInit, OsRng, rand_core::RngCore},
 };
 use sha2::{Digest, Sha256};
 
@@ -69,9 +69,7 @@ impl SecretCrypto {
             .decode(encoded)
             .map_err(|e| AppError::Internal(format!("Base64 decode failed: {}", e)))?;
         if packed.len() <= NONCE_LEN {
-            return Err(AppError::Internal(
-                "Encrypted value too short".to_string(),
-            ));
+            return Err(AppError::Internal("Encrypted value too short".to_string()));
         }
         let (nonce_bytes, ciphertext) = packed.split_at(NONCE_LEN);
         let nonce = Nonce::from_slice(nonce_bytes);

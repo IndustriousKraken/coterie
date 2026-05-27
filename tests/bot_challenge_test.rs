@@ -6,15 +6,17 @@
 //! `FakeVerifier` from `test_utils`.
 
 use coterie::api::middleware::bot_challenge::{
-    BotChallengeVerifier, DisabledVerifier, VerifyError,
-    test_utils::FakeVerifier,
+    test_utils::FakeVerifier, BotChallengeVerifier, DisabledVerifier, VerifyError,
 };
 
 #[tokio::test]
 async fn disabled_verifier_passes_with_no_token() {
     let v = DisabledVerifier;
     let result = v.verify("public/signup", None, None).await;
-    assert!(result.is_ok(), "DisabledVerifier should accept missing tokens");
+    assert!(
+        result.is_ok(),
+        "DisabledVerifier should accept missing tokens"
+    );
 }
 
 #[tokio::test]
@@ -38,12 +40,20 @@ async fn fake_verifier_routes_through_decision_closure() {
         if t == "good-token" {
             Ok(())
         } else {
-            Err(VerifyError::Invalid { provider_codes: vec!["bad".into()] })
+            Err(VerifyError::Invalid {
+                provider_codes: vec!["bad".into()],
+            })
         }
     });
 
-    assert!(v.verify("public/signup", Some("good-token"), None).await.is_ok());
-    let err = v.verify("public/signup", Some("anything-else"), None).await.unwrap_err();
+    assert!(v
+        .verify("public/signup", Some("good-token"), None)
+        .await
+        .is_ok());
+    let err = v
+        .verify("public/signup", Some("anything-else"), None)
+        .await
+        .unwrap_err();
     assert!(matches!(err, VerifyError::Invalid { .. }));
     assert_eq!(v.call_count(), 2);
 }

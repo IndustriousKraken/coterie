@@ -88,7 +88,9 @@ const CSRF_EXEMPT_PATHS: &[(&str, &str)] = &[
 ];
 
 fn is_exempt(method: &Method, path: &str) -> bool {
-    CSRF_EXEMPT_PATHS.iter().any(|(m, p)| *m == method.as_str() && *p == path)
+    CSRF_EXEMPT_PATHS
+        .iter()
+        .any(|(m, p)| *m == method.as_str() && *p == path)
 }
 
 /// Top-level CSRF middleware.
@@ -195,7 +197,8 @@ async fn validate_form_body(
     struct CsrfField {
         csrf_token: String,
     }
-    let parsed: CsrfField = serde_urlencoded::from_bytes(&bytes).map_err(|_| AppError::Forbidden)?;
+    let parsed: CsrfField =
+        serde_urlencoded::from_bytes(&bytes).map_err(|_| AppError::Forbidden)?;
     let is_valid = state
         .service_context
         .csrf_service
@@ -236,13 +239,15 @@ async fn validate_multipart_body(
 
     // Bytes is reference-counted, so cloning to feed `multer` is cheap.
     let stream_bytes = bytes.clone();
-    let stream = futures_util::stream::once(async move {
-        Ok::<_, std::io::Error>(stream_bytes)
-    });
+    let stream = futures_util::stream::once(async move { Ok::<_, std::io::Error>(stream_bytes) });
     let mut multipart = multer::Multipart::new(stream, boundary);
 
     let mut token: Option<String> = None;
-    while let Some(field) = multipart.next_field().await.map_err(|_| AppError::Forbidden)? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| AppError::Forbidden)?
+    {
         if field.name() == Some("csrf_token") {
             token = Some(field.text().await.map_err(|_| AppError::Forbidden)?);
             break;

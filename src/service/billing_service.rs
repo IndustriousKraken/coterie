@@ -26,7 +26,6 @@ use crate::{
     service::{membership_type_service::MembershipTypeService, settings_service::SettingsService},
 };
 
-
 pub struct BillingService {
     pub auto_renew: auto_renew::AutoRenew,
     pub notifications: notifications::Notifications,
@@ -77,6 +76,10 @@ impl BillingService {
             integration_manager,
             db_pool,
         );
-        Self { auto_renew, notifications, expiration }
+        Self {
+            auto_renew,
+            notifications,
+            expiration,
+        }
     }
 }

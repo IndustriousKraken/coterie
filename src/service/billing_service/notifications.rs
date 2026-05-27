@@ -74,14 +74,23 @@ impl Notifications {
     /// (billing_mode='manual', clear sub_id) — this method is just
     /// notification.
     pub async fn notify_subscription_cancelled(&self, member_id: Uuid) -> Result<()> {
-        use crate::email::{self, templates::{SubscriptionCancelledHtml, SubscriptionCancelledText}};
+        use crate::email::{
+            self,
+            templates::{SubscriptionCancelledHtml, SubscriptionCancelledText},
+        };
 
-        let member = self.member_repo.find_by_id(member_id).await?
+        let member = self
+            .member_repo
+            .find_by_id(member_id)
+            .await?
             .ok_or_else(|| AppError::NotFound("Member not found".to_string()))?;
 
-        let org_name = self.settings_service
-            .get_value("org.name").await
-            .ok().filter(|s| !s.is_empty())
+        let org_name = self
+            .settings_service
+            .get_value("org.name")
+            .await
+            .ok()
+            .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "Coterie".to_string());
 
         let portal_url = format!(
@@ -89,7 +98,8 @@ impl Notifications {
             self.base_url.trim_end_matches('/'),
         );
 
-        let dues_until = member.dues_paid_until
+        let dues_until = member
+            .dues_paid_until
             .map(|d| d.format("%B %d, %Y").to_string())
             .unwrap_or_else(|| "(unknown)".to_string());
 
@@ -107,13 +117,12 @@ impl Notifications {
         };
         let subject = format!("Your {} auto-renewal has been turned off", org_name);
 
-        let message = email::message_from_templates(
-            member.email.clone(), subject, &html, &text,
-        )?;
+        let message = email::message_from_templates(member.email.clone(), subject, &html, &text)?;
         if let Err(e) = self.email_sender.send(&message).await {
             tracing::error!(
                 "Couldn't email subscription-cancelled notice to member {}: {}",
-                member_id, e,
+                member_id,
+                e,
             );
         }
 
@@ -149,20 +158,30 @@ impl Notifications {
         amount_display: Option<String>,
         is_final: bool,
     ) -> Result<()> {
-        use crate::email::{self, templates::{CardDeclinedHtml, CardDeclinedText}};
+        use crate::email::{
+            self,
+            templates::{CardDeclinedHtml, CardDeclinedText},
+        };
 
-        let member = self.member_repo.find_by_id(member_id).await?
+        let member = self
+            .member_repo
+            .find_by_id(member_id)
+            .await?
             .ok_or_else(|| AppError::NotFound("Member not found".to_string()))?;
 
-        let org_name = self.settings_service
-            .get_value("org.name").await
-            .ok().filter(|s| !s.is_empty())
+        let org_name = self
+            .settings_service
+            .get_value("org.name")
+            .await
+            .ok()
+            .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "Coterie".to_string());
 
         let base = self.base_url.trim_end_matches('/');
         let portal_url = format!("{}/portal/payments/methods", base);
 
-        let dues_until = member.dues_paid_until
+        let dues_until = member
+            .dues_paid_until
             .map(|d| d.format("%B %d, %Y").to_string())
             .unwrap_or_else(|| "(unknown)".to_string());
 
@@ -189,21 +208,23 @@ impl Notifications {
             format!("Card declined for {} membership", org_name)
         };
 
-        let message = email::message_from_templates(
-            member.email.clone(), subject, &html, &text,
-        )?;
+        let message = email::message_from_templates(member.email.clone(), subject, &html, &text)?;
 
         if let Err(e) = self.email_sender.send(&message).await {
             tracing::error!(
                 "Couldn't email card-declined notice to member {}: {}",
-                member_id, e,
+                member_id,
+                e,
             );
         }
 
         // AdminAlert: the body is plain-text since it's piped into
         // both Discord (markdown-ish) and email.
         let alert_subject = if is_final {
-            format!("Stripe subscription charge failed (final) — {}", member.full_name)
+            format!(
+                "Stripe subscription charge failed (final) — {}",
+                member.full_name
+            )
         } else {
             format!("Stripe subscription charge failed — {}", member.full_name)
         };
@@ -254,15 +275,19 @@ impl Notifications {
             email::templates::{ReminderHtml, ReminderText, RenewalNoticeHtml, RenewalNoticeText},
         };
 
-        let reminder_days = self.settings_service
+        let reminder_days = self
+            .settings_service
             .get_number("membership.reminder_days_before")
             .await
             .unwrap_or(7)
             .clamp(1, 90);
 
-        let org_name = self.settings_service
-            .get_value("org.name").await
-            .ok().filter(|s| !s.is_empty())
+        let org_name = self
+            .settings_service
+            .get_value("org.name")
+            .await
+            .ok()
+            .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "Coterie".to_string());
 
         let base = self.base_url.trim_end_matches('/');
@@ -272,9 +297,15 @@ impl Notifications {
         // Candidate members: Active, dues in the window, not yet reminded.
         // We fetch billing_mode and membership_type_id here so we can
         // branch in code rather than doing N+1 joins.
-        let rows: Vec<(String, String, String, chrono::NaiveDateTime, String, Option<String>)> =
-            sqlx::query_as(
-                r#"
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            chrono::NaiveDateTime,
+            String,
+            Option<String>,
+        )> = sqlx::query_as(
+            r#"
                 SELECT id, email, full_name, dues_paid_until, billing_mode, membership_type_id
                 FROM members
                 WHERE status = 'Active'
@@ -283,12 +314,12 @@ impl Notifications {
                   AND dues_paid_until > CURRENT_TIMESTAMP
                   AND date(dues_paid_until) <= date(CURRENT_TIMESTAMP, '+' || ? || ' days')
                   AND dues_reminder_sent_at IS NULL
-                "#
-            )
-            .bind(reminder_days)
-            .fetch_all(&self.db_pool)
-            .await
-            .map_err(|e| AppError::Internal(format!("DB error in reminder query: {}", e)))?;
+                "#,
+        )
+        .bind(reminder_days)
+        .fetch_all(&self.db_pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("DB error in reminder query: {}", e)))?;
 
         let total = rows.len();
         let mut sent = 0u32;
@@ -304,11 +335,12 @@ impl Notifications {
                 }
             };
             let due = chrono::DateTime::<Utc>::from_naive_utc_and_offset(due_naive, Utc);
-            let billing_mode = BillingMode::from_str(&billing_mode_str)
-                .unwrap_or(BillingMode::Manual);
+            let billing_mode =
+                BillingMode::from_str(&billing_mode_str).unwrap_or(BillingMode::Manual);
 
             // Default card — presence and future validity drive the branch.
-            let default_card = self.saved_card_repo
+            let default_card = self
+                .saved_card_repo
                 .find_default_for_member(member_id)
                 .await
                 .ok()
@@ -326,8 +358,12 @@ impl Notifications {
             // Defaults to Yearly if the lookup fails — conservative:
             // we'd rather send a renewal notice than skip silently.
             let billing_period = match mt_id_opt.as_ref().and_then(|s| Uuid::parse_str(s).ok()) {
-                Some(mt_id) => self.membership_type_service.get(mt_id).await
-                    .ok().flatten()
+                Some(mt_id) => self
+                    .membership_type_service
+                    .get(mt_id)
+                    .await
+                    .ok()
+                    .flatten()
                     .and_then(|mt| mt.billing_period_enum())
                     .unwrap_or(BillingPeriod::Yearly),
                 None => BillingPeriod::Yearly,
@@ -351,7 +387,8 @@ impl Notifications {
             }
 
             // Case 2: auto-renew + card will be valid + short period → skip.
-            if is_auto_renew && card_good_at_charge
+            if is_auto_renew
+                && card_good_at_charge
                 && matches!(billing_period, BillingPeriod::Monthly)
             {
                 skipped += 1;
@@ -359,7 +396,8 @@ impl Notifications {
             }
 
             // Case 3: auto-renew + card valid + long period → renewal notice.
-            if is_auto_renew && card_good_at_charge
+            if is_auto_renew
+                && card_good_at_charge
                 && matches!(billing_period, BillingPeriod::Yearly)
             {
                 // Amount display for the renewal notice.
@@ -371,26 +409,34 @@ impl Notifications {
                     None => "(your membership fee)".to_string(),
                 };
                 // We verified the card is Some in the "card_good_at_charge" branch.
-                let card_display = default_card.as_ref()
+                let card_display = default_card
+                    .as_ref()
                     .map(|c| c.display_name())
                     .unwrap_or_else(|| "your card on file".to_string());
 
                 let html = RenewalNoticeHtml {
-                    full_name: &full_name, org_name: &org_name,
-                    due_date: &due_formatted, days_remaining,
-                    amount: &amount, card_display: &card_display,
+                    full_name: &full_name,
+                    org_name: &org_name,
+                    due_date: &due_formatted,
+                    days_remaining,
+                    amount: &amount,
+                    card_display: &card_display,
                     portal_url: &portal_url,
                 };
                 let text = RenewalNoticeText {
-                    full_name: &full_name, org_name: &org_name,
-                    due_date: &due_formatted, days_remaining,
-                    amount: &amount, card_display: &card_display,
+                    full_name: &full_name,
+                    org_name: &org_name,
+                    due_date: &due_formatted,
+                    days_remaining,
+                    amount: &amount,
+                    card_display: &card_display,
                     portal_url: &portal_url,
                 };
                 let subject = format!("Your {} membership will renew {}", org_name, due_formatted);
-                if self.try_send_and_mark(
-                    &id_str, &email_addr, &subject, &html, &text,
-                ).await {
+                if self
+                    .try_send_and_mark(&id_str, &email_addr, &subject, &html, &text)
+                    .await
+                {
                     sent += 1;
                 }
                 continue;
@@ -401,19 +447,26 @@ impl Notifications {
             let card_invalid = is_auto_renew && !card_good_at_charge;
 
             let html = ReminderHtml {
-                full_name: &full_name, org_name: &org_name,
-                due_date: &due_formatted, days_remaining,
-                pay_url: &pay_url, card_invalid,
+                full_name: &full_name,
+                org_name: &org_name,
+                due_date: &due_formatted,
+                days_remaining,
+                pay_url: &pay_url,
+                card_invalid,
             };
             let text = ReminderText {
-                full_name: &full_name, org_name: &org_name,
-                due_date: &due_formatted, days_remaining,
-                pay_url: &pay_url, card_invalid,
+                full_name: &full_name,
+                org_name: &org_name,
+                due_date: &due_formatted,
+                days_remaining,
+                pay_url: &pay_url,
+                card_invalid,
             };
             let subject = format!("Your {} dues are due soon", org_name);
-            if self.try_send_and_mark(
-                &id_str, &email_addr, &subject, &html, &text,
-            ).await {
+            if self
+                .try_send_and_mark(&id_str, &email_addr, &subject, &html, &text)
+                .await
+            {
                 sent += 1;
             }
         }
@@ -465,7 +518,8 @@ impl Notifications {
                         tracing::error!(
                             "Sent reminder to {} but failed to mark reminder_sent_at — \
                              next cycle may re-send: {}",
-                            email_addr, e
+                            email_addr,
+                            e
                         );
                     }
                 }
@@ -493,18 +547,25 @@ impl Notifications {
     /// — operators clear `reminder_sent_at` manually to retry. See
     /// `event-reminders` spec D3 for the trade-off rationale.
     pub async fn send_event_reminders(&self) -> Result<u32> {
-        use crate::email::{self, templates::{EventReminderHtml, EventReminderText}};
+        use crate::email::{
+            self,
+            templates::{EventReminderHtml, EventReminderText},
+        };
 
-        let lead_hours = self.settings_service
+        let lead_hours = self
+            .settings_service
             .get_number("events.reminder_lead_hours")
             .await
             .ok()
             .filter(|n| *n > 0)
             .unwrap_or(24);
 
-        let org_name = self.settings_service
-            .get_value("org.name").await
-            .ok().filter(|s| !s.is_empty())
+        let org_name = self
+            .settings_service
+            .get_value("org.name")
+            .await
+            .ok()
+            .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "Coterie".to_string());
 
         let now = Utc::now();
@@ -517,14 +578,18 @@ impl Notifications {
         let base = self.base_url.trim_end_matches('/');
 
         for row in candidates {
-            let claimed = match self.event_repo
-                .mark_reminder_sent(row.event_id, row.member_id).await
+            let claimed = match self
+                .event_repo
+                .mark_reminder_sent(row.event_id, row.member_id)
+                .await
             {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::error!(
                         "Event reminder claim failed for event {} member {}: {}",
-                        row.event_id, row.member_id, e
+                        row.event_id,
+                        row.member_id,
+                        e
                     );
                     continue;
                 }
@@ -557,13 +622,18 @@ impl Notifications {
             let subject = format!("Reminder: {} is coming up", row.event_title);
 
             let message = match email::message_from_templates(
-                row.member_email.clone(), subject, &html, &text,
+                row.member_email.clone(),
+                subject,
+                &html,
+                &text,
             ) {
                 Ok(m) => m,
                 Err(e) => {
                     tracing::error!(
                         "Event reminder render failed for event {} member {}: {}",
-                        row.event_id, row.member_id, e
+                        row.event_id,
+                        row.member_id,
+                        e
                     );
                     continue;
                 }
@@ -575,7 +645,10 @@ impl Notifications {
                     tracing::warn!(
                         "Event reminder send failed for {} (event {} member {}): {} \
                          — row stays stamped per claim-then-send policy",
-                        row.member_email, row.event_id, row.member_id, e,
+                        row.member_email,
+                        row.event_id,
+                        row.member_id,
+                        e,
                     );
                 }
             }
@@ -584,7 +657,9 @@ impl Notifications {
         if total > 0 {
             tracing::info!(
                 "Event reminders: {} sent out of {} candidates (lead window: {} hours)",
-                sent, total, lead_hours,
+                sent,
+                total,
+                lead_hours,
             );
         }
         Ok(sent)

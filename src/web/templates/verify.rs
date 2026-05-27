@@ -37,34 +37,49 @@ pub async fn verify_handler(
     Query(query): Query<VerifyQuery>,
 ) -> Response {
     let (success, message) = match auth::email_tokens::consume_verification_token(
-        &db_pool, &query.token,
-    ).await {
+        &db_pool,
+        &query.token,
+    )
+    .await
+    {
         Ok(Some(consumed)) => {
             // Mark the member as verified. Any other outstanding
             // verification tokens for this member become moot (the DB
             // state already reflects "verified"), but invalidate them
             // as well for cleanliness.
-            if let Err(e) = member_repo
-                .mark_email_verified(consumed.member_id).await
-            {
+            if let Err(e) = member_repo.mark_email_verified(consumed.member_id).await {
                 tracing::error!("Failed to mark email verified: {}", e);
-                (false, "We couldn't finish verifying your email. Please try again or contact support.".to_string())
+                (
+                    false,
+                    "We couldn't finish verifying your email. Please try again or contact support."
+                        .to_string(),
+                )
             } else {
                 if let Err(e) = auth::email_tokens::invalidate_verification_tokens_for_member(
-                    &db_pool, consumed.member_id,
-                ).await {
+                    &db_pool,
+                    consumed.member_id,
+                )
+                .await
+                {
                     tracing::warn!(
                         "Verified email for member {} but couldn't invalidate other tokens: {}",
-                        consumed.member_id, e
+                        consumed.member_id,
+                        e
                     );
                 }
                 (true, "Your email has been verified. An administrator will review your account shortly.".to_string())
             }
         }
-        Ok(None) => (false, "This verification link is invalid or has expired.".to_string()),
+        Ok(None) => (
+            false,
+            "This verification link is invalid or has expired.".to_string(),
+        ),
         Err(e) => {
             tracing::error!("Verification token lookup failed: {}", e);
-            (false, "Something went wrong. Please try again later.".to_string())
+            (
+                false,
+                "Something went wrong. Please try again later.".to_string(),
+            )
         }
     };
 
@@ -72,5 +87,6 @@ pub async fn verify_handler(
         base: BaseContext::for_anon(),
         success,
         message,
-    }).into_response()
+    })
+    .into_response()
 }

@@ -99,18 +99,26 @@ async fn authenticate(
             return Err(RejectReason::AdminTotpMissing);
         }
     }
-    Ok(Authenticated { member, session_id: session.id })
+    Ok(Authenticated {
+        member,
+        session_id: session.id,
+    })
 }
 
 fn redirect_to_login(original_uri: &Uri) -> Response {
-    let path = original_uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/portal/dashboard");
+    let path = original_uri
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/portal/dashboard");
     Redirect::to(&format!("/login?redirect={}", urlencoding::encode(path))).into_response()
 }
 
 fn render_reject(reason: RejectReason, behavior: RejectBehavior, original_uri: &Uri) -> Response {
     match behavior {
         RejectBehavior::Json401 => match reason {
-            RejectReason::StatusBlocked(MemberStatus::Pending) => AppError::Forbidden.into_response(),
+            RejectReason::StatusBlocked(MemberStatus::Pending) => {
+                AppError::Forbidden.into_response()
+            }
             _ => AppError::Unauthorized.into_response(),
         },
         RejectBehavior::RedirectToLogin => redirect_to_login(original_uri),
@@ -143,8 +151,12 @@ async fn gate(
     let original_uri = request.uri().clone();
     match authenticate(state, jar, policy).await {
         Ok(auth) => {
-            request.extensions_mut().insert(CurrentUser { member: auth.member });
-            request.extensions_mut().insert(SessionInfo { session_id: auth.session_id });
+            request.extensions_mut().insert(CurrentUser {
+                member: auth.member,
+            });
+            request.extensions_mut().insert(SessionInfo {
+                session_id: auth.session_id,
+            });
             next.run(request).await
         }
         Err(reason) => render_reject(reason, policy.on_reject, &original_uri),
@@ -164,7 +176,11 @@ const POLICY_REQUIRE_AUTH_REDIRECT: AccessPolicy = AccessPolicy {
     on_reject: RejectBehavior::RedirectToRestoreOrLogin,
 };
 const POLICY_REQUIRE_RESTORABLE: AccessPolicy = AccessPolicy {
-    allowed_statuses: &[MemberStatus::Active, MemberStatus::Honorary, MemberStatus::Expired],
+    allowed_statuses: &[
+        MemberStatus::Active,
+        MemberStatus::Honorary,
+        MemberStatus::Expired,
+    ],
     require_admin: false,
     enforce_admin_totp: false,
     on_reject: RejectBehavior::RedirectToLogin,
@@ -196,8 +212,12 @@ pub async fn require_auth(
 ) -> Result<Response, AppError> {
     match authenticate(&state, &jar, &POLICY_REQUIRE_AUTH).await {
         Ok(auth) => {
-            request.extensions_mut().insert(CurrentUser { member: auth.member });
-            request.extensions_mut().insert(SessionInfo { session_id: auth.session_id });
+            request.extensions_mut().insert(CurrentUser {
+                member: auth.member,
+            });
+            request.extensions_mut().insert(SessionInfo {
+                session_id: auth.session_id,
+            });
             Ok(next.run(request).await)
         }
         Err(RejectReason::StatusBlocked(MemberStatus::Pending)) => Err(AppError::Forbidden),
@@ -271,7 +291,9 @@ pub async fn optional_auth(
     next: Next,
 ) -> Response {
     if let Ok(auth) = authenticate(&state, &jar, &POLICY_OPTIONAL_AUTH).await {
-        request.extensions_mut().insert(CurrentUser { member: auth.member });
+        request.extensions_mut().insert(CurrentUser {
+            member: auth.member,
+        });
     }
     next.run(request).await
 }

@@ -59,7 +59,12 @@ impl PaymentService {
         donation_campaign_repo: Arc<dyn DonationCampaignRepository>,
         audit_service: Arc<AuditService>,
     ) -> Self {
-        Self { payment_repo, member_repo, donation_campaign_repo, audit_service }
+        Self {
+            payment_repo,
+            member_repo,
+            donation_campaign_repo,
+            audit_service,
+        }
     }
 
     /// Record a manual or waived payment, optionally extending dues.
@@ -93,7 +98,12 @@ impl PaymentService {
                 "Stripe payments are recorded via StripeClient, not record_manual".to_string(),
             ));
         }
-        if self.member_repo.find_by_id(input.member_id).await?.is_none() {
+        if self
+            .member_repo
+            .find_by_id(input.member_id)
+            .await?
+            .is_none()
+        {
             return Err(AppError::BadRequest(format!(
                 "member {} not found",
                 input.member_id,
@@ -102,7 +112,10 @@ impl PaymentService {
         // Campaign-existence check: the dropdown only offers valid
         // campaigns, but a stale form / forged JSON could otherwise
         // create an orphan donation row.
-        if let PaymentKind::Donation { campaign_id: Some(cid) } = input.kind {
+        if let PaymentKind::Donation {
+            campaign_id: Some(cid),
+        } = input.kind
+        {
             if self.donation_campaign_repo.find_by_id(cid).await?.is_none() {
                 return Err(AppError::BadRequest(
                     "donation_campaign_id doesn't match any campaign".to_string(),
@@ -138,7 +151,9 @@ impl PaymentService {
                 {
                     tracing::error!(
                         "Recorded {:?} payment for {} but dues extension failed: {}",
-                        input.payment_method, input.member_id, e,
+                        input.payment_method,
+                        input.member_id,
+                        e,
                     );
                 }
                 if let Err(e) = billing_service
@@ -148,7 +163,9 @@ impl PaymentService {
                 {
                     tracing::error!(
                         "Recorded {:?} payment for {} but reschedule failed: {}",
-                        input.payment_method, input.member_id, e,
+                        input.payment_method,
+                        input.member_id,
+                        e,
                     );
                 }
             }
@@ -156,19 +173,21 @@ impl PaymentService {
 
         // ---- Audit ----------------------------------------------------
         let action = audit_action(&input.payment_method, &input.kind);
-        self.audit_service.log(
-            Some(input.actor_id),
-            action,
-            "member",
-            &input.member_id.to_string(),
-            None,
-            Some(&format!(
-                "${:.2} — {}",
-                input.amount_cents as f64 / 100.0,
-                input.description,
-            )),
-            None,
-        ).await;
+        self.audit_service
+            .log(
+                Some(input.actor_id),
+                action,
+                "member",
+                &input.member_id.to_string(),
+                None,
+                Some(&format!(
+                    "${:.2} — {}",
+                    input.amount_cents as f64 / 100.0,
+                    input.description,
+                )),
+                None,
+            )
+            .await;
 
         Ok(payment)
     }

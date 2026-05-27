@@ -88,9 +88,9 @@ impl SavedCardRepository for SqliteSavedCardRepository {
         .await
         .map_err(AppError::Database)?;
 
-        self.find_by_id(card.id).await?.ok_or_else(|| {
-            AppError::Internal("Failed to retrieve created card".to_string())
-        })
+        self.find_by_id(card.id)
+            .await?
+            .ok_or_else(|| AppError::Internal("Failed to retrieve created card".to_string()))
     }
 
     async fn find_by_id(&self, id: Uuid) -> Result<Option<SavedCard>> {

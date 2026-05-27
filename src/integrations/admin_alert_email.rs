@@ -18,7 +18,11 @@ use async_trait::async_trait;
 use std::sync::Arc;
 
 use crate::{
-    email::{self, EmailSender, templates::{AdminAlertHtml, AdminAlertText}},
+    email::{
+        self,
+        templates::{AdminAlertHtml, AdminAlertText},
+        EmailSender,
+    },
     error::Result,
     integrations::{Integration, IntegrationEvent},
     service::settings_service::SettingsService,
@@ -58,19 +62,35 @@ impl Integration for AdminAlertEmailIntegration {
             return Ok(());
         };
 
-        let to = self.settings.get_value("org.contact_email").await
-            .ok().filter(|s| !s.is_empty());
+        let to = self
+            .settings
+            .get_value("org.contact_email")
+            .await
+            .ok()
+            .filter(|s| !s.is_empty());
         let Some(to) = to else {
             tracing::debug!("AdminAlertEmail skipped: org.contact_email not set");
             return Ok(());
         };
 
-        let org_name = self.settings.get_value("org.name").await
-            .ok().filter(|s| !s.is_empty())
+        let org_name = self
+            .settings
+            .get_value("org.name")
+            .await
+            .ok()
+            .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "Coterie".to_string());
 
-        let html = AdminAlertHtml { org_name: &org_name, subject, body };
-        let text = AdminAlertText { org_name: &org_name, subject, body };
+        let html = AdminAlertHtml {
+            org_name: &org_name,
+            subject,
+            body,
+        };
+        let text = AdminAlertText {
+            org_name: &org_name,
+            subject,
+            body,
+        };
         let message = match email::message_from_templates(
             to.clone(),
             format!("[{}] Admin alert: {}", org_name, subject),

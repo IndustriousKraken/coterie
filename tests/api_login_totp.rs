@@ -17,10 +17,7 @@ use axum::{
     http::{header, Request, StatusCode},
     Router,
 };
-use coterie::{
-    api::state::AppState,
-    auth::TotpService,
-};
+use coterie::{api::state::AppState, auth::TotpService};
 use serde_json::Value;
 use sqlx::SqlitePool;
 use totp_rs::{Algorithm, TOTP};
@@ -28,7 +25,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 mod common;
-use common::{build_app_state, fresh_pool};
+use common::{build_app_state, build_app_state_with_totp, failing_totp_service, fresh_pool};
 
 // ---------------------------------------------------------------------
 // Harness helpers
@@ -115,7 +112,8 @@ fn post_json(uri: &str, body: Value, cookies: &[String]) -> Request<Body> {
     if !cookies.is_empty() {
         b = b.header(header::COOKIE, cookies.join("; "));
     }
-    b.body(Body::from(serde_json::to_vec(&body).unwrap())).unwrap()
+    b.body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap()
 }
 
 async fn read_json(body: Body) -> Value {
@@ -138,7 +136,9 @@ fn collect_set_cookies(resp_headers: &axum::http::HeaderMap) -> Vec<String> {
 }
 
 fn has_cookie_named(set_cookies: &[String], name: &str) -> bool {
-    set_cookies.iter().any(|c| c.starts_with(&format!("{}=", name)))
+    set_cookies
+        .iter()
+        .any(|c| c.starts_with(&format!("{}=", name)))
 }
 
 /// Get the value of a `Set-Cookie` for `name`. Returns the bare token
@@ -168,13 +168,11 @@ async fn count_sessions(pool: &SqlitePool, member_id: Uuid) -> i64 {
 }
 
 async fn count_pending(pool: &SqlitePool, member_id: Uuid) -> i64 {
-    sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM pending_logins WHERE member_id = ?",
-    )
-    .bind(member_id.to_string())
-    .fetch_one(pool)
-    .await
-    .expect("count pending")
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pending_logins WHERE member_id = ?")
+        .bind(member_id.to_string())
+        .fetch_one(pool)
+        .await
+        .expect("count pending")
 }
 
 // ---------------------------------------------------------------------
@@ -207,7 +205,11 @@ async fn json_login_for_totp_enrolled_returns_202_no_session() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::ACCEPTED, "TOTP-enrolled login must yield 202");
+    assert_eq!(
+        resp.status(),
+        StatusCode::ACCEPTED,
+        "TOTP-enrolled login must yield 202"
+    );
 
     let cookies = collect_set_cookies(resp.headers());
     assert!(
@@ -224,7 +226,10 @@ async fn json_login_for_totp_enrolled_returns_202_no_session() {
     let body = read_json(resp.into_body()).await;
     assert_eq!(body["message"], "2fa_required");
     assert!(
-        body["pending_token"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
+        body["pending_token"]
+            .as_str()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false),
         "pending_token must be present and non-empty: {:?}",
         body
     );
@@ -265,8 +270,8 @@ async fn json_login_totp_with_valid_code_creates_session() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let cookies = collect_set_cookies(resp.headers());
-    let pending = cookie_value(&cookies, "pending_login")
-        .expect("pending_login cookie should be set");
+    let pending =
+        cookie_value(&cookies, "pending_login").expect("pending_login cookie should be set");
     assert_eq!(
         count_pending(&pool, member_id).await,
         1,
@@ -283,7 +288,11 @@ async fn json_login_totp_with_valid_code_creates_session() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "valid TOTP code should issue a session");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "valid TOTP code should issue a session"
+    );
 
     let cookies = collect_set_cookies(resp.headers());
     assert!(
@@ -293,7 +302,9 @@ async fn json_login_totp_with_valid_code_creates_session() {
     );
     // The handler also clears the pending cookie (empty value, Max-Age=0).
     assert!(
-        cookies.iter().any(|c| c.starts_with("pending_login=") && c.contains("Max-Age=0")),
+        cookies
+            .iter()
+            .any(|c| c.starts_with("pending_login=") && c.contains("Max-Age=0")),
         "pending_login cookie should be cleared; got {:?}",
         cookies
     );
@@ -335,13 +346,17 @@ async fn json_login_totp_with_wrong_code_returns_unauthorized() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let cookies = collect_set_cookies(resp.headers());
-    let pending = cookie_value(&cookies, "pending_login")
-        .expect("pending_login cookie should be set");
+    let pending =
+        cookie_value(&cookies, "pending_login").expect("pending_login cookie should be set");
 
     // Wrong 6-digit code (TOTP code is generated from `totp`; we
     // pick something that's almost certainly not the current window).
     let real_code = totp.generate_current().expect("current code");
-    let wrong_code = if real_code == "000000" { "111111" } else { "000000" };
+    let wrong_code = if real_code == "000000" {
+        "111111"
+    } else {
+        "000000"
+    };
 
     let resp = app
         .clone()
@@ -352,7 +367,11 @@ async fn json_login_totp_with_wrong_code_returns_unauthorized() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "wrong code must yield 401");
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "wrong code must yield 401"
+    );
     assert_eq!(
         count_sessions(&pool, member_id).await,
         0,
@@ -375,7 +394,11 @@ async fn json_login_totp_with_wrong_code_returns_unauthorized() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "retry with valid code should succeed");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "retry with valid code should succeed"
+    );
     assert_eq!(count_sessions(&pool, member_id).await, 1);
     assert_eq!(count_pending(&pool, member_id).await, 0);
 }
@@ -397,7 +420,11 @@ async fn json_login_no_totp_still_returns_200() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::OK, "non-TOTP login must remain 200");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "non-TOTP login must remain 200"
+    );
     let cookies = collect_set_cookies(resp.headers());
     assert!(
         has_cookie_named(&cookies, "session"),
@@ -413,4 +440,121 @@ async fn json_login_no_totp_still_returns_200() {
     let body = read_json(resp.into_body()).await;
     assert_eq!(body["message"], "Login successful");
     assert_eq!(count_sessions(&pool, member_id).await, 1);
+}
+
+/// A failure of `TotpService::is_enabled` during the password-only step
+/// MUST NOT silently slip the request through as not-enrolled — that
+/// would race a DB blip into a 2FA bypass. The handler must surface a
+/// 500, set no `session` cookie, and not mint a `pending_login` row.
+#[tokio::test]
+async fn json_login_returns_500_if_totp_enrollment_check_errors() {
+    let pool = fresh_pool().await;
+    let failing_totp = failing_totp_service().await;
+    let state = build_app_state_with_totp(pool.clone(), failing_totp).await;
+    let (member_id, email) = make_member(&state).await;
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(post_json(
+            "/auth/login",
+            serde_json::json!({ "email": email, "password": PASSWORD }),
+            &[],
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "TOTP enrollment-check failure must fail closed as 500"
+    );
+
+    let cookies = collect_set_cookies(resp.headers());
+    assert!(
+        !has_cookie_named(&cookies, "session"),
+        "no `session` cookie may be set when the enrollment check errors; got {:?}",
+        cookies,
+    );
+    assert!(
+        !has_cookie_named(&cookies, "pending_login"),
+        "no `pending_login` cookie may be set when the enrollment check errors; got {:?}",
+        cookies,
+    );
+    assert_eq!(
+        count_sessions(&pool, member_id).await,
+        0,
+        "no session row may be created when the enrollment check errors"
+    );
+}
+
+/// `/auth/login/totp` SHALL share the per-IP login budget with
+/// `/auth/login`. After the budget is exhausted by repeated wrong-code
+/// attempts, the next submission MUST return 429 — preventing a
+/// stolen-password attacker from brute-forcing the 6-digit TOTP space.
+#[tokio::test]
+async fn json_login_totp_returns_429_after_budget_exhausted() {
+    let pool = fresh_pool().await;
+    let state = build_app_state(pool.clone()).await;
+    let (member_id, email) = make_member(&state).await;
+    let _totp = enroll_totp(
+        state.service_context.totp_service.as_ref(),
+        member_id,
+        &email,
+    )
+    .await;
+
+    // Mint the pending row directly via the service so the test starts
+    // with a fresh per-IP budget on /auth/login/totp specifically.
+    let pending = state
+        .service_context
+        .pending_login_service
+        .create(member_id, false)
+        .await
+        .expect("create pending");
+
+    let app = build_app(state.clone());
+    let wrong = "000000";
+    let cookies = [format!("pending_login={}", pending)];
+
+    // Budget is 5/15min per IP. 5 wrong-code attempts consume the
+    // budget while returning 401 on auth failure. The 6th attempt is
+    // gated at the limiter and returns 429 without ever reaching the
+    // TOTP verify path.
+    for i in 1..=5 {
+        let resp = app
+            .clone()
+            .oneshot(post_json(
+                "/auth/login/totp",
+                serde_json::json!({ "code": wrong }),
+                &cookies,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "attempt {} should be 401",
+            i
+        );
+    }
+
+    let resp = app
+        .oneshot(post_json(
+            "/auth/login/totp",
+            serde_json::json!({ "code": wrong }),
+            &cookies,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "6th attempt must be 429"
+    );
+
+    assert_eq!(
+        count_sessions(&pool, member_id).await,
+        0,
+        "no session may be created across the budget-exhausted run"
+    );
 }

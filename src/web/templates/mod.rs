@@ -6,8 +6,8 @@ pub mod verify;
 
 use askama::Template;
 use axum::{
-    response::{Html, IntoResponse, Response},
     http::StatusCode,
+    response::{Html, IntoResponse, Response},
 };
 
 use crate::api::middleware::auth::{CurrentUser, SessionInfo};
@@ -88,7 +88,8 @@ where
             Err(err) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to render template: {}", err),
-            ).into_response(),
+            )
+                .into_response(),
         }
     }
 }

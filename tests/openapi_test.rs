@@ -16,7 +16,10 @@ use utoipa::OpenApi;
 fn openapi_spec_compiles_and_serializes() {
     let doc = ApiDoc::openapi();
     let json = serde_json::to_value(&doc).expect("openapi spec serializes");
-    assert!(json.get("openapi").is_some(), "spec has openapi version field");
+    assert!(
+        json.get("openapi").is_some(),
+        "spec has openapi version field"
+    );
     assert!(json.get("info").is_some(), "spec has info block");
     assert!(json.get("paths").is_some(), "spec has paths block");
 }
@@ -25,7 +28,10 @@ fn openapi_spec_compiles_and_serializes() {
 fn openapi_spec_documents_all_public_endpoints() {
     let doc = ApiDoc::openapi();
     let json = serde_json::to_value(&doc).unwrap();
-    let paths = json.get("paths").and_then(|p| p.as_object()).expect("paths object");
+    let paths = json
+        .get("paths")
+        .and_then(|p| p.as_object())
+        .expect("paths object");
 
     // (path, method) pairs we intentionally document.
     let expected: &[(&str, &str)] = &[

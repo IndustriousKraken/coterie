@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use chrono::{DateTime, Utc, NaiveDateTime};
-use sqlx::{SqlitePool, FromRow};
+use chrono::{DateTime, NaiveDateTime, Utc};
+use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
 
 use crate::{
@@ -54,7 +54,8 @@ impl SqliteAnnouncementRepository {
     }
 
     fn row_to_announcement(row: AnnouncementRow) -> Result<Announcement> {
-        let announcement_type_id = row.announcement_type_id
+        let announcement_type_id = row
+            .announcement_type_id
             .as_ref()
             .map(|id| Uuid::parse_str(id))
             .transpose()
@@ -69,9 +70,14 @@ impl SqliteAnnouncementRepository {
             is_public: row.is_public != 0,
             featured: row.featured != 0,
             image_url: row.image_url,
-            published_at: row.published_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
-            scheduled_publish_at: row.scheduled_publish_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
-            created_by: Uuid::parse_str(&row.created_by).map_err(|e| AppError::Internal(e.to_string()))?,
+            published_at: row
+                .published_at
+                .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
+            scheduled_publish_at: row
+                .scheduled_publish_at
+                .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
+            created_by: Uuid::parse_str(&row.created_by)
+                .map_err(|e| AppError::Internal(e.to_string()))?,
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
             updated_at: DateTime::from_naive_utc_and_offset(row.updated_at, Utc),
         })
@@ -84,7 +90,10 @@ impl SqliteAnnouncementRepository {
             "Meeting" => Ok(AnnouncementType::Meeting),
             "CTFResult" => Ok(AnnouncementType::CTFResult),
             "General" => Ok(AnnouncementType::General),
-            _ => Err(AppError::Internal(format!("Invalid announcement type: {}", s))),
+            _ => Err(AppError::Internal(format!(
+                "Invalid announcement type: {}",
+                s
+            ))),
         }
     }
 
@@ -118,7 +127,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
                 id, title, content, announcement_type, announcement_type_id, is_public, featured,
                 image_url, published_at, scheduled_publish_at, created_by, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#
+            "#,
         )
         .bind(&id_str)
         .bind(&announcement.title)
@@ -150,7 +159,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
                    image_url, published_at, scheduled_publish_at, created_by, created_at, updated_at
             FROM announcements
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(id_str)
         .fetch_optional(&self.pool)
@@ -159,7 +168,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
 
         match row {
             Some(r) => Ok(Some(Self::row_to_announcement(r)?)),
-            None => Ok(None)
+            None => Ok(None),
         }
     }
 
@@ -171,7 +180,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
             FROM announcements
             ORDER BY created_at DESC
             LIMIT ? OFFSET ?
-            "#
+            "#,
         )
         .bind(limit)
         .bind(offset)
@@ -179,9 +188,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         .await
         .map_err(AppError::Database)?;
 
-        rows.into_iter()
-            .map(Self::row_to_announcement)
-            .collect()
+        rows.into_iter().map(Self::row_to_announcement).collect()
     }
 
     async fn list_recent(&self, limit: i64) -> Result<Vec<Announcement>> {
@@ -193,16 +200,14 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
             WHERE published_at IS NOT NULL
             ORDER BY published_at DESC
             LIMIT ?
-            "#
+            "#,
         )
         .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(AppError::Database)?;
 
-        rows.into_iter()
-            .map(Self::row_to_announcement)
-            .collect()
+        rows.into_iter().map(Self::row_to_announcement).collect()
     }
 
     async fn list_public(&self) -> Result<Vec<Announcement>> {
@@ -213,15 +218,13 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
             FROM announcements
             WHERE is_public = 1 AND published_at IS NOT NULL
             ORDER BY published_at DESC
-            "#
+            "#,
         )
         .fetch_all(&self.pool)
         .await
         .map_err(AppError::Database)?;
 
-        rows.into_iter()
-            .map(Self::row_to_announcement)
-            .collect()
+        rows.into_iter().map(Self::row_to_announcement).collect()
     }
 
     async fn count_private_published(&self) -> Result<i64> {
@@ -230,7 +233,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
             SELECT COUNT(*) as count
             FROM announcements
             WHERE is_public = 0 AND published_at IS NOT NULL
-            "#
+            "#,
         )
         .fetch_one(&self.pool)
         .await
@@ -256,7 +259,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
                 is_public = ?, featured = ?, image_url = ?, published_at = ?,
                 scheduled_publish_at = ?, updated_at = ?
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(&announcement.title)
         .bind(&announcement.content)
@@ -300,16 +303,14 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
               AND scheduled_publish_at IS NOT NULL
               AND scheduled_publish_at <= ?
             ORDER BY scheduled_publish_at ASC
-            "#
+            "#,
         )
         .bind(now_naive)
         .fetch_all(&self.pool)
         .await
         .map_err(AppError::Database)?;
 
-        rows.into_iter()
-            .map(Self::row_to_announcement)
-            .collect()
+        rows.into_iter().map(Self::row_to_announcement).collect()
     }
 
     async fn mark_published_now(&self, id: Uuid) -> Result<bool> {
@@ -324,7 +325,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
             UPDATE announcements
             SET published_at = ?, scheduled_publish_at = NULL, updated_at = ?
             WHERE id = ? AND published_at IS NULL
-            "#
+            "#,
         )
         .bind(now)
         .bind(now)

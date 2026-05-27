@@ -4,13 +4,13 @@ pub mod middleware;
 pub mod state;
 
 use axum::{
-    Router,
     http::{header, Method},
     routing::{get, post},
+    Router,
 };
 use tower_http::{
     compression::CompressionLayer,
-    cors::{CorsLayer, AllowOrigin},
+    cors::{AllowOrigin, CorsLayer},
     trace::TraceLayer,
 };
 use utoipa::OpenApi;
@@ -37,18 +37,14 @@ pub fn create_app(app_state: AppState) -> Router {
         .route("/", get(handlers::root::root))
         .route("/health", get(handlers::root::health_check))
         .route("/api", get(handlers::root::api_info))
-
         // OpenAPI / Swagger UI for the public API. The UI is served at
         // /api/docs and the raw spec at /api/docs/openapi.json so frontend
         // developers can either browse interactively or codegen a client.
-        .merge(SwaggerUi::new("/api/docs")
-            .url("/api/docs/openapi.json", docs::ApiDoc::openapi()))
-
+        .merge(SwaggerUi::new("/api/docs").url("/api/docs/openapi.json", docs::ApiDoc::openapi()))
         // Auth routes
         .route("/auth/login", post(handlers::auth::login))
         .route("/auth/login/totp", post(handlers::auth::login_totp))
         .route("/auth/logout", post(handlers::auth::logout))
-
         // API routes — narrowly scoped to:
         //   1. The Stripe webhook (Stripe POSTs here).
         //   2. The saved-card endpoints the portal frontend calls
@@ -60,13 +56,10 @@ pub fn create_app(app_state: AppState) -> Router {
         // actions and carry the audit-log + integration-event
         // side-effects the JSON wrappers were missing.
         .nest("/api", api_routes(app_state.clone()))
-
         // Public routes (for website integration)
         .nest("/public", public_routes(app_state.clone()))
-
         // Add state to the router
         .with_state(app_state.clone())
-
         // Middleware. Order matters: `.layer()` calls wrap from the
         // inside out, so the LAST `.layer(...)` is OUTERMOST and runs
         // FIRST on incoming requests.
@@ -90,7 +83,9 @@ pub fn create_app(app_state: AppState) -> Router {
 /// Build CORS layer from configuration. If `cors_origins` is set, only those
 /// origins are allowed. Otherwise the layer is restrictive (same-origin only).
 fn build_cors_layer(settings: &Settings) -> CorsLayer {
-    let origins: Vec<_> = settings.server.cors_origins
+    let origins: Vec<_> = settings
+        .server
+        .cors_origins
         .as_deref()
         .unwrap_or("")
         .split(',')
@@ -107,8 +102,18 @@ fn build_cors_layer(settings: &Settings) -> CorsLayer {
     };
 
     layer
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
-        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION, "X-CSRF-Token".parse().unwrap()])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            "X-CSRF-Token".parse().unwrap(),
+        ])
         .allow_credentials(true)
 }
 
@@ -131,13 +136,18 @@ fn payment_routes(state: AppState) -> Router<AppState> {
         // `csrf_protect_unless_exempt`; only the auth gate is layered
         // here. The portal's fetch() calls stamp the X-CSRF-Token
         // header from `<meta name="csrf-token">`.
-        .nest("/", Router::new()
-            .route("/cards", post(handlers::payments::save_card))
-            .route("/cards/setup-intent", post(handlers::payments::create_setup_intent))
-            .route_layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                middleware::auth::require_auth,
-            ))
+        .nest(
+            "/",
+            Router::new()
+                .route("/cards", post(handlers::payments::save_card))
+                .route(
+                    "/cards/setup-intent",
+                    post(handlers::payments::create_setup_intent),
+                )
+                .route_layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    middleware::auth::require_auth,
+                )),
         )
 }
 
@@ -146,10 +156,15 @@ fn public_routes(_state: AppState) -> Router<AppState> {
         .route("/signup", post(handlers::public::signup))
         .route("/donate", post(handlers::public::donate))
         .route("/events", get(handlers::public::list_events))
-        .route("/events/private-count", get(handlers::public::private_event_count))
+        .route(
+            "/events/private-count",
+            get(handlers::public::private_event_count),
+        )
         .route("/announcements", get(handlers::public::list_announcements))
-        .route("/announcements/private-count", get(handlers::announcements::private_count))
+        .route(
+            "/announcements/private-count",
+            get(handlers::announcements::private_count),
+        )
         .route("/feed/rss", get(handlers::public::rss_feed))
         .route("/feed/calendar", get(handlers::public::calendar_feed))
 }
-

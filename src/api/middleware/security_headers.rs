@@ -57,10 +57,7 @@ pub async fn security_headers(
     let mut response = rewrite_html_nonce(response, &nonce).await;
     let headers = response.headers_mut();
 
-    headers.insert(
-        header::X_FRAME_OPTIONS,
-        HeaderValue::from_static("DENY"),
-    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),

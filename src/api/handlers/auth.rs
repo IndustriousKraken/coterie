@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anyhow::Context;
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -62,8 +63,7 @@ pub async fn login(
     }
 
     // Get password hash from database
-    let password_hash = auth::get_password_hash(&db_pool, &req.email)
-        .await?;
+    let password_hash = auth::get_password_hash(&db_pool, &req.email).await?;
 
     let password_hash = match password_hash {
         Some(h) => h,
@@ -99,14 +99,16 @@ pub async fn login(
     // session-invalidation sweep and defer it to /auth/login/totp — doing
     // it here would let an attacker who guessed the password log the
     // victim out at will, a DoS vector that 2FA otherwise prevents.
+    // Fail closed: a transient failure of the enrollment query must NOT
+    // skip the 2FA branch. Surface as 500 instead so an attacker can't
+    // race a DB blip into a password-only session.
     let totp_enabled = totp_service
         .is_enabled(member.id)
         .await
-        .unwrap_or(false);
+        .context("failed to query TOTP enrollment status")
+        .map_err(|e| AppError::Internal(format!("{e:#}")))?;
     if totp_enabled {
-        let pending_token = pending_login_service
-            .create(member.id, false)
-            .await?;
+        let pending_token = pending_login_service.create(member.id, false).await?;
         let pending_cookie = crate::auth::pending_login::create_cookie(
             &pending_token,
             settings.server.cookies_are_secure(),
@@ -119,30 +121,27 @@ pub async fn login(
                 message: "2fa_required".to_string(),
                 pending_token,
             }),
-        ).into_response());
+        )
+            .into_response());
     }
 
     // Invalidate pre-existing sessions to prevent session fixation.
-    let _ = auth_service
-        .invalidate_all_sessions(member.id)
-        .await;
+    let _ = auth_service.invalidate_all_sessions(member.id).await;
 
     // Create session (returns both session and token)
-    let (_session, token) = auth_service
-        .create_session(member.id, 24)
-        .await?;
+    let (_session, token) = auth_service.create_session(member.id, 24).await?;
 
     // Create cookie with the actual token. The Secure flag tracks whether
     // the deployment is TLS-terminated; see ServerConfig::cookies_are_secure.
-    let cookie = auth_service
-        .create_session_cookie(&token, settings.server.cookies_are_secure());
+    let cookie = auth_service.create_session_cookie(&token, settings.server.cookies_are_secure());
 
     Ok((
         jar.add(cookie),
         Json(LoginResponse {
             message: "Login successful".to_string(),
         }),
-    ).into_response())
+    )
+        .into_response())
 }
 
 /// Second-factor endpoint for the JSON login flow. The client must
@@ -152,16 +151,26 @@ pub async fn login(
 /// recovery code) the handler consumes the pending row, performs the
 /// session-fixation sweep deferred from `/auth/login`, and issues a
 /// fresh session cookie.
+#[allow(clippy::too_many_arguments)]
 pub async fn login_totp(
     State(auth_service): State<Arc<AuthService>>,
     State(settings): State<Arc<Settings>>,
+    State(login_limiter): State<LoginLimiter>,
     State(totp_service): State<Arc<TotpService>>,
     State(pending_login_service): State<Arc<PendingLoginService>>,
     State(db_pool): State<SqlitePool>,
-    _headers: HeaderMap, // not used today; retained per the spec for parity with the web handler and future rate-limit hooks
+    headers: HeaderMap,
     jar: CookieJar,
     Json(req): Json<LoginTotpRequest>,
 ) -> Result<Response> {
+    // Share the per-IP budget with /auth/login so an attacker holding a
+    // stolen password can't switch surfaces to get a fresh allowance
+    // when brute-forcing the 6-digit TOTP code.
+    let ip = state::client_ip(&headers, settings.server.trust_forwarded_for());
+    if !login_limiter.0.check_and_record(ip) {
+        return Err(AppError::TooManyRequests);
+    }
+
     let token = jar
         .get(crate::auth::pending_login::COOKIE_NAME)
         .map(|c| c.value().to_string())
@@ -171,9 +180,14 @@ pub async fn login_totp(
         Some(t) if !t.is_empty() => t,
         _ => {
             let jar = jar.add(crate::auth::pending_login::create_clear_cookie());
-            return Ok((StatusCode::UNAUTHORIZED, jar, Json(serde_json::json!({
-                "error": "Unauthorized",
-            }))).into_response());
+            return Ok((
+                StatusCode::UNAUTHORIZED,
+                jar,
+                Json(serde_json::json!({
+                    "error": "Unauthorized",
+                })),
+            )
+                .into_response());
         }
     };
 
@@ -181,9 +195,14 @@ pub async fn login_totp(
         Some(p) => p,
         None => {
             let jar = jar.add(crate::auth::pending_login::create_clear_cookie());
-            return Ok((StatusCode::UNAUTHORIZED, jar, Json(serde_json::json!({
-                "error": "Unauthorized",
-            }))).into_response());
+            return Ok((
+                StatusCode::UNAUTHORIZED,
+                jar,
+                Json(serde_json::json!({
+                    "error": "Unauthorized",
+                })),
+            )
+                .into_response());
         }
     };
 
@@ -224,21 +243,24 @@ pub async fn login_totp(
         // Lost a race with another window or with expiry — make the
         // client retry from /auth/login.
         let jar = jar.add(crate::auth::pending_login::create_clear_cookie());
-        return Ok((StatusCode::UNAUTHORIZED, jar, Json(serde_json::json!({
-            "error": "Unauthorized",
-        }))).into_response());
+        return Ok((
+            StatusCode::UNAUTHORIZED,
+            jar,
+            Json(serde_json::json!({
+                "error": "Unauthorized",
+            })),
+        )
+            .into_response());
     }
     let _ = pending_login_service.delete_for_member(member.id).await;
 
     // Session-fixation sweep deferred from the password-only step.
     let _ = auth_service.invalidate_all_sessions(member.id).await;
 
-    let (_session, session_token) = auth_service
-        .create_session(member.id, 24)
-        .await?;
+    let (_session, session_token) = auth_service.create_session(member.id, 24).await?;
 
-    let session_cookie = auth_service
-        .create_session_cookie(&session_token, settings.server.cookies_are_secure());
+    let session_cookie =
+        auth_service.create_session_cookie(&session_token, settings.server.cookies_are_secure());
     let clear_pending = crate::auth::pending_login::create_clear_cookie();
 
     if used_recovery {
@@ -258,7 +280,8 @@ pub async fn login_totp(
         Json(LoginResponse {
             message: "Login successful".to_string(),
         }),
-    ).into_response())
+    )
+        .into_response())
 }
 
 /// CSRF is enforced at the application root by
@@ -271,22 +294,19 @@ pub async fn logout(
     jar: CookieJar,
 ) -> Result<(CookieJar, StatusCode)> {
     if let Some(session_cookie) = jar.get("session") {
-        if let Ok(Some(session)) = auth_service
-            .validate_session(session_cookie.value())
-            .await
-        {
-            let _ = csrf_service
-                .delete_token(&session.id)
+        if let Ok(Some(session)) = auth_service.validate_session(session_cookie.value()).await {
+            let _ = csrf_service.delete_token(&session.id).await;
+            audit_service
+                .log(
+                    Some(session.member_id),
+                    "logout",
+                    "session",
+                    &session.id,
+                    None,
+                    None,
+                    None,
+                )
                 .await;
-            audit_service.log(
-                Some(session.member_id),
-                "logout",
-                "session",
-                &session.id,
-                None,
-                None,
-                None,
-            ).await;
         }
         let _ = auth_service
             .invalidate_session(session_cookie.value())

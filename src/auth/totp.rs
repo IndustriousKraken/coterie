@@ -69,7 +69,11 @@ pub struct EnrollmentInit {
 
 impl TotpService {
     pub fn new(pool: SqlitePool, crypto: Arc<SecretCrypto>, issuer: String) -> Self {
-        Self { pool, crypto, issuer }
+        Self {
+            pool,
+            crypto,
+            issuer,
+        }
     }
 
     /// Generate a fresh TOTP secret and the artifacts the enrollment
@@ -85,7 +89,11 @@ impl TotpService {
         let secret_base32 = totp.get_secret_base32();
         let qr_svg = render_qr_svg(&otpauth_url)?;
 
-        Ok(EnrollmentInit { otpauth_url, secret_base32, qr_svg })
+        Ok(EnrollmentInit {
+            otpauth_url,
+            secret_base32,
+            qr_svg,
+        })
     }
 
     /// Verify the supplied TOTP code against `secret_base32` and, on
@@ -178,8 +186,7 @@ impl TotpService {
     /// an authenticated action. Bulk-clears `pending_logins` too in
     /// case any half-finished login was hanging around.
     pub async fn disable(&self, member_id: Uuid) -> Result<()> {
-        let mut tx = self.pool.begin().await
-            .map_err(AppError::Database)?;
+        let mut tx = self.pool.begin().await.map_err(AppError::Database)?;
 
         sqlx::query(
             "UPDATE members \
@@ -206,14 +213,13 @@ impl TotpService {
 
     /// Whether 2FA is enabled for this member.
     pub async fn is_enabled(&self, member_id: Uuid) -> Result<bool> {
-        let enabled: Option<chrono::NaiveDateTime> = sqlx::query_scalar(
-            "SELECT totp_enabled_at FROM members WHERE id = ?",
-        )
-        .bind(member_id.to_string())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(AppError::Database)?
-        .flatten();
+        let enabled: Option<chrono::NaiveDateTime> =
+            sqlx::query_scalar("SELECT totp_enabled_at FROM members WHERE id = ?")
+                .bind(member_id.to_string())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(AppError::Database)?
+                .flatten();
         Ok(enabled.is_some())
     }
 }

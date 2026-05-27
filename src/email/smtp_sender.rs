@@ -2,9 +2,9 @@
 
 use async_trait::async_trait;
 use lettre::{
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
-    message::{MultiPart, SinglePart, header},
+    message::{header, MultiPart, SinglePart},
     transport::smtp::authentication::Credentials,
+    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
 };
 
 use super::{EmailMessage, EmailSender};
@@ -21,13 +21,18 @@ pub struct SmtpSender {
 
 impl SmtpSender {
     pub fn from_config(config: &EmailConfig) -> Result<Self> {
-        let host = config.smtp_host.as_ref().ok_or_else(|| {
-            AppError::Internal("email.smtp_host not configured".to_string())
-        })?;
-        let from_address = config.from_address.clone().ok_or_else(|| {
-            AppError::Internal("email.from_address not configured".to_string())
-        })?;
-        let from_name = config.from_name.clone().unwrap_or_else(|| "Coterie".to_string());
+        let host = config
+            .smtp_host
+            .as_ref()
+            .ok_or_else(|| AppError::Internal("email.smtp_host not configured".to_string()))?;
+        let from_address = config
+            .from_address
+            .clone()
+            .ok_or_else(|| AppError::Internal("email.from_address not configured".to_string()))?;
+        let from_name = config
+            .from_name
+            .clone()
+            .unwrap_or_else(|| "Coterie".to_string());
 
         let mut builder = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
             .map_err(|e| AppError::Internal(format!("SMTP init failed: {}", e)))?;

@@ -1,41 +1,41 @@
 pub mod announcement_admin_service;
 pub mod audit_service;
+pub mod basic_type_service;
 pub mod billing_service;
 pub mod configurable_types;
-pub mod basic_type_service;
 pub mod event_admin_service;
 pub mod expense_account_service;
 pub mod expense_category_service;
 pub mod expense_service;
 pub mod member_service;
+pub mod membership_type_service;
 pub mod payment_admin_service;
 pub mod payment_service;
 pub mod recurring_event_service;
 pub mod settings_service;
-pub mod membership_type_service;
 
-use std::sync::Arc;
-use sqlx::SqlitePool;
 use crate::api::state::MoneyLimiter;
-use crate::repository::*;
-use crate::integrations::IntegrationManager;
 use crate::auth::{AuthService, CsrfService, PendingLoginService, TotpService};
 use crate::domain::BasicTypeKind;
 use crate::email::EmailSender;
+use crate::integrations::IntegrationManager;
 use crate::payments::StripeClient;
+use crate::repository::*;
 use announcement_admin_service::AnnouncementAdminService;
 use audit_service::AuditService;
+use basic_type_service::BasicTypeService;
 use event_admin_service::EventAdminService;
 use expense_account_service::ExpenseAccountService;
 use expense_category_service::ExpenseCategoryService;
 use expense_service::ExpenseService;
 use member_service::MemberService;
+use membership_type_service::MembershipTypeService;
 use payment_admin_service::PaymentAdminService;
 use payment_service::PaymentService;
-use settings_service::SettingsService;
-use basic_type_service::BasicTypeService;
-use membership_type_service::MembershipTypeService;
 use recurring_event_service::RecurringEventService;
+use settings_service::SettingsService;
+use sqlx::SqlitePool;
+use std::sync::Arc;
 
 pub struct ServiceContext {
     pub member_repo: Arc<dyn MemberRepository>,
@@ -112,9 +112,12 @@ impl ServiceContext {
             Arc::new(SqliteProcessedEventsRepository::new(db_pool.clone()));
 
         // Create saved card and scheduled payment repositories
-        let saved_card_repo: Arc<dyn SavedCardRepository> = Arc::new(SqliteSavedCardRepository::new(db_pool.clone()));
-        let scheduled_payment_repo: Arc<dyn ScheduledPaymentRepository> = Arc::new(SqliteScheduledPaymentRepository::new(db_pool.clone()));
-        let donation_campaign_repo: Arc<dyn DonationCampaignRepository> = Arc::new(SqliteDonationCampaignRepository::new(db_pool.clone()));
+        let saved_card_repo: Arc<dyn SavedCardRepository> =
+            Arc::new(SqliteSavedCardRepository::new(db_pool.clone()));
+        let scheduled_payment_repo: Arc<dyn ScheduledPaymentRepository> =
+            Arc::new(SqliteScheduledPaymentRepository::new(db_pool.clone()));
+        let donation_campaign_repo: Arc<dyn DonationCampaignRepository> =
+            Arc::new(SqliteDonationCampaignRepository::new(db_pool.clone()));
 
         // Expense ledger repositories — see expense-tracking capability.
         let expense_repo: Arc<dyn ExpenseRepository> =
@@ -135,7 +138,8 @@ impl ServiceContext {
             basic_type_repo.clone(),
             BasicTypeKind::Announcement,
         ));
-        let membership_type_service = Arc::new(MembershipTypeService::new(membership_type_repo.clone()));
+        let membership_type_service =
+            Arc::new(MembershipTypeService::new(membership_type_repo.clone()));
 
         let payment_service = Arc::new(PaymentService::new(
             payment_repo.clone(),

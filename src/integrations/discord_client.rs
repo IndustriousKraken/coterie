@@ -64,16 +64,21 @@ impl DiscordClient {
     /// staring at a spinner wants the answer as fast as possible.
     pub async fn get_current_user(&self) -> Result<DiscordUser> {
         let url = format!("{}/users/@me", API_BASE);
-        let resp = self.http.get(&url)
+        let resp = self
+            .http
+            .get(&url)
             .header("Authorization", format!("Bot {}", self.bot_token))
             .send()
             .await
             .map_err(|e| AppError::External(format!("Discord request failed: {}", e)))?;
         check_status(&resp.status())?;
-        let body = resp.text().await
+        let body = resp
+            .text()
+            .await
             .map_err(|e| AppError::External(format!("Discord response read failed: {}", e)))?;
-        serde_json::from_str(&body)
-            .map_err(|e| AppError::External(format!("Discord response parse: {} (body: {})", e, body)))
+        serde_json::from_str(&body).map_err(|e| {
+            AppError::External(format!("Discord response parse: {} (body: {})", e, body))
+        })
     }
 
     /// `PUT /guilds/{guild.id}/members/{user.id}/roles/{role.id}` —
@@ -81,22 +86,22 @@ impl DiscordClient {
     /// Returns Ok on 204 (success) and on 404 ("user isn't in this
     /// guild" or "role doesn't exist") since neither is something we
     /// can fix from here, just log and move on.
-    pub async fn add_role(
-        &self,
-        guild_id: &str,
-        user_id: &str,
-        role_id: &str,
-    ) -> Result<()> {
+    pub async fn add_role(&self, guild_id: &str, user_id: &str, role_id: &str) -> Result<()> {
         let url = format!(
             "{}/guilds/{}/members/{}/roles/{}",
             API_BASE, guild_id, user_id, role_id
         );
-        let label = format!("add_role guild={} user={} role={}", guild_id, user_id, role_id);
+        let label = format!(
+            "add_role guild={} user={} role={}",
+            guild_id, user_id, role_id
+        );
         let resp = send_with_retry(&label, || {
-            self.http.put(&url)
+            self.http
+                .put(&url)
                 .header("Authorization", format!("Bot {}", self.bot_token))
                 .header("Content-Length", "0") // Discord rejects PUT with no body unless this is set
-        }).await?;
+        })
+        .await?;
         if resp.status().as_u16() == 404 {
             tracing::warn!(
                 "Discord add_role: 404 for guild={} user={} role={} (member not in guild or role gone?)",
@@ -110,25 +115,27 @@ impl DiscordClient {
 
     /// `DELETE /guilds/{guild.id}/members/{user.id}/roles/{role.id}` —
     /// removes a role. Idempotent; 404 is treated as success (already gone).
-    pub async fn remove_role(
-        &self,
-        guild_id: &str,
-        user_id: &str,
-        role_id: &str,
-    ) -> Result<()> {
+    pub async fn remove_role(&self, guild_id: &str, user_id: &str, role_id: &str) -> Result<()> {
         let url = format!(
             "{}/guilds/{}/members/{}/roles/{}",
             API_BASE, guild_id, user_id, role_id
         );
-        let label = format!("remove_role guild={} user={} role={}", guild_id, user_id, role_id);
+        let label = format!(
+            "remove_role guild={} user={} role={}",
+            guild_id, user_id, role_id
+        );
         let resp = send_with_retry(&label, || {
-            self.http.delete(&url)
+            self.http
+                .delete(&url)
                 .header("Authorization", format!("Bot {}", self.bot_token))
-        }).await?;
+        })
+        .await?;
         if resp.status().as_u16() == 404 {
             tracing::warn!(
                 "Discord remove_role: 404 for guild={} user={} role={} (already gone?)",
-                guild_id, user_id, role_id
+                guild_id,
+                user_id,
+                role_id
             );
             return Ok(());
         }
@@ -143,10 +150,12 @@ impl DiscordClient {
         let body = serde_json::json!({ "content": content });
         let label = format!("send_message channel={}", channel_id);
         let resp = send_with_retry(&label, || {
-            self.http.post(&url)
+            self.http
+                .post(&url)
                 .header("Authorization", format!("Bot {}", self.bot_token))
                 .json(&body)
-        }).await?;
+        })
+        .await?;
         check_status(&resp.status())
             .map_err(|e| AppError::External(format!("Discord {}: {}", label, e)))
     }
@@ -176,7 +185,11 @@ where
                     };
                     tracing::warn!(
                         "Discord {}: HTTP {} on attempt {}/{}, retrying in {:?}",
-                        label, code, attempt, MAX_ATTEMPTS, delay,
+                        label,
+                        code,
+                        attempt,
+                        MAX_ATTEMPTS,
+                        delay,
                     );
                     tokio::time::sleep(delay).await;
                     continue;
@@ -189,13 +202,20 @@ where
                     let delay = backoff_delay(attempt);
                     tracing::warn!(
                         "Discord {}: transient error {} on attempt {}/{}, retrying in {:?}",
-                        label, e, attempt, MAX_ATTEMPTS, delay,
+                        label,
+                        e,
+                        attempt,
+                        MAX_ATTEMPTS,
+                        delay,
                     );
                     last_err = Some(e.to_string());
                     tokio::time::sleep(delay).await;
                     continue;
                 }
-                return Err(AppError::External(format!("Discord {} request: {}", label, e)));
+                return Err(AppError::External(format!(
+                    "Discord {} request: {}",
+                    label, e
+                )));
             }
         }
     }

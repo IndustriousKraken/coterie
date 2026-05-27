@@ -15,9 +15,8 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        configurable_types::BillingPeriod, BillingMode, Payer, Payment, PaymentKind,
-        PaymentMethod, PaymentStatus, SavedCard, ScheduledPayment, ScheduledPaymentStatus,
-        StripeRef,
+        configurable_types::BillingPeriod, BillingMode, Payer, Payment, PaymentKind, PaymentMethod,
+        PaymentStatus, SavedCard, ScheduledPayment, ScheduledPaymentStatus, StripeRef,
     },
     error::{AppError, Result},
     integrations::{IntegrationEvent, IntegrationManager},
@@ -110,7 +109,8 @@ impl AutoRenew {
 
         // Get current dues_paid_until to determine next due date.
         let next_due = match self.member_repo.find_by_id(member_id).await? {
-            Some(m) => m.dues_paid_until
+            Some(m) => m
+                .dues_paid_until
                 .map(|d| d.date_naive())
                 .unwrap_or_else(|| Utc::now().date_naive()),
             None => Utc::now().date_naive(),
@@ -156,31 +156,34 @@ impl AutoRenew {
     /// Returns Ok(false) in those cases so callers can chain it
     /// safely (e.g. the save_card handler runs this for everyone but
     /// only stripe-sub members actually migrate).
-    pub async fn migrate_to_coterie_managed(
-        &self,
-        member_id: Uuid,
-    ) -> Result<bool> {
-        let member = self.member_repo.find_by_id(member_id).await?
+    pub async fn migrate_to_coterie_managed(&self, member_id: Uuid) -> Result<bool> {
+        let member = self
+            .member_repo
+            .find_by_id(member_id)
+            .await?
             .ok_or_else(|| AppError::NotFound("Member not found".to_string()))?;
 
         if member.billing_mode != BillingMode::StripeSubscription {
             return Ok(false);
         }
 
-        let customer_id = member.stripe_customer_id
-            .as_deref()
-            .ok_or_else(|| AppError::Internal(format!(
-                "Member {} is on stripe_subscription but has no stripe_customer_id", member_id
-            )))?;
-        let subscription_id = member.stripe_subscription_id
-            .as_deref()
-            .ok_or_else(|| AppError::Internal(format!(
-                "Member {} is on stripe_subscription but has no stripe_subscription_id", member_id
-            )))?;
-
-        let stripe = self.stripe_client.as_ref().ok_or_else(|| {
-            AppError::ServiceUnavailable("Stripe not configured".to_string())
+        let customer_id = member.stripe_customer_id.as_deref().ok_or_else(|| {
+            AppError::Internal(format!(
+                "Member {} is on stripe_subscription but has no stripe_customer_id",
+                member_id
+            ))
         })?;
+        let subscription_id = member.stripe_subscription_id.as_deref().ok_or_else(|| {
+            AppError::Internal(format!(
+                "Member {} is on stripe_subscription but has no stripe_subscription_id",
+                member_id
+            ))
+        })?;
+
+        let stripe = self
+            .stripe_client
+            .as_ref()
+            .ok_or_else(|| AppError::ServiceUnavailable("Stripe not configured".to_string()))?;
 
         // 1. Hydrate SavedCards from Stripe — do this BEFORE
         // cancelling so a Stripe outage doesn't leave the member
@@ -190,7 +193,8 @@ impl AutoRenew {
         let now = Utc::now();
 
         for card in &stripe_cards {
-            let already_have = existing.iter()
+            let already_have = existing
+                .iter()
                 .any(|c| c.stripe_payment_method_id == card.payment_method_id);
             if already_have {
                 continue;
@@ -216,13 +220,15 @@ impl AutoRenew {
         // customer's default; fall back to whatever's already marked
         // default in Coterie; fall back to the most recently added.
         let all_cards = self.saved_card_repo.find_by_member(member_id).await?;
-        let stripe_default_pm_id = stripe_cards.iter()
+        let stripe_default_pm_id = stripe_cards
+            .iter()
             .find(|c| c.is_default)
             .map(|c| c.payment_method_id.clone());
 
         let default_card_id: Option<Uuid> = stripe_default_pm_id
             .and_then(|pm| {
-                all_cards.iter()
+                all_cards
+                    .iter()
                     .find(|c| c.stripe_payment_method_id == pm)
                     .map(|c| c.id)
             })
@@ -255,14 +261,20 @@ impl AutoRenew {
         // be the worst of both worlds.
         if let Err(e) = stripe.cancel_subscription(&stashed_sub_id).await {
             self.member_repo
-                .set_billing_mode(member_id, BillingMode::StripeSubscription, Some(&stashed_sub_id))
+                .set_billing_mode(
+                    member_id,
+                    BillingMode::StripeSubscription,
+                    Some(&stashed_sub_id),
+                )
                 .await
-                .map_err(|rollback| AppError::Internal(format!(
-                    "Stripe cancel failed ({}) AND local rollback failed ({}); \
+                .map_err(|rollback| {
+                    AppError::Internal(format!(
+                        "Stripe cancel failed ({}) AND local rollback failed ({}); \
                      member {} is in coterie_managed but Stripe is still \
                      billing them. Manual intervention required.",
-                    e, rollback, member_id,
-                )))?;
+                        e, rollback, member_id,
+                    ))
+                })?;
             return Err(e);
         }
 
@@ -271,16 +283,20 @@ impl AutoRenew {
         // shouldn't be any for a stripe_sub member, but better safe).
         self.cancel_scheduled_payments(member_id).await?;
 
-        let mt = self.membership_type_service.get(member.membership_type_id).await?
-            .ok_or_else(|| AppError::Internal(
-                "Member's membership type was deleted".to_string()
-            ))?;
+        let mt = self
+            .membership_type_service
+            .get(member.membership_type_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::Internal("Member's membership type was deleted".to_string())
+            })?;
         self.schedule_renewal(member_id, &mt.slug).await?;
 
         tracing::info!(
             "Migrated member {} from stripe_subscription to coterie_managed \
              (cards imported: {})",
-            member_id, stripe_cards.len(),
+            member_id,
+            stripe_cards.len(),
         );
 
         Ok(true)
@@ -299,14 +315,20 @@ impl AutoRenew {
     pub async fn bulk_migrate_stripe_subscriptions(&self) -> BulkMigrationSummary {
         let mut summary = BulkMigrationSummary::default();
 
-        let ids = match self.member_repo
+        let ids = match self
+            .member_repo
             .list_ids_by_billing_mode(BillingMode::StripeSubscription)
             .await
         {
             Ok(r) => r,
             Err(e) => {
-                tracing::error!("bulk_migrate_stripe_subscriptions: list query failed: {}", e);
-                summary.failed.push((Uuid::nil(), format!("DB error: {}", e)));
+                tracing::error!(
+                    "bulk_migrate_stripe_subscriptions: list query failed: {}",
+                    e
+                );
+                summary
+                    .failed
+                    .push((Uuid::nil(), format!("DB error: {}", e)));
                 return summary;
             }
         };
@@ -316,10 +338,7 @@ impl AutoRenew {
                 Ok(true) => summary.succeeded += 1,
                 Ok(false) => summary.skipped += 1,
                 Err(e) => {
-                    tracing::error!(
-                        "Bulk migrate: member {} failed: {}",
-                        member_id, e,
-                    );
+                    tracing::error!("Bulk migrate: member {} failed: {}", member_id, e,);
                     summary.failed.push((member_id, e.to_string()));
                 }
             }
@@ -332,7 +351,10 @@ impl AutoRenew {
     /// (charges happen on Stripe's side, no ScheduledPayment row), so
     /// this returns true only for `coterie_managed`.
     pub async fn is_auto_renew(&self, member_id: Uuid) -> Result<bool> {
-        let mode = self.member_repo.find_by_id(member_id).await?
+        let mode = self
+            .member_repo
+            .find_by_id(member_id)
+            .await?
             .map(|m| m.billing_mode);
         Ok(mode == Some(BillingMode::CoterieManaged))
     }
@@ -353,7 +375,10 @@ impl AutoRenew {
         member_id: Uuid,
         membership_type_slug: &str,
     ) -> Result<()> {
-        let member = self.member_repo.find_by_id(member_id).await?
+        let member = self
+            .member_repo
+            .find_by_id(member_id)
+            .await?
             .ok_or_else(|| AppError::NotFound("Member not found".to_string()))?;
 
         if member.billing_mode == BillingMode::StripeSubscription {
@@ -369,10 +394,15 @@ impl AutoRenew {
         // disable paths, which actually cancel the Stripe sub.
         let prior_sub_id = member.stripe_subscription_id.clone();
         self.member_repo
-            .set_billing_mode(member_id, BillingMode::CoterieManaged, prior_sub_id.as_deref())
+            .set_billing_mode(
+                member_id,
+                BillingMode::CoterieManaged,
+                prior_sub_id.as_deref(),
+            )
             .await?;
 
-        self.schedule_renewal(member_id, membership_type_slug).await?;
+        self.schedule_renewal(member_id, membership_type_slug)
+            .await?;
         Ok(())
     }
 
@@ -393,7 +423,8 @@ impl AutoRenew {
             return Ok(());
         }
         self.cancel_scheduled_payments(member_id).await?;
-        self.schedule_renewal(member_id, membership_type_slug).await?;
+        self.schedule_renewal(member_id, membership_type_slug)
+            .await?;
         Ok(())
     }
 
@@ -408,7 +439,10 @@ impl AutoRenew {
     /// Stripe keep charging them, which is the opposite of what
     /// "disable auto-renew" means.
     pub async fn disable_auto_renew(&self, member_id: Uuid) -> Result<()> {
-        let member = self.member_repo.find_by_id(member_id).await?
+        let member = self
+            .member_repo
+            .find_by_id(member_id)
+            .await?
             .ok_or_else(|| AppError::NotFound("Member not found".to_string()))?;
 
         // Cancel Coterie-side pending charges no matter what — cheap
@@ -439,19 +473,22 @@ impl AutoRenew {
         // failure, roll back so the operator can retry without us
         // leaving them in 'manual' while Stripe keeps billing.
         if let Some(sub_id) = stripe_sub_to_cancel {
-            let stripe = self.stripe_client.as_ref().ok_or_else(|| {
-                AppError::ServiceUnavailable("Stripe not configured".to_string())
-            })?;
+            let stripe = self
+                .stripe_client
+                .as_ref()
+                .ok_or_else(|| AppError::ServiceUnavailable("Stripe not configured".to_string()))?;
             if let Err(e) = stripe.cancel_subscription(&sub_id).await {
                 self.member_repo
                     .set_billing_mode(member_id, prior_mode, prior_sub_id.as_deref())
                     .await
-                    .map_err(|rollback| AppError::Internal(format!(
-                        "Stripe cancel failed ({}) AND local rollback failed ({}); \
+                    .map_err(|rollback| {
+                        AppError::Internal(format!(
+                            "Stripe cancel failed ({}) AND local rollback failed ({}); \
                          member {} is in 'manual' but Stripe may still bill them. \
                          Manual intervention required.",
-                        e, rollback, member_id,
-                    )))?;
+                            e, rollback, member_id,
+                        ))
+                    })?;
                 return Err(e);
             }
         }
@@ -492,9 +529,10 @@ impl AutoRenew {
             )));
         }
 
-        let stripe_client = self.stripe_client.as_ref().ok_or_else(|| {
-            AppError::ServiceUnavailable("Stripe not configured".to_string())
-        })?;
+        let stripe_client = self
+            .stripe_client
+            .as_ref()
+            .ok_or_else(|| AppError::ServiceUnavailable("Stripe not configured".to_string()))?;
 
         // Mark as processing
         self.scheduled_payment_repo
@@ -619,11 +657,16 @@ impl AutoRenew {
                     if let Err(e) = self.schedule_renewal(sp.member_id, &mt.slug).await {
                         tracing::error!(
                             "Charged member {} (sp {}) but failed to schedule next renewal: {}",
-                            sp.member_id, id, e
+                            sp.member_id,
+                            id,
+                            e
                         );
-                        let member_label = self.member_repo
-                            .find_by_id(sp.member_id).await
-                            .ok().flatten()
+                        let member_label = self
+                            .member_repo
+                            .find_by_id(sp.member_id)
+                            .await
+                            .ok()
+                            .flatten()
                             .map(|m| format!("{} <{}>", m.full_name, m.email))
                             .unwrap_or_else(|| sp.member_id.to_string());
                         self.integration_manager
@@ -676,11 +719,8 @@ impl AutoRenew {
                     // lookup fails (shouldn't, the member was just charged),
                     // log and skip — the scheduled_payment row is already
                     // marked Failed.
-                    if let Ok(Some(member)) =
-                        self.member_repo.find_by_id(sp.member_id).await
-                    {
-                        let amount_display =
-                            format!("${:.2}", sp.amount_cents as f64 / 100.0);
+                    if let Ok(Some(member)) = self.member_repo.find_by_id(sp.member_id).await {
+                        let amount_display = format!("${:.2}", sp.amount_cents as f64 / 100.0);
                         let dues_until = member
                             .dues_paid_until
                             .map(|d| d.format("%B %d, %Y").to_string())
@@ -728,11 +768,7 @@ impl AutoRenew {
                 } else {
                     // Back to pending for retry
                     self.scheduled_payment_repo
-                        .update_status(
-                            id,
-                            ScheduledPaymentStatus::Pending,
-                            Some(format!("{}", e)),
-                        )
+                        .update_status(id, ScheduledPaymentStatus::Pending, Some(format!("{}", e)))
                         .await?;
                     tracing::warn!(
                         "Scheduled payment {} failed (retry {}/{}): {}",
@@ -763,29 +799,19 @@ impl AutoRenew {
             match self.process_scheduled_payment(sp.id).await {
                 Ok(()) => {
                     // Check if it completed (vs failed-but-handled)
-                    if let Ok(Some(updated)) =
-                        self.scheduled_payment_repo.find_by_id(sp.id).await
-                    {
+                    if let Ok(Some(updated)) = self.scheduled_payment_repo.find_by_id(sp.id).await {
                         if updated.status == ScheduledPaymentStatus::Completed {
                             succeeded += 1;
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::error!(
-                        "Error processing scheduled payment {}: {}",
-                        sp.id,
-                        e
-                    );
+                    tracing::error!("Error processing scheduled payment {}: {}", sp.id, e);
                 }
             }
         }
 
-        tracing::info!(
-            "Billing cycle complete: {}/{} succeeded",
-            succeeded,
-            total
-        );
+        tracing::info!("Billing cycle complete: {}/{} succeeded", succeeded, total);
         Ok((succeeded, total))
     }
 
@@ -799,12 +825,16 @@ impl AutoRenew {
         member_id: Uuid,
         membership_type_slug: &str,
     ) -> Result<()> {
-        let mt = self.membership_type_service
+        let mt = self
+            .membership_type_service
             .get_by_slug(membership_type_slug)
             .await?
-            .ok_or_else(|| AppError::NotFound(format!(
-                "Membership type '{}' not found", membership_type_slug
-            )))?;
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "Membership type '{}' not found",
+                    membership_type_slug
+                ))
+            })?;
         self.extend_member_dues(payment_id, member_id, mt.id).await
     }
 
@@ -827,20 +857,20 @@ impl AutoRenew {
         // Atomic per-payment claim + member update — see
         // PaymentRepository::extend_dues_for_payment_atomic for why
         // this isn't a SELECT/compute/UPDATE pair anymore.
-        let extended = self.payment_repo
+        let extended = self
+            .payment_repo
             .extend_dues_for_payment_atomic(payment_id, member_id, billing_period)
             .await?;
 
         if extended {
             tracing::info!(
                 "Extended dues for member {} (payment: {}, billing period: {:?})",
-                member_id, payment_id, billing_period,
+                member_id,
+                payment_id,
+                billing_period,
             );
         } else {
-            tracing::debug!(
-                "Dues already extended for payment {}; skipping",
-                payment_id,
-            );
+            tracing::debug!("Dues already extended for payment {}; skipping", payment_id,);
         }
 
         Ok(())

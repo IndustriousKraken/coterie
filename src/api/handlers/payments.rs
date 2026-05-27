@@ -20,9 +20,8 @@ use std::sync::Arc;
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
-    Json,
-    Extension,
     response::IntoResponse,
+    Extension, Json,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -37,7 +36,6 @@ use crate::{
     repository::SavedCardRepository,
     service::{audit_service::AuditService, billing_service::BillingService},
 };
-
 
 pub async fn stripe_webhook(
     State(webhook_dispatcher): State<Option<Arc<WebhookDispatcher>>>,
@@ -68,7 +66,10 @@ pub async fn stripe_webhook(
     // (in Discord, if configured) — bad signature usually means
     // either Stripe rotated the webhook secret and we still have
     // the old one, OR something is forging requests at our endpoint.
-    if let Err(e) = dispatcher.handle_webhook(&body, stripe_signature, &billing_service_ref).await {
+    if let Err(e) = dispatcher
+        .handle_webhook(&body, stripe_signature, &billing_service_ref)
+        .await
+    {
         if matches!(&e, AppError::BadRequest(msg) if msg.contains("Invalid signature")) {
             integration_manager
                 .handle_event(crate::integrations::IntegrationEvent::AdminAlert {
@@ -109,7 +110,6 @@ pub async fn stripe_webhook(
 
     Ok(StatusCode::OK)
 }
-
 
 // ============================================================
 // Saved Card (Payment Method) Handlers
@@ -152,14 +152,13 @@ pub async fn create_setup_intent(
     State(stripe_client): State<Option<Arc<StripeClient>>>,
     Extension(user): Extension<CurrentUser>,
 ) -> Result<Json<SetupIntentResponse>> {
-    let stripe_client = stripe_client.as_ref()
-        .ok_or_else(|| AppError::ServiceUnavailable("Payment processing not configured".to_string()))?;
+    let stripe_client = stripe_client.as_ref().ok_or_else(|| {
+        AppError::ServiceUnavailable("Payment processing not configured".to_string())
+    })?;
 
-    let client_secret = stripe_client.create_setup_intent(
-        user.member.id,
-        &user.member.email,
-        &user.member.full_name,
-    ).await?;
+    let client_secret = stripe_client
+        .create_setup_intent(user.member.id, &user.member.email, &user.member.full_name)
+        .await?;
 
     Ok(Json(SetupIntentResponse { client_secret }))
 }
@@ -173,11 +172,14 @@ pub async fn save_card(
     Extension(user): Extension<CurrentUser>,
     Json(request): Json<SaveCardRequest>,
 ) -> Result<(StatusCode, Json<SavedCardResponse>)> {
-    let stripe_client = stripe_client.as_ref()
-        .ok_or_else(|| AppError::ServiceUnavailable("Payment processing not configured".to_string()))?;
+    let stripe_client = stripe_client.as_ref().ok_or_else(|| {
+        AppError::ServiceUnavailable("Payment processing not configured".to_string())
+    })?;
 
     // Get card details from Stripe
-    let card_details = stripe_client.get_payment_method_details(&request.stripe_payment_method_id).await?;
+    let card_details = stripe_client
+        .get_payment_method_details(&request.stripe_payment_method_id)
+        .await?;
 
     // Cross-member PM stapling guard. Stripe's PaymentMethod attaches
     // to exactly one Customer; a PM ID belonging to another member's
@@ -224,23 +226,30 @@ pub async fn save_card(
     // save itself — the card IS in Coterie's table either way, and
     // an admin can finish the migration manually if needed.
     if user.member.billing_mode == crate::domain::BillingMode::StripeSubscription {
-        match billing_service.auto_renew.migrate_to_coterie_managed(user.member.id).await {
+        match billing_service
+            .auto_renew
+            .migrate_to_coterie_managed(user.member.id)
+            .await
+        {
             Ok(true) => {
-                audit_service.log(
-                    Some(user.member.id),
-                    "migrate_stripe_to_coterie",
-                    "member",
-                    &user.member.id.to_string(),
-                    None,
-                    Some("triggered by save_card"),
-                    None,
-                ).await;
+                audit_service
+                    .log(
+                        Some(user.member.id),
+                        "migrate_stripe_to_coterie",
+                        "member",
+                        &user.member.id.to_string(),
+                        None,
+                        Some("triggered by save_card"),
+                        None,
+                    )
+                    .await;
             }
             Ok(false) => {} // Wasn't actually on stripe_sub by the time we ran; harmless.
             Err(e) => {
                 tracing::error!(
                     "Card saved for member {} but stripe→coterie migration failed: {}",
-                    user.member.id, e,
+                    user.member.id,
+                    e,
                 );
             }
         }
@@ -248,4 +257,3 @@ pub async fn save_card(
 
     Ok((StatusCode::CREATED, Json(card.into())))
 }
-

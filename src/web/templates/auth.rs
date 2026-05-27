@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use askama::Template;
 use axum::{
-    extract::{State, Query},
-    response::{IntoResponse, Response, Redirect},
-    http::{StatusCode, HeaderMap, header},
+    extract::{Query, State},
+    http::{header, HeaderMap, StatusCode},
+    response::{IntoResponse, Redirect, Response},
     Json,
 };
 use axum_extra::extract::CookieJar;
@@ -56,10 +56,7 @@ pub async fn login_page(
 ) -> Response {
     // Check if user already has a valid session
     if let Some(session_cookie) = jar.get("session") {
-        if let Ok(Some(session)) = auth_service
-            .validate_session(session_cookie.value())
-            .await
-        {
+        if let Ok(Some(session)) = auth_service.validate_session(session_cookie.value()).await {
             // Already logged in — send Expired members to the restoration
             // page directly, everyone else to the dashboard.
             use crate::domain::MemberStatus;
@@ -103,16 +100,17 @@ pub async fn login_handler(
     Json(credentials): Json<LoginRequest>,
 ) -> Response {
     // Rate-limit login attempts per IP
-    let ip = crate::api::state::client_ip(
-        &headers,
-        settings.server.trust_forwarded_for(),
-    );
+    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
     if !login_limiter.0.check_and_record(ip) {
-        return (StatusCode::TOO_MANY_REQUESTS, Json(LoginResponse {
-            success: false,
-            redirect: None,
-            error: Some("Too many login attempts. Please try again later.".to_string()),
-        })).into_response();
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(LoginResponse {
+                success: false,
+                redirect: None,
+                error: Some("Too many login attempts. Please try again later.".to_string()),
+            }),
+        )
+            .into_response();
     }
 
     // Find member by username or email
@@ -134,17 +132,16 @@ pub async fn login_handler(
 
     if let Some(member) = member {
         // Get password hash from database
-        let password_hash = crate::auth::get_password_hash(
-            &db_pool,
-            &member.email
-        ).await.ok().flatten();
+        let password_hash = crate::auth::get_password_hash(&db_pool, &member.email)
+            .await
+            .ok()
+            .flatten();
 
         // Verify password
         let password_valid = if let Some(hash) = password_hash {
-            crate::auth::AuthService::verify_password(
-                &credentials.password,
-                &hash
-            ).await.unwrap_or(false)
+            crate::auth::AuthService::verify_password(&credentials.password, &hash)
+                .await
+                .unwrap_or(false)
         } else {
             false
         };
@@ -157,18 +154,29 @@ pub async fn login_handler(
             match member.status {
                 MemberStatus::Active | MemberStatus::Honorary | MemberStatus::Expired => {}
                 MemberStatus::Pending => {
-                    return (StatusCode::FORBIDDEN, Json(LoginResponse {
-                        success: false,
-                        redirect: None,
-                        error: Some("Your account is awaiting admin approval.".to_string()),
-                    })).into_response();
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(LoginResponse {
+                            success: false,
+                            redirect: None,
+                            error: Some("Your account is awaiting admin approval.".to_string()),
+                        }),
+                    )
+                        .into_response();
                 }
                 MemberStatus::Suspended => {
-                    return (StatusCode::FORBIDDEN, Json(LoginResponse {
-                        success: false,
-                        redirect: None,
-                        error: Some("Your account has been suspended. Please contact an administrator.".to_string()),
-                    })).into_response();
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(LoginResponse {
+                            success: false,
+                            redirect: None,
+                            error: Some(
+                                "Your account has been suspended. Please contact an administrator."
+                                    .to_string(),
+                            ),
+                        }),
+                    )
+                        .into_response();
                 }
             }
 
@@ -182,10 +190,24 @@ pub async fn login_handler(
             // because doing it here would let an attacker who guessed
             // the password log the victim out at will — a denial-of-
             // service vector that 2FA otherwise prevents.
-            let totp_enabled = totp_service
-                .is_enabled(member.id)
-                .await
-                .unwrap_or(false);
+            // Fail closed: a transient failure of the enrollment query
+            // must NOT skip the 2FA branch. Surface as 500 instead so an
+            // attacker can't race a DB blip into a password-only session.
+            let totp_enabled = match totp_service.is_enabled(member.id).await {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::error!("failed to query TOTP enrollment status: {}", e);
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(LoginResponse {
+                            success: false,
+                            redirect: None,
+                            error: Some("Login failed. Please try again.".to_string()),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
 
             if totp_enabled {
                 let pending_token = match pending_login_service
@@ -195,10 +217,15 @@ pub async fn login_handler(
                     Ok(t) => t,
                     Err(e) => {
                         tracing::error!("Failed to mint pending_login: {}", e);
-                        return (StatusCode::INTERNAL_SERVER_ERROR, Json(LoginResponse {
-                            success: false, redirect: None,
-                            error: Some("Login failed. Please try again.".to_string()),
-                        })).into_response();
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(LoginResponse {
+                                success: false,
+                                redirect: None,
+                                error: Some("Login failed. Please try again.".to_string()),
+                            }),
+                        )
+                            .into_response();
                     }
                 };
                 let pending_cookie = crate::auth::pending_login::create_cookie(
@@ -207,7 +234,8 @@ pub async fn login_handler(
                 );
                 // Preserve the originally-requested URL through the second
                 // step. Path-validated below in the /login/totp handler.
-                let next_redirect = credentials.redirect_url
+                let next_redirect = credentials
+                    .redirect_url
                     .as_deref()
                     .filter(|url| url.starts_with("/portal/") && !url.contains(".."))
                     .map(|url| format!("/login/totp?redirect={}", urlencoding::encode(url)))
@@ -217,10 +245,15 @@ pub async fn login_handler(
                     Ok(v) => v,
                     Err(e) => {
                         tracing::error!("Failed to construct pending_login cookie header: {}", e);
-                        return (StatusCode::INTERNAL_SERVER_ERROR, Json(LoginResponse {
-                            success: false, redirect: None,
-                            error: Some("Login failed. Please try again.".to_string()),
-                        })).into_response();
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(LoginResponse {
+                                success: false,
+                                redirect: None,
+                                error: Some("Login failed. Please try again.".to_string()),
+                            }),
+                        )
+                            .into_response();
                     }
                 };
                 let redirect_header = match next_redirect.parse() {
@@ -230,26 +263,33 @@ pub async fn login_handler(
                 let mut headers = HeaderMap::new();
                 headers.insert(header::SET_COOKIE, cookie_header);
                 headers.insert("HX-Redirect", redirect_header);
-                return (StatusCode::OK, headers, Json(LoginResponse {
-                    success: true,
-                    redirect: Some(next_redirect),
-                    error: None,
-                })).into_response();
+                return (
+                    StatusCode::OK,
+                    headers,
+                    Json(LoginResponse {
+                        success: true,
+                        redirect: Some(next_redirect),
+                        error: None,
+                    }),
+                )
+                    .into_response();
             }
 
             // Invalidate any pre-existing sessions for this member before
             // creating the new one. Prevents session fixation: if an attacker
             // planted a cookie in the victim's browser, that token is now
             // dead.
-            let _ = auth_service
-                .invalidate_all_sessions(member.id)
-                .await;
+            let _ = auth_service.invalidate_all_sessions(member.id).await;
 
             // Create session
             let (_session, token) = auth_service
                 .create_session(
                     member.id,
-                    if credentials.remember_me.unwrap_or(false) { 24 * 30 } else { 24 }
+                    if credentials.remember_me.unwrap_or(false) {
+                        24 * 30
+                    } else {
+                        24
+                    },
                 )
                 .await
                 .unwrap();
@@ -278,7 +318,8 @@ pub async fn login_handler(
             } else {
                 "/portal/dashboard".to_string()
             };
-            let redirect_url = credentials.redirect_url
+            let redirect_url = credentials
+                .redirect_url
                 .filter(|url| url.starts_with("/portal/") && !url.contains(".."))
                 .unwrap_or(default_destination);
 
@@ -291,17 +332,27 @@ pub async fn login_handler(
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!("Failed to construct session cookie header: {}", e);
-                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(LoginResponse {
-                        success: false, redirect: None,
-                        error: Some("Login failed. Please try again.".to_string()),
-                    })).into_response();
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(LoginResponse {
+                            success: false,
+                            redirect: None,
+                            error: Some("Login failed. Please try again.".to_string()),
+                        }),
+                    )
+                        .into_response();
                 }
             };
             let redirect_header = match redirect_url.parse() {
                 Ok(v) => v,
                 Err(e) => {
-                    tracing::error!("Invalid redirect URL after login (will use dashboard): {}", e);
-                    "/portal/dashboard".parse().expect("static path always parses")
+                    tracing::error!(
+                        "Invalid redirect URL after login (will use dashboard): {}",
+                        e
+                    );
+                    "/portal/dashboard"
+                        .parse()
+                        .expect("static path always parses")
                 }
             };
 
@@ -309,11 +360,16 @@ pub async fn login_handler(
             headers.insert(header::SET_COOKIE, cookie_header);
             headers.insert("HX-Redirect", redirect_header);
 
-            return (StatusCode::OK, headers, Json(LoginResponse {
-                success: true,
-                redirect: Some(redirect_url),
-                error: None,
-            })).into_response();
+            return (
+                StatusCode::OK,
+                headers,
+                Json(LoginResponse {
+                    success: true,
+                    redirect: Some(redirect_url),
+                    error: None,
+                }),
+            )
+                .into_response();
         }
     } else {
         // User not found — run Argon2 against a dummy hash so the response
@@ -322,11 +378,15 @@ pub async fn login_handler(
     }
 
     // Invalid credentials
-    (StatusCode::UNAUTHORIZED, Json(LoginResponse {
-        success: false,
-        redirect: None,
-        error: Some("Invalid username or password".to_string()),
-    })).into_response()
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(LoginResponse {
+            success: false,
+            redirect: None,
+            error: Some("Invalid username or password".to_string()),
+        }),
+    )
+        .into_response()
 }
 
 // POST /logout
@@ -343,22 +403,19 @@ pub async fn logout_handler(
     jar: CookieJar,
 ) -> impl IntoResponse {
     if let Some(session_cookie) = jar.get("session") {
-        if let Ok(Some(session)) = auth_service
-            .validate_session(session_cookie.value())
-            .await
-        {
-            let _ = csrf_service
-                .delete_token(&session.id)
+        if let Ok(Some(session)) = auth_service.validate_session(session_cookie.value()).await {
+            let _ = csrf_service.delete_token(&session.id).await;
+            audit_service
+                .log(
+                    Some(session.member_id),
+                    "logout",
+                    "session",
+                    &session.id,
+                    None,
+                    None,
+                    None,
+                )
                 .await;
-            audit_service.log(
-                Some(session.member_id),
-                "logout",
-                "session",
-                &session.id,
-                None,
-                None,
-                None,
-            ).await;
         }
         let _ = auth_service
             .invalidate_session(session_cookie.value())
@@ -368,7 +425,9 @@ pub async fn logout_handler(
     let mut headers = HeaderMap::new();
     headers.insert(
         header::SET_COOKIE,
-        "session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0".parse().unwrap()
+        "session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"
+            .parse()
+            .unwrap(),
     );
     headers.insert("HX-Redirect", "/login".parse().unwrap());
 
@@ -465,31 +524,54 @@ pub async fn login_totp_page(
 // the pool, session invalidate-all/create, and cookie attributes from
 // settings. Granular extraction per D1, with cookie/secure flags coming from
 // `settings`.
+#[allow(clippy::too_many_arguments)]
 pub async fn login_totp_handler(
     State(settings): State<Arc<Settings>>,
+    State(login_limiter): State<LoginLimiter>,
     State(db_pool): State<SqlitePool>,
     State(auth_service): State<Arc<AuthService>>,
     State(member_repo): State<Arc<dyn MemberRepository>>,
     State(totp_service): State<Arc<TotpService>>,
     State(pending_login_service): State<Arc<PendingLoginService>>,
+    headers: HeaderMap,
     jar: CookieJar,
     Json(payload): Json<LoginTotpRequest>,
 ) -> Response {
+    // Share the per-IP budget with /login so an attacker holding a
+    // stolen password can't switch surfaces to get a fresh allowance
+    // when brute-forcing the 6-digit TOTP code.
+    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
+    if !login_limiter.0.check_and_record(ip) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(LoginResponse {
+                success: false,
+                redirect: None,
+                error: Some("Too many login attempts. Please try again later.".to_string()),
+            }),
+        )
+            .into_response();
+    }
+
     let pending_token = match jar.get(crate::auth::pending_login::COOKIE_NAME) {
         Some(c) => c.value().to_string(),
         None => {
             let mut headers = HeaderMap::new();
             headers.insert("HX-Redirect", "/login".parse().unwrap());
-            return (StatusCode::UNAUTHORIZED, headers, Json(LoginResponse {
-                success: false, redirect: Some("/login".to_string()),
-                error: Some("Your login session expired. Please sign in again.".to_string()),
-            })).into_response();
+            return (
+                StatusCode::UNAUTHORIZED,
+                headers,
+                Json(LoginResponse {
+                    success: false,
+                    redirect: Some("/login".to_string()),
+                    error: Some("Your login session expired. Please sign in again.".to_string()),
+                }),
+            )
+                .into_response();
         }
     };
 
-    let pending = match pending_login_service
-        .find(&pending_token).await
-    {
+    let pending = match pending_login_service.find(&pending_token).await {
         Ok(Some(p)) => p,
         _ => {
             let mut headers = HeaderMap::new();
@@ -498,22 +580,31 @@ pub async fn login_totp_handler(
                 headers.insert(header::SET_COOKIE, v);
             }
             headers.insert("HX-Redirect", "/login".parse().unwrap());
-            return (StatusCode::UNAUTHORIZED, headers, Json(LoginResponse {
-                success: false, redirect: Some("/login".to_string()),
-                error: Some("Your login session expired. Please sign in again.".to_string()),
-            })).into_response();
+            return (
+                StatusCode::UNAUTHORIZED,
+                headers,
+                Json(LoginResponse {
+                    success: false,
+                    redirect: Some("/login".to_string()),
+                    error: Some("Your login session expired. Please sign in again.".to_string()),
+                }),
+            )
+                .into_response();
         }
     };
 
-    let member = match member_repo
-        .find_by_id(pending.member_id).await
-    {
+    let member = match member_repo.find_by_id(pending.member_id).await {
         Ok(Some(m)) => m,
         _ => {
-            return (StatusCode::UNAUTHORIZED, Json(LoginResponse {
-                success: false, redirect: None,
-                error: Some("Account not found.".to_string()),
-            })).into_response();
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(LoginResponse {
+                    success: false,
+                    redirect: None,
+                    error: Some("Account not found.".to_string()),
+                }),
+            )
+                .into_response();
         }
     };
 
@@ -527,11 +618,7 @@ pub async fn login_totp_handler(
     let used_recovery = if totp_ok {
         false
     } else {
-        match crate::auth::recovery_codes::try_consume(
-            &db_pool,
-            member.id,
-            &payload.code,
-        ).await {
+        match crate::auth::recovery_codes::try_consume(&db_pool, member.id, &payload.code).await {
             Ok(consumed) => consumed,
             Err(e) => {
                 tracing::error!("Recovery-code consume failed: {}", e);
@@ -541,47 +628,62 @@ pub async fn login_totp_handler(
     };
 
     if !totp_ok && !used_recovery {
-        return (StatusCode::UNAUTHORIZED, Json(LoginResponse {
-            success: false, redirect: None,
-            error: Some("Invalid code. Try again.".to_string()),
-        })).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(LoginResponse {
+                success: false,
+                redirect: None,
+                error: Some("Invalid code. Try again.".to_string()),
+            }),
+        )
+            .into_response();
     }
 
     // Code accepted. Atomically consume the pending_login (so retries
     // can't issue a second session) and create the real one.
     let consumed = pending_login_service
-        .consume(&pending_token).await.ok().flatten();
+        .consume(&pending_token)
+        .await
+        .ok()
+        .flatten();
     if consumed.is_none() {
         // Lost a race with another window or expiry — make them retry.
         let mut headers = HeaderMap::new();
         headers.insert("HX-Redirect", "/login".parse().unwrap());
-        return (StatusCode::UNAUTHORIZED, headers, Json(LoginResponse {
-            success: false, redirect: Some("/login".to_string()),
-            error: Some("Login expired. Please sign in again.".to_string()),
-        })).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            headers,
+            Json(LoginResponse {
+                success: false,
+                redirect: Some("/login".to_string()),
+                error: Some("Login expired. Please sign in again.".to_string()),
+            }),
+        )
+            .into_response();
     }
 
     // Now do the session-fixation sweep that we deliberately skipped
     // at the password-only step. Combined with the pending_login
     // consume, any half-finished login state for this member is gone.
-    let _ = auth_service
-        .invalidate_all_sessions(member.id).await;
-    let _ = pending_login_service
-        .delete_for_member(member.id).await;
+    let _ = auth_service.invalidate_all_sessions(member.id).await;
+    let _ = pending_login_service.delete_for_member(member.id).await;
 
     let (_session, token) = match auth_service
-        .create_session(
-            member.id,
-            if pending.remember_me { 24 * 30 } else { 24 },
-        ).await
+        .create_session(member.id, if pending.remember_me { 24 * 30 } else { 24 })
+        .await
     {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("Failed to create session after TOTP: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(LoginResponse {
-                success: false, redirect: None,
-                error: Some("Login failed. Please try again.".to_string()),
-            })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(LoginResponse {
+                    success: false,
+                    redirect: None,
+                    error: Some("Login failed. Please try again.".to_string()),
+                }),
+            )
+                .into_response();
         }
     };
 
@@ -591,17 +693,26 @@ pub async fn login_totp_handler(
     // codes are running low; emailing the member directly is left as
     // future work.
     if used_recovery {
-        let remaining = crate::auth::recovery_codes::remaining_count(
-            &db_pool, member.id,
-        ).await.unwrap_or(0);
+        let remaining = crate::auth::recovery_codes::remaining_count(&db_pool, member.id)
+            .await
+            .unwrap_or(0);
         tracing::info!(
             "Member {} logged in via recovery code; {} codes remaining",
-            member.id, remaining,
+            member.id,
+            remaining,
         );
     }
 
-    let max_age_secs = if pending.remember_me { 60 * 60 * 24 * 30 } else { 60 * 60 * 24 };
-    let secure_attr = if settings.server.cookies_are_secure() { "; Secure" } else { "" };
+    let max_age_secs = if pending.remember_me {
+        60 * 60 * 24 * 30
+    } else {
+        60 * 60 * 24
+    };
+    let secure_attr = if settings.server.cookies_are_secure() {
+        "; Secure"
+    } else {
+        ""
+    };
     let session_cookie_value = format!(
         "session={}; HttpOnly; SameSite=Lax; Path=/; Max-Age={}{}",
         token, max_age_secs, secure_attr,
@@ -614,7 +725,8 @@ pub async fn login_totp_handler(
     } else {
         "/portal/dashboard".to_string()
     };
-    let redirect_url = payload.redirect_url
+    let redirect_url = payload
+        .redirect_url
         .filter(|u| u.starts_with("/portal/") && !u.contains(".."))
         .unwrap_or(default_destination);
 
@@ -629,9 +741,14 @@ pub async fn login_totp_handler(
         headers.insert("HX-Redirect", v);
     }
 
-    (StatusCode::OK, headers, Json(LoginResponse {
-        success: true,
-        redirect: Some(redirect_url),
-        error: None,
-    })).into_response()
+    (
+        StatusCode::OK,
+        headers,
+        Json(LoginResponse {
+            success: true,
+            redirect: Some(redirect_url),
+            error: None,
+        }),
+    )
+        .into_response()
 }

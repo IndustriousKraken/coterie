@@ -203,7 +203,9 @@ impl BotChallengeVerifier for TurnstileVerifier {
                 provider_codes = ?body.error_codes,
                 "bot_challenge",
             );
-            Err(VerifyError::Invalid { provider_codes: body.error_codes })
+            Err(VerifyError::Invalid {
+                provider_codes: body.error_codes,
+            })
         }
     }
 }
@@ -262,7 +264,10 @@ pub mod test_utils {
         where
             F: Fn(&str) -> Result<(), VerifyError> + Send + Sync + 'static,
         {
-            Self { decide: Box::new(decide), calls: Mutex::new(0) }
+            Self {
+                decide: Box::new(decide),
+                calls: Mutex::new(0),
+            }
         }
 
         pub fn call_count(&self) -> u32 {

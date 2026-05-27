@@ -16,10 +16,7 @@ use std::sync::Arc;
 use crate::{
     domain::{Member, MemberStatus},
     error::Result,
-    integrations::{
-        Integration, IntegrationEvent,
-        discord_client::DiscordClient,
-    },
+    integrations::{discord_client::DiscordClient, Integration, IntegrationEvent},
     repository::MemberRepository,
     service::settings_service::{DbDiscordConfig, SettingsService},
 };
@@ -54,7 +51,7 @@ pub fn is_valid_snowflake(s: &str) -> bool {
 /// or non-ASCII script will hit this).
 fn build_announcement_preview(content: &str) -> String {
     const MAX_CHARS: usize = 280;
-    const PARAGRAPH_BUDGET: usize = 500;  // bytes — paragraphs longer than this fall through to char truncate
+    const PARAGRAPH_BUDGET: usize = 500; // bytes — paragraphs longer than this fall through to char truncate
 
     let trimmed = content.trim();
 
@@ -135,7 +132,8 @@ impl DiscordIntegration {
         if !is_valid_snowflake(discord_id) {
             tracing::warn!(
                 "Discord sync skipped for member {}: invalid discord_id {:?}",
-                member.id, discord_id
+                member.id,
+                discord_id
             );
             return;
         }
@@ -143,24 +141,36 @@ impl DiscordIntegration {
         match member.status {
             MemberStatus::Active | MemberStatus::Honorary => {
                 if !cfg.member_role_id.is_empty() {
-                    if let Err(e) = client.add_role(&cfg.guild_id, discord_id, &cfg.member_role_id).await {
+                    if let Err(e) = client
+                        .add_role(&cfg.guild_id, discord_id, &cfg.member_role_id)
+                        .await
+                    {
                         tracing::error!("Discord add member role for {}: {}", member.id, e);
                     }
                 }
                 if !cfg.expired_role_id.is_empty() {
-                    if let Err(e) = client.remove_role(&cfg.guild_id, discord_id, &cfg.expired_role_id).await {
+                    if let Err(e) = client
+                        .remove_role(&cfg.guild_id, discord_id, &cfg.expired_role_id)
+                        .await
+                    {
                         tracing::error!("Discord remove expired role for {}: {}", member.id, e);
                     }
                 }
             }
             MemberStatus::Expired | MemberStatus::Suspended => {
                 if !cfg.expired_role_id.is_empty() {
-                    if let Err(e) = client.add_role(&cfg.guild_id, discord_id, &cfg.expired_role_id).await {
+                    if let Err(e) = client
+                        .add_role(&cfg.guild_id, discord_id, &cfg.expired_role_id)
+                        .await
+                    {
                         tracing::error!("Discord add expired role for {}: {}", member.id, e);
                     }
                 }
                 if !cfg.member_role_id.is_empty() {
-                    if let Err(e) = client.remove_role(&cfg.guild_id, discord_id, &cfg.member_role_id).await {
+                    if let Err(e) = client
+                        .remove_role(&cfg.guild_id, discord_id, &cfg.member_role_id)
+                        .await
+                    {
                         tracing::error!("Discord remove member role for {}: {}", member.id, e);
                     }
                 }
@@ -171,10 +181,14 @@ impl DiscordIntegration {
                 // in the guild at all at this stage so the calls 404
                 // quietly.
                 if !cfg.member_role_id.is_empty() {
-                    let _ = client.remove_role(&cfg.guild_id, discord_id, &cfg.member_role_id).await;
+                    let _ = client
+                        .remove_role(&cfg.guild_id, discord_id, &cfg.member_role_id)
+                        .await;
                 }
                 if !cfg.expired_role_id.is_empty() {
-                    let _ = client.remove_role(&cfg.guild_id, discord_id, &cfg.expired_role_id).await;
+                    let _ = client
+                        .remove_role(&cfg.guild_id, discord_id, &cfg.expired_role_id)
+                        .await;
                 }
             }
         }
@@ -191,10 +205,7 @@ impl DiscordIntegration {
             return;
         }
         if let Err(e) = client.send_message(channel_id, content).await {
-            tracing::error!(
-                "Discord send_message to channel {}: {}",
-                channel_id, e
-            );
+            tracing::error!("Discord send_message to channel {}: {}", channel_id, e);
         }
     }
 
@@ -250,10 +261,14 @@ impl DiscordIntegration {
             return;
         }
         if !cfg.member_role_id.is_empty() {
-            let _ = client.remove_role(&cfg.guild_id, discord_id, &cfg.member_role_id).await;
+            let _ = client
+                .remove_role(&cfg.guild_id, discord_id, &cfg.member_role_id)
+                .await;
         }
         if !cfg.expired_role_id.is_empty() {
-            let _ = client.remove_role(&cfg.guild_id, discord_id, &cfg.expired_role_id).await;
+            let _ = client
+                .remove_role(&cfg.guild_id, discord_id, &cfg.expired_role_id)
+                .await;
         }
     }
 }
@@ -374,7 +389,8 @@ impl Integration for DiscordIntegration {
                     "{}📣 **{}**\n{}\n\n{}",
                     visibility_tag, announcement.title, preview, link,
                 );
-                self.post_to_channel(&cfg.announcements_channel_id, &content).await;
+                self.post_to_channel(&cfg.announcements_channel_id, &content)
+                    .await;
                 Ok(())
             }
 
@@ -386,7 +402,8 @@ impl Integration for DiscordIntegration {
                     return Ok(());
                 }
                 let content = format!("⚠️ **{}**\n{}", subject, body);
-                self.post_to_channel(&cfg.admin_alerts_channel_id, &content).await;
+                self.post_to_channel(&cfg.admin_alerts_channel_id, &content)
+                    .await;
                 Ok(())
             }
         }
@@ -400,17 +417,17 @@ mod snowflake_tests {
     #[test]
     fn accepts_valid() {
         assert!(is_valid_snowflake("123456789012345678")); // 18 digits
-        assert!(is_valid_snowflake("12345678901234567"));   // 17 digits
+        assert!(is_valid_snowflake("12345678901234567")); // 17 digits
         assert!(is_valid_snowflake("12345678901234567890")); // 20 digits
     }
 
     #[test]
     fn rejects_invalid() {
         assert!(!is_valid_snowflake(""));
-        assert!(!is_valid_snowflake("123"));                 // too short
+        assert!(!is_valid_snowflake("123")); // too short
         assert!(!is_valid_snowflake("123456789012345678901")); // too long (21)
-        assert!(!is_valid_snowflake("user#1234"));           // legacy username format
-        assert!(!is_valid_snowflake("12345678901234567a"));  // non-digit
+        assert!(!is_valid_snowflake("user#1234")); // legacy username format
+        assert!(!is_valid_snowflake("12345678901234567a")); // non-digit
         assert!(!is_valid_snowflake(" 123456789012345678")); // leading space
     }
 }
@@ -428,7 +445,7 @@ mod preview_tests {
     #[test]
     fn first_paragraph_with_more_content_gets_ellipsis() {
         let s = build_announcement_preview(
-            "Quick note about Saturday.\n\nLong details follow about the event ..."
+            "Quick note about Saturday.\n\nLong details follow about the event ...",
         );
         assert_eq!(s, "Quick note about Saturday.…");
     }

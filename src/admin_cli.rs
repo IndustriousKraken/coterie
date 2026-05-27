@@ -180,11 +180,9 @@ pub async fn dispatch(cli: &Cli, pool: &SqlitePool) -> Result<()> {
 /// `SELECT EXISTS(...)` against the authoritative `is_admin` column,
 /// matching the `require_setup` middleware's check.
 async fn admin_exists(pool: &SqlitePool) -> Result<bool> {
-    let row: (i64,) = sqlx::query_as(
-        "SELECT EXISTS(SELECT 1 FROM members WHERE is_admin = 1)",
-    )
-    .fetch_one(pool)
-    .await
-    .context("checking for existing admin")?;
+    let row: (i64,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM members WHERE is_admin = 1)")
+        .fetch_one(pool)
+        .await
+        .context("checking for existing admin")?;
     Ok(row.0 != 0)
 }

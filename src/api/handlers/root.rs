@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use axum::{
     extract::State,
-    http::{header, StatusCode, HeaderMap},
+    http::{header, HeaderMap, StatusCode},
+    response::{IntoResponse, Redirect, Response},
     Json,
-    response::{IntoResponse, Response, Redirect},
 };
 use axum_extra::extract::CookieJar;
 use serde::Serialize;
@@ -55,9 +55,7 @@ pub async fn root(
     if accepts_html {
         // Check if user has a valid session
         if let Some(session_cookie) = jar.get("session") {
-            if let Ok(Some(_session)) = auth_service
-                .validate_session(session_cookie.value())
-                .await
+            if let Ok(Some(_session)) = auth_service.validate_session(session_cookie.value()).await
             {
                 return Redirect::to("/portal/dashboard").into_response();
             }
@@ -93,7 +91,8 @@ pub async fn root(
                 "admin": "/portal/admin/members - Admin interface"
             },
             "documentation": "https://github.com/IndustriousKraken/coterie"
-        })).into_response()
+        }))
+        .into_response()
     }
 }
 
@@ -107,10 +106,13 @@ pub async fn root(
     ),
 )]
 pub async fn health_check() -> impl IntoResponse {
-    (StatusCode::OK, Json(HealthStatus {
-        status: "healthy".to_string(),
-        timestamp: chrono::Utc::now().to_rfc3339(),
-    }))
+    (
+        StatusCode::OK,
+        Json(HealthStatus {
+            status: "healthy".to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        }),
+    )
 }
 
 #[utoipa::path(

@@ -84,8 +84,8 @@ async fn consume_token(
 
     Ok(match row {
         Some((member_id_str,)) => {
-            let member_id = Uuid::parse_str(&member_id_str)
-                .map_err(|e| AppError::Internal(e.to_string()))?;
+            let member_id =
+                Uuid::parse_str(&member_id_str).map_err(|e| AppError::Internal(e.to_string()))?;
             Some(ConsumedToken { member_id })
         }
         None => None,

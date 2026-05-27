@@ -12,18 +12,19 @@ mod service;
 mod util;
 mod web;
 
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    Executor,
+};
 use std::str::FromStr;
 use std::sync::Arc;
-use sqlx::{Executor, sqlite::{SqliteConnectOptions, SqlitePoolOptions}};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
     config::Settings,
     integrations::{
-        IntegrationManager,
-        admin_alert_email::AdminAlertEmailIntegration,
-        discord::DiscordIntegration,
-        unifi::UnifiIntegration,
+        admin_alert_email::AdminAlertEmailIntegration, discord::DiscordIntegration,
+        unifi::UnifiIntegration, IntegrationManager,
     },
     service::ServiceContext,
 };
@@ -45,10 +46,14 @@ async fn main() -> anyhow::Result<()> {
     // Load configuration — crash on missing/invalid config rather than silently using defaults
     let settings = Settings::new().expect(
         "Failed to load configuration. \
-         Ensure .env exists with all required fields (see .env.example)."
+         Ensure .env exists with all required fields (see .env.example).",
     );
 
-    tracing::info!("Starting Coterie server on {}:{}", settings.server.host, settings.server.port);
+    tracing::info!(
+        "Starting Coterie server on {}:{}",
+        settings.server.host,
+        settings.server.port
+    );
 
     // Initialize database (resolves path relative to data_dir if needed)
     let database_url = settings.database_url();
@@ -77,25 +82,24 @@ async fn main() -> anyhow::Result<()> {
     // `unable to open database file` because sqlx's default `.connect()`
     // path doesn't create the file — operators have to remember to
     // add `?mode=rwc` to the URL, which is a deploy footgun.
-    let connect_options = SqliteConnectOptions::from_str(&database_url)?
-        .create_if_missing(true);
+    let connect_options = SqliteConnectOptions::from_str(&database_url)?.create_if_missing(true);
 
     let db_pool = SqlitePoolOptions::new()
         .max_connections(settings.database.max_connections)
-        .after_connect(|conn, _meta| Box::pin(async move {
-            conn.execute("PRAGMA foreign_keys = ON").await?;
-            conn.execute("PRAGMA journal_mode = WAL").await?;
-            conn.execute("PRAGMA synchronous = NORMAL").await?;
-            conn.execute("PRAGMA busy_timeout = 5000").await?;
-            Ok(())
-        }))
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                conn.execute("PRAGMA foreign_keys = ON").await?;
+                conn.execute("PRAGMA journal_mode = WAL").await?;
+                conn.execute("PRAGMA synchronous = NORMAL").await?;
+                conn.execute("PRAGMA busy_timeout = 5000").await?;
+                Ok(())
+            })
+        })
         .connect_with(connect_options)
         .await?;
 
     // Run migrations
-    sqlx::migrate!("./migrations")
-        .run(&db_pool)
-        .await?;
+    sqlx::migrate!("./migrations").run(&db_pool).await?;
 
     // Initialize auth service
     let auth_service = Arc::new(auth::AuthService::new(
@@ -133,7 +137,8 @@ async fn main() -> anyhow::Result<()> {
     // existing enrollments aren't affected (issuer is metadata in the
     // enrolled otpauth URL, not part of the verification math).
     let totp_issuer = settings_service
-        .get_setting("org.name").await
+        .get_setting("org.name")
+        .await
         .ok()
         .map(|s| s.value)
         .filter(|s| !s.is_empty())
@@ -148,7 +153,9 @@ async fn main() -> anyhow::Result<()> {
     // Initialize repositories
     let member_repo = Arc::new(repository::SqliteMemberRepository::new(db_pool.clone()));
     let event_repo = Arc::new(repository::SqliteEventRepository::new(db_pool.clone()));
-    let announcement_repo = Arc::new(repository::SqliteAnnouncementRepository::new(db_pool.clone()));
+    let announcement_repo = Arc::new(repository::SqliteAnnouncementRepository::new(
+        db_pool.clone(),
+    ));
     let payment_repo = Arc::new(repository::SqlitePaymentRepository::new(db_pool.clone()));
 
     // Initialize integration manager
@@ -286,7 +293,11 @@ async fn main() -> anyhow::Result<()> {
                     .unwrap_or(365);
                 match audit_service.prune_older_than(retention_days).await {
                     Ok(count) if count > 0 => {
-                        tracing::info!("Pruned {} audit-log entries older than {} days", count, retention_days);
+                        tracing::info!(
+                            "Pruned {} audit-log entries older than {} days",
+                            count,
+                            retention_days
+                        );
                     }
                     Err(e) => {
                         tracing::warn!("Failed to prune audit log: {:?}", e);
@@ -382,17 +393,21 @@ async fn main() -> anyhow::Result<()> {
     // a configured stripe_client is present; the API-key / secret
     // pair check already happened up top.
     let webhook_dispatcher: Option<Arc<payments::WebhookDispatcher>> = match &stripe_client {
-        Some(client) => settings.stripe.webhook_secret.clone().map(|webhook_secret| {
-            Arc::new(payments::WebhookDispatcher::new(
-                client.gateway(),
-                webhook_secret,
-                payment_repo,
-                service_context.member_repo.clone(),
-                service_context.processed_events_repo.clone(),
-                service_context.membership_type_service.clone(),
-                service_context.integration_manager.clone(),
-            ))
-        }),
+        Some(client) => settings
+            .stripe
+            .webhook_secret
+            .clone()
+            .map(|webhook_secret| {
+                Arc::new(payments::WebhookDispatcher::new(
+                    client.gateway(),
+                    webhook_secret,
+                    payment_repo,
+                    service_context.member_repo.clone(),
+                    service_context.processed_events_repo.clone(),
+                    service_context.membership_type_service.clone(),
+                    service_context.integration_manager.clone(),
+                ))
+            }),
         None => None,
     };
 
@@ -400,10 +415,9 @@ async fn main() -> anyhow::Result<()> {
     // the same instance. Reconstructing per-request would silently lose
     // any per-instance state a future field might carry (rate limiter,
     // backoff cache, etc.); fixing the pattern now is cheap insurance.
-    let billing_service = Arc::new(service_context.billing_service(
-        stripe_client.clone(),
-        settings.server.base_url.clone(),
-    ));
+    let billing_service = Arc::new(
+        service_context.billing_service(stripe_client.clone(), settings.server.base_url.clone()),
+    );
 
     // Spawn billing runner (runs every hour)
     {
@@ -423,7 +437,9 @@ async fn main() -> anyhow::Result<()> {
     let bot_challenge_verifier = api::middleware::bot_challenge::from_config(
         &settings.bot_challenge,
         reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(settings.bot_challenge.timeout_ms))
+            .timeout(std::time::Duration::from_millis(
+                settings.bot_challenge.timeout_ms,
+            ))
             .build()
             .expect("reqwest client (bot_challenge) construction"),
     );
@@ -494,11 +510,15 @@ async fn main() -> anyhow::Result<()> {
             api::middleware::security::csrf_protect_unless_exempt,
         ));
 
-    let listener = tokio::net::TcpListener::bind(
-        format!("{}:{}", settings.server.host, settings.server.port)
-    ).await?;
+    let listener =
+        tokio::net::TcpListener::bind(format!("{}:{}", settings.server.host, settings.server.port))
+            .await?;
 
-    tracing::info!("Server listening on http://{}:{}", settings.server.host, settings.server.port);
+    tracing::info!(
+        "Server listening on http://{}:{}",
+        settings.server.host,
+        settings.server.port
+    );
 
     axum::serve(listener, app).await?;
 
