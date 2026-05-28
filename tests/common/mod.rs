@@ -89,7 +89,11 @@ pub async fn build_app_state(pool: SqlitePool) -> AppState {
         crypto,
         "Coterie".to_string(),
     ));
-    build_app_state_with_totp(pool, totp_service).await
+    let auth_service = Arc::new(AuthService::new(
+        pool.clone(),
+        "test-session-secret-please-ignore".to_string(),
+    ));
+    build_app_state_with_services(pool, totp_service, auth_service).await
 }
 
 /// Variant of [`build_app_state`] that lets the caller inject a custom
@@ -100,6 +104,36 @@ pub async fn build_app_state(pool: SqlitePool) -> AppState {
 pub async fn build_app_state_with_totp(
     pool: SqlitePool,
     totp_service: Arc<TotpService>,
+) -> AppState {
+    let auth_service = Arc::new(AuthService::new(
+        pool.clone(),
+        "test-session-secret-please-ignore".to_string(),
+    ));
+    build_app_state_with_services(pool, totp_service, auth_service).await
+}
+
+/// Variant of [`build_app_state`] that lets the caller inject a custom
+/// `AuthService` — useful for tests that need to force `create_session`
+/// to fail (point the service at a closed pool). All other services keep
+/// the main `pool` so password lookup, member repo, etc. continue to
+/// work.
+pub async fn build_app_state_with_auth(
+    pool: SqlitePool,
+    auth_service: Arc<AuthService>,
+) -> AppState {
+    let crypto = Arc::new(SecretCrypto::new("test-secret-please-ignore"));
+    let totp_service = Arc::new(TotpService::new(
+        pool.clone(),
+        crypto,
+        "Coterie".to_string(),
+    ));
+    build_app_state_with_services(pool, totp_service, auth_service).await
+}
+
+async fn build_app_state_with_services(
+    pool: SqlitePool,
+    totp_service: Arc<TotpService>,
+    auth_service: Arc<AuthService>,
 ) -> AppState {
     let settings = Settings {
         server: coterie::config::ServerConfig {
@@ -137,10 +171,6 @@ pub async fn build_app_state_with_totp(
         Arc::new(SqlitePaymentRepository::new(pool.clone()));
 
     let crypto = Arc::new(SecretCrypto::new("test-secret-please-ignore"));
-    let auth_service = Arc::new(AuthService::new(
-        pool.clone(),
-        settings.auth.session_secret.clone(),
-    ));
     let csrf_service = Arc::new(CsrfService::new(&settings.auth.session_secret));
     let pending_login_service = Arc::new(PendingLoginService::new(pool.clone()));
     let settings_service = Arc::new(SettingsService::new(pool.clone(), crypto));
@@ -199,6 +229,24 @@ pub async fn failing_totp_service() -> Arc<TotpService> {
     bad_pool.close().await;
     let crypto = Arc::new(SecretCrypto::new("test-secret-please-ignore"));
     Arc::new(TotpService::new(bad_pool, crypto, "Coterie".to_string()))
+}
+
+/// Build an `AuthService` whose backing pool has already been closed.
+/// Any query through its session store (including `create_session`)
+/// returns a sqlx pool-closed error — used to drive the
+/// session-create-failure branch in the login handlers without
+/// disturbing the shared pool that the rest of the harness needs.
+pub async fn failing_auth_service() -> Arc<AuthService> {
+    let bad_pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("connect bad pool");
+    bad_pool.close().await;
+    Arc::new(AuthService::new(
+        bad_pool,
+        "test-session-secret-please-ignore".to_string(),
+    ))
 }
 
 /// Insert a fresh test member through `SqliteMemberRepository::create`

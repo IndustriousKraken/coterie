@@ -1,16 +1,22 @@
 use std::sync::Arc;
 
 use askama::Template;
-use axum::{extract::State, response::IntoResponse, Extension};
+use axum::{
+    extract::State,
+    response::{IntoResponse, Response},
+    Extension,
+};
+use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 use sqlx::SqlitePool;
 
 use super::MemberInfo;
 use crate::{
     api::middleware::auth::{CurrentUser, SessionInfo},
-    auth::CsrfService,
+    auth::{AuthService, CsrfService},
+    config::Settings,
     repository::MemberRepository,
-    service::membership_type_service::MembershipTypeService,
+    service::{audit_service::AuditService, membership_type_service::MembershipTypeService},
     web::templates::{filters, BaseContext, HtmlTemplate},
 };
 
@@ -108,9 +114,13 @@ pub struct UpdatePasswordRequest {
 pub async fn update_password(
     State(db_pool): State<SqlitePool>,
     State(member_repo): State<Arc<dyn MemberRepository>>,
+    State(auth_service): State<Arc<AuthService>>,
+    State(settings): State<Arc<Settings>>,
+    State(audit_service): State<Arc<AuditService>>,
     Extension(current_user): Extension<CurrentUser>,
+    jar: CookieJar,
     axum::Form(form): axum::Form<UpdatePasswordRequest>,
-) -> impl IntoResponse {
+) -> Response {
     // Validate passwords match
     if form.new_password != form.confirm_password {
         return axum::response::Html(
@@ -118,7 +128,8 @@ pub async fn update_password(
                 New passwords do not match
             </div>"#
                 .to_string(),
-        );
+        )
+        .into_response();
     }
 
     // Validate password complexity
@@ -126,7 +137,8 @@ pub async fn update_password(
         return axum::response::Html(format!(
             r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">{}</div>"#,
             crate::web::escape_html(msg)
-        ));
+        ))
+        .into_response();
     }
 
     // Verify current password
@@ -149,7 +161,8 @@ pub async fn update_password(
                 Current password is incorrect
             </div>"#
                 .to_string(),
-        );
+        )
+        .into_response();
     }
 
     // Hash new password and update
@@ -167,27 +180,83 @@ pub async fn update_password(
                     Failed to update password
                 </div>"#
                     .to_string(),
-            );
+            )
+            .into_response();
         }
     };
 
     // Update password in database
-    let result = member_repo
+    if member_repo
         .update_password_hash(current_user.member.id, &new_hash)
+        .await
+        .is_err()
+    {
+        return axum::response::Html(
+            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">
+                Failed to update password
+            </div>"#
+                .to_string(),
+        )
+        .into_response();
+    }
+
+    // Kill every existing session for this member — including the
+    // caller's current cookie. If a stolen-cookie scenario was the
+    // reason for the password change, this is the action that closes
+    // the gap. Mirrors `reset_password_handler` in
+    // src/web/templates/reset.rs: log the failure loudly but still
+    // report success, because the password DID change.
+    if let Err(e) = auth_service
+        .invalidate_all_sessions(current_user.member.id)
+        .await
+    {
+        tracing::error!(
+            "Password change for member {} succeeded but session invalidation FAILED — \
+             stale sessions may still be valid: {}",
+            current_user.member.id,
+            e
+        );
+    }
+
+    // Mint a fresh session for the caller so they aren't logged out on
+    // the device they just changed their password from.
+    let new_jar = match auth_service.create_session(current_user.member.id, 24).await {
+        Ok((_session, token)) => {
+            let cookie = auth_service
+                .create_session_cookie(&token, settings.server.cookies_are_secure());
+            jar.add(cookie)
+        }
+        Err(e) => {
+            tracing::error!(
+                "Password change for member {} succeeded but re-issuing the caller's \
+                 session FAILED — caller will need to log in again: {}",
+                current_user.member.id,
+                e
+            );
+            jar
+        }
+    };
+
+    audit_service
+        .log(
+            Some(current_user.member.id),
+            "password_change",
+            "member",
+            &current_user.member.id.to_string(),
+            None,
+            Some("via portal"),
+            None,
+        )
         .await;
 
-    match result {
-        Ok(()) => axum::response::Html(
+    (
+        new_jar,
+        axum::response::Html(
             r#"<div class="p-3 bg-green-50 text-green-800 rounded-md text-sm">
                 Password updated successfully!
             </div>"#
                 .to_string(),
         ),
-        Err(_) => axum::response::Html(
-            r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">
-                Failed to update password
-            </div>"#
-                .to_string(),
-        ),
-    }
+    )
+        .into_response()
 }
