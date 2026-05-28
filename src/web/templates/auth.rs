@@ -282,7 +282,7 @@ pub async fn login_handler(
             let _ = auth_service.invalidate_all_sessions(member.id).await;
 
             // Create session
-            let (_session, token) = auth_service
+            let (_session, token) = match auth_service
                 .create_session(
                     member.id,
                     if credentials.remember_me.unwrap_or(false) {
@@ -292,7 +292,21 @@ pub async fn login_handler(
                     },
                 )
                 .await
-                .unwrap();
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("Failed to create session after password verify: {}", e);
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(LoginResponse {
+                            success: false,
+                            redirect: None,
+                            error: Some("Login failed. Please try again.".to_string()),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
             // Create session cookie. Secure flag is driven by server config
             // so local http dev still works while TLS deployments get it set.
             let max_age_secs = if credentials.remember_me.unwrap_or(false) {
