@@ -27,14 +27,13 @@ use chrono::{Datelike, Utc};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-use crate::error::{AppError, Result};
 use super::gateway::{
-    CheckoutOutput, CreateCheckoutInput, CreateCustomerInput,
-    CreatePaymentIntentInput, CreateRefundInput, CreateSetupIntentInput,
-    PaymentIntentResult, PaymentMethodDetails, PaymentMethodSummary,
-    RefundOutput, RetrievedCheckoutSession, RetrievedCustomer,
+    CheckoutOutput, CreateCheckoutInput, CreateCustomerInput, CreatePaymentIntentInput,
+    CreateRefundInput, CreateSetupIntentInput, PaymentIntentResult, PaymentMethodDetails,
+    PaymentMethodSummary, RefundOutput, RetrievedCheckoutSession, RetrievedCustomer,
     RetrievedInvoice, SetupIntentOutput, StripeGateway,
 };
+use crate::error::{AppError, Result};
 
 /// Recorded gateway invocation. Tests assert on a `Vec<FakeCall>` to
 /// verify what the production code dispatched.
@@ -100,7 +99,12 @@ impl FakeStripeGateway {
 
     /// Convenience: count calls of a particular shape via a predicate.
     pub fn count_where<F: Fn(&FakeCall) -> bool>(&self, pred: F) -> usize {
-        self.calls.lock().unwrap().iter().filter(|c| pred(c)).count()
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| pred(c))
+            .count()
     }
 
     fn record(&self, call: FakeCall) {
@@ -117,7 +121,11 @@ impl FakeStripeGateway {
     // --- Response setters -------------------------------------------
 
     pub fn next_payment_intent(&self, result: PaymentIntentResult) {
-        self.queues.lock().unwrap().payment_intent.push_back(Ok(result));
+        self.queues
+            .lock()
+            .unwrap()
+            .payment_intent
+            .push_back(Ok(result));
     }
 
     pub fn next_payment_intent_err(&self, e: AppError) {
@@ -133,15 +141,27 @@ impl FakeStripeGateway {
     }
 
     pub fn next_checkout_session(&self, output: CheckoutOutput) {
-        self.queues.lock().unwrap().create_checkout.push_back(Ok(output));
+        self.queues
+            .lock()
+            .unwrap()
+            .create_checkout
+            .push_back(Ok(output));
     }
 
     pub fn next_retrieve_checkout_session(&self, retrieved: RetrievedCheckoutSession) {
-        self.queues.lock().unwrap().retrieve_session.push_back(Ok(retrieved));
+        self.queues
+            .lock()
+            .unwrap()
+            .retrieve_session
+            .push_back(Ok(retrieved));
     }
 
     pub fn next_retrieve_invoice(&self, retrieved: RetrievedInvoice) {
-        self.queues.lock().unwrap().retrieve_invoice.push_back(Ok(retrieved));
+        self.queues
+            .lock()
+            .unwrap()
+            .retrieve_invoice
+            .push_back(Ok(retrieved));
     }
 }
 
@@ -153,10 +173,7 @@ impl Default for FakeStripeGateway {
 
 #[async_trait]
 impl StripeGateway for FakeStripeGateway {
-    async fn create_checkout_session(
-        &self,
-        input: CreateCheckoutInput,
-    ) -> Result<CheckoutOutput> {
+    async fn create_checkout_session(&self, input: CreateCheckoutInput) -> Result<CheckoutOutput> {
         self.record(FakeCall::CreateCheckoutSession(input.clone()));
         if let Some(r) = self.queues.lock().unwrap().create_checkout.pop_front() {
             return r;
@@ -191,7 +208,9 @@ impl StripeGateway for FakeStripeGateway {
         if let Some(r) = self.queues.lock().unwrap().retrieve_session.pop_front() {
             return r;
         }
-        Ok(RetrievedCheckoutSession { payment_intent_id: None })
+        Ok(RetrievedCheckoutSession {
+            payment_intent_id: None,
+        })
     }
 
     async fn create_customer(&self, input: CreateCustomerInput) -> Result<String> {
@@ -239,13 +258,12 @@ impl StripeGateway for FakeStripeGateway {
         if let Some(r) = self.queues.lock().unwrap().payment_intent.pop_front() {
             return r;
         }
-        Ok(PaymentIntentResult::Succeeded { id: self.gen_id("pi") })
+        Ok(PaymentIntentResult::Succeeded {
+            id: self.gen_id("pi"),
+        })
     }
 
-    async fn list_payment_methods(
-        &self,
-        customer_id: &str,
-    ) -> Result<Vec<PaymentMethodSummary>> {
+    async fn list_payment_methods(&self, customer_id: &str) -> Result<Vec<PaymentMethodSummary>> {
         self.record(FakeCall::ListPaymentMethods {
             customer_id: customer_id.to_string(),
         });
@@ -279,7 +297,12 @@ impl StripeGateway for FakeStripeGateway {
         self.record(FakeCall::DetachPaymentMethod {
             payment_method_id: payment_method_id.to_string(),
         });
-        self.queues.lock().unwrap().detach_pm.pop_front().unwrap_or(Ok(()))
+        self.queues
+            .lock()
+            .unwrap()
+            .detach_pm
+            .pop_front()
+            .unwrap_or(Ok(()))
     }
 
     async fn create_refund(&self, input: CreateRefundInput) -> Result<RefundOutput> {
@@ -287,14 +310,21 @@ impl StripeGateway for FakeStripeGateway {
         if let Some(r) = self.queues.lock().unwrap().refund.pop_front() {
             return r;
         }
-        Ok(RefundOutput { id: self.gen_id("re") })
+        Ok(RefundOutput {
+            id: self.gen_id("re"),
+        })
     }
 
     async fn delete_subscription(&self, subscription_id: &str) -> Result<()> {
         self.record(FakeCall::DeleteSubscription {
             subscription_id: subscription_id.to_string(),
         });
-        self.queues.lock().unwrap().delete_sub.pop_front().unwrap_or(Ok(()))
+        self.queues
+            .lock()
+            .unwrap()
+            .delete_sub
+            .pop_front()
+            .unwrap_or(Ok(()))
     }
 
     async fn retrieve_invoice(&self, invoice_id: &str) -> Result<RetrievedInvoice> {
@@ -304,6 +334,8 @@ impl StripeGateway for FakeStripeGateway {
         if let Some(r) = self.queues.lock().unwrap().retrieve_invoice.pop_front() {
             return r;
         }
-        Ok(RetrievedInvoice { payment_intent_id: None })
+        Ok(RetrievedInvoice {
+            payment_intent_id: None,
+        })
     }
 }

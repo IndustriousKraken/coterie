@@ -1,5 +1,5 @@
-use chrono::{DateTime, Utc, NaiveDateTime};
-use sqlx::{SqlitePool, FromRow};
+use chrono::{DateTime, NaiveDateTime, Utc};
+use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
 
 use super::tokens::hash_token;
@@ -47,12 +47,12 @@ impl SessionStore {
         let member_id_str = member_id.to_string();
         let expires_at_naive = expires_at.naive_utc();
         let now_naive = now.naive_utc();
-        
+
         sqlx::query(
             r#"
             INSERT INTO sessions (id, member_id, token_hash, expires_at, created_at, last_used_at)
             VALUES (?, ?, ?, ?, ?, ?)
-            "#
+            "#,
         )
         .bind(&id)
         .bind(&member_id_str)
@@ -78,13 +78,13 @@ impl SessionStore {
         let now = Utc::now();
 
         let now_naive = now.naive_utc();
-        
+
         let row = sqlx::query_as::<_, SessionRow>(
             r#"
             SELECT id, member_id, token_hash, expires_at, created_at, last_used_at
             FROM sessions
             WHERE token_hash = ? AND expires_at > ?
-            "#
+            "#,
         )
         .bind(&token_hash)
         .bind(now_naive)
@@ -93,13 +93,11 @@ impl SessionStore {
 
         if let Some(row) = row {
             // Update last_used_at
-            sqlx::query(
-                "UPDATE sessions SET last_used_at = ? WHERE id = ?"
-            )
-            .bind(now_naive)
-            .bind(&row.id)
-            .execute(&self.pool)
-            .await?;
+            sqlx::query("UPDATE sessions SET last_used_at = ? WHERE id = ?")
+                .bind(now_naive)
+                .bind(&row.id)
+                .execute(&self.pool)
+                .await?;
 
             Ok(Some(Session {
                 id: row.id,
@@ -117,7 +115,7 @@ impl SessionStore {
 
     pub async fn delete_by_token(&self, token: &str) -> Result<()> {
         let token_hash = hash_token(token);
-        
+
         sqlx::query("DELETE FROM sessions WHERE token_hash = ?")
             .bind(&token_hash)
             .execute(&self.pool)
@@ -138,7 +136,7 @@ impl SessionStore {
 
     pub async fn cleanup_expired(&self) -> Result<u64> {
         let now = Utc::now();
-        
+
         let now_naive = now.naive_utc();
         let result = sqlx::query("DELETE FROM sessions WHERE expires_at <= ?")
             .bind(now_naive)

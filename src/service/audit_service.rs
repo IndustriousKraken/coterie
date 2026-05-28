@@ -68,7 +68,7 @@ impl AuditService {
         let result = sqlx::query(
             "INSERT INTO audit_logs \
              (id, actor_id, action, entity_type, entity_id, old_value, new_value, ip_address) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(&actor)
@@ -84,7 +84,10 @@ impl AuditService {
         if let Err(e) = result {
             tracing::error!(
                 "Failed to write audit log (action={}, entity={}:{}): {}",
-                action, entity_type, entity_id, e
+                action,
+                entity_type,
+                entity_id,
+                e
             );
         }
     }
@@ -95,7 +98,7 @@ impl AuditService {
     pub async fn prune_older_than(&self, retention_days: i64) -> Result<u64> {
         let days = retention_days.clamp(1, 3650); // refuse both absurdly short and absurdly long
         let result = sqlx::query(
-            "DELETE FROM audit_logs WHERE created_at < datetime('now', '-' || ? || ' days')"
+            "DELETE FROM audit_logs WHERE created_at < datetime('now', '-' || ? || ' days')",
         )
         .bind(days)
         .execute(&self.pool)
@@ -113,24 +116,27 @@ impl AuditService {
              FROM audit_logs al \
              LEFT JOIN members m ON m.id = al.actor_id \
              ORDER BY al.created_at DESC \
-             LIMIT ?"
+             LIMIT ?",
         )
         .bind(limit.clamp(1, 500))
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(|r| AuditEntry {
-            id: Uuid::parse_str(&r.id).unwrap_or_default(),
-            actor_id: r.actor_id.and_then(|s| Uuid::parse_str(&s).ok()),
-            actor_name: r.actor_name,
-            action: r.action,
-            entity_type: r.entity_type,
-            entity_id: r.entity_id,
-            old_value: r.old_value,
-            new_value: r.new_value,
-            ip_address: r.ip_address,
-            created_at: DateTime::from_naive_utc_and_offset(r.created_at, Utc),
-        }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| AuditEntry {
+                id: Uuid::parse_str(&r.id).unwrap_or_default(),
+                actor_id: r.actor_id.and_then(|s| Uuid::parse_str(&s).ok()),
+                actor_name: r.actor_name,
+                action: r.action,
+                entity_type: r.entity_type,
+                entity_id: r.entity_id,
+                old_value: r.old_value,
+                new_value: r.new_value,
+                ip_address: r.ip_address,
+                created_at: DateTime::from_naive_utc_and_offset(r.created_at, Utc),
+            })
+            .collect())
     }
 }
 
@@ -151,7 +157,10 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .expect(":memory:");
-        sqlx::migrate!("./migrations").run(&pool).await.expect("migrate");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrate");
         pool
     }
 
@@ -160,7 +169,7 @@ mod tests {
         sqlx::query(
             "INSERT INTO audit_logs \
              (id, action, entity_type, entity_id) \
-             VALUES (?, 'test.action', 'test', 'test-entity')"
+             VALUES (?, 'test.action', 'test', 'test-entity')",
         )
         .bind(&id)
         .execute(pool)
@@ -183,8 +192,15 @@ mod tests {
         let svc = AuditService::new(pool.clone());
 
         let removed = svc.prune_older_than(0).await.expect("prune returns Ok");
-        assert_eq!(removed, 0, "clamp must lift 0 to 1 day so today's row is not deleted");
-        assert_eq!(count_rows(&pool).await, 1, "row inserted now must NOT be wiped");
+        assert_eq!(
+            removed, 0,
+            "clamp must lift 0 to 1 day so today's row is not deleted"
+        );
+        assert_eq!(
+            count_rows(&pool).await,
+            1,
+            "row inserted now must NOT be wiped"
+        );
     }
 
     #[tokio::test]
@@ -196,7 +212,10 @@ mod tests {
             .prune_older_than(i64::MAX)
             .await
             .expect("prune must clamp i64::MAX and not propagate SQL overflow");
-        assert_eq!(removed, 0, "empty table — nothing to delete after clamp to 3650");
+        assert_eq!(
+            removed, 0,
+            "empty table — nothing to delete after clamp to 3650"
+        );
     }
 
     #[tokio::test]
@@ -220,7 +239,7 @@ mod tests {
             sqlx::query(
                 "INSERT INTO audit_logs \
                  (id, action, entity_type, entity_id) \
-                 VALUES (?, 'test.action', 'test', 'test-entity')"
+                 VALUES (?, 'test.action', 'test', 'test-entity')",
             )
             .bind(&id)
             .execute(&mut *tx)

@@ -264,10 +264,7 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
             "/finance/expenses/new",
             get(admin::finance::expenses::new_page),
         )
-        .route(
-            "/finance/expenses",
-            post(admin::finance::expenses::create),
-        )
+        .route("/finance/expenses", post(admin::finance::expenses::create))
         .route(
             "/finance/expenses/:id/edit",
             get(admin::finance::expenses::edit_page),
@@ -320,10 +317,7 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
             "/finance/accounts/new",
             get(admin::finance::accounts::new_page),
         )
-        .route(
-            "/finance/accounts",
-            post(admin::finance::accounts::create),
-        )
+        .route("/finance/accounts", post(admin::finance::accounts::create))
         .route(
             "/finance/accounts/:id/edit",
             get(admin::finance::accounts::edit_page),

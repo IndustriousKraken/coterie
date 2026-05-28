@@ -1,5 +1,5 @@
-use serde::Deserialize;
 use config::{Config, ConfigError, Environment, File};
+use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Settings {
@@ -54,9 +54,9 @@ pub struct ServerConfig {
 impl ServerConfig {
     /// Get the uploads directory, defaulting to {data_dir}/uploads
     pub fn uploads_path(&self) -> String {
-        self.uploads_dir.clone().unwrap_or_else(|| {
-            format!("{}/uploads", self.data_dir)
-        })
+        self.uploads_dir
+            .clone()
+            .unwrap_or_else(|| format!("{}/uploads", self.data_dir))
     }
 
     pub fn cookies_are_secure(&self) -> bool {
@@ -152,11 +152,15 @@ impl Default for BotChallengeConfig {
     }
 }
 
-fn default_bot_challenge_provider() -> String { "disabled".to_string() }
+fn default_bot_challenge_provider() -> String {
+    "disabled".to_string()
+}
 fn default_bot_challenge_url() -> String {
     "https://challenges.cloudflare.com/turnstile/v0/siteverify".to_string()
 }
-fn default_bot_challenge_timeout_ms() -> u64 { 3000 }
+fn default_bot_challenge_timeout_ms() -> u64 {
+    3000
+}
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct StripeConfig {
@@ -259,14 +263,12 @@ impl Settings {
     pub fn new() -> Result<Self, ConfigError> {
         let config = Config::builder()
             // Add config files if they exist (in order of precedence, later overrides earlier)
-            .add_source(File::with_name("/etc/coterie/config").required(false))  // System-wide
-            .add_source(File::with_name("config/default").required(false))        // App default
-            .add_source(File::with_name("config/local").required(false))          // Local overrides
-            .add_source(File::with_name("config/seed").required(false))           // Seed data
-
+            .add_source(File::with_name("/etc/coterie/config").required(false)) // System-wide
+            .add_source(File::with_name("config/default").required(false)) // App default
+            .add_source(File::with_name("config/local").required(false)) // Local overrides
+            .add_source(File::with_name("config/seed").required(false)) // Seed data
             // Add environment variables (with COTERIE__ prefix, double underscore separates levels)
             .add_source(Environment::with_prefix("COTERIE").separator("__"))
-
             .build()?;
 
         config.try_deserialize()
@@ -277,7 +279,8 @@ impl Settings {
         let url = &self.database.url;
         // If it's a simple sqlite filename (not a full path), put it in data_dir
         // Handle both "sqlite://filename" and "sqlite:filename" forms
-        let filename = url.strip_prefix("sqlite://")
+        let filename = url
+            .strip_prefix("sqlite://")
             .or_else(|| url.strip_prefix("sqlite:"));
         if let Some(filename) = filename {
             if !filename.contains('/') {

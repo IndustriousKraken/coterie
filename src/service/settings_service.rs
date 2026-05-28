@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use chrono::{Utc, NaiveDateTime, DateTime};
+use chrono::{DateTime, NaiveDateTime, Utc};
+use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
-use sqlx::{SqlitePool, FromRow};
 
 use crate::{
     auth::SecretCrypto,
-    domain::{AppSetting, UpdateSettingRequest, SettingsCategory, SettingType},
+    domain::{AppSetting, SettingType, SettingsCategory, UpdateSettingRequest},
     error::{AppError, Result},
 };
 
@@ -128,7 +128,7 @@ impl SettingsService {
                 is_sensitive, updated_by, updated_at
             FROM app_settings
             WHERE key = ?
-            "#
+            "#,
         )
         .bind(key)
         .fetch_optional(&self.pool)
@@ -137,7 +137,7 @@ impl SettingsService {
 
         Ok(self.row_to_setting(row))
     }
-    
+
     fn row_to_setting(&self, row: SettingRow) -> AppSetting {
         AppSetting {
             key: row.key,
@@ -150,7 +150,7 @@ impl SettingsService {
             updated_at: DateTime::from_naive_utc_and_offset(row.updated_at, Utc),
         }
     }
-    
+
     fn parse_setting_type(&self, type_str: &str) -> SettingType {
         match type_str {
             "string" => SettingType::String,
@@ -169,11 +169,11 @@ impl SettingsService {
                 is_sensitive, updated_by, updated_at
             FROM app_settings
             ORDER BY category, key
-            "#
+            "#,
         )
         .fetch_all(&self.pool)
         .await?;
-        
+
         let settings: Vec<AppSetting> = rows.into_iter().map(|r| self.row_to_setting(r)).collect();
 
         // Group by category
@@ -227,7 +227,7 @@ impl SettingsService {
             UPDATE app_settings
             SET value = ?, updated_by = ?, updated_at = ?
             WHERE key = ?
-            "#
+            "#,
         )
         .bind(&request.value)
         .bind(updated_by.to_string())
@@ -242,7 +242,7 @@ impl SettingsService {
             r#"
             INSERT INTO settings_audit (id, setting_key, old_value, new_value, changed_by, reason)
             VALUES (?, ?, ?, ?, ?, ?)
-            "#
+            "#,
         )
         .bind(audit_id)
         .bind(key)
@@ -264,24 +264,46 @@ impl SettingsService {
 
     pub async fn get_bool(&self, key: &str) -> Result<bool> {
         let value = self.get_value(key).await?;
-        value.parse().map_err(|_| AppError::Internal(format!("Invalid boolean value for {}", key)))
+        value
+            .parse()
+            .map_err(|_| AppError::Internal(format!("Invalid boolean value for {}", key)))
     }
 
     pub async fn get_number(&self, key: &str) -> Result<i64> {
         let value = self.get_value(key).await?;
-        value.parse().map_err(|_| AppError::Internal(format!("Invalid number value for {}", key)))
+        value
+            .parse()
+            .map_err(|_| AppError::Internal(format!("Invalid number value for {}", key)))
     }
 
     /// Load the full email configuration from the settings table,
     /// decrypting the SMTP password into plaintext.
     pub async fn get_email_config(&self) -> Result<DbEmailConfig> {
-        let mode = self.get_value(email_keys::MODE).await.unwrap_or_else(|_| "log".to_string());
-        let from_address = self.get_value(email_keys::FROM_ADDRESS).await.unwrap_or_default();
-        let from_name = self.get_value(email_keys::FROM_NAME).await.unwrap_or_else(|_| "Coterie".to_string());
-        let smtp_host = self.get_value(email_keys::SMTP_HOST).await.unwrap_or_default();
+        let mode = self
+            .get_value(email_keys::MODE)
+            .await
+            .unwrap_or_else(|_| "log".to_string());
+        let from_address = self
+            .get_value(email_keys::FROM_ADDRESS)
+            .await
+            .unwrap_or_default();
+        let from_name = self
+            .get_value(email_keys::FROM_NAME)
+            .await
+            .unwrap_or_else(|_| "Coterie".to_string());
+        let smtp_host = self
+            .get_value(email_keys::SMTP_HOST)
+            .await
+            .unwrap_or_default();
         let smtp_port = self.get_number(email_keys::SMTP_PORT).await.unwrap_or(587) as u16;
-        let smtp_username = self.get_value(email_keys::SMTP_USERNAME).await.unwrap_or_default();
-        let encrypted_password = self.get_value(email_keys::SMTP_PASSWORD).await.unwrap_or_default();
+        let smtp_username = self
+            .get_value(email_keys::SMTP_USERNAME)
+            .await
+            .unwrap_or_default();
+        let encrypted_password = self
+            .get_value(email_keys::SMTP_PASSWORD)
+            .await
+            .unwrap_or_default();
         let smtp_password = self.crypto.decrypt(&encrypted_password)?;
 
         Ok(DbEmailConfig {
@@ -299,7 +321,10 @@ impl SettingsService {
     /// decrypted — almost always a sign that `session_secret` was
     /// rotated. The admin UI uses this to show a clear warning banner.
     pub async fn smtp_password_undecryptable(&self) -> bool {
-        let encrypted = self.get_value(email_keys::SMTP_PASSWORD).await.unwrap_or_default();
+        let encrypted = self
+            .get_value(email_keys::SMTP_PASSWORD)
+            .await
+            .unwrap_or_default();
         if encrypted.is_empty() {
             return false;
         }
@@ -314,16 +339,27 @@ impl SettingsService {
         config: UpdateEmailConfig,
         updated_by: Uuid,
     ) -> Result<()> {
-        self.set_value_raw(email_keys::MODE, &config.mode, updated_by).await?;
-        self.set_value_raw(email_keys::FROM_ADDRESS, &config.from_address, updated_by).await?;
-        self.set_value_raw(email_keys::FROM_NAME, &config.from_name, updated_by).await?;
-        self.set_value_raw(email_keys::SMTP_HOST, &config.smtp_host, updated_by).await?;
-        self.set_value_raw(email_keys::SMTP_PORT, &config.smtp_port.to_string(), updated_by).await?;
-        self.set_value_raw(email_keys::SMTP_USERNAME, &config.smtp_username, updated_by).await?;
+        self.set_value_raw(email_keys::MODE, &config.mode, updated_by)
+            .await?;
+        self.set_value_raw(email_keys::FROM_ADDRESS, &config.from_address, updated_by)
+            .await?;
+        self.set_value_raw(email_keys::FROM_NAME, &config.from_name, updated_by)
+            .await?;
+        self.set_value_raw(email_keys::SMTP_HOST, &config.smtp_host, updated_by)
+            .await?;
+        self.set_value_raw(
+            email_keys::SMTP_PORT,
+            &config.smtp_port.to_string(),
+            updated_by,
+        )
+        .await?;
+        self.set_value_raw(email_keys::SMTP_USERNAME, &config.smtp_username, updated_by)
+            .await?;
 
         if let Some(new_password) = config.smtp_password {
             let encrypted = self.crypto.encrypt(&new_password)?;
-            self.set_value_raw(email_keys::SMTP_PASSWORD, &encrypted, updated_by).await?;
+            self.set_value_raw(email_keys::SMTP_PASSWORD, &encrypted, updated_by)
+                .await?;
         }
 
         Ok(())
@@ -333,19 +369,49 @@ impl SettingsService {
     /// decrypted into plaintext for the integration's use.
     pub async fn get_discord_config(&self) -> Result<DbDiscordConfig> {
         let enabled = self.get_bool(discord_keys::ENABLED).await.unwrap_or(false);
-        let guild_id = self.get_value(discord_keys::GUILD_ID).await.unwrap_or_default();
-        let member_role_id = self.get_value(discord_keys::MEMBER_ROLE_ID).await.unwrap_or_default();
-        let expired_role_id = self.get_value(discord_keys::EXPIRED_ROLE_ID).await.unwrap_or_default();
-        let events_channel_id = self.get_value(discord_keys::EVENTS_CHANNEL_ID).await.unwrap_or_default();
-        let announcements_channel_id = self.get_value(discord_keys::ANNOUNCEMENTS_CHANNEL_ID).await.unwrap_or_default();
-        let admin_alerts_channel_id = self.get_value(discord_keys::ADMIN_ALERTS_CHANNEL_ID).await.unwrap_or_default();
-        let invite_url = self.get_value(discord_keys::INVITE_URL).await.unwrap_or_default();
-        let encrypted = self.get_value(discord_keys::BOT_TOKEN).await.unwrap_or_default();
+        let guild_id = self
+            .get_value(discord_keys::GUILD_ID)
+            .await
+            .unwrap_or_default();
+        let member_role_id = self
+            .get_value(discord_keys::MEMBER_ROLE_ID)
+            .await
+            .unwrap_or_default();
+        let expired_role_id = self
+            .get_value(discord_keys::EXPIRED_ROLE_ID)
+            .await
+            .unwrap_or_default();
+        let events_channel_id = self
+            .get_value(discord_keys::EVENTS_CHANNEL_ID)
+            .await
+            .unwrap_or_default();
+        let announcements_channel_id = self
+            .get_value(discord_keys::ANNOUNCEMENTS_CHANNEL_ID)
+            .await
+            .unwrap_or_default();
+        let admin_alerts_channel_id = self
+            .get_value(discord_keys::ADMIN_ALERTS_CHANNEL_ID)
+            .await
+            .unwrap_or_default();
+        let invite_url = self
+            .get_value(discord_keys::INVITE_URL)
+            .await
+            .unwrap_or_default();
+        let encrypted = self
+            .get_value(discord_keys::BOT_TOKEN)
+            .await
+            .unwrap_or_default();
         let bot_token = self.crypto.decrypt(&encrypted)?;
 
         Ok(DbDiscordConfig {
-            enabled, bot_token, guild_id, member_role_id, expired_role_id,
-            events_channel_id, announcements_channel_id, admin_alerts_channel_id,
+            enabled,
+            bot_token,
+            guild_id,
+            member_role_id,
+            expired_role_id,
+            events_channel_id,
+            announcements_channel_id,
+            admin_alerts_channel_id,
             invite_url,
         })
     }
@@ -354,7 +420,10 @@ impl SettingsService {
     /// shape as `smtp_password_undecryptable`. Triggers the admin UI's
     /// rotation banner.
     pub async fn discord_token_undecryptable(&self) -> bool {
-        let encrypted = self.get_value(discord_keys::BOT_TOKEN).await.unwrap_or_default();
+        let encrypted = self
+            .get_value(discord_keys::BOT_TOKEN)
+            .await
+            .unwrap_or_default();
         if encrypted.is_empty() {
             return false;
         }
@@ -366,18 +435,51 @@ impl SettingsService {
         config: UpdateDiscordConfig,
         updated_by: Uuid,
     ) -> Result<()> {
-        self.set_value_raw(discord_keys::ENABLED, if config.enabled { "true" } else { "false" }, updated_by).await?;
-        self.set_value_raw(discord_keys::GUILD_ID, &config.guild_id, updated_by).await?;
-        self.set_value_raw(discord_keys::MEMBER_ROLE_ID, &config.member_role_id, updated_by).await?;
-        self.set_value_raw(discord_keys::EXPIRED_ROLE_ID, &config.expired_role_id, updated_by).await?;
-        self.set_value_raw(discord_keys::EVENTS_CHANNEL_ID, &config.events_channel_id, updated_by).await?;
-        self.set_value_raw(discord_keys::ANNOUNCEMENTS_CHANNEL_ID, &config.announcements_channel_id, updated_by).await?;
-        self.set_value_raw(discord_keys::ADMIN_ALERTS_CHANNEL_ID, &config.admin_alerts_channel_id, updated_by).await?;
-        self.set_value_raw(discord_keys::INVITE_URL, &config.invite_url, updated_by).await?;
+        self.set_value_raw(
+            discord_keys::ENABLED,
+            if config.enabled { "true" } else { "false" },
+            updated_by,
+        )
+        .await?;
+        self.set_value_raw(discord_keys::GUILD_ID, &config.guild_id, updated_by)
+            .await?;
+        self.set_value_raw(
+            discord_keys::MEMBER_ROLE_ID,
+            &config.member_role_id,
+            updated_by,
+        )
+        .await?;
+        self.set_value_raw(
+            discord_keys::EXPIRED_ROLE_ID,
+            &config.expired_role_id,
+            updated_by,
+        )
+        .await?;
+        self.set_value_raw(
+            discord_keys::EVENTS_CHANNEL_ID,
+            &config.events_channel_id,
+            updated_by,
+        )
+        .await?;
+        self.set_value_raw(
+            discord_keys::ANNOUNCEMENTS_CHANNEL_ID,
+            &config.announcements_channel_id,
+            updated_by,
+        )
+        .await?;
+        self.set_value_raw(
+            discord_keys::ADMIN_ALERTS_CHANNEL_ID,
+            &config.admin_alerts_channel_id,
+            updated_by,
+        )
+        .await?;
+        self.set_value_raw(discord_keys::INVITE_URL, &config.invite_url, updated_by)
+            .await?;
 
         if let Some(new_token) = config.bot_token {
             let encrypted = self.crypto.encrypt(&new_token)?;
-            self.set_value_raw(discord_keys::BOT_TOKEN, &encrypted, updated_by).await?;
+            self.set_value_raw(discord_keys::BOT_TOKEN, &encrypted, updated_by)
+                .await?;
         }
 
         Ok(())
@@ -385,9 +487,16 @@ impl SettingsService {
 
     pub async fn record_discord_test(&self, ok: bool, error: &str, updated_by: Uuid) -> Result<()> {
         let now = Utc::now().to_rfc3339();
-        self.set_value_raw(discord_keys::LAST_TEST_AT, &now, updated_by).await?;
-        self.set_value_raw(discord_keys::LAST_TEST_OK, if ok { "true" } else { "false" }, updated_by).await?;
-        self.set_value_raw(discord_keys::LAST_TEST_ERROR, error, updated_by).await?;
+        self.set_value_raw(discord_keys::LAST_TEST_AT, &now, updated_by)
+            .await?;
+        self.set_value_raw(
+            discord_keys::LAST_TEST_OK,
+            if ok { "true" } else { "false" },
+            updated_by,
+        )
+        .await?;
+        self.set_value_raw(discord_keys::LAST_TEST_ERROR, error, updated_by)
+            .await?;
         Ok(())
     }
 
@@ -395,9 +504,16 @@ impl SettingsService {
     /// show health at a glance.
     pub async fn record_email_test(&self, ok: bool, error: &str, updated_by: Uuid) -> Result<()> {
         let now = Utc::now().to_rfc3339();
-        self.set_value_raw(email_keys::LAST_TEST_AT, &now, updated_by).await?;
-        self.set_value_raw(email_keys::LAST_TEST_OK, if ok { "true" } else { "false" }, updated_by).await?;
-        self.set_value_raw(email_keys::LAST_TEST_ERROR, error, updated_by).await?;
+        self.set_value_raw(email_keys::LAST_TEST_AT, &now, updated_by)
+            .await?;
+        self.set_value_raw(
+            email_keys::LAST_TEST_OK,
+            if ok { "true" } else { "false" },
+            updated_by,
+        )
+        .await?;
+        self.set_value_raw(email_keys::LAST_TEST_ERROR, error, updated_by)
+            .await?;
         Ok(())
     }
 
@@ -407,7 +523,7 @@ impl SettingsService {
     async fn set_value_raw(&self, key: &str, value: &str, updated_by: Uuid) -> Result<()> {
         let now = Utc::now().naive_utc();
         sqlx::query(
-            "UPDATE app_settings SET value = ?, updated_by = ?, updated_at = ? WHERE key = ?"
+            "UPDATE app_settings SET value = ?, updated_by = ?, updated_at = ? WHERE key = ?",
         )
         .bind(value)
         .bind(updated_by.to_string())

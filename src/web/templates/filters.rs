@@ -10,12 +10,14 @@ pub fn fmt_short_date(d: &DateTime<Utc>) -> ::askama::Result<String> {
 
 #[allow(dead_code)]
 pub fn fmt_long_date_opt(d: &Option<DateTime<Utc>>) -> ::askama::Result<String> {
-    Ok(d.map(|x| x.format("%B %d, %Y").to_string()).unwrap_or_default())
+    Ok(d.map(|x| x.format("%B %d, %Y").to_string())
+        .unwrap_or_default())
 }
 
 #[allow(dead_code)]
 pub fn fmt_short_date_opt(d: &Option<DateTime<Utc>>) -> ::askama::Result<String> {
-    Ok(d.map(|x| x.format("%b %d, %Y").to_string()).unwrap_or_default())
+    Ok(d.map(|x| x.format("%b %d, %Y").to_string())
+        .unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -39,7 +41,10 @@ mod tests {
 
     #[test]
     fn fmt_long_date_opt_renders_some() {
-        assert_eq!(fmt_long_date_opt(&Some(fixture())).unwrap(), "September 12, 2025");
+        assert_eq!(
+            fmt_long_date_opt(&Some(fixture())).unwrap(),
+            "September 12, 2025"
+        );
     }
 
     #[test]
@@ -49,7 +54,10 @@ mod tests {
 
     #[test]
     fn fmt_short_date_opt_renders_some() {
-        assert_eq!(fmt_short_date_opt(&Some(fixture())).unwrap(), "Sep 12, 2025");
+        assert_eq!(
+            fmt_short_date_opt(&Some(fixture())).unwrap(),
+            "Sep 12, 2025"
+        );
     }
 
     #[test]

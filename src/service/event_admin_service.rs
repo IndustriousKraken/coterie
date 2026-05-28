@@ -1549,4 +1549,187 @@ mod tests {
             1,
         );
     }
+
+    // -----------------------------------------------------------------
+    // Error-path tests — assert typed AppError variants on operator-
+    // reachable failure inputs (stale UUIDs, hand-crafted zero-index
+    // URLs) and the no-op + audit branch of restore.
+
+    #[tokio::test]
+    async fn update_one_errors_when_event_id_not_found() {
+        let pool = fresh_pool().await;
+        let svc = make_service(pool.clone());
+        let actor = make_actor(&pool).await;
+
+        let missing_id = Uuid::new_v4();
+        let input = UpdateEventInput {
+            title: "Whatever".to_string(),
+            description: "Body".to_string(),
+            event_type: EventType::Meeting,
+            event_type_id: None,
+            visibility: EventVisibility::MembersOnly,
+            start_time: next_saturday_anchor(),
+            end_time: None,
+            location: None,
+            max_attendees: None,
+            rsvp_required: false,
+            image_url: None,
+        };
+
+        let err = svc.update_one(actor, missing_id, input).await.unwrap_err();
+        match err {
+            AppError::NotFound(msg) => assert!(
+                msg.contains("Event not found"),
+                "expected 'Event not found' in message, got: {msg}",
+            ),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        // Short-circuit BEFORE the audit row — no phantom update_event entry.
+        assert_eq!(
+            audit_count(&pool, "update_event", &missing_id.to_string()).await,
+            0,
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_event_occurrence_errors_when_series_not_found() {
+        let pool = fresh_pool().await;
+        let svc = make_service(pool.clone());
+        let actor = make_actor(&pool).await;
+
+        let missing_series = Uuid::new_v4();
+        let err = svc
+            .cancel_event_occurrence(actor, missing_series, 1, None)
+            .await
+            .unwrap_err();
+        match err {
+            AppError::NotFound(msg) => {
+                assert!(msg.contains("series"), "expected 'series' in msg: {msg}");
+                assert!(
+                    msg.contains("not found"),
+                    "expected 'not found' in msg: {msg}",
+                );
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_event_occurrence_errors_on_zero_index() {
+        let pool = fresh_pool().await;
+        let svc = make_service(pool.clone());
+        let actor = make_actor(&pool).await;
+        let (series_id, _) = make_series_with_anchor(&svc, actor).await;
+
+        let err = svc
+            .cancel_event_occurrence(actor, series_id, 0, None)
+            .await
+            .unwrap_err();
+        match err {
+            AppError::BadRequest(msg) => assert!(
+                msg.contains("occurrence_index must be >= 1"),
+                "expected zero-index msg, got: {msg}",
+            ),
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn override_event_occurrence_errors_when_series_not_found() {
+        let pool = fresh_pool().await;
+        let svc = make_service(pool.clone());
+        let actor = make_actor(&pool).await;
+
+        let missing_series = Uuid::new_v4();
+        let ov = OccurrenceOverride {
+            location: Some("Anywhere".into()),
+            ..Default::default()
+        };
+        let err = svc
+            .override_event_occurrence(actor, missing_series, 1, ov, None)
+            .await
+            .unwrap_err();
+        match err {
+            AppError::NotFound(msg) => {
+                assert!(msg.contains("series"), "expected 'series' in msg: {msg}");
+                assert!(
+                    msg.contains("not found"),
+                    "expected 'not found' in msg: {msg}",
+                );
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn override_event_occurrence_errors_on_zero_index() {
+        let pool = fresh_pool().await;
+        let svc = make_service(pool.clone());
+        let actor = make_actor(&pool).await;
+        let (series_id, _) = make_series_with_anchor(&svc, actor).await;
+
+        let ov = OccurrenceOverride {
+            location: Some("Anywhere".into()),
+            ..Default::default()
+        };
+        let err = svc
+            .override_event_occurrence(actor, series_id, 0, ov, None)
+            .await
+            .unwrap_err();
+        match err {
+            AppError::BadRequest(msg) => assert!(
+                msg.contains("occurrence_index must be >= 1"),
+                "expected zero-index msg, got: {msg}",
+            ),
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn restore_event_occurrence_errors_when_series_not_found() {
+        let pool = fresh_pool().await;
+        let svc = make_service(pool.clone());
+        let actor = make_actor(&pool).await;
+
+        // Hits the inline find_by_id-then-ok_or_else chain in
+        // restore_event_occurrence, not require_series_exists.
+        let missing_series = Uuid::new_v4();
+        let err = svc
+            .restore_event_occurrence(actor, missing_series, 1)
+            .await
+            .unwrap_err();
+        match err {
+            AppError::NotFound(msg) => {
+                assert!(msg.contains("series"), "expected 'series' in msg: {msg}");
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn restore_event_occurrence_noop_when_no_exception_emits_audit() {
+        let pool = fresh_pool().await;
+        let svc = make_service(pool.clone());
+        let actor = make_actor(&pool).await;
+        let (series_id, _) = make_series_with_anchor(&svc, actor).await;
+
+        // Occurrence 2 exists (materializer creates several) and has no
+        // exception — restore must be a no-op but still audit.
+        let result = svc
+            .restore_event_occurrence(actor, series_id, 2)
+            .await
+            .unwrap();
+        assert!(result.is_none(), "no-op restore returns None");
+
+        assert_eq!(
+            audit_count(
+                &pool,
+                "restore_event_occurrence",
+                &format!("{}#2", series_id),
+            )
+            .await,
+            1,
+        );
+    }
 }

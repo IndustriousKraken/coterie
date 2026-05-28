@@ -1,5 +1,5 @@
+use argon2::password_hash::{rand_core::OsRng, SaltString};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
-use argon2::password_hash::{SaltString, rand_core::OsRng};
 use chrono::{Duration, Utc};
 use cookie::{Cookie, SameSite};
 use sqlx::SqlitePool;
@@ -19,10 +19,10 @@ pub mod session;
 pub mod tokens;
 pub mod totp;
 
-use session::{Session, SessionStore};
 pub use csrf::CsrfService;
 pub use pending_login::PendingLoginService;
 pub use secret_crypto::SecretCrypto;
+use session::{Session, SessionStore};
 pub use totp::TotpService;
 
 pub struct AuthService {
@@ -45,7 +45,9 @@ impl AuthService {
 
         let argon2 = Argon2::default();
 
-        Ok(argon2.verify_password(password.as_bytes(), &parsed_hash).is_ok())
+        Ok(argon2
+            .verify_password(password.as_bytes(), &parsed_hash)
+            .is_ok())
     }
 
     /// Run a full Argon2 hash so the caller's latency is
@@ -63,22 +65,27 @@ impl AuthService {
     pub async fn hash_password(password: &str) -> Result<String> {
         let salt = SaltString::generate(&mut OsRng);
         let argon2 = Argon2::default();
-        
+
         let password_hash = argon2
             .hash_password(password.as_bytes(), &salt)
             .map_err(|e| AppError::Internal(format!("Password hashing failed: {}", e)))?;
-        
+
         Ok(password_hash.to_string())
     }
 
-    pub async fn create_session(&self, member_id: Uuid, duration_hours: i64) -> Result<(Session, String)> {
+    pub async fn create_session(
+        &self,
+        member_id: Uuid,
+        duration_hours: i64,
+    ) -> Result<(Session, String)> {
         let token = tokens::generate_token();
         let expires_at = Utc::now() + Duration::hours(duration_hours);
-        
-        let session = self.session_store
+
+        let session = self
+            .session_store
             .create(member_id, &token, expires_at)
             .await?;
-        
+
         Ok((session, token))
     }
 
@@ -141,19 +148,18 @@ pub fn validate_password(password: &str) -> std::result::Result<(), &'static str
 }
 
 pub async fn get_password_hash(pool: &SqlitePool, email: &str) -> Result<Option<String>> {
-    let result = sqlx::query_scalar::<_, String>(
-        "SELECT password_hash FROM members WHERE email = ?"
-    )
-    .bind(email)
-    .fetch_optional(pool)
-    .await?;
-    
+    let result =
+        sqlx::query_scalar::<_, String>("SELECT password_hash FROM members WHERE email = ?")
+            .bind(email)
+            .fetch_optional(pool)
+            .await?;
+
     Ok(result)
 }
 
 pub async fn get_member_by_email(pool: &SqlitePool, email: &str) -> Result<Option<Member>> {
     use crate::repository::{MemberRepository, SqliteMemberRepository};
-    
+
     let repo = SqliteMemberRepository::new(pool.clone());
     repo.find_by_email(email).await
 }

@@ -5,8 +5,7 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        CreateMembershipTypeRequest, MembershipTypeConfig, UpdateMembershipTypeRequest,
-        slugify,
+        slugify, CreateMembershipTypeRequest, MembershipTypeConfig, UpdateMembershipTypeRequest,
     },
     error::{AppError, Result},
 };
@@ -33,7 +32,11 @@ pub trait MembershipTypeRepository: Send + Sync {
     async fn find_by_id(&self, id: Uuid) -> Result<Option<MembershipTypeConfig>>;
     async fn find_by_slug(&self, slug: &str) -> Result<Option<MembershipTypeConfig>>;
     async fn list(&self, include_inactive: bool) -> Result<Vec<MembershipTypeConfig>>;
-    async fn update(&self, id: Uuid, request: UpdateMembershipTypeRequest) -> Result<MembershipTypeConfig>;
+    async fn update(
+        &self,
+        id: Uuid,
+        request: UpdateMembershipTypeRequest,
+    ) -> Result<MembershipTypeConfig>;
     async fn delete(&self, id: Uuid) -> Result<()>;
     async fn count_usage(&self, id: Uuid) -> Result<i64>;
     async fn get_next_sort_order(&self) -> Result<i32>;
@@ -99,9 +102,9 @@ impl MembershipTypeRepository for SqliteMembershipTypeRepository {
         .await
         .map_err(AppError::Database)?;
 
-        self.find_by_id(id)
-            .await?
-            .ok_or_else(|| AppError::Internal("Failed to retrieve created membership type".to_string()))
+        self.find_by_id(id).await?.ok_or_else(|| {
+            AppError::Internal("Failed to retrieve created membership type".to_string())
+        })
     }
 
     async fn find_by_id(&self, id: Uuid) -> Result<Option<MembershipTypeConfig>> {
@@ -175,10 +178,15 @@ impl MembershipTypeRepository for SqliteMembershipTypeRepository {
         rows.into_iter().map(Self::row_to_config).collect()
     }
 
-    async fn update(&self, id: Uuid, request: UpdateMembershipTypeRequest) -> Result<MembershipTypeConfig> {
-        let existing = self.find_by_id(id).await?.ok_or_else(|| {
-            AppError::NotFound("Membership type not found".to_string())
-        })?;
+    async fn update(
+        &self,
+        id: Uuid,
+        request: UpdateMembershipTypeRequest,
+    ) -> Result<MembershipTypeConfig> {
+        let existing = self
+            .find_by_id(id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Membership type not found".to_string()))?;
 
         let id_str = id.to_string();
         let now = Utc::now().naive_utc();
@@ -215,9 +223,9 @@ impl MembershipTypeRepository for SqliteMembershipTypeRepository {
         .await
         .map_err(AppError::Database)?;
 
-        self.find_by_id(id)
-            .await?
-            .ok_or_else(|| AppError::Internal("Failed to retrieve updated membership type".to_string()))
+        self.find_by_id(id).await?.ok_or_else(|| {
+            AppError::Internal("Failed to retrieve updated membership type".to_string())
+        })
     }
 
     async fn delete(&self, id: Uuid) -> Result<()> {
@@ -251,14 +259,11 @@ impl MembershipTypeRepository for SqliteMembershipTypeRepository {
     }
 
     async fn get_next_sort_order(&self) -> Result<i32> {
-        let row: (Option<i32>,) = sqlx::query_as(
-            "SELECT MAX(sort_order) FROM membership_types"
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(AppError::Database)?;
+        let row: (Option<i32>,) = sqlx::query_as("SELECT MAX(sort_order) FROM membership_types")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(AppError::Database)?;
 
         Ok(row.0.unwrap_or(0) + 1)
     }
-
 }

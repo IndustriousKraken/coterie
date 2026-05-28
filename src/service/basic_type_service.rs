@@ -12,8 +12,7 @@ use crate::{
     error::{AppError, Result},
     repository::BasicTypeRepository,
     service::configurable_types::{
-        check_delete_unused_for_basic, check_unique_slug_for_basic,
-        validate_hex_color_for_request,
+        check_delete_unused_for_basic, check_unique_slug_for_basic, validate_hex_color_for_request,
     },
     util::string::capitalize_first,
 };
@@ -60,26 +59,18 @@ impl BasicTypeService {
         self.repo.create(self.kind, request).await
     }
 
-    pub async fn update(
-        &self,
-        id: Uuid,
-        request: UpdateBasicTypeRequest,
-    ) -> Result<BasicType> {
+    pub async fn update(&self, id: Uuid, request: UpdateBasicTypeRequest) -> Result<BasicType> {
         validate_hex_color_for_request(request.color.as_deref())?;
         self.repo.update(self.kind, id, request).await
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let _existing = self
-            .repo
-            .find_by_id(self.kind, id)
-            .await?
-            .ok_or_else(|| {
-                AppError::NotFound(format!(
-                    "{} not found",
-                    capitalize_first(self.kind.display_name())
-                ))
-            })?;
+        let _existing = self.repo.find_by_id(self.kind, id).await?.ok_or_else(|| {
+            AppError::NotFound(format!(
+                "{} not found",
+                capitalize_first(self.kind.display_name())
+            ))
+        })?;
 
         check_delete_unused_for_basic(self.repo.as_ref(), self.kind, id).await?;
 

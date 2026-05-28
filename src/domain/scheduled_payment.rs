@@ -84,7 +84,10 @@ impl sqlx::Type<sqlx::Sqlite> for ScheduledPaymentStatus {
 }
 
 impl<'q> sqlx::Encode<'q, sqlx::Sqlite> for ScheduledPaymentStatus {
-    fn encode_by_ref(&self, args: &mut Vec<sqlx::sqlite::SqliteArgumentValue<'q>>) -> sqlx::encode::IsNull {
+    fn encode_by_ref(
+        &self,
+        args: &mut Vec<sqlx::sqlite::SqliteArgumentValue<'q>>,
+    ) -> sqlx::encode::IsNull {
         <String as sqlx::Encode<'q, sqlx::Sqlite>>::encode_by_ref(&self.as_str().to_string(), args)
     }
 }

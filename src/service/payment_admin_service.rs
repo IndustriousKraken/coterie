@@ -272,7 +272,7 @@ mod tests {
     use crate::{
         api::state::RateLimiter,
         domain::{Payer, Payment, PaymentKind, StripeRef},
-        repository::{SqlitePaymentRepository, PaymentRepository},
+        repository::{PaymentRepository, SqlitePaymentRepository},
     };
     use sqlx::{Executor, SqlitePool};
 
@@ -288,7 +288,10 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .expect(":memory:");
-        sqlx::migrate!("./migrations").run(&pool).await.expect("migrate");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrate");
         pool
     }
 
@@ -368,14 +371,13 @@ mod tests {
     }
 
     async fn audit_count(pool: &SqlitePool, action: &str, entity_id: &str) -> i64 {
-        let (n,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM audit_logs WHERE action = ? AND entity_id = ?",
-        )
-        .bind(action)
-        .bind(entity_id)
-        .fetch_one(pool)
-        .await
-        .unwrap();
+        let (n,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM audit_logs WHERE action = ? AND entity_id = ?")
+                .bind(action)
+                .bind(entity_id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
         n
     }
 
@@ -539,13 +541,11 @@ mod tests {
         let r1 = h1.await.unwrap();
         let r2 = h2.await.unwrap();
 
-        let (ok_count, race_count) = [&r1, &r2]
-            .iter()
-            .fold((0, 0), |(ok, race), r| match r {
-                Ok(_) => (ok + 1, race),
-                Err(RefundError::AnotherActorClaimedFirst) => (ok, race + 1),
-                Err(e) => panic!("unexpected error: {:?}", e),
-            });
+        let (ok_count, race_count) = [&r1, &r2].iter().fold((0, 0), |(ok, race), r| match r {
+            Ok(_) => (ok + 1, race),
+            Err(RefundError::AnotherActorClaimedFirst) => (ok, race + 1),
+            Err(e) => panic!("unexpected error: {:?}", e),
+        });
         assert_eq!(ok_count, 1, "exactly one call should succeed");
         assert_eq!(race_count, 1, "exactly one call should lose the race");
 

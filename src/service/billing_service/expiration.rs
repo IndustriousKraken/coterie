@@ -87,7 +87,8 @@ impl Expiration {
                     "Marked {} members Expired but session cleanup failed: {}. \
                      Middleware still rejects Expired status, so members are \
                      bounced to /portal/restore on next request.",
-                    expired_count, e
+                    expired_count,
+                    e
                 );
             }
         }

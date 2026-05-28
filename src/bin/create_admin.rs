@@ -14,7 +14,10 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use coterie::{admin_cli::{dispatch, Cli}, config::Settings};
+use coterie::{
+    admin_cli::{dispatch, Cli},
+    config::Settings,
+};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 

@@ -24,7 +24,11 @@ use crate::{
     api::state::LoginLimiter,
     auth::{self, AuthService},
     config::Settings,
-    email::{self, templates::{ResetHtml, ResetText}, EmailSender},
+    email::{
+        self,
+        templates::{ResetHtml, ResetText},
+        EmailSender,
+    },
     repository::MemberRepository,
     service::settings_service::SettingsService,
     web::templates::{BaseContext, HtmlTemplate},
@@ -48,7 +52,8 @@ pub async fn forgot_password_page() -> Response {
     HtmlTemplate(ForgotPasswordTemplate {
         base: BaseContext::for_anon(),
         submitted: false,
-    }).into_response()
+    })
+    .into_response()
 }
 
 pub async fn forgot_password_handler(
@@ -65,22 +70,26 @@ pub async fn forgot_password_handler(
     // generator or to probe for valid addresses.
     let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
     if !login_limiter.0.check_and_record(ip) {
-        return (StatusCode::TOO_MANY_REQUESTS,
-            "Too many requests. Please try again later."
-        ).into_response();
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many requests. Please try again later.",
+        )
+            .into_response();
     }
 
     // Look up the member. Whether or not we find one, return the same
     // response — leaking membership via this endpoint would undo the
     // enumeration protection we added on signup.
-    if let Ok(Some(member)) = member_repo
-        .find_by_email(&form.email).await
-    {
+    if let Ok(Some(member)) = member_repo.find_by_email(&form.email).await {
         // Generate token and send email. Soft-fail: we don't expose any
         // error to the caller; the tracing log captures the failure.
         match auth::email_tokens::create_password_reset_token(
-            &db_pool, member.id, chrono::Duration::hours(1),
-        ).await {
+            &db_pool,
+            member.id,
+            chrono::Duration::hours(1),
+        )
+        .await
+        {
             Ok(created) => {
                 let reset_url = format!(
                     "{}/reset-password?token={}",
@@ -127,7 +136,8 @@ pub async fn forgot_password_handler(
     HtmlTemplate(ForgotPasswordTemplate {
         base: BaseContext::for_anon(),
         submitted: true,
-    }).into_response()
+    })
+    .into_response()
 }
 
 // ----- Reset password -----
@@ -160,14 +170,13 @@ pub struct ResetPasswordForm {
     pub confirm_password: String,
 }
 
-pub async fn reset_password_page(
-    Query(query): Query<ResetPasswordQuery>,
-) -> Response {
+pub async fn reset_password_page(Query(query): Query<ResetPasswordQuery>) -> Response {
     HtmlTemplate(ResetPasswordTemplate {
         base: BaseContext::for_anon(),
         token: query.token,
         error: None,
-    }).into_response()
+    })
+    .into_response()
 }
 
 pub async fn reset_password_handler(
@@ -183,38 +192,43 @@ pub async fn reset_password_handler(
             base: BaseContext::for_anon(),
             token: form.token,
             error: Some("Passwords do not match.".to_string()),
-        }).into_response();
+        })
+        .into_response();
     }
     if let Err(msg) = crate::auth::validate_password(&form.new_password) {
         return HtmlTemplate(ResetPasswordTemplate {
             base: BaseContext::for_anon(),
             token: form.token,
             error: Some(msg.to_string()),
-        }).into_response();
+        })
+        .into_response();
     }
 
     // Consume the token atomically. Any further attempts with the same
     // token will return None.
-    let consumed = match auth::email_tokens::consume_password_reset_token(
-        &db_pool, &form.token,
-    ).await {
-        Ok(Some(c)) => c,
-        Ok(None) => {
-            return HtmlTemplate(ResetPasswordResultTemplate {
+    let consumed =
+        match auth::email_tokens::consume_password_reset_token(&db_pool, &form.token).await {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                return HtmlTemplate(ResetPasswordResultTemplate {
                 base: BaseContext::for_anon(),
                 success: false,
-                message: "This reset link is invalid or has expired. Request a new one and try again.".to_string(),
-            }).into_response();
-        }
-        Err(e) => {
-            tracing::error!("Reset token consume failed: {}", e);
-            return HtmlTemplate(ResetPasswordResultTemplate {
-                base: BaseContext::for_anon(),
-                success: false,
-                message: "Something went wrong. Please try again.".to_string(),
-            }).into_response();
-        }
-    };
+                message:
+                    "This reset link is invalid or has expired. Request a new one and try again."
+                        .to_string(),
+            })
+            .into_response();
+            }
+            Err(e) => {
+                tracing::error!("Reset token consume failed: {}", e);
+                return HtmlTemplate(ResetPasswordResultTemplate {
+                    base: BaseContext::for_anon(),
+                    success: false,
+                    message: "Something went wrong. Please try again.".to_string(),
+                })
+                .into_response();
+            }
+        };
 
     // Hash the new password and persist it.
     let new_hash = match AuthService::hash_password(&form.new_password).await {
@@ -225,19 +239,22 @@ pub async fn reset_password_handler(
                 base: BaseContext::for_anon(),
                 success: false,
                 message: "Something went wrong. Please try again.".to_string(),
-            }).into_response();
+            })
+            .into_response();
         }
     };
 
     if let Err(e) = member_repo
-        .update_password_hash(consumed.member_id, &new_hash).await
+        .update_password_hash(consumed.member_id, &new_hash)
+        .await
     {
         tracing::error!("Password update failed: {}", e);
         return HtmlTemplate(ResetPasswordResultTemplate {
             base: BaseContext::for_anon(),
             success: false,
             message: "Something went wrong. Please try again.".to_string(),
-        }).into_response();
+        })
+        .into_response();
     }
 
     // Invalidate all existing sessions — whoever had them might be
@@ -247,26 +264,34 @@ pub async fn reset_password_handler(
     // failure here means the suspected attacker's session might
     // remain valid until natural expiry.
     if let Err(e) = auth_service
-        .invalidate_all_sessions(consumed.member_id).await
+        .invalidate_all_sessions(consumed.member_id)
+        .await
     {
         tracing::error!(
             "Password reset for member {} succeeded but session invalidation FAILED — \
              stale sessions may still be valid: {}",
-            consumed.member_id, e
+            consumed.member_id,
+            e
         );
     }
     if let Err(e) = auth::email_tokens::invalidate_password_reset_tokens_for_member(
-        &db_pool, consumed.member_id,
-    ).await {
+        &db_pool,
+        consumed.member_id,
+    )
+    .await
+    {
         tracing::warn!(
             "Couldn't invalidate other reset tokens for member {}: {}",
-            consumed.member_id, e
+            consumed.member_id,
+            e
         );
     }
 
     HtmlTemplate(ResetPasswordResultTemplate {
         base: BaseContext::for_anon(),
         success: true,
-        message: "Your password has been reset. You can now log in with your new password.".to_string(),
-    }).into_response()
+        message: "Your password has been reset. You can now log in with your new password."
+            .to_string(),
+    })
+    .into_response()
 }

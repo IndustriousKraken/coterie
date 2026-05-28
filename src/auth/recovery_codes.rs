@@ -10,8 +10,8 @@
 //! we still avoid early-exits that could leak whether SOME code
 //! matched vs WHICH one — by walking every entry.
 
+use argon2::password_hash::{rand_core::OsRng, SaltString};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
-use argon2::password_hash::{SaltString, rand_core::OsRng};
 use rand::RngCore;
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -43,25 +43,23 @@ pub struct GeneratedCodes {
 /// Generate a fresh batch of codes, hash them, and return both the
 /// plaintext set (to display once) and the JSON blob to persist.
 pub fn generate() -> Result<GeneratedCodes> {
-    let plaintext: Vec<String> = (0..RECOVERY_CODE_COUNT)
-        .map(|_| random_code())
-        .collect();
+    let plaintext: Vec<String> = (0..RECOVERY_CODE_COUNT).map(|_| random_code()).collect();
     let hashes: Vec<String> = plaintext
         .iter()
         .map(|c| argon2_hash(c))
         .collect::<Result<Vec<_>>>()?;
     let stored_json = serde_json::to_string(&hashes)
         .map_err(|e| AppError::Internal(format!("Recovery codes serialize failed: {}", e)))?;
-    Ok(GeneratedCodes { plaintext, stored_json })
+    Ok(GeneratedCodes {
+        plaintext,
+        stored_json,
+    })
 }
 
 /// Generate codes AND persist them to the member's row. Used by
 /// enrollment confirmation and the regenerate path. Returns the
 /// plaintext set for one-time display.
-pub async fn issue_for_member(
-    pool: &SqlitePool,
-    member_id: Uuid,
-) -> Result<Vec<String>> {
+pub async fn issue_for_member(pool: &SqlitePool, member_id: Uuid) -> Result<Vec<String>> {
     let codes = generate()?;
     sqlx::query(
         "UPDATE members SET totp_recovery_codes = ?, \
@@ -85,27 +83,21 @@ pub async fn issue_for_member(
 /// Race-free: the SELECT + UPDATE happen inside a transaction with
 /// SQLite's per-row write lock, so two concurrent calls with the
 /// same code can't both succeed — the second sees the rewritten JSON.
-pub async fn try_consume(
-    pool: &SqlitePool,
-    member_id: Uuid,
-    submitted: &str,
-) -> Result<bool> {
+pub async fn try_consume(pool: &SqlitePool, member_id: Uuid, submitted: &str) -> Result<bool> {
     let normalized = normalize(submitted);
     if normalized.is_empty() {
         return Ok(false);
     }
 
-    let mut tx = pool.begin().await
-        .map_err(AppError::Database)?;
+    let mut tx = pool.begin().await.map_err(AppError::Database)?;
 
-    let json_opt: Option<String> = sqlx::query_scalar(
-        "SELECT totp_recovery_codes FROM members WHERE id = ?",
-    )
-    .bind(member_id.to_string())
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(AppError::Database)?
-    .flatten();
+    let json_opt: Option<String> =
+        sqlx::query_scalar("SELECT totp_recovery_codes FROM members WHERE id = ?")
+            .bind(member_id.to_string())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(AppError::Database)?
+            .flatten();
 
     let json = match json_opt {
         Some(s) if !s.is_empty() => s,
@@ -131,8 +123,9 @@ pub async fn try_consume(
     let consumed = match matched_idx {
         Some(i) => {
             hashes.remove(i);
-            let new_json = serde_json::to_string(&hashes)
-                .map_err(|e| AppError::Internal(format!("Recovery codes reserialize failed: {}", e)))?;
+            let new_json = serde_json::to_string(&hashes).map_err(|e| {
+                AppError::Internal(format!("Recovery codes reserialize failed: {}", e))
+            })?;
             sqlx::query(
                 "UPDATE members SET totp_recovery_codes = ?, \
                                     updated_at = CURRENT_TIMESTAMP \
@@ -155,14 +148,13 @@ pub async fn try_consume(
 /// How many recovery codes the member has left. Shown on the security
 /// page so they know when to regenerate.
 pub async fn remaining_count(pool: &SqlitePool, member_id: Uuid) -> Result<usize> {
-    let json: Option<String> = sqlx::query_scalar(
-        "SELECT totp_recovery_codes FROM members WHERE id = ?",
-    )
-    .bind(member_id.to_string())
-    .fetch_optional(pool)
-    .await
-    .map_err(AppError::Database)?
-    .flatten();
+    let json: Option<String> =
+        sqlx::query_scalar("SELECT totp_recovery_codes FROM members WHERE id = ?")
+            .bind(member_id.to_string())
+            .fetch_optional(pool)
+            .await
+            .map_err(AppError::Database)?
+            .flatten();
     let json = match json {
         Some(s) if !s.is_empty() => s,
         _ => return Ok(0),

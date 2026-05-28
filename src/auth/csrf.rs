@@ -12,7 +12,7 @@
 //! existing callers (logout cleanup, background task) compile unchanged.
 
 use hmac::{Hmac, Mac};
-use rand::{RngCore, rngs::OsRng};
+use rand::{rngs::OsRng, RngCore};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 

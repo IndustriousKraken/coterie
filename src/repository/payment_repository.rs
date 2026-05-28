@@ -1,12 +1,12 @@
 use async_trait::async_trait;
-use chrono::{DateTime, Utc, NaiveDateTime};
-use sqlx::{SqlitePool, FromRow};
+use chrono::{DateTime, NaiveDateTime, Utc};
+use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
 
 use crate::{
     domain::{
-        Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus, StripeRef,
-        configurable_types::BillingPeriod,
+        configurable_types::BillingPeriod, Payer, Payment, PaymentKind, PaymentMethod,
+        PaymentStatus, StripeRef,
     },
     error::{AppError, Result},
 };
@@ -39,11 +39,7 @@ pub trait PaymentRepository: Send + Sync {
     /// next renewal); `false` if the row had already been completed by
     /// another caller (sync path vs. webhook race). The semantics
     /// guarantee that exactly one caller does the post-work.
-    async fn complete_pending_payment(
-        &self,
-        id: Uuid,
-        stripe_payment_id: &str,
-    ) -> Result<bool>;
+    async fn complete_pending_payment(&self, id: Uuid, stripe_payment_id: &str) -> Result<bool>;
     /// Counterpart to `complete_pending_payment` for the failure path:
     /// flip a Pending row to Failed when the Stripe charge errored.
     /// Returns true if a row was flipped. Idempotent against double-
@@ -136,7 +132,8 @@ impl SqlitePaymentRepository {
         // (only possible if the constraint was bypassed by a manual
         // migration). We don't soft-fall-back here — letting a payment
         // through with a fabricated payer would be worse than a 500.
-        let member_id = row.member_id
+        let member_id = row
+            .member_id
             .as_deref()
             .map(Uuid::parse_str)
             .transpose()
@@ -154,12 +151,15 @@ impl SqlitePaymentRepository {
 
         // Tolerate unknown payment_type values from older rows by
         // falling back to Membership (the column default).
-        let donation_campaign_id = row.donation_campaign_id
+        let donation_campaign_id = row
+            .donation_campaign_id
             .as_deref()
             .and_then(|s| Uuid::parse_str(s).ok());
         let kind = match row.payment_type.as_str() {
             "membership" => PaymentKind::Membership,
-            "donation" => PaymentKind::Donation { campaign_id: donation_campaign_id },
+            "donation" => PaymentKind::Donation {
+                campaign_id: donation_campaign_id,
+            },
             "other" => PaymentKind::Other,
             _ => PaymentKind::Membership,
         };
@@ -168,7 +168,8 @@ impl SqlitePaymentRepository {
         // prefixes (or shapes we no longer recognize) are dropped to
         // `None` rather than panicking — they'll just lose Stripe-
         // side functionality (refund-via-API) until reconciled.
-        let external_id = row.stripe_payment_id
+        let external_id = row
+            .stripe_payment_id
             .as_deref()
             .and_then(StripeRef::from_id);
 
@@ -182,7 +183,9 @@ impl SqlitePaymentRepository {
             kind,
             external_id,
             description: row.description,
-            paid_at: row.paid_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
+            paid_at: row
+                .paid_at
+                .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
             updated_at: DateTime::from_naive_utc_and_offset(row.updated_at, Utc),
         })
@@ -255,7 +258,7 @@ impl PaymentRepository for SqlitePaymentRepository {
                 donor_name, donor_email,
                 paid_at, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#
+            "#,
         )
         .bind(&id_str)
         .bind(&member_id_str)
@@ -276,9 +279,9 @@ impl PaymentRepository for SqlitePaymentRepository {
         .await
         .map_err(AppError::Database)?;
 
-        self.find_by_id(payment.id).await?.ok_or_else(|| {
-            AppError::Internal("Failed to retrieve created payment".to_string())
-        })
+        self.find_by_id(payment.id)
+            .await?
+            .ok_or_else(|| AppError::Internal("Failed to retrieve created payment".to_string()))
     }
 
     async fn find_by_id(&self, id: Uuid) -> Result<Option<Payment>> {
@@ -292,7 +295,7 @@ impl PaymentRepository for SqlitePaymentRepository {
                    paid_at, created_at, updated_at
             FROM payments
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(id_str)
         .fetch_optional(&self.pool)
@@ -301,7 +304,7 @@ impl PaymentRepository for SqlitePaymentRepository {
 
         match row {
             Some(r) => Ok(Some(Self::row_to_payment(r)?)),
-            None => Ok(None)
+            None => Ok(None),
         }
     }
 
@@ -317,16 +320,14 @@ impl PaymentRepository for SqlitePaymentRepository {
             FROM payments
             WHERE member_id = ?
             ORDER BY created_at DESC
-            "#
+            "#,
         )
         .bind(member_id_str)
         .fetch_all(&self.pool)
         .await
         .map_err(AppError::Database)?;
 
-        rows.into_iter()
-            .map(Self::row_to_payment)
-            .collect()
+        rows.into_iter().map(Self::row_to_payment).collect()
     }
 
     async fn find_by_stripe_id(&self, stripe_id: &str) -> Result<Option<Payment>> {
@@ -339,7 +340,7 @@ impl PaymentRepository for SqlitePaymentRepository {
                    paid_at, created_at, updated_at
             FROM payments
             WHERE stripe_payment_id = ?
-            "#
+            "#,
         )
         .bind(stripe_id)
         .fetch_optional(&self.pool)
@@ -348,7 +349,7 @@ impl PaymentRepository for SqlitePaymentRepository {
 
         match row {
             Some(r) => Ok(Some(Self::row_to_payment(r)?)),
-            None => Ok(None)
+            None => Ok(None),
         }
     }
 
@@ -372,7 +373,7 @@ impl PaymentRepository for SqlitePaymentRepository {
                 paid_at = ?,
                 updated_at = ?
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(payment.member_id().map(|id| id.to_string()))
         .bind(payment.amount_cents)
@@ -388,16 +389,12 @@ impl PaymentRepository for SqlitePaymentRepository {
         .await
         .map_err(AppError::Database)?;
 
-        self.find_by_id(id).await?.ok_or_else(|| {
-            AppError::Internal("Failed to retrieve updated payment".to_string())
-        })
+        self.find_by_id(id)
+            .await?
+            .ok_or_else(|| AppError::Internal("Failed to retrieve updated payment".to_string()))
     }
 
-    async fn complete_pending_payment(
-        &self,
-        id: Uuid,
-        stripe_payment_id: &str,
-    ) -> Result<bool> {
+    async fn complete_pending_payment(&self, id: Uuid, stripe_payment_id: &str) -> Result<bool> {
         let now = Utc::now().naive_utc();
         let res = sqlx::query(
             "UPDATE payments \
@@ -463,14 +460,12 @@ impl PaymentRepository for SqlitePaymentRepository {
     }
 
     async fn mark_refunded(&self, id: Uuid) -> Result<()> {
-        sqlx::query(
-            "UPDATE payments SET status = 'Refunded', updated_at = ? WHERE id = ?",
-        )
-        .bind(Utc::now().naive_utc())
-        .bind(id.to_string())
-        .execute(&self.pool)
-        .await
-        .map_err(AppError::Database)?;
+        sqlx::query("UPDATE payments SET status = 'Refunded', updated_at = ? WHERE id = ?")
+            .bind(Utc::now().naive_utc())
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(AppError::Database)?;
         Ok(())
     }
 
@@ -482,8 +477,7 @@ impl PaymentRepository for SqlitePaymentRepository {
     ) -> Result<bool> {
         use chrono::Months;
 
-        let mut tx = self.pool.begin().await
-            .map_err(AppError::Database)?;
+        let mut tx = self.pool.begin().await.map_err(AppError::Database)?;
 
         // Atomic claim. dues_extended_at is the per-payment idempotency
         // anchor: only the first caller for this payment_id sees
@@ -521,8 +515,12 @@ impl PaymentRepository for SqlitePaymentRepository {
         let now_utc = Utc::now();
         let base_date = current_dues.filter(|d| *d > now_utc).unwrap_or(now_utc);
         let new_dues_date = match billing_period {
-            BillingPeriod::Monthly => base_date.checked_add_months(Months::new(1)).unwrap_or(base_date),
-            BillingPeriod::Yearly => base_date.checked_add_months(Months::new(12)).unwrap_or(base_date),
+            BillingPeriod::Monthly => base_date
+                .checked_add_months(Months::new(1))
+                .unwrap_or(base_date),
+            BillingPeriod::Yearly => base_date
+                .checked_add_months(Months::new(12))
+                .unwrap_or(base_date),
             BillingPeriod::Lifetime => DateTime::<Utc>::MAX_UTC,
         };
 
@@ -579,9 +577,11 @@ impl PaymentRepository for SqlitePaymentRepository {
 
         let mut out = Vec::with_capacity(rows.len());
         for (year_str, month_str, type_str, total, count) in rows {
-            let year: i32 = year_str.parse()
+            let year: i32 = year_str
+                .parse()
                 .map_err(|e: std::num::ParseIntError| AppError::Internal(e.to_string()))?;
-            let month: u32 = month_str.parse()
+            let month: u32 = month_str
+                .parse()
                 .map_err(|e: std::num::ParseIntError| AppError::Internal(e.to_string()))?;
             out.push(MonthlyRevenue {
                 year,

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -13,12 +13,9 @@ use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use crate::{
-    api::{
-        middleware::bot_challenge::BotChallengeVerifier,
-        state::MoneyLimiter,
-    },
+    api::{middleware::bot_challenge::BotChallengeVerifier, state::MoneyLimiter},
     config::Settings,
-    domain::{CreateMemberRequest, Event, Announcement, EventVisibility, MemberStatus},
+    domain::{Announcement, CreateMemberRequest, Event, EventVisibility, MemberStatus},
     email::EmailSender,
     error::{AppError, Result},
     payments::StripeClient,
@@ -26,9 +23,7 @@ use crate::{
         AnnouncementRepository, DonationCampaignRepository, EventRepository, MemberRepository,
         PaymentRepository,
     },
-    service::{
-        membership_type_service::MembershipTypeService, settings_service::SettingsService,
-    },
+    service::{membership_type_service::MembershipTypeService, settings_service::SettingsService},
 };
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -90,10 +85,7 @@ pub async fn signup(
     // org has configured a provider, every request must carry a token
     // the provider verifies. The DisabledVerifier is a no-op so dev
     // setups don't break.
-    let ip = crate::api::state::client_ip(
-        &headers,
-        settings.server.trust_forwarded_for(),
-    );
+    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
     if bot_challenge_verifier
         .verify("public/signup", request.captcha_token.as_deref(), Some(ip))
         .await
@@ -120,9 +112,9 @@ pub async fn signup(
             let mt = membership_type_service
                 .get_by_slug(slug)
                 .await?
-                .ok_or_else(|| AppError::BadRequest(format!(
-                    "Unknown membership type slug: {}", slug,
-                )))?;
+                .ok_or_else(|| {
+                    AppError::BadRequest(format!("Unknown membership type slug: {}", slug,))
+                })?;
             Some(mt.id)
         }
         None => None,
@@ -140,15 +132,17 @@ pub async fn signup(
 
     // Create the member. Use a generic error for UNIQUE violations to
     // prevent attackers from enumerating valid emails/usernames.
-    let member = member_repo.create(create_request).await
-        .map_err(|e| {
-            if let AppError::Database(sqlx::Error::Database(ref db_err)) = e {
-                if db_err.is_unique_violation() {
-                    return AppError::Conflict("Registration failed: an account with this information already exists".to_string());
-                }
+    let member = member_repo.create(create_request).await.map_err(|e| {
+        if let AppError::Database(sqlx::Error::Database(ref db_err)) = e {
+            if db_err.is_unique_violation() {
+                return AppError::Conflict(
+                    "Registration failed: an account with this information already exists"
+                        .to_string(),
+                );
             }
-            e
-        })?;
+        }
+        e
+    })?;
 
     // Send email verification. Soft-fail on send error: the account is
     // already created and an admin can manually verify / resend later.
@@ -158,17 +152,21 @@ pub async fn signup(
         &settings_service,
         email_sender.as_ref(),
         &member,
-    ).await {
+    )
+    .await
+    {
         tracing::error!(
             "Signup succeeded but verification email failed for member {}: {}",
-            member.id, e
+            member.id,
+            e
         );
     }
 
     let response = SignupResponse {
         member_id: member.id,
         status: member.status,
-        message: "Registration successful. Please check your email to verify your account.".to_string(),
+        message: "Registration successful. Please check your email to verify your account."
+            .to_string(),
     };
 
     Ok((StatusCode::CREATED, Json(response)))
@@ -182,11 +180,20 @@ async fn send_verification_email(
     email_sender: &dyn EmailSender,
     member: &crate::domain::Member,
 ) -> Result<()> {
-    use crate::{auth, email::{self, templates::{VerifyHtml, VerifyText}}};
+    use crate::{
+        auth,
+        email::{
+            self,
+            templates::{VerifyHtml, VerifyText},
+        },
+    };
 
     let created = auth::email_tokens::create_verification_token(
-        db_pool, member.id, chrono::Duration::hours(24),
-    ).await?;
+        db_pool,
+        member.id,
+        chrono::Duration::hours(24),
+    )
+    .await?;
 
     let verify_url = format!(
         "{}/verify?token={}",
@@ -194,8 +201,16 @@ async fn send_verification_email(
         created.token,
     );
     let org_name = org_name(settings_service).await;
-    let html = VerifyHtml { full_name: &member.full_name, org_name: &org_name, verify_url: &verify_url };
-    let text = VerifyText { full_name: &member.full_name, org_name: &org_name, verify_url: &verify_url };
+    let html = VerifyHtml {
+        full_name: &member.full_name,
+        org_name: &org_name,
+        verify_url: &verify_url,
+    };
+    let text = VerifyText {
+        full_name: &member.full_name,
+        org_name: &org_name,
+        verify_url: &verify_url,
+    };
     let message = email::message_from_templates(
         member.email.clone(),
         format!("Verify your email for {}", org_name),
@@ -244,7 +259,8 @@ pub async fn list_events(
         .chain(private_events.into_iter().map(|mut e| {
             // Sanitize private events
             e.title = "Members-Only Event".to_string();
-            e.description = "This event is for members only. Log in to the portal to see details.".to_string();
+            e.description =
+                "This event is for members only. Log in to the portal to see details.".to_string();
             e.location = None;
             e.image_url = None;
             e
@@ -265,7 +281,8 @@ pub async fn list_events(
             StatusCode::OK,
             [(header::CONTENT_TYPE, "text/calendar; charset=utf-8")],
             ical,
-        ).into_response())
+        )
+            .into_response())
     } else {
         Ok(Json(upcoming_events).into_response())
     }
@@ -311,12 +328,13 @@ pub async fn rss_feed(
 
     // Generate RSS XML
     let rss = generate_rss_feed(&announcements);
-    
+
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
         rss,
-    ).into_response())
+    )
+        .into_response())
 }
 
 #[utoipa::path(
@@ -328,9 +346,7 @@ pub async fn rss_feed(
             content_type = "text/calendar"),
     ),
 )]
-pub async fn calendar_feed(
-    State(event_repo): State<Arc<dyn EventRepository>>,
-) -> Result<Response> {
+pub async fn calendar_feed(State(event_repo): State<Arc<dyn EventRepository>>) -> Result<Response> {
     // Get public events (full details)
     let public_events = event_repo.list_public().await?;
 
@@ -338,7 +354,8 @@ pub async fn calendar_feed(
     let private_events = event_repo.list_members_only().await?;
 
     // Combine all events for the calendar
-    let all_events: Vec<_> = public_events.into_iter()
+    let all_events: Vec<_> = public_events
+        .into_iter()
         .chain(private_events.into_iter())
         .collect();
 
@@ -349,7 +366,8 @@ pub async fn calendar_feed(
         StatusCode::OK,
         [(header::CONTENT_TYPE, "text/calendar; charset=utf-8")],
         ical,
-    ).into_response())
+    )
+        .into_response())
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -381,14 +399,16 @@ fn escape_cdata(s: &str) -> String {
 
 // Helper function to generate RSS feed
 fn generate_rss_feed(announcements: &[Announcement]) -> String {
-    let mut rss = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+    let mut rss = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
 <channel>
     <title>Coterie Announcements</title>
     <link>https://example.com/announcements</link>
     <description>Latest announcements from Coterie</description>
     <language>en-us</language>
-    <lastBuildDate>"#);
+    <lastBuildDate>"#,
+    );
 
     rss.push_str(&Utc::now().to_rfc2822());
     rss.push_str("</lastBuildDate>\n");
@@ -396,10 +416,22 @@ fn generate_rss_feed(announcements: &[Announcement]) -> String {
     for announcement in announcements.iter().take(20) {
         if let Some(published) = announcement.published_at {
             rss.push_str("    <item>\n");
-            rss.push_str(&format!("        <title><![CDATA[{}]]></title>\n", escape_cdata(&announcement.title)));
-            rss.push_str(&format!("        <description><![CDATA[{}]]></description>\n", escape_cdata(&announcement.content)));
-            rss.push_str(&format!("        <guid isPermaLink=\"false\">{}</guid>\n", announcement.id));
-            rss.push_str(&format!("        <pubDate>{}</pubDate>\n", published.to_rfc2822()));
+            rss.push_str(&format!(
+                "        <title><![CDATA[{}]]></title>\n",
+                escape_cdata(&announcement.title)
+            ));
+            rss.push_str(&format!(
+                "        <description><![CDATA[{}]]></description>\n",
+                escape_cdata(&announcement.content)
+            ));
+            rss.push_str(&format!(
+                "        <guid isPermaLink=\"false\">{}</guid>\n",
+                announcement.id
+            ));
+            rss.push_str(&format!(
+                "        <pubDate>{}</pubDate>\n",
+                published.to_rfc2822()
+            ));
             rss.push_str("    </item>\n");
         }
     }
@@ -433,7 +465,10 @@ fn generate_ical_feed(events: &[Event]) -> String {
 
         ical.push_str("BEGIN:VEVENT\r\n");
         ical.push_str(&format!("UID:{}\r\n", event.id));
-        ical.push_str(&format!("DTSTART:{}\r\n", event.start_time.format("%Y%m%dT%H%M%SZ")));
+        ical.push_str(&format!(
+            "DTSTART:{}\r\n",
+            event.start_time.format("%Y%m%dT%H%M%SZ")
+        ));
 
         if let Some(end_time) = event.end_time {
             ical.push_str(&format!("DTEND:{}\r\n", end_time.format("%Y%m%dT%H%M%SZ")));
@@ -445,15 +480,24 @@ fn generate_ical_feed(events: &[Event]) -> String {
             ical.push_str("DESCRIPTION:This event is for members only. Log in to the portal to see details.\r\n");
         } else {
             ical.push_str(&format!("SUMMARY:{}\r\n", escape_ical_text(&event.title)));
-            ical.push_str(&format!("DESCRIPTION:{}\r\n", escape_ical_text(&event.description)));
+            ical.push_str(&format!(
+                "DESCRIPTION:{}\r\n",
+                escape_ical_text(&event.description)
+            ));
 
             if let Some(location) = &event.location {
                 ical.push_str(&format!("LOCATION:{}\r\n", escape_ical_text(location)));
             }
         }
 
-        ical.push_str(&format!("CREATED:{}\r\n", event.created_at.format("%Y%m%dT%H%M%SZ")));
-        ical.push_str(&format!("LAST-MODIFIED:{}\r\n", event.updated_at.format("%Y%m%dT%H%M%SZ")));
+        ical.push_str(&format!(
+            "CREATED:{}\r\n",
+            event.created_at.format("%Y%m%dT%H%M%SZ")
+        ));
+        ical.push_str(&format!(
+            "LAST-MODIFIED:{}\r\n",
+            event.updated_at.format("%Y%m%dT%H%M%SZ")
+        ));
         ical.push_str("STATUS:CONFIRMED\r\n");
         ical.push_str("END:VEVENT\r\n");
     }
@@ -534,10 +578,7 @@ pub async fn donate(
     // is the prime card-testing target — the limiter caps each IP at
     // 10 attempts per minute. Rate limit BEFORE the bot challenge so
     // a bursting IP can't burn through the provider's quota.
-    let ip = crate::api::state::client_ip(
-        &headers,
-        settings.server.trust_forwarded_for(),
-    );
+    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
     if !money_limiter.0.check_and_record(ip) {
         return Err(AppError::TooManyRequests);
     }
@@ -583,20 +624,16 @@ pub async fn donate(
     // slug = general donation; unknown slug also = general (donor
     // shouldn't get a hard error for stale URL); inactive = reject.
     let (campaign_id, campaign_name) = match request.campaign_slug.as_deref() {
-        Some(slug) if !slug.is_empty() => {
-            match donation_campaign_repo
-                .find_by_slug(slug).await?
-            {
-                Some(c) if !c.is_active => {
-                    return Err(AppError::BadRequest(format!(
-                        "Campaign '{}' is no longer accepting donations.",
-                        c.name,
-                    )));
-                }
-                Some(c) => (Some(c.id), c.name),
-                None => (None, "General donation".to_string()),
+        Some(slug) if !slug.is_empty() => match donation_campaign_repo.find_by_slug(slug).await? {
+            Some(c) if !c.is_active => {
+                return Err(AppError::BadRequest(format!(
+                    "Campaign '{}' is no longer accepting donations.",
+                    c.name,
+                )));
             }
-        }
+            Some(c) => (Some(c.id), c.name),
+            None => (None, "General donation".to_string()),
+        },
         _ => (None, "General donation".to_string()),
     };
 
@@ -604,43 +641,48 @@ pub async fn donate(
     // member-attributed donation flow so the donation appears in their
     // payment history. If no, public-donation flow with donor identity
     // captured on the payment row directly.
-    let stripe_client = stripe_client.as_ref()
-        .ok_or_else(|| AppError::ServiceUnavailable(
-            "Payment processing not configured".to_string()
-        ))?;
+    let stripe_client = stripe_client.as_ref().ok_or_else(|| {
+        AppError::ServiceUnavailable("Payment processing not configured".to_string())
+    })?;
 
     let success_url = format!("{}/portal/payments/success", settings.server.base_url);
     let cancel_url = format!("{}/portal/payments/cancel", settings.server.base_url);
 
-    let existing_member = member_repo
-        .find_by_email(email).await?;
+    let existing_member = member_repo.find_by_email(email).await?;
 
     let (checkout_url, payment_id) = match existing_member {
         Some(member) => {
-            stripe_client.create_donation_checkout_session(
-                member.id,
-                &campaign_name,
-                campaign_id,
-                request.amount_cents,
-                success_url,
-                cancel_url,
-            ).await?
+            stripe_client
+                .create_donation_checkout_session(
+                    member.id,
+                    &campaign_name,
+                    campaign_id,
+                    request.amount_cents,
+                    success_url,
+                    cancel_url,
+                )
+                .await?
         }
         None => {
-            stripe_client.create_public_donation_checkout_session(
-                name,
-                email,
-                &campaign_name,
-                campaign_id,
-                request.amount_cents,
-                success_url,
-                cancel_url,
-            ).await?
+            stripe_client
+                .create_public_donation_checkout_session(
+                    name,
+                    email,
+                    &campaign_name,
+                    campaign_id,
+                    request.amount_cents,
+                    success_url,
+                    cancel_url,
+                )
+                .await?
         }
     };
 
-    Ok((StatusCode::OK, Json(PublicDonateResponse {
-        payment_id,
-        checkout_url,
-    })))
+    Ok((
+        StatusCode::OK,
+        Json(PublicDonateResponse {
+            payment_id,
+            checkout_url,
+        }),
+    ))
 }

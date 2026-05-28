@@ -13,9 +13,7 @@ use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
 
 use crate::{
-    domain::{
-        slugify, BasicType, BasicTypeKind, CreateBasicTypeRequest, UpdateBasicTypeRequest,
-    },
+    domain::{slugify, BasicType, BasicTypeKind, CreateBasicTypeRequest, UpdateBasicTypeRequest},
     error::{AppError, Result},
     util::string::capitalize_first,
 };
@@ -144,11 +142,7 @@ impl BasicTypeRepository for SqliteBasicTypeRepository {
         }
     }
 
-    async fn find_by_slug(
-        &self,
-        kind: BasicTypeKind,
-        slug: &str,
-    ) -> Result<Option<BasicType>> {
+    async fn find_by_slug(&self, kind: BasicTypeKind, slug: &str) -> Result<Option<BasicType>> {
         let sql = format!(
             "SELECT id, name, slug, description, color, icon, \
                     sort_order, is_active, created_at, updated_at \
@@ -168,11 +162,7 @@ impl BasicTypeRepository for SqliteBasicTypeRepository {
         }
     }
 
-    async fn list(
-        &self,
-        kind: BasicTypeKind,
-        include_inactive: bool,
-    ) -> Result<Vec<BasicType>> {
+    async fn list(&self, kind: BasicTypeKind, include_inactive: bool) -> Result<Vec<BasicType>> {
         let sql = if include_inactive {
             format!(
                 "SELECT id, name, slug, description, color, icon, \

@@ -45,12 +45,12 @@ where
     H: askama::Template,
     T: askama::Template,
 {
-    let html_body = html.render().map_err(|e| {
-        AppError::Internal(format!("Failed to render HTML email template: {}", e))
-    })?;
-    let text_body = text.render().map_err(|e| {
-        AppError::Internal(format!("Failed to render text email template: {}", e))
-    })?;
+    let html_body = html
+        .render()
+        .map_err(|e| AppError::Internal(format!("Failed to render HTML email template: {}", e)))?;
+    let text_body = text
+        .render()
+        .map_err(|e| AppError::Internal(format!("Failed to render text email template: {}", e)))?;
     Ok(EmailMessage {
         to,
         subject,

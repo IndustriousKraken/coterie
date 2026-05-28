@@ -115,15 +115,17 @@ impl AnnouncementAdminService {
 
         let created = self.announcement_repo.create(announcement).await?;
 
-        self.audit_service.log(
-            Some(actor_id),
-            "create_announcement",
-            "announcement",
-            &created.id.to_string(),
-            None,
-            Some(&created.title),
-            None,
-        ).await;
+        self.audit_service
+            .log(
+                Some(actor_id),
+                "create_announcement",
+                "announcement",
+                &created.id.to_string(),
+                None,
+                Some(&created.title),
+                None,
+            )
+            .await;
 
         // If the admin chose "publish now", treat that the same as a
         // separate publish action — fire the integration event so
@@ -148,7 +150,10 @@ impl AnnouncementAdminService {
         announcement_id: Uuid,
         input: UpdateAnnouncementInput,
     ) -> Result<Announcement> {
-        let existing = self.announcement_repo.find_by_id(announcement_id).await?
+        let existing = self
+            .announcement_repo
+            .find_by_id(announcement_id)
+            .await?
             .ok_or_else(|| AppError::NotFound("Announcement not found".to_string()))?;
 
         let updated = Announcement {
@@ -167,17 +172,22 @@ impl AnnouncementAdminService {
             updated_at: Utc::now(),
         };
 
-        let result = self.announcement_repo.update(announcement_id, updated).await?;
+        let result = self
+            .announcement_repo
+            .update(announcement_id, updated)
+            .await?;
 
-        self.audit_service.log(
-            Some(actor_id),
-            "update_announcement",
-            "announcement",
-            &announcement_id.to_string(),
-            None,
-            Some(&result.title),
-            None,
-        ).await;
+        self.audit_service
+            .log(
+                Some(actor_id),
+                "update_announcement",
+                "announcement",
+                &announcement_id.to_string(),
+                None,
+                Some(&result.title),
+                None,
+            )
+            .await;
 
         Ok(result)
     }
@@ -187,30 +197,34 @@ impl AnnouncementAdminService {
     /// exist, so a concurrent-delete from another tab surfaces as a
     /// 4xx and does not produce a phantom audit row.
     pub async fn delete(&self, actor_id: Uuid, announcement_id: Uuid) -> Result<()> {
-        let _existing = self.announcement_repo.find_by_id(announcement_id).await?
+        let _existing = self
+            .announcement_repo
+            .find_by_id(announcement_id)
+            .await?
             .ok_or_else(|| AppError::NotFound("Announcement not found".to_string()))?;
         self.announcement_repo.delete(announcement_id).await?;
-        self.audit_service.log(
-            Some(actor_id),
-            "delete_announcement",
-            "announcement",
-            &announcement_id.to_string(),
-            None,
-            None,
-            None,
-        ).await;
+        self.audit_service
+            .log(
+                Some(actor_id),
+                "delete_announcement",
+                "announcement",
+                &announcement_id.to_string(),
+                None,
+                None,
+                None,
+            )
+            .await;
         Ok(())
     }
 
     /// Publish a Draft announcement. Idempotent: re-publishing an
     /// already-published row updates `updated_at` and writes an audit
     /// row but does NOT re-dispatch the integration event.
-    pub async fn publish(
-        &self,
-        actor_id: Uuid,
-        announcement_id: Uuid,
-    ) -> Result<Announcement> {
-        let existing = self.announcement_repo.find_by_id(announcement_id).await?
+    pub async fn publish(&self, actor_id: Uuid, announcement_id: Uuid) -> Result<Announcement> {
+        let existing = self
+            .announcement_repo
+            .find_by_id(announcement_id)
+            .await?
             .ok_or_else(|| AppError::NotFound("Announcement not found".to_string()))?;
 
         let was_already_published = existing.published_at.is_some();
@@ -218,17 +232,22 @@ impl AnnouncementAdminService {
         updated.published_at = Some(Utc::now());
         updated.updated_at = Utc::now();
 
-        let saved = self.announcement_repo.update(announcement_id, updated).await?;
+        let saved = self
+            .announcement_repo
+            .update(announcement_id, updated)
+            .await?;
 
-        self.audit_service.log(
-            Some(actor_id),
-            "publish_announcement",
-            "announcement",
-            &announcement_id.to_string(),
-            None,
-            Some(&saved.title),
-            None,
-        ).await;
+        self.audit_service
+            .log(
+                Some(actor_id),
+                "publish_announcement",
+                "announcement",
+                &announcement_id.to_string(),
+                None,
+                Some(&saved.title),
+                None,
+            )
+            .await;
 
         // Only fire the integration event on the transition from
         // unpublished → published, not on re-publishing an already-
@@ -256,7 +275,11 @@ impl AnnouncementAdminService {
         let candidates = self.announcement_repo.list_due_for_publish(now).await?;
         let mut sent: u32 = 0;
         for candidate in candidates {
-            match self.announcement_repo.mark_published_now(candidate.id).await {
+            match self
+                .announcement_repo
+                .mark_published_now(candidate.id)
+                .await
+            {
                 Ok(true) => {
                     // Re-fetch so the row carries the updated
                     // `published_at` and the cleared schedule. This
@@ -266,19 +289,25 @@ impl AnnouncementAdminService {
                         Ok(Some(a)) => a,
                         Ok(None) => continue,
                         Err(e) => {
-                            tracing::error!("publish_scheduled: refetch failed for {}: {}", candidate.id, e);
+                            tracing::error!(
+                                "publish_scheduled: refetch failed for {}: {}",
+                                candidate.id,
+                                e
+                            );
                             continue;
                         }
                     };
-                    self.audit_service.log(
-                        None,
-                        "auto_publish_announcement",
-                        "announcement",
-                        &published.id.to_string(),
-                        None,
-                        Some(&published.title),
-                        None,
-                    ).await;
+                    self.audit_service
+                        .log(
+                            None,
+                            "auto_publish_announcement",
+                            "announcement",
+                            &published.id.to_string(),
+                            None,
+                            Some(&published.title),
+                            None,
+                        )
+                        .await;
                     self.integration_manager
                         .handle_event(IntegrationEvent::AnnouncementPublished(published))
                         .await;
@@ -288,7 +317,11 @@ impl AnnouncementAdminService {
                     // Lost the race or status changed under us; skip.
                 }
                 Err(e) => {
-                    tracing::error!("publish_scheduled: mark_published_now failed for {}: {}", candidate.id, e);
+                    tracing::error!(
+                        "publish_scheduled: mark_published_now failed for {}: {}",
+                        candidate.id,
+                        e
+                    );
                 }
             }
         }
@@ -298,29 +331,33 @@ impl AnnouncementAdminService {
     /// Unpublish a Published announcement (back to Draft). Audits
     /// `unpublish_announcement`. No integration dispatch — unpublish
     /// is silent on the integration channel.
-    pub async fn unpublish(
-        &self,
-        actor_id: Uuid,
-        announcement_id: Uuid,
-    ) -> Result<Announcement> {
-        let existing = self.announcement_repo.find_by_id(announcement_id).await?
+    pub async fn unpublish(&self, actor_id: Uuid, announcement_id: Uuid) -> Result<Announcement> {
+        let existing = self
+            .announcement_repo
+            .find_by_id(announcement_id)
+            .await?
             .ok_or_else(|| AppError::NotFound("Announcement not found".to_string()))?;
 
         let mut updated = existing;
         updated.published_at = None;
         updated.updated_at = Utc::now();
 
-        let saved = self.announcement_repo.update(announcement_id, updated).await?;
+        let saved = self
+            .announcement_repo
+            .update(announcement_id, updated)
+            .await?;
 
-        self.audit_service.log(
-            Some(actor_id),
-            "unpublish_announcement",
-            "announcement",
-            &announcement_id.to_string(),
-            None,
-            Some(&saved.title),
-            None,
-        ).await;
+        self.audit_service
+            .log(
+                Some(actor_id),
+                "unpublish_announcement",
+                "announcement",
+                &announcement_id.to_string(),
+                None,
+                Some(&saved.title),
+                None,
+            )
+            .await;
 
         Ok(saved)
     }
@@ -332,9 +369,7 @@ mod tests {
     use crate::{
         domain::CreateMemberRequest,
         integrations::IntegrationManager,
-        repository::{
-            MemberRepository, SqliteAnnouncementRepository, SqliteMemberRepository,
-        },
+        repository::{MemberRepository, SqliteAnnouncementRepository, SqliteMemberRepository},
     };
     use sqlx::{Executor, SqlitePool};
 
@@ -350,7 +385,10 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .expect(":memory:");
-        sqlx::migrate!("./migrations").run(&pool).await.expect("migrate");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrate");
         pool
     }
 
@@ -365,24 +403,28 @@ mod tests {
 
     async fn make_actor(pool: &SqlitePool) -> Uuid {
         let repo = SqliteMemberRepository::new(pool.clone());
-        let m = repo.create(CreateMemberRequest {
-            email: format!("a-{}@example.com", Uuid::new_v4()),
-            username: format!("u_{}", Uuid::new_v4().simple()),
-            full_name: "Test Admin".to_string(),
-            password: "p4ssword_long_enough".to_string(),
-            membership_type_id: None,
-            ..Default::default()
-        }).await.unwrap();
+        let m = repo
+            .create(CreateMemberRequest {
+                email: format!("a-{}@example.com", Uuid::new_v4()),
+                username: format!("u_{}", Uuid::new_v4().simple()),
+                full_name: "Test Admin".to_string(),
+                password: "p4ssword_long_enough".to_string(),
+                membership_type_id: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         m.id
     }
 
     async fn audit_count(pool: &SqlitePool, action: &str, entity_id: &str) -> i64 {
-        let count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM audit_logs WHERE action = ? AND entity_id = ?"
-        )
-        .bind(action)
-        .bind(entity_id)
-        .fetch_one(pool).await.unwrap();
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM audit_logs WHERE action = ? AND entity_id = ?")
+                .bind(action)
+                .bind(entity_id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
         count.0
     }
 
@@ -409,15 +451,26 @@ mod tests {
         let announcement = svc.create(actor, create_input(false)).await.unwrap();
 
         // Draft: published_at None.
-        assert!(announcement.published_at.is_none(), "draft should have no published_at");
+        assert!(
+            announcement.published_at.is_none(),
+            "draft should have no published_at"
+        );
 
         // Repo touched — row exists.
-        let fetched = svc.announcement_repo.find_by_id(announcement.id).await.unwrap().unwrap();
+        let fetched = svc
+            .announcement_repo
+            .find_by_id(announcement.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(fetched.title, "Test Announcement");
         assert!(fetched.published_at.is_none());
 
         // Audit row inserted.
-        assert_eq!(audit_count(&pool, "create_announcement", &announcement.id.to_string()).await, 1);
+        assert_eq!(
+            audit_count(&pool, "create_announcement", &announcement.id.to_string()).await,
+            1
+        );
 
         // No external observability of the integration_manager call
         // beyond reaching here without panicking — IntegrationManager
@@ -432,12 +485,23 @@ mod tests {
 
         let announcement = svc.create(actor, create_input(true)).await.unwrap();
 
-        assert!(announcement.published_at.is_some(), "publish_now should stamp published_at");
+        assert!(
+            announcement.published_at.is_some(),
+            "publish_now should stamp published_at"
+        );
 
-        let fetched = svc.announcement_repo.find_by_id(announcement.id).await.unwrap().unwrap();
+        let fetched = svc
+            .announcement_repo
+            .find_by_id(announcement.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(fetched.published_at.is_some());
 
-        assert_eq!(audit_count(&pool, "create_announcement", &announcement.id.to_string()).await, 1);
+        assert_eq!(
+            audit_count(&pool, "create_announcement", &announcement.id.to_string()).await,
+            1
+        );
     }
 
     #[tokio::test]
@@ -465,8 +529,14 @@ mod tests {
 
         assert_eq!(result.title, "Renamed");
         assert_eq!(result.content, "New body");
-        assert_eq!(result.published_at, original_published_at, "update should preserve published_at");
-        assert_eq!(audit_count(&pool, "update_announcement", &announcement.id.to_string()).await, 1);
+        assert_eq!(
+            result.published_at, original_published_at,
+            "update should preserve published_at"
+        );
+        assert_eq!(
+            audit_count(&pool, "update_announcement", &announcement.id.to_string()).await,
+            1
+        );
     }
 
     #[tokio::test]
@@ -478,8 +548,16 @@ mod tests {
         let announcement = svc.create(actor, create_input(false)).await.unwrap();
 
         svc.delete(actor, announcement.id).await.unwrap();
-        assert!(svc.announcement_repo.find_by_id(announcement.id).await.unwrap().is_none());
-        assert_eq!(audit_count(&pool, "delete_announcement", &announcement.id.to_string()).await, 1);
+        assert!(svc
+            .announcement_repo
+            .find_by_id(announcement.id)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            audit_count(&pool, "delete_announcement", &announcement.id.to_string()).await,
+            1
+        );
     }
 
     #[tokio::test]
@@ -492,8 +570,14 @@ mod tests {
         assert!(announcement.published_at.is_none());
 
         let result = svc.publish(actor, announcement.id).await.unwrap();
-        assert!(result.published_at.is_some(), "publish should stamp published_at");
-        assert_eq!(audit_count(&pool, "publish_announcement", &announcement.id.to_string()).await, 1);
+        assert!(
+            result.published_at.is_some(),
+            "publish should stamp published_at"
+        );
+        assert_eq!(
+            audit_count(&pool, "publish_announcement", &announcement.id.to_string()).await,
+            1
+        );
     }
 
     #[tokio::test]
@@ -516,7 +600,10 @@ mod tests {
         let again = svc.publish(actor, announcement.id).await.unwrap();
         assert!(again.published_at.is_some());
 
-        assert_eq!(audit_count(&pool, "publish_announcement", &announcement.id.to_string()).await, 2);
+        assert_eq!(
+            audit_count(&pool, "publish_announcement", &announcement.id.to_string()).await,
+            2
+        );
     }
 
     #[tokio::test]
@@ -529,8 +616,19 @@ mod tests {
         assert!(announcement.published_at.is_some());
 
         let result = svc.unpublish(actor, announcement.id).await.unwrap();
-        assert!(result.published_at.is_none(), "unpublish should clear published_at");
-        assert_eq!(audit_count(&pool, "unpublish_announcement", &announcement.id.to_string()).await, 1);
+        assert!(
+            result.published_at.is_none(),
+            "unpublish should clear published_at"
+        );
+        assert_eq!(
+            audit_count(
+                &pool,
+                "unpublish_announcement",
+                &announcement.id.to_string()
+            )
+            .await,
+            1
+        );
     }
 
     fn update_input() -> UpdateAnnouncementInput {
@@ -553,10 +651,17 @@ mod tests {
         let actor = make_actor(&pool).await;
         let missing_id = Uuid::new_v4();
 
-        let err = svc.update(actor, missing_id, update_input()).await.unwrap_err();
+        let err = svc
+            .update(actor, missing_id, update_input())
+            .await
+            .unwrap_err();
         match err {
             AppError::NotFound(msg) => {
-                assert!(msg.contains("Announcement not found"), "expected NotFound message, got {:?}", msg);
+                assert!(
+                    msg.contains("Announcement not found"),
+                    "expected NotFound message, got {:?}",
+                    msg
+                );
             }
             other => panic!("expected AppError::NotFound, got {:?}", other),
         }
@@ -578,7 +683,11 @@ mod tests {
         let err = svc.delete(actor, missing_id).await.unwrap_err();
         match err {
             AppError::NotFound(msg) => {
-                assert!(msg.contains("Announcement not found"), "expected NotFound message, got {:?}", msg);
+                assert!(
+                    msg.contains("Announcement not found"),
+                    "expected NotFound message, got {:?}",
+                    msg
+                );
             }
             other => panic!("expected AppError::NotFound, got {:?}", other),
         }
@@ -600,7 +709,11 @@ mod tests {
         let err = svc.publish(actor, missing_id).await.unwrap_err();
         match err {
             AppError::NotFound(msg) => {
-                assert!(msg.contains("Announcement not found"), "expected NotFound message, got {:?}", msg);
+                assert!(
+                    msg.contains("Announcement not found"),
+                    "expected NotFound message, got {:?}",
+                    msg
+                );
             }
             other => panic!("expected AppError::NotFound, got {:?}", other),
         }
@@ -622,7 +735,11 @@ mod tests {
         let err = svc.unpublish(actor, missing_id).await.unwrap_err();
         match err {
             AppError::NotFound(msg) => {
-                assert!(msg.contains("Announcement not found"), "expected NotFound message, got {:?}", msg);
+                assert!(
+                    msg.contains("Announcement not found"),
+                    "expected NotFound message, got {:?}",
+                    msg
+                );
             }
             other => panic!("expected AppError::NotFound, got {:?}", other),
         }

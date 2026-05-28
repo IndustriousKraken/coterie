@@ -17,7 +17,6 @@ use coterie::{
     domain::MemberStatus,
     web::{
         portal::{
-            MemberInfo,
             admin::members::{
                 create::AdminNewMemberTemplate,
                 detail::{AdminMemberDetailInfo, AdminMemberDetailTemplate, AdminSavedCardInfo},
@@ -27,6 +26,7 @@ use coterie::{
             dashboard::MemberDashboardTemplate,
             profile::ProfileTemplate,
             security::SecurityTemplate,
+            MemberInfo,
         },
         templates::BaseContext,
     },
@@ -41,7 +41,9 @@ fn fixture_uuid() -> Uuid {
 }
 
 fn fixture_joined() -> chrono::DateTime<chrono::Utc> {
-    chrono::Utc.with_ymd_and_hms(2025, 9, 12, 14, 30, 0).unwrap()
+    chrono::Utc
+        .with_ymd_and_hms(2025, 9, 12, 14, 30, 0)
+        .unwrap()
 }
 
 fn fixture_dues() -> chrono::DateTime<chrono::Utc> {
@@ -114,7 +116,9 @@ fn type_options() -> Vec<MembershipTypeOption> {
 }
 
 fn snapshots_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("snapshots")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("snapshots")
 }
 
 fn assert_golden(name: &str, rendered: &str) {
@@ -126,7 +130,8 @@ fn assert_golden(name: &str, rendered: &str) {
     }
     let expected = std::fs::read_to_string(&path).expect("read golden");
     assert_eq!(
-        rendered, expected,
+        rendered,
+        expected,
         "rendered output drifted from golden at {}",
         path.display()
     );
@@ -223,7 +228,10 @@ fn all_statuses() -> [(&'static str, MemberStatus); 5] {
 #[test]
 fn dashboard_template_snapshots_match() {
     for (label, status) in all_statuses() {
-        assert_golden(&format!("dashboard_member__{label}"), &render_dashboard(status));
+        assert_golden(
+            &format!("dashboard_member__{label}"),
+            &render_dashboard(status),
+        );
     }
 }
 
@@ -237,14 +245,20 @@ fn profile_template_snapshots_match() {
 #[test]
 fn security_template_snapshots_match() {
     for (label, status) in all_statuses() {
-        assert_golden(&format!("portal_security__{label}"), &render_security(status));
+        assert_golden(
+            &format!("portal_security__{label}"),
+            &render_security(status),
+        );
     }
 }
 
 #[test]
 fn admin_members_template_snapshots_match() {
     for (label, status) in all_statuses() {
-        assert_golden(&format!("admin_members__{label}"), &render_admin_members(status));
+        assert_golden(
+            &format!("admin_members__{label}"),
+            &render_admin_members(status),
+        );
     }
 }
 

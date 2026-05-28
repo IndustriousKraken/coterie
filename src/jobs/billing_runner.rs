@@ -2,8 +2,7 @@ use std::sync::Arc;
 use tokio::time::{self, Duration};
 
 use crate::service::{
-    announcement_admin_service::AnnouncementAdminService,
-    billing_service::BillingService,
+    announcement_admin_service::AnnouncementAdminService, billing_service::BillingService,
 };
 
 pub struct BillingRunner {
@@ -45,11 +44,7 @@ impl BillingRunner {
         match self.billing_service.auto_renew.run_billing_cycle().await {
             Ok((succeeded, total)) => {
                 if total > 0 {
-                    tracing::info!(
-                        "Billing cycle: {}/{} payments processed",
-                        succeeded,
-                        total
-                    );
+                    tracing::info!("Billing cycle: {}/{} payments processed", succeeded, total);
                 }
             }
             Err(e) => {
@@ -58,7 +53,12 @@ impl BillingRunner {
         }
 
         // Check for expired members
-        match self.billing_service.expiration.check_expired_members().await {
+        match self
+            .billing_service
+            .expiration
+            .check_expired_members()
+            .await
+        {
             Ok(count) => {
                 if count > 0 {
                     tracing::info!("Expired {} members past grace period", count);
@@ -72,7 +72,12 @@ impl BillingRunner {
         // Send dues-expiring-soon reminders (idempotent per cycle via
         // dues_reminder_sent_at flag, so running hourly is fine — only
         // newly-eligible members get email).
-        match self.billing_service.notifications.send_dues_reminders().await {
+        match self
+            .billing_service
+            .notifications
+            .send_dues_reminders()
+            .await
+        {
             Ok(_) => {}
             Err(e) => {
                 tracing::error!("Dues reminder cycle error: {}", e);
@@ -82,7 +87,12 @@ impl BillingRunner {
         // Send RSVP'd-event reminders (idempotent per RSVP via the
         // event_attendance.reminder_sent_at flag, so hourly ticks are
         // safe — only newly-eligible RSVPs get email).
-        match self.billing_service.notifications.send_event_reminders().await {
+        match self
+            .billing_service
+            .notifications
+            .send_event_reminders()
+            .await
+        {
             Ok(_) => {}
             Err(e) => {
                 tracing::error!("Event reminder cycle error: {}", e);

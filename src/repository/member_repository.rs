@@ -1,10 +1,10 @@
 use async_trait::async_trait;
-use chrono::{DateTime, Utc, NaiveDateTime};
-use sqlx::{SqlitePool, FromRow};
+use chrono::{DateTime, NaiveDateTime, Utc};
+use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
 
 use crate::{
-    domain::{Member, MemberStatus, CreateMemberRequest, UpdateMemberRequest, BillingMode},
+    domain::{BillingMode, CreateMemberRequest, Member, MemberStatus, UpdateMemberRequest},
     error::{AppError, Result},
 };
 
@@ -186,8 +186,7 @@ impl SqliteMemberRepository {
         let membership_type_id = Uuid::parse_str(&row.membership_type_id)
             .map_err(|e| AppError::Internal(e.to_string()))?;
 
-        let billing_mode = BillingMode::from_str(&row.billing_mode)
-            .unwrap_or(BillingMode::Manual);
+        let billing_mode = BillingMode::from_str(&row.billing_mode).unwrap_or(BillingMode::Manual);
 
         Ok(Member {
             id: Uuid::parse_str(&row.id).map_err(|e| AppError::Internal(e.to_string()))?,
@@ -197,16 +196,24 @@ impl SqliteMemberRepository {
             status: Self::parse_member_status(&row.status)?,
             membership_type_id,
             joined_at: DateTime::from_naive_utc_and_offset(row.joined_at, Utc),
-            expires_at: row.expires_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
-            dues_paid_until: row.dues_paid_until.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
+            expires_at: row
+                .expires_at
+                .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
+            dues_paid_until: row
+                .dues_paid_until
+                .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
             bypass_dues: row.bypass_dues != 0,
             is_admin: row.is_admin != 0,
             notes: row.notes,
             stripe_customer_id: row.stripe_customer_id,
             stripe_subscription_id: row.stripe_subscription_id,
             billing_mode,
-            email_verified_at: row.email_verified_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
-            dues_reminder_sent_at: row.dues_reminder_sent_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
+            email_verified_at: row
+                .email_verified_at
+                .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
+            dues_reminder_sent_at: row
+                .dues_reminder_sent_at
+                .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
             discord_id: row.discord_id,
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
             updated_at: DateTime::from_naive_utc_and_offset(row.updated_at, Utc),
@@ -239,8 +246,9 @@ impl SqliteMemberRepository {
         .map_err(AppError::Database)?;
 
         match row {
-            Some((id_str,)) => Uuid::parse_str(&id_str)
-                .map_err(|e| AppError::Internal(e.to_string())),
+            Some((id_str,)) => {
+                Uuid::parse_str(&id_str).map_err(|e| AppError::Internal(e.to_string()))
+            }
             None => Err(AppError::BadRequest(
                 "No active membership types configured — admin must create one before \
                  members can be added."
@@ -256,11 +264,13 @@ impl MemberRepository for SqliteMemberRepository {
         let id = Uuid::new_v4();
         let now = Utc::now();
         let status = MemberStatus::Pending;
-        let membership_type_id = self.resolve_membership_type_id(request.membership_type_id).await?;
+        let membership_type_id = self
+            .resolve_membership_type_id(request.membership_type_id)
+            .await?;
 
         // Hash the password with argon2
+        use argon2::password_hash::{rand_core::OsRng, SaltString};
         use argon2::{Argon2, PasswordHasher};
-        use argon2::password_hash::{SaltString, rand_core::OsRng};
 
         let salt = SaltString::generate(&mut OsRng);
         let argon2 = Argon2::default();
@@ -277,7 +287,8 @@ impl MemberRepository for SqliteMemberRepository {
         // Bulk-import billing-migration fields. When None, fall back to
         // the same defaults the prior INSERT shape produced: `joined_at`
         // defaults to `now`, the rest to SQL NULL.
-        let joined_at_naive = request.joined_at
+        let joined_at_naive = request
+            .joined_at
             .map(|dt| dt.naive_utc())
             .unwrap_or(now_naive);
         let dues_paid_until_naive = request.dues_paid_until.map(|dt| dt.naive_utc());
@@ -291,7 +302,7 @@ impl MemberRepository for SqliteMemberRepository {
                 dues_paid_until, stripe_customer_id, stripe_subscription_id,
                 email_verified_at, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#
+            "#,
         )
         .bind(&id_str)
         .bind(&request.email)
@@ -301,7 +312,7 @@ impl MemberRepository for SqliteMemberRepository {
         .bind(status_str)
         .bind(&mt_id_str)
         .bind(joined_at_naive)
-        .bind(0i32)  // bypass_dues as integer (0 = false)
+        .bind(0i32) // bypass_dues as integer (0 = false)
         .bind(dues_paid_until_naive)
         .bind(&request.stripe_customer_id)
         .bind(&request.stripe_subscription_id)
@@ -312,9 +323,9 @@ impl MemberRepository for SqliteMemberRepository {
         .await
         .map_err(AppError::Database)?;
 
-        self.find_by_id(id).await?.ok_or_else(|| {
-            AppError::Internal("Failed to retrieve created member".to_string())
-        })
+        self.find_by_id(id)
+            .await?
+            .ok_or_else(|| AppError::Internal("Failed to retrieve created member".to_string()))
     }
 
     async fn find_by_id(&self, id: Uuid) -> Result<Option<Member>> {
@@ -327,7 +338,7 @@ impl MemberRepository for SqliteMemberRepository {
                    dues_reminder_sent_at, discord_id, created_at, updated_at
             FROM members
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(id_str)
         .fetch_optional(&self.pool)
@@ -336,7 +347,7 @@ impl MemberRepository for SqliteMemberRepository {
 
         match row {
             Some(r) => Ok(Some(Self::row_to_member(r)?)),
-            None => Ok(None)
+            None => Ok(None),
         }
     }
 
@@ -349,7 +360,7 @@ impl MemberRepository for SqliteMemberRepository {
                    dues_reminder_sent_at, discord_id, created_at, updated_at
             FROM members
             WHERE email = ?
-            "#
+            "#,
         )
         .bind(email)
         .fetch_optional(&self.pool)
@@ -358,7 +369,7 @@ impl MemberRepository for SqliteMemberRepository {
 
         match row {
             Some(r) => Ok(Some(Self::row_to_member(r)?)),
-            None => Ok(None)
+            None => Ok(None),
         }
     }
 
@@ -371,7 +382,7 @@ impl MemberRepository for SqliteMemberRepository {
                    dues_reminder_sent_at, discord_id, created_at, updated_at
             FROM members
             WHERE username = ?
-            "#
+            "#,
         )
         .bind(username)
         .fetch_optional(&self.pool)
@@ -380,7 +391,7 @@ impl MemberRepository for SqliteMemberRepository {
 
         match row {
             Some(r) => Ok(Some(Self::row_to_member(r)?)),
-            None => Ok(None)
+            None => Ok(None),
         }
     }
 
@@ -394,25 +405,27 @@ impl MemberRepository for SqliteMemberRepository {
             FROM members
             WHERE discord_id IS NOT NULL AND discord_id != ''
             ORDER BY status, joined_at
-            "#
+            "#,
         )
         .fetch_all(&self.pool)
         .await
         .map_err(AppError::Database)?;
 
-        rows.into_iter()
-            .map(Self::row_to_member)
-            .collect()
+        rows.into_iter().map(Self::row_to_member).collect()
     }
 
     async fn update(&self, id: Uuid, update: UpdateMemberRequest) -> Result<Member> {
-        let existing = self.find_by_id(id).await?
+        let existing = self
+            .find_by_id(id)
+            .await?
             .ok_or_else(|| AppError::NotFound("Member not found".to_string()))?;
 
         let now = Utc::now();
 
         let status_str = update.status.as_ref().unwrap_or(&existing.status).as_str();
-        let membership_type_id = update.membership_type_id.unwrap_or(existing.membership_type_id);
+        let membership_type_id = update
+            .membership_type_id
+            .unwrap_or(existing.membership_type_id);
         let mt_id_str = membership_type_id.to_string();
 
         let id_str = id.to_string();
@@ -431,7 +444,7 @@ impl MemberRepository for SqliteMemberRepository {
                 notes = COALESCE(?, notes),
                 updated_at = ?
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(&update.full_name)
         .bind(status_str)
@@ -445,9 +458,9 @@ impl MemberRepository for SqliteMemberRepository {
         .await
         .map_err(AppError::Database)?;
 
-        self.find_by_id(id).await?.ok_or_else(|| {
-            AppError::Internal("Failed to retrieve updated member".to_string())
-        })
+        self.find_by_id(id)
+            .await?
+            .ok_or_else(|| AppError::Internal("Failed to retrieve updated member".to_string()))
     }
 
     async fn set_admin(&self, id: Uuid, is_admin: bool) -> Result<Member> {
@@ -463,9 +476,9 @@ impl MemberRepository for SqliteMemberRepository {
             .await
             .map_err(AppError::Database)?;
 
-        self.find_by_id(id).await?.ok_or_else(|| {
-            AppError::NotFound("Member not found".to_string())
-        })
+        self.find_by_id(id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Member not found".to_string()))
     }
 
     async fn mark_email_verified(&self, id: Uuid) -> Result<()> {
@@ -473,23 +486,21 @@ impl MemberRepository for SqliteMemberRepository {
         let now_naive = Utc::now().naive_utc();
         sqlx::query(
             "UPDATE members SET email_verified_at = ?, updated_at = ? \
-             WHERE id = ? AND email_verified_at IS NULL"
+             WHERE id = ? AND email_verified_at IS NULL",
         )
-            .bind(now_naive)
-            .bind(now_naive)
-            .bind(&id_str)
-            .execute(&self.pool)
-            .await
-            .map_err(AppError::Database)?;
+        .bind(now_naive)
+        .bind(now_naive)
+        .bind(&id_str)
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
         Ok(())
     }
 
     async fn update_password_hash(&self, id: Uuid, password_hash: &str) -> Result<()> {
         let id_str = id.to_string();
         let now_naive = Utc::now().naive_utc();
-        sqlx::query(
-            "UPDATE members SET password_hash = ?, updated_at = ? WHERE id = ?"
-        )
+        sqlx::query("UPDATE members SET password_hash = ?, updated_at = ? WHERE id = ?")
             .bind(password_hash)
             .bind(now_naive)
             .bind(&id_str)
@@ -502,9 +513,7 @@ impl MemberRepository for SqliteMemberRepository {
     async fn update_discord_id(&self, id: Uuid, discord_id: Option<&str>) -> Result<()> {
         let id_str = id.to_string();
         let now_naive = Utc::now().naive_utc();
-        sqlx::query(
-            "UPDATE members SET discord_id = ?, updated_at = ? WHERE id = ?"
-        )
+        sqlx::query("UPDATE members SET discord_id = ?, updated_at = ? WHERE id = ?")
             .bind(discord_id)
             .bind(now_naive)
             .bind(&id_str)
@@ -623,24 +632,20 @@ impl MemberRepository for SqliteMemberRepository {
     }
 
     async fn count_by_billing_mode(&self, mode: BillingMode) -> Result<i64> {
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM members WHERE billing_mode = ?",
-        )
-        .bind(mode.as_str())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(AppError::Database)?;
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM members WHERE billing_mode = ?")
+            .bind(mode.as_str())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(AppError::Database)?;
         Ok(count)
     }
 
     async fn list_ids_by_billing_mode(&self, mode: BillingMode) -> Result<Vec<Uuid>> {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT id FROM members WHERE billing_mode = ?",
-        )
-        .bind(mode.as_str())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(AppError::Database)?;
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT id FROM members WHERE billing_mode = ?")
+            .bind(mode.as_str())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(AppError::Database)?;
 
         rows.into_iter()
             .map(|(id_str,)| {
@@ -654,7 +659,8 @@ impl MemberRepository for SqliteMemberRepository {
         // Build WHERE clause + bound params from the typed query.
         // Sort field/direction map to constant strings (no injection
         // risk); user-provided values (search, status, type) bind.
-        let search_pat = query.search
+        let search_pat = query
+            .search
             .as_ref()
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
@@ -664,9 +670,8 @@ impl MemberRepository for SqliteMemberRepository {
 
         let mut where_clauses: Vec<&str> = Vec::new();
         if search_pat.is_some() {
-            where_clauses.push(
-                "(LOWER(full_name) LIKE ? OR LOWER(email) LIKE ? OR LOWER(username) LIKE ?)",
-            );
+            where_clauses
+                .push("(LOWER(full_name) LIKE ? OR LOWER(email) LIKE ? OR LOWER(username) LIKE ?)");
         }
         if status_str.is_some() {
             where_clauses.push("status = ?");
@@ -726,17 +731,25 @@ impl MemberRepository for SqliteMemberRepository {
         }
         rows_q = rows_q.bind(query.limit).bind(query.offset);
 
-        let rows = rows_q.fetch_all(&self.pool).await
+        let rows = rows_q
+            .fetch_all(&self.pool)
+            .await
             .map_err(AppError::Database)?;
-        let total: i64 = count_q.fetch_one(&self.pool).await
+        let total: i64 = count_q
+            .fetch_one(&self.pool)
+            .await
             .map_err(AppError::Database)?;
 
-        let members = rows.into_iter().map(Self::row_to_member).collect::<Result<Vec<_>>>()?;
+        let members = rows
+            .into_iter()
+            .map(Self::row_to_member)
+            .collect::<Result<Vec<_>>>()?;
         Ok((members, total))
     }
 
     async fn export_rows(&self, query: MemberQuery) -> Result<Vec<MemberExportRow>> {
-        let search_pat = query.search
+        let search_pat = query
+            .search
             .as_ref()
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
@@ -799,25 +812,29 @@ impl MemberRepository for SqliteMemberRepository {
         }
 
         let rows = q.fetch_all(&self.pool).await.map_err(AppError::Database)?;
-        rows.into_iter().map(|r| {
-            Ok(MemberExportRow {
-                id: Uuid::parse_str(&r.id).map_err(|e| AppError::Internal(e.to_string()))?,
-                email: r.email,
-                username: r.username,
-                full_name: r.full_name,
-                status: Self::parse_member_status(&r.status)?,
-                membership_type: r.membership_type,
-                joined_at: DateTime::from_naive_utc_and_offset(r.joined_at, Utc),
-                dues_paid_until: r.dues_paid_until
-                    .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
-                is_admin: r.is_admin != 0,
-                bypass_dues: r.bypass_dues != 0,
-                discord_id: r.discord_id,
-                email_verified_at: r.email_verified_at
-                    .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
-                notes: r.notes,
+        rows.into_iter()
+            .map(|r| {
+                Ok(MemberExportRow {
+                    id: Uuid::parse_str(&r.id).map_err(|e| AppError::Internal(e.to_string()))?,
+                    email: r.email,
+                    username: r.username,
+                    full_name: r.full_name,
+                    status: Self::parse_member_status(&r.status)?,
+                    membership_type: r.membership_type,
+                    joined_at: DateTime::from_naive_utc_and_offset(r.joined_at, Utc),
+                    dues_paid_until: r
+                        .dues_paid_until
+                        .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
+                    is_admin: r.is_admin != 0,
+                    bypass_dues: r.bypass_dues != 0,
+                    discord_id: r.discord_id,
+                    email_verified_at: r
+                        .email_verified_at
+                        .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
+                    notes: r.notes,
+                })
             })
-        }).collect()
+            .collect()
     }
 }
 

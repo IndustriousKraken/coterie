@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,7 +31,7 @@ impl SettingType {
     pub fn as_str(&self) -> &'static str {
         match self {
             SettingType::String => "string",
-            SettingType::Number => "number", 
+            SettingType::Number => "number",
             SettingType::Boolean => "boolean",
             SettingType::Json => "json",
         }
@@ -49,4 +49,3 @@ pub struct SettingsCategory {
     pub name: String,
     pub settings: Vec<AppSetting>,
 }
-

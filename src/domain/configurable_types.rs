@@ -227,8 +227,14 @@ mod tests {
     #[test]
     fn test_billing_period() {
         assert_eq!(BillingPeriod::Yearly.as_str(), "yearly");
-        assert_eq!(BillingPeriod::from_str("yearly"), Some(BillingPeriod::Yearly));
-        assert_eq!(BillingPeriod::from_str("YEARLY"), Some(BillingPeriod::Yearly));
+        assert_eq!(
+            BillingPeriod::from_str("yearly"),
+            Some(BillingPeriod::Yearly)
+        );
+        assert_eq!(
+            BillingPeriod::from_str("YEARLY"),
+            Some(BillingPeriod::Yearly)
+        );
         assert_eq!(BillingPeriod::from_str("invalid"), None);
     }
 
@@ -241,7 +247,13 @@ mod tests {
 
         assert_eq!(BasicTypeKind::Announcement.table(), "announcement_types");
         assert_eq!(BasicTypeKind::Announcement.usage_table(), "announcements");
-        assert_eq!(BasicTypeKind::Announcement.usage_fk(), "announcement_type_id");
-        assert_eq!(BasicTypeKind::Announcement.display_name(), "announcement type");
+        assert_eq!(
+            BasicTypeKind::Announcement.usage_fk(),
+            "announcement_type_id"
+        );
+        assert_eq!(
+            BasicTypeKind::Announcement.display_name(),
+            "announcement type"
+        );
     }
 }

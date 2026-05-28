@@ -12,34 +12,34 @@ pub type Result<T> = std::result::Result<T, AppError>;
 pub enum AppError {
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
-    
+
     #[error("Not found: {0}")]
     NotFound(String),
-    
+
     #[error("Unauthorized")]
     Unauthorized,
-    
+
     #[error("Forbidden")]
     Forbidden,
-    
+
     #[error("Bad request: {0}")]
     BadRequest(String),
-    
+
     #[error("Conflict: {0}")]
     Conflict(String),
-    
+
     #[error("Internal server error: {0}")]
     Internal(String),
 
     #[error("Integration error: {0}")]
     Integration(String),
-    
+
     #[error("Validation error: {0}")]
     Validation(String),
-    
+
     #[error("Service unavailable: {0}")]
     ServiceUnavailable(String),
-    
+
     #[error("External service error: {0}")]
     External(String),
 
@@ -68,7 +68,9 @@ impl IntoResponse for AppError {
                 (StatusCode::SERVICE_UNAVAILABLE, msg.as_str())
             }
             AppError::Validation(ref msg) => (StatusCode::UNPROCESSABLE_ENTITY, msg.as_str()),
-            AppError::ServiceUnavailable(ref msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.as_str()),
+            AppError::ServiceUnavailable(ref msg) => {
+                (StatusCode::SERVICE_UNAVAILABLE, msg.as_str())
+            }
             AppError::External(ref msg) => {
                 // Inner message often contains raw vendor strings (Stripe
                 // request IDs, "No such customer: cus_…", Discord HTTP
@@ -81,7 +83,10 @@ impl IntoResponse for AppError {
                     "Upstream service error. Please try again or contact support.",
                 )
             }
-            AppError::TooManyRequests => (StatusCode::TOO_MANY_REQUESTS, "Too many requests. Please try again later.")
+            AppError::TooManyRequests => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many requests. Please try again later.",
+            ),
         };
 
         let body = Json(json!({
@@ -91,4 +96,3 @@ impl IntoResponse for AppError {
         (status, body).into_response()
     }
 }
-

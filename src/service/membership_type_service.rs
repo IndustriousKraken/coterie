@@ -36,7 +36,10 @@ impl MembershipTypeService {
     }
 
     /// Create a new membership type
-    pub async fn create(&self, request: CreateMembershipTypeRequest) -> Result<MembershipTypeConfig> {
+    pub async fn create(
+        &self,
+        request: CreateMembershipTypeRequest,
+    ) -> Result<MembershipTypeConfig> {
         validate_hex_color_for_request(request.color.as_deref())?;
 
         // Validate billing period
@@ -49,9 +52,7 @@ impl MembershipTypeService {
 
         // Validate fee is non-negative
         if request.fee_cents < 0 {
-            return Err(AppError::BadRequest(
-                "Fee cannot be negative".to_string()
-            ));
+            return Err(AppError::BadRequest("Fee cannot be negative".to_string()));
         }
 
         // Check for duplicate slug if provided
@@ -68,7 +69,11 @@ impl MembershipTypeService {
     }
 
     /// Update an existing membership type
-    pub async fn update(&self, id: Uuid, request: UpdateMembershipTypeRequest) -> Result<MembershipTypeConfig> {
+    pub async fn update(
+        &self,
+        id: Uuid,
+        request: UpdateMembershipTypeRequest,
+    ) -> Result<MembershipTypeConfig> {
         validate_hex_color_for_request(request.color.as_deref())?;
 
         // Validate billing period if provided
@@ -84,9 +89,7 @@ impl MembershipTypeService {
         // Validate fee is non-negative if provided
         if let Some(fee_cents) = request.fee_cents {
             if fee_cents < 0 {
-                return Err(AppError::BadRequest(
-                    "Fee cannot be negative".to_string()
-                ));
+                return Err(AppError::BadRequest("Fee cannot be negative".to_string()));
             }
         }
 
@@ -95,9 +98,11 @@ impl MembershipTypeService {
 
     /// Delete a membership type
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let _membership_type = self.repo.find_by_id(id).await?.ok_or_else(|| {
-            AppError::NotFound("Membership type not found".to_string())
-        })?;
+        let _membership_type = self
+            .repo
+            .find_by_id(id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Membership type not found".to_string()))?;
 
         // Cannot delete if in use
         let usage_count = self.repo.count_usage(id).await?;
