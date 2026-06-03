@@ -154,7 +154,66 @@
             </div>
         </div>
     </nav>
-    
+    {% if let Some(update) = base.update_banner.as_ref() %}
+    <!-- Admin-only "update available" banner (a40).
+         The server emits this only for admins running a release build
+         that is behind the cached latest stable. Dismissal is honored
+         here client-side: the banner starts hidden, and the nonce'd
+         script below removes it when the `update_dismissed` cookie
+         already matches this tag, or reveals it otherwise. A newer tag
+         no longer matches an older dismissed cookie, so the banner
+         returns on the next release. No new route, CSRF surface, or
+         schema — see design D6. -->
+    <div id="update-banner" data-tag="{{ update.tag }}"
+         class="hidden bg-amber-50 border-b border-amber-200">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between gap-4">
+            <p class="text-sm text-amber-800">
+                <span class="font-medium">Update available:</span>
+                Coterie <span class="font-mono">{{ update.tag }}</span> is out.
+                <a href="{{ update.notes_url }}" target="_blank" rel="noopener noreferrer"
+                   class="font-medium underline hover:text-amber-900">Release notes</a>
+                <span class="mx-1 text-amber-400">·</span>
+                <a href="{{ base.update_readme_url }}" target="_blank" rel="noopener noreferrer"
+                   class="font-medium underline hover:text-amber-900">How to update</a>
+            </p>
+            <button type="button" id="update-banner-dismiss"
+                    class="shrink-0 text-amber-700 hover:text-amber-900 text-sm font-medium">
+                Dismiss
+            </button>
+        </div>
+    </div>
+    <script nonce="__CSP_NONCE__">
+        (function () {
+            var el = document.getElementById('update-banner');
+            if (!el) return;
+            var tag = el.getAttribute('data-tag');
+            function readCookie(name) {
+                return document.cookie.split('; ').reduce(function (acc, pair) {
+                    var eq = pair.indexOf('=');
+                    var key = eq < 0 ? pair : pair.slice(0, eq);
+                    if (key === name) {
+                        return decodeURIComponent(eq < 0 ? '' : pair.slice(eq + 1));
+                    }
+                    return acc;
+                }, null);
+            }
+            // Already dismissed for this exact tag → don't show at all.
+            if (readCookie('update_dismissed') === tag) {
+                el.remove();
+                return;
+            }
+            el.classList.remove('hidden');
+            var btn = document.getElementById('update-banner-dismiss');
+            if (btn) {
+                btn.addEventListener('click', function () {
+                    document.cookie = 'update_dismissed=' + encodeURIComponent(tag) +
+                        '; path=/; max-age=31536000; samesite=lax';
+                    el.remove();
+                });
+            }
+        })();
+    </script>
+    {% endif %}
     <!-- Toast notifications -->
     <div id="toast-container" class="fixed top-4 right-4 z-50"></div>
 
@@ -170,7 +229,19 @@
     <main class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
         {% block content %}{% endblock %}
     </main>
-    
+
+    <!-- Footer: "about this version" affordance.
+         Links to the release page for a real release build; dev builds
+         (no embedded tag) render the -dev string with no link. -->
+    <footer class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 text-center text-xs text-gray-400">
+        {% if let Some(url) = base.release_url.as_ref() %}
+        <a href="{{ url }}" target="_blank" rel="noopener noreferrer"
+           class="hover:text-gray-600">Coterie {{ base.version }}</a>
+        {% else %}
+        <span>Coterie {{ base.version }}</span>
+        {% endif %}
+    </footer>
+
     <!-- Loading indicator -->
     <div class="htmx-indicator fixed top-0 left-0 right-0 h-1 bg-blue-600"></div>
     

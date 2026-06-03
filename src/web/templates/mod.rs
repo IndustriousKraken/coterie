@@ -30,6 +30,25 @@ pub struct BaseContext {
     pub current_user: Option<UserInfo>,
     pub is_admin: bool,
     pub csrf_token: String,
+    /// The running version string (e.g. `"v1.2.3 (abc1234)"` or
+    /// `"0.1.0-dev (abc1234)"`), rendered in the footer's "about this
+    /// version" line on every portal page. See [`crate::version`].
+    pub version: String,
+    /// The GitHub release page URL when this is a real release build
+    /// (`crate::version::release_tag()` is `Some`); `None` for dev
+    /// builds, which have no release page and render the version with
+    /// no link.
+    pub release_url: Option<String>,
+    /// The admin-only "update available" banner, or `None`. Populated by
+    /// [`BaseContext::for_member`] from the cached latest stable release
+    /// when the session is an admin and the running release build is
+    /// behind it. `None` for members, dev builds, and up-to-date
+    /// instances — see [`crate::service::update_check::banner_for`].
+    pub update_banner: Option<crate::service::update_check::UpdateBanner>,
+    /// Version-pinned link to the README "Update" steps, used by the
+    /// update banner's "How to update" link. Empty unless a banner is
+    /// shown, and only referenced from inside the banner markup.
+    pub update_readme_url: String,
 }
 
 impl BaseContext {
@@ -47,14 +66,36 @@ impl BaseContext {
             .generate_token(&session.session_id)
             .await
             .unwrap_or_default();
+        let is_admin = current_user.member.is_admin;
+        // Read the cached latest stable release (written by the daily
+        // background task) and decide whether this admin is behind it.
+        // Dismissal is enforced client-side from the `update_dismissed`
+        // cookie (the server has no per-request cookie here), so we pass
+        // `None` — see `banner_for` and `templates/layouts/base.html`.
+        let cached = crate::service::update_check::cached_latest();
+        let update_banner = crate::service::update_check::banner_for(
+            is_admin,
+            crate::version::release_tag(),
+            cached.as_ref(),
+            None,
+        );
+        let update_readme_url = if update_banner.is_some() {
+            format!("{}#update", crate::version::docs_url("README.md"))
+        } else {
+            String::new()
+        };
         Self {
             current_user: Some(UserInfo {
                 id: current_user.member.id.to_string(),
                 username: current_user.member.username.clone(),
                 email: current_user.member.email.clone(),
             }),
-            is_admin: current_user.member.is_admin,
+            is_admin,
             csrf_token,
+            version: crate::version::current(),
+            release_url: crate::version::release_tag().map(crate::version::release_url),
+            update_banner,
+            update_readme_url,
         }
     }
 
@@ -64,7 +105,11 @@ impl BaseContext {
     /// to CSRF-exempt endpoints (login, signup) or supply tokens
     /// out-of-band (password reset link).
     pub fn for_anon() -> Self {
-        Self::default()
+        Self {
+            version: crate::version::current(),
+            release_url: crate::version::release_tag().map(crate::version::release_url),
+            ..Self::default()
+        }
     }
 }
 

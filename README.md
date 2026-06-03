@@ -1,5 +1,11 @@
 # Coterie
 
+> **These docs track the latest development version.** If you're running an
+> older release, see that release's notes on the
+> [Releases page](https://github.com/IndustriousKraken/coterie/releases) — or
+> browse the repository at your version's tag — for documentation matching your
+> build. The running version is shown in the portal footer and at `GET /health`.
+
 Coterie is a secure, lightweight member-management system for small-to-medium
 clubs, groups, and organizations. It is the source of truth for who is in your
 group and who is not: it tracks membership status, collects dues and donations

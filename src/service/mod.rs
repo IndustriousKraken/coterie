@@ -13,6 +13,7 @@ pub mod payment_admin_service;
 pub mod payment_service;
 pub mod recurring_event_service;
 pub mod settings_service;
+pub mod update_check;
 
 use crate::api::state::MoneyLimiter;
 use crate::auth::{AuthService, CsrfService, PendingLoginService, TotpService};

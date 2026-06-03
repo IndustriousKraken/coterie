@@ -11,4 +11,5 @@ pub mod payments;
 pub mod repository;
 pub mod service;
 pub mod util;
+pub mod version;
 pub mod web;

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use axum::extract::FromRef;
@@ -165,6 +165,14 @@ pub struct AppState {
     /// `bot_challenge.provider = "disabled"` (the default) this is the
     /// no-op `DisabledVerifier`, so existing dev flows keep working.
     pub bot_challenge_verifier: Arc<dyn BotChallengeVerifier>,
+    /// Cache of the latest known stable release, refreshed by the daily
+    /// update-check task and read by the portal "update available"
+    /// banner. The backing store is the singleton in
+    /// `service::update_check`, so the static `BaseContext::for_member`
+    /// render helper reads the same value this task writes without the
+    /// cache having to be threaded through every portal handler. See
+    /// a40 / D2.
+    pub latest_release: LatestReleaseCache,
 }
 
 impl AppState {
@@ -188,7 +196,21 @@ impl AppState {
             setup_lock: Arc::new(AsyncMutex::new(())),
             admin_exists_observed: Arc::new(AtomicBool::new(false)),
             bot_challenge_verifier,
+            // Same Arc the background task and the render path use.
+            latest_release: LatestReleaseCache(crate::service::update_check::cache()),
         }
+    }
+}
+
+/// Handle to the process-wide latest-stable-release cache. Newtype so
+/// it has a single unambiguous `FromRef<AppState>` impl. The inner
+/// `Arc` is the singleton from `service::update_check`.
+#[derive(Clone)]
+pub struct LatestReleaseCache(pub Arc<RwLock<Option<crate::service::update_check::LatestRelease>>>);
+
+impl FromRef<AppState> for LatestReleaseCache {
+    fn from_ref(state: &AppState) -> Self {
+        state.latest_release.clone()
     }
 }
 

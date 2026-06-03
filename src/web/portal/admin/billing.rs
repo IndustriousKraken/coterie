@@ -33,6 +33,10 @@ pub struct AdminBillingTemplate {
     pub last_succeeded: Option<u32>,
     pub last_skipped: Option<u32>,
     pub last_failed: Vec<(String, String)>,
+    /// Version-pinned link to the Stripe operator setup guide. Pinned
+    /// to the running build's ref so the linked guide matches this
+    /// build rather than always pointing at `master`.
+    pub stripe_guide_url: String,
 }
 
 pub async fn billing_settings_page(
@@ -86,6 +90,7 @@ async fn render_page(
         last_succeeded: args.last_succeeded,
         last_skipped: args.last_skipped,
         last_failed: args.last_failed,
+        stripe_guide_url: crate::version::docs_url("docs/deploy/STRIPE-SETUP.md"),
     })
     .into_response()
 }

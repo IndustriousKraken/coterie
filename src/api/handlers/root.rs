@@ -24,6 +24,9 @@ pub struct ApiInfo {
 #[derive(Serialize, ToSchema)]
 pub struct HealthStatus {
     pub status: String,
+    /// The version embedded at build time (release tag + short SHA for
+    /// release builds, a `-dev` marker otherwise). See [`crate::version`].
+    pub version: String,
     /// RFC 3339 timestamp captured when the request was served.
     pub timestamp: String,
 }
@@ -64,7 +67,7 @@ pub async fn root(
     } else {
         Json(json!({
             "name": "Coterie API",
-            "version": env!("CARGO_PKG_VERSION"),
+            "version": crate::version::current(),
             "description": "Member management system for clubs and organizations",
             "status": "operational",
             "endpoints": {
@@ -110,6 +113,7 @@ pub async fn health_check() -> impl IntoResponse {
         StatusCode::OK,
         Json(HealthStatus {
             status: "healthy".to_string(),
+            version: crate::version::current(),
             timestamp: chrono::Utc::now().to_rfc3339(),
         }),
     )
@@ -126,7 +130,7 @@ pub async fn health_check() -> impl IntoResponse {
 pub async fn api_info() -> impl IntoResponse {
     Json(ApiInfo {
         name: "Coterie API".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: crate::version::current(),
         description: "Member management system for clubs and organizations".to_string(),
         status: "operational".to_string(),
     })
