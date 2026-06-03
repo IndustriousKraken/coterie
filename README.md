@@ -34,6 +34,22 @@ read the source at [`deploy/coterie-provision/`](deploy/coterie-provision/).
 Deploying somewhere other than Debian, or prefer to drive each step yourself?
 See the [deployment guides](#deployment-guides) below.
 
+## Update
+
+To update an existing instance, on the server as root:
+
+```bash
+curl -sfL https://raw.githubusercontent.com/IndustriousKraken/coterie/master/deploy/release-deploy.sh \
+    -o /tmp/release-deploy.sh
+sudo bash /tmp/release-deploy.sh            # latest release
+sudo bash /tmp/release-deploy.sh v1.2.3     # pin, or roll back, to a specific tag
+```
+
+Updates download a **prebuilt release** (nothing is compiled on the server) and
+never touch your `.env` or database. The script is idempotent — re-running it
+when you're already on the target version does nothing. Good practice: snapshot
+the database first with [`deploy/backup.sh`](deploy/backup.sh).
+
 ## Run locally (development)
 
 ```bash
