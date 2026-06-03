@@ -236,6 +236,11 @@ async fn fetch_settings_by_category(
         ),
         ("audit", "Audit", "Audit log retention"),
         ("auth", "Authentication", "Login policy and access controls"),
+        (
+            "updates",
+            "Updates",
+            "Update notifications. Enabling the check contacts the public GitHub releases API.",
+        ),
     ];
 
     let mut result = Vec::new();

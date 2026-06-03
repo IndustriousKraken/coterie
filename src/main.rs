@@ -387,6 +387,44 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Spawn daily "is a newer stable release available?" check. Mirrors
+    // the reconcile/horizon loops: a short initial delay so it never
+    // blocks startup, then every 24h. Each cycle reads
+    // `updates.check_enabled`; when off it clears the cache and skips
+    // the GitHub fetch. A fetch error leaves the cache unchanged and
+    // logs at debug — never an error surfaced to a page (a40 / D8). The
+    // cached result feeds the admin-only "update available" banner; the
+    // render path only ever reads this cache, never GitHub.
+    {
+        let settings_service = service_context.settings_service.clone();
+        tokio::spawn(async move {
+            let interval = tokio::time::Duration::from_secs(24 * 60 * 60);
+            let client = service::update_check::http_client();
+            // Initial delay so the first check runs in the background
+            // after the server has settled.
+            tokio::time::sleep(tokio::time::Duration::from_secs(90)).await;
+            loop {
+                let enabled = settings_service
+                    .get_bool("updates.check_enabled")
+                    .await
+                    .unwrap_or(true);
+                if enabled {
+                    if let Some(latest) = service::update_check::fetch_latest_stable(&client).await
+                    {
+                        service::update_check::store(Some(latest));
+                        tracing::debug!("update check: cached latest stable release");
+                    }
+                    // On a fetch/parse error, leave the cache unchanged.
+                } else {
+                    // Opt-out: clear any previously cached value so the
+                    // banner can't show from stale data.
+                    service::update_check::store(None);
+                }
+                tokio::time::sleep(interval).await;
+            }
+        });
+    }
+
     // Stripe webhook dispatcher — paired with the StripeClient built
     // above. Stays here (after ServiceContext::new) because it pulls
     // several service_context-owned fields (processed_events_repo,
