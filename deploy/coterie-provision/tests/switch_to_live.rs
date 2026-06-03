@@ -67,6 +67,12 @@ impl coterie_provision::fs_ops::FileSystem for NoopChownFs {
     fn remove_dir_all(&self, path: &std::path::Path) -> anyhow::Result<()> {
         self.0.remove_dir_all(path)
     }
+    fn copy_file(&self, from: &std::path::Path, to: &std::path::Path) -> anyhow::Result<()> {
+        self.0.copy_file(from, to)
+    }
+    fn copy_dir_all(&self, from: &std::path::Path, to: &std::path::Path) -> anyhow::Result<()> {
+        self.0.copy_dir_all(from, to)
+    }
 }
 
 const SAMPLE_TEST_ENV: &str = "\

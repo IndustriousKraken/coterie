@@ -7,7 +7,9 @@ use coterie_provision::prompts::InquirePrompter;
 use coterie_provision::stripe_api::RealStripeApi;
 use coterie_provision::switch_to_live::{self, RealRootCheck, SwitchArgs};
 use coterie_provision::system::RealSystem;
+use coterie_provision::update::{self, RealReleaseFetcher, RealSnapshotter, UpdateArgs};
 use secrecy::SecretString;
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -24,9 +26,37 @@ struct Cli {
 enum Command {
     /// Run the full install wizard (the primary entry point).
     Install(Box<InstallCli>),
+    /// Update an installed Coterie instance to a released version.
+    Update(Box<UpdateCli>),
     /// (placeholder) Switch a live Stripe deploy from test keys.
     /// Implemented by openspec change `a25`.
     SwitchStripeToLive(Box<SwitchStripeCli>),
+}
+
+#[derive(Debug, Parser, Default)]
+struct UpdateCli {
+    /// Release tag to update to (e.g. v1.2.3). If omitted, the latest
+    /// stable (non-prerelease) release is used. Pin a tag to roll back
+    /// or install a specific version.
+    #[arg(long, env = "COTERIE_PROVISION_UPDATE_TAG")]
+    tag: Option<String>,
+
+    /// Override the install directory (default /opt/coterie). Primarily
+    /// for tests; production installs live at /opt/coterie.
+    #[arg(long)]
+    install_dir: Option<PathBuf>,
+}
+
+impl From<UpdateCli> for UpdateArgs {
+    fn from(c: UpdateCli) -> Self {
+        Self {
+            tag: c.tag,
+            install_dir: c.install_dir,
+            skip_root_check: false,
+            smoke_test_interval: None,
+            smoke_test_budget: None,
+        }
+    }
 }
 
 #[derive(Debug, Parser, Default)]
@@ -268,6 +298,19 @@ fn real_main() -> Result<()> {
             let output = RealOutput::new();
             install::run(install_args, &sys, &fs, &prompts, &output)
         }
+        Command::Update(args) => {
+            let update_args: UpdateArgs = (*args).into();
+            let sys = RealSystem::new();
+            let fs = RealFs::new();
+            let snap = RealSnapshotter::new();
+            let fetch = RealReleaseFetcher::new();
+            let output = RealOutput::new();
+            let exit_code = update::run(update_args, &sys, &fs, &snap, &fetch, &output)?;
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
+            Ok(())
+        }
         Command::SwitchStripeToLive(args) => {
             let switch_args: SwitchArgs = (*args).into();
             let sys = RealSystem::new();
@@ -345,7 +388,7 @@ mod tests {
                 assert!(c.no_prompt);
                 assert!(c.dry_run);
             }
-            Command::SwitchStripeToLive(_) => panic!("expected install"),
+            other => panic!("expected install, got {other:?}"),
         }
     }
 
@@ -353,5 +396,40 @@ mod tests {
     fn switch_stripe_parses() {
         let parsed = Cli::try_parse_from(["coterie-provision", "switch-stripe-to-live"]);
         assert!(parsed.is_ok());
+    }
+
+    #[test]
+    fn update_parses_no_args() {
+        let parsed = Cli::try_parse_from(["coterie-provision", "update"]).expect("parse");
+        match parsed.command {
+            Command::Update(c) => {
+                assert!(c.tag.is_none());
+                assert!(c.install_dir.is_none());
+            }
+            other => panic!("expected update, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_parses_tag_and_install_dir() {
+        let parsed = Cli::try_parse_from([
+            "coterie-provision",
+            "update",
+            "--tag",
+            "v1.2.3",
+            "--install-dir",
+            "/tmp/coterie",
+        ])
+        .expect("parse");
+        match parsed.command {
+            Command::Update(c) => {
+                assert_eq!(c.tag.as_deref(), Some("v1.2.3"));
+                assert_eq!(
+                    c.install_dir.as_deref(),
+                    Some(std::path::Path::new("/tmp/coterie"))
+                );
+            }
+            other => panic!("expected update, got {other:?}"),
+        }
     }
 }

@@ -39,16 +39,31 @@ See the [deployment guides](#deployment-guides) below.
 To update an existing instance, on the server as root:
 
 ```bash
-curl -sfL https://raw.githubusercontent.com/IndustriousKraken/coterie/master/deploy/release-deploy.sh \
-    -o /tmp/release-deploy.sh
-sudo bash /tmp/release-deploy.sh            # latest release
-sudo bash /tmp/release-deploy.sh v1.2.3     # pin, or roll back, to a specific tag
+curl -sfL https://raw.githubusercontent.com/IndustriousKraken/coterie/master/deploy/update.sh \
+    -o /tmp/update.sh
+sudo bash /tmp/update.sh                 # update to the latest stable release
+sudo bash /tmp/update.sh --tag v1.2.3    # pin, or roll back, to a specific tag
 ```
 
-Updates download a **prebuilt release** (nothing is compiled on the server) and
-never touch your `.env` or database. The script is idempotent — re-running it
-when you're already on the target version does nothing. Good practice: snapshot
-the database first with [`deploy/backup.sh`](deploy/backup.sh).
+`update.sh` is a thin bootstrap: it downloads the `coterie-provision` binary,
+verifies its checksum, and hands off to `coterie-provision update`, which does
+the work in testable Rust.
+
+The update downloads a **prebuilt release** — nothing is ever compiled on the
+server — and **snapshots the database automatically** (a SQLite `VACUUM INTO`
+copy) before applying anything. It then swaps the binary, restarts the service,
+and runs the `/health` smoke test; if the new version fails to come up healthy
+it **rolls back to the previous binary** automatically. With no `--tag` it
+resolves the latest **stable** release (prereleases are skipped); `--tag <vX.Y.Z>`
+pins an exact tag for a specific version or a rollback. It is idempotent —
+re-running when you're already on the target version does nothing — and it never
+modifies your `.env` or the live database (beyond the pre-update snapshot it
+creates).
+
+> If a database migration ran before a failed health check, binary rollback
+> alone won't undo the schema change — restore the pre-update snapshot the run
+> printed (under `/var/lib/coterie/`) over the live database. Migrations are
+> forward-only.
 
 ## Run locally (development)
 

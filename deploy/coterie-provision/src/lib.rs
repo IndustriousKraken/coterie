@@ -10,6 +10,7 @@ pub mod stripe_api;
 pub mod stripe_check;
 pub mod switch_to_live;
 pub mod system;
+pub mod update;
 pub mod version_selector;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -17,6 +18,7 @@ pub mod test_support {
     use crate::fs_ops::FileSystem;
     use crate::prompts::Prompter;
     use crate::system::{CommandOutput, SystemCommand};
+    use crate::update::{ReleaseFetcher, Snapshotter};
     use anyhow::{anyhow, Result};
     use secrecy::SecretString;
     use std::cell::RefCell;
@@ -185,6 +187,8 @@ pub mod test_support {
         Rename(PathBuf, PathBuf),
         RemoveFile(PathBuf),
         RemoveDirAll(PathBuf),
+        CopyFile(PathBuf, PathBuf),
+        CopyDirAll(PathBuf, PathBuf),
     }
 
     /// In-memory filesystem backed by a `HashMap<PathBuf, Vec<u8>>`.
@@ -330,6 +334,42 @@ pub mod test_support {
             self.files.borrow_mut().retain(|p, _| !p.starts_with(path));
             Ok(())
         }
+
+        fn copy_file(&self, from: &Path, to: &Path) -> Result<()> {
+            self.ops
+                .borrow_mut()
+                .push(FsOp::CopyFile(from.to_path_buf(), to.to_path_buf()));
+            let mut files = self.files.borrow_mut();
+            let bytes = files
+                .get(from)
+                .cloned()
+                .ok_or_else(|| anyhow!("FakeFs: no file at {}", from.display()))?;
+            files.insert(to.to_path_buf(), bytes);
+            Ok(())
+        }
+
+        fn copy_dir_all(&self, from: &Path, to: &Path) -> Result<()> {
+            self.ops
+                .borrow_mut()
+                .push(FsOp::CopyDirAll(from.to_path_buf(), to.to_path_buf()));
+            // Mirror every file under `from` to the equivalent path under
+            // `to`, preserving the relative subtree.
+            let snapshot: Vec<(PathBuf, Vec<u8>)> = self
+                .files
+                .borrow()
+                .iter()
+                .filter(|(p, _)| p.starts_with(from))
+                .map(|(p, b)| (p.clone(), b.clone()))
+                .collect();
+            self.dirs.borrow_mut().push(to.to_path_buf());
+            let mut files = self.files.borrow_mut();
+            for (path, bytes) in snapshot {
+                if let Ok(rel) = path.strip_prefix(from) {
+                    files.insert(to.join(rel), bytes);
+                }
+            }
+            Ok(())
+        }
     }
 
     /// Scripted prompter that pops answers from VecDeques. Tests
@@ -403,6 +443,71 @@ pub mod test_support {
                 .borrow_mut()
                 .pop_front()
                 .ok_or_else(|| anyhow!("MockPrompter: no select answer for `{message}`"))
+        }
+    }
+
+    /// In-memory `Snapshotter` for the update flow. Records each
+    /// requested (db, dest) pair and, by default, "succeeds" without
+    /// touching a real database. Set `fail` to drive the
+    /// snapshot-failure-aborts path.
+    pub struct FakeSnapshotter {
+        pub calls: RefCell<Vec<(PathBuf, PathBuf)>>,
+        pub fail: RefCell<bool>,
+    }
+
+    impl FakeSnapshotter {
+        pub fn new() -> Self {
+            Self {
+                calls: RefCell::new(Vec::new()),
+                fail: RefCell::new(false),
+            }
+        }
+
+        /// Configure the next (and every) snapshot call to return Err.
+        pub fn fail_next(&self) {
+            *self.fail.borrow_mut() = true;
+        }
+
+        pub fn call_count(&self) -> usize {
+            self.calls.borrow().len()
+        }
+    }
+
+    impl Default for FakeSnapshotter {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl Snapshotter for FakeSnapshotter {
+        fn snapshot(&self, db_path: &Path, dest: &Path) -> Result<()> {
+            self.calls
+                .borrow_mut()
+                .push((db_path.to_path_buf(), dest.to_path_buf()));
+            if *self.fail.borrow() {
+                return Err(anyhow!("FakeSnapshotter: configured to fail"));
+            }
+            Ok(())
+        }
+    }
+
+    /// `ReleaseFetcher` that returns a canned releases JSON body (a
+    /// fixture) instead of going over the network.
+    pub struct FakeReleaseFetcher {
+        pub body: String,
+    }
+
+    impl FakeReleaseFetcher {
+        pub fn new(body: &str) -> Self {
+            Self {
+                body: body.to_string(),
+            }
+        }
+    }
+
+    impl ReleaseFetcher for FakeReleaseFetcher {
+        fn fetch_releases(&self, _repo: &str) -> Result<String> {
+            Ok(self.body.clone())
         }
     }
 }

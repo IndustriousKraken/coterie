@@ -1127,40 +1127,43 @@ impl<'a, S: SystemCommand, F: FileSystem> Executor<'a, S, F> {
             self.announce("would GET http://127.0.0.1:8080/health");
             return Ok(());
         }
-        // Use curl for the smoke test so it routes through the
-        // SystemCommand trait and is mockable in tests. -fsSL gives us
-        // a non-zero exit on HTTP error.
-        //
-        // Poll until a 2xx response or the budget exhausts. The gap
-        // between systemd reporting `active` and the HTTP listener
-        // binding is the documented race condition (sqlx pool init,
-        // first-connection migrations, address binding).
         self.announce(&format!(
             "smoke test GET /health (polling up to {}s)",
             self.smoke_test_budget.as_secs()
         ));
-        let deadline = Instant::now() + self.smoke_test_budget;
-        loop {
-            let last_error = match self
-                .sys
-                .run("curl", &["-fsSL", "http://127.0.0.1:8080/health"])
-            {
-                Ok(out) if out.success() => return Ok(()),
-                Ok(out) => format!(
-                    "status={}, stdout={}, stderr={}",
-                    out.status, out.stdout, out.stderr
-                ),
-                Err(e) => format!("{e}"),
-            };
-            if Instant::now() >= deadline {
-                return Err(anyhow!(
-                    "smoke test failed after {}s: {}",
-                    self.smoke_test_budget.as_secs(),
-                    last_error
-                ));
-            }
-            sleep(self.smoke_test_interval);
+        smoke_test(self.sys, self.smoke_test_interval, self.smoke_test_budget)
+    }
+}
+
+/// Poll `/health` via `curl` until a 2xx response or the budget
+/// exhausts. Shared by the install flow and the update flow so both use
+/// identical smoke-test semantics.
+///
+/// `curl` is used (rather than an in-process HTTP client) so the check
+/// routes through the `SystemCommand` trait and is mockable in tests.
+/// `-fsSL` yields a non-zero exit on any HTTP error. Polling covers the
+/// documented race between systemd reporting `active` and the HTTP
+/// listener binding (sqlx pool init, first-connection migrations,
+/// address binding).
+pub fn smoke_test<S: SystemCommand>(sys: &S, interval: Duration, budget: Duration) -> Result<()> {
+    let deadline = Instant::now() + budget;
+    loop {
+        let last_error = match sys.run("curl", &["-fsSL", "http://127.0.0.1:8080/health"]) {
+            Ok(out) if out.success() => return Ok(()),
+            Ok(out) => format!(
+                "status={}, stdout={}, stderr={}",
+                out.status, out.stdout, out.stderr
+            ),
+            Err(e) => format!("{e}"),
+        };
+        if Instant::now() >= deadline {
+            return Err(anyhow!(
+                "smoke test failed after {}s: {}",
+                budget.as_secs(),
+                last_error
+            ));
         }
+        sleep(interval);
     }
 }
 
