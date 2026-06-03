@@ -38,11 +38,7 @@ a Coterie internal.
       live test on a throwaway droplet before declaring 1.2 done
       end-to-end
 
-### 1.3 Manual e2e pass
-- [ ] (rab) End-to-end click-through of every member/admin/auth flow
-      against a fresh database, including all payment paths, refunds,
-      auto-renew toggle, dues reminders, Discord events. Issues that
-      surface here become Tier 1.x sub-items.
+
 
 ---
 
@@ -62,7 +58,7 @@ after. Confirmed priorities for this tier.
       relaxed payments.member_id NOT NULL.
 - [x] Returns a Stripe Checkout URL the frontend redirects to.
       Webhook flow completes identically to the logged-in donate path.
-- [ ] **Frontend form lives in neontemple.net**, not Coterie — to be
+- [ ] **Frontend form lives on the public site**, not Coterie — to be
       built on the public-site side. (Reason: anyone not logged in
       shouldn't reach the portal at all.)
 - [x] Rate-limit by IP using the existing `money_limiter`.
@@ -75,10 +71,7 @@ after. Confirmed priorities for this tier.
 - [x] Format: visibility tag + title + first paragraph (with
       char-boundary-safe fallback to ~280 chars) + portal link.
       Unit-tested for emoji walls and CRLF paragraph separators.
-- [ ] **Per-announcement channel selector** — deferred. NT has a
-      single announcements channel; the settings-level default is
-      sufficient. Promote if a real org needs to route different
-      announcement classes to different channels.
+- [ ] **Per-announcement channel selector** — deferred.
 
 ### 2.3 Member receipt downloads
 - [x] Per-payment receipt at `/portal/payments/:id/receipt` —
@@ -179,7 +172,7 @@ not mandate.
       capping, edit-this-and-future scoping, end-series, cascade
       delete).
 - Skipped the long tail of RFC 5545 deliberately — these three rule
-  kinds cover NT's actual use cases.
+  kinds cover the real-world use cases we've seen.
 
 ### 3.3 Admin billing dashboard
 - [x] **Upcoming scheduled payments** (next 30 days) via the existing
@@ -266,6 +259,12 @@ not mandate.
 Real features, but no obvious user pulling for them yet. Promote a
 specific item if a real org requests it.
 
+- Bot protection for the public `POST /signup` and `POST /donate`
+  endpoints (CAPTCHA / Cloudflare Turnstile). These are CSRF-exempt by
+  design (cross-origin POSTs from the marketing site) and today rely
+  only on per-IP rate limiting; a token check from the marketing site,
+  verified server-side, would harden them against fake-account creation
+  and card-testing (carding) abuse. Promote if abuse actually shows up.
 - Calendar two-way sync (Google, O365, CalDAV)
 - Unifi access provisioning (API client exists; provisioning logic
   doesn't)

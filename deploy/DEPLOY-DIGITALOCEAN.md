@@ -215,11 +215,11 @@ sudo bash /tmp/provision.sh --tag v1.2.3
 Or run fully non-interactive for IaC:
 
 ```bash
-COTERIE_PROVISION_ORG_NAME="Neon Temple" \
-COTERIE_PROVISION_PORTAL_DOMAIN="coterie.theneontemple.com" \
-COTERIE_PROVISION_ADMIN_EMAIL="rab@theneontemple.com" \
-COTERIE_PROVISION_ADMIN_USERNAME="rab" \
-COTERIE_PROVISION_ADMIN_FULL_NAME="R A Bee" \
+COTERIE_PROVISION_ORG_NAME="Your Org" \
+COTERIE_PROVISION_PORTAL_DOMAIN="coterie.example.com" \
+COTERIE_PROVISION_ADMIN_EMAIL="admin@example.com" \
+COTERIE_PROVISION_ADMIN_USERNAME="admin" \
+COTERIE_PROVISION_ADMIN_FULL_NAME="Admin User" \
 COTERIE_PROVISION_ADMIN_PASSWORD="…" \
 sudo -E bash /tmp/provision.sh -- --no-prompt
 ```

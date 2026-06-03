@@ -18,10 +18,10 @@ Items still to do. Completed work lives in git history.
 ## Public-Facing
 
 - [x] **Public donation API endpoint** (`POST /public/donate`) —
-      shipped. The frontend form on neontemple.net (or any public site
-      in CORS_ORIGINS) is still TODO on the public-site side.
+      shipped. The matching frontend form (on any public site listed in
+      CORS_ORIGINS) is still TODO on the public-site side.
 
-- [ ] Member directory (opt-in)
+- [ ] Member directory (opt-in) deferred
 
 ## Donations
 
@@ -41,7 +41,7 @@ Items still to do. Completed work lives in git history.
       Wednesday", "last Friday") patterns. 52-week rolling horizon with daily
       roll-forward; `until_date` for end dates; series-level edit affects only
       future occurrences. See `event-admin-service` capability spec.
-- [ ] **Recurring events — per-occurrence exceptions**: cancel a single
+- [x] **Recurring events — per-occurrence exceptions**: cancel a single
       occurrence (e.g., this Tuesday's meeting is canceled for the holiday)
       and override a single occurrence (e.g., this Tuesday moves to Wednesday)
       without affecting the rest of the series. Spec'd as `a35-recurring-event-exceptions`.
@@ -51,7 +51,7 @@ Items still to do. Completed work lives in git history.
         announcement override deferred)
   - [x] **Scheduled delivery** (publish now vs. schedule for later) — shipped
         via `a11-scheduled-announcement-publish`.
-  - [ ] Support for other chat APIs (Slack, Matrix)
+  - [ ] Support for other chat APIs (Slack, Matrix) defer
 
 ## Integrations
 

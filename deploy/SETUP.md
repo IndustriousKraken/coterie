@@ -85,7 +85,7 @@ openssl rand -hex 32
 # 3. Edit .env with your values
 sudo nano /opt/coterie/.env
 # - Replace CHANGE_ME_GENERATE_A_RANDOM_STRING with the generated secret
-# - Update COTERIE_SERVER_BASE_URL to your domain (e.g., https://coterie.stage.grc.red)
+# - Update COTERIE_SERVER_BASE_URL to your domain (e.g., https://coterie.staging.example.com)
 
 # 4. Fix ownership
 sudo chown -R coterie:coterie /opt/coterie

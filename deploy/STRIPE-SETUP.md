@@ -90,7 +90,7 @@ in the nav). Click **Add endpoint**.
 https://<your-domain>/api/payments/webhook/stripe
 ```
 
-For Neon Temple: `https://coterie.neontemple.com/api/payments/webhook/stripe`.
+For example: `https://coterie.example.com/api/payments/webhook/stripe`.
 
 Notes:
 - Must be HTTPS in live mode. (Stripe allows plain HTTP in test

@@ -42,8 +42,7 @@ exclusively in the management portal under `/portal/admin/*`. A
 parallel JSON admin surface used to exist; it was deleted in 2026-04
 because it had drifted into half-strength duplicates that skipped
 audit logs and integration events, and was missing CSRF protection.
-See `CLAUDE.md` for the rule and `ARCHITECTURE-PUNCHLIST.md` for the
-history.
+See `CLAUDE.md` for the rule and the rationale.
 
 ### 2. Public Website (Static Site)
 **Technology**: Any static site generator (Hugo, Jekyll, Next.js, etc.)  
@@ -55,7 +54,7 @@ history.
   - Event calendar (fetched from `/public/events`)
   - News/announcements (fetched from `/public/announcements`)
   - Member signup form (posts to `/public/signup`)
-  - Public member directory (if enabled)
+  - Donation form (posts to `/public/donate`)
 - **Feed Integration**:
   - RSS feed for news readers
   - iCal subscription for calendars
@@ -156,7 +155,6 @@ https://api.yourorg.com/public/feed/rss
 - Rate limiting on all endpoints
 - CORS configured for allowed domains
 - No sensitive data exposed
-- Signup requires email verification (pending implementation)
 
 ### Management Portal
 - Session-based authentication
@@ -189,6 +187,38 @@ a CSRF token?"
 - No secrets or API keys needed
 - All API calls are to public endpoints
 - Can use environment variables for API base URL
+
+## Resilience
+
+Coterie favors a few simple, durable patterns over heavier infrastructure.
+The goal is that a downed external API, a slow network call, or a process
+restart never loses work or leaves the system inconsistent.
+
+- **Lean on the payment processor's retries.** Inbound Stripe webhooks are the
+  source of truth for completed payments. Each event is claimed once in a
+  `processed_events` table (exactly-once); if a handler errors, the claim is
+  released and a non-2xx returned so Stripe re-delivers — Stripe retries for
+  ~3 days. Coterie needs no inbound queue of its own.
+
+- **Reconcile, don't replay.** External state that can drift (e.g. Discord
+  roles) is corrected by a daily sweep that recomputes the desired state from
+  the database and re-applies it idempotently. Real-time integration calls are
+  best-effort: a failure is logged but never fails the admin action that
+  triggered it, because the next reconcile converges anyway.
+
+- **Durable, idempotent background work.** Scheduled charges live in a
+  `scheduled_payments` table with status and retry-count columns; the billing
+  loop just re-scans for due rows each tick, so a restart resumes cleanly.
+  Charges carry idempotency keys so a double-run can't double-bill, dues
+  extension is a single atomic claim, and reminders/publishes guard on a
+  "sent"/"published" timestamp so repeated ticks are no-ops. Terminal failures
+  (e.g. a card declined past the retry limit) raise an operator alert delivered
+  over Discord *and* email, so one channel being down doesn't bury it.
+
+- **Keep transactions short and SQL-only.** Network calls (Stripe, Discord,
+  SMTP) never run inside a database transaction, so a slow or hung external
+  call can't hold a write lock. Combined with WAL mode and a `busy_timeout`,
+  concurrent admin browsing and background jobs coexist without `SQLITE_BUSY`.
 
 ## Deployment Architecture
 

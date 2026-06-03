@@ -1,15 +1,47 @@
 # Coterie
 
-Status: Active Development, alpha.
+Coterie is a secure, lightweight member-management system for small-to-medium
+clubs, groups, and organizations. It is the source of truth for who is in your
+group and who is not: it tracks membership status, collects dues and donations
+through Stripe, manages events and RSVPs, publishes announcements, and gives
+members a self-service portal — without the complexity of enterprise software.
 
-## Quick Start
+It runs as a single Rust binary backed by SQLite, serves its own admin and
+member portal, and exposes a small public API your existing website can call
+for signups, events, and announcements.
+
+## Deploy
+
+On a fresh Debian 13 host, as root:
+
+```bash
+curl -sfL https://raw.githubusercontent.com/IndustriousKraken/coterie/master/deploy/provision.sh \
+    -o /tmp/provision.sh
+sudo bash /tmp/provision.sh
+```
+
+The wizard prompts for your org name, portal domain, first admin credentials,
+and which integrations to enable (Stripe / Discord / UniFi / Caddy), then leaves
+Coterie running under systemd with the first admin created and (optionally)
+Caddy serving with TLS. It is idempotent — re-running it detects existing state
+and prompts before overwriting.
+
+For unattended installs (IaC / CI), every prompt has a matching
+`COTERIE_PROVISION_<NAME>` env var and `--flag`. Run
+`coterie-provision install --help` after the bootstrap downloads the binary, or
+read the source at [`deploy/coterie-provision/`](deploy/coterie-provision/).
+
+Deploying somewhere other than Debian, or prefer to drive each step yourself?
+See the [deployment guides](#deployment-guides) below.
+
+## Run locally (development)
 
 ```bash
 # First-time setup (downloads Tailwind CLI, builds CSS)
 make setup
 
 # Copy and configure environment
-cp .env.example .env  # then edit .env with your values
+cp .env.example .env   # then edit .env with your values
 
 # Seed the database with test data (optional, clears existing data)
 make seed
@@ -18,47 +50,10 @@ make seed
 make dev
 ```
 
-Run `make help` to see all available targets.
+The server runs at <http://127.0.0.1:8080>. Run `make help` to see all targets
+and `cargo test --features test-utils` to run the full suite.
 
-**Server runs at**: http://127.0.0.1:8080
-
-### Accessing the System
-
-Coterie serves both a **web portal** (for browsers) and a **JSON API** (for integrations).
-
-| Access Method | What You Get |
-|---------------|--------------|
-| Browser → `http://127.0.0.1:8080/` | Redirects to login page |
-| `curl http://127.0.0.1:8080/` | JSON with API endpoint listing |
-| `curl http://127.0.0.1:8080/health` | Health check JSON |
-
-### Web Portal Routes
-
-| Route | Description |
-|-------|-------------|
-| `/login` | Login page |
-| `/portal/dashboard` | Member dashboard |
-| `/portal/profile` | Edit profile, change password |
-| `/portal/events` | View and RSVP to events |
-| `/portal/payments` | Payment history |
-| `/portal/admin/members` | Admin: manage members |
-
-### API Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /health` | Health check |
-| `GET /api` | API info |
-| `GET /public/events` | Public events (JSON or iCal) |
-| `GET /public/announcements` | Public announcements |
-| `GET /public/feed/rss` | RSS feed |
-| `GET /public/feed/calendar` | iCal calendar feed |
-| `POST /public/signup` | Register new member |
-| `GET/POST /api/members` | Member management (auth required) |
-| `GET/POST /api/events` | Event management (auth required) |
-| `GET/POST /api/payments` | Payment management (auth required) |
-
-### Test Credentials (Development)
+### Test credentials (seeded data)
 
 | User | Email | Password | Role |
 |------|-------|----------|------|
@@ -68,9 +63,9 @@ Coterie serves both a **web portal** (for browsers) and a **JSON API** (for inte
 | Charlie | charlie@example.com | password123 | Expired |
 | Dave | dave@example.com | password123 | Pending |
 
-### Stripe Payments (Local Testing)
+### Testing Stripe locally
 
-To test Stripe payments locally, add your test keys to `.env` (gitignored):
+Add your Stripe test keys to `.env` (gitignored):
 
 ```
 COTERIE__STRIPE__ENABLED=true
@@ -78,43 +73,33 @@ COTERIE__STRIPE__SECRET_KEY=sk_test_...
 COTERIE__STRIPE__WEBHOOK_SECRET=whsec_...
 ```
 
-Stripe sends payment confirmations via webhooks, which can't reach `localhost` directly. The [Stripe CLI](https://docs.stripe.com/stripe-cli) bridges this gap by tunneling webhook events to your local server. In a separate terminal:
+Stripe delivers payment confirmations by webhook, which can't reach `localhost`
+directly. The [Stripe CLI](https://docs.stripe.com/stripe-cli) tunnels them to
+your local server — in a separate terminal:
 
 ```bash
 stripe listen --forward-to localhost:8080/api/payments/webhook/stripe
 ```
 
-This prints a webhook signing secret (`whsec_...`) — use that as your `WEBHOOK_SECRET` above. Leave it running while you test the checkout flow.
+It prints a signing secret (`whsec_...`); use that as `WEBHOOK_SECRET` above and
+leave it running while you test checkout. On a deployed server with a public URL
+you register the webhook in the Stripe dashboard instead and the CLI isn't
+needed. Full walkthrough: [`deploy/STRIPE-SETUP.md`](deploy/STRIPE-SETUP.md).
 
-On a deployed server with a public URL, webhooks are registered in the Stripe dashboard instead and the CLI isn't needed.
+## How it works
 
----
-
-Coterie is a secure, lightweight member management system designed for small to medium-sized groups, clubs, and organizations. Built with security and maintainability in mind, it provides a simple yet powerful platform for managing memberships without the complexity of enterprise solutions.
-
-## Overview
-
-Coterie is a member management system for clubs, groups, social organizations etc. 
-You can connect it to your website to verify dues payments and register new members, 
-and for members to self-service their accounts. Admins can use Coterie to check 
-member status, activate/approve memberships, and update member details.
-
-At its core, Coterie strives to do one thing very well: to make sure you know who is in your group, and who is not.
-
-## Architecture
-
-Coterie uses a **dual-frontend architecture** to separate public-facing content from member management:
+Coterie uses a dual-frontend architecture that separates your public website
+from member management:
 
 ```
 ┌─────────────────────┐         ┌──────────────────────┐
 │  Public Website     │         │  Management Portal   │
-│  (Static Site)      │         │  (HTMX + Alpine.js)  │
+│  (your static site) │         │  (HTMX + Alpine.js)  │
 ├─────────────────────┤         ├──────────────────────┤
 │ • Marketing pages   │         │ • Member dashboard   │
 │ • Event calendar    │         │ • Admin panel        │
 │ • Announcements     │         │ • Payment management │
 │ • Signup form       │         │ • Profile editing    │
-│ • Member directory  │         │ • Event RSVP         │
 └──────────┬──────────┘         └──────────┬───────────┘
            │                                │
            ▼                                ▼
@@ -128,91 +113,93 @@ Coterie uses a **dual-frontend architecture** to separate public-facing content 
                  └─────────────┘
 ```
 
-- **Public Website**: Your existing website (built with any technology) consumes Coterie's public APIs to display events, announcements, and handle signups
-- **Management Portal**: Built-in admin and member interface served by Coterie for account management
-- **Coterie Backend**: Single Rust binary providing both public and authenticated APIs
+- **Public website** — your existing site (any technology) calls Coterie's
+  public APIs to show events and announcements and to accept signups.
+- **Management portal** — the admin and member interface, server-rendered with
+  HTMX and served by Coterie itself. This is the only admin surface.
+- **Coterie backend** — a single Rust binary serving both, backed by SQLite.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed integration examples.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for integration examples and the
+surface-by-surface security model.
 
-## Technology Stack
+**Stack**: Rust (Axum) · SQLite (WAL) · HTMX + Alpine.js portal · session auth
+with Argon2id + TOTP 2FA · single-binary deploy behind Caddy.
 
-- **Backend**: Rust (using Axum web framework)
-- **Database**: SQLite with WAL mode
-- **Management Portal**: HTMX + Alpine.js for minimal, secure interfaces
-- **Public Website**: Any static site generator or framework (your choice)
-- **Authentication**: Session-based with secure cookies, Argon2id for password hashing, TOTP for 2FA
-- **Deployment**: Single binary deployment with Caddy reverse proxy
+## Features
 
-## Core Features
+- **Member management** — Active / Honorary / Expired / Suspended / Pending
+  statuses; admin CRUD; bulk CSV import and export.
+- **Payments** — Stripe Elements for one-time and saved-card payments;
+  Coterie-managed auto-renew via scheduled charges (legacy Stripe-managed
+  subscriptions still supported during migration); donations with optional
+  campaign attribution; refunds with idempotency; member-facing receipts and
+  tax-year summaries.
+- **Events** — public / member-only visibility, RSVP tracking, configurable
+  types, recurring series (weekly, monthly-by-date, ordinal-weekday) with
+  single-occurrence edits and cancellations, iCal feed, and email reminders.
+- **Announcements** — publish now or schedule for later; RSS feed; Discord push
+  on publish.
+- **Admin dashboard** — member / event / announcement editors; manual payment,
+  waive, refund, and dues adjustment; billing dashboard; audit-log viewer;
+  configurable types; settings UI.
+- **Public API** — signup, donations, public event and announcement reads, RSS
+  and iCal feeds; documented as OpenAPI at `/api/docs`.
+- **Security** — session cookies (HttpOnly / Secure / SameSite); top-level CSRF;
+  per-IP rate limiting on auth and money-moving endpoints; full audit logging;
+  optional admin-mandatory 2FA.
+- **Integrations** — Discord role sync by dues status (with email fallback);
+  UniFi Access API client wired up.
 
-### Built
-- **Member Management**: Active / Honorary / Expired / Suspended / Pending statuses; admin CRUD and bulk operations.
-- **Payment Integration**: Stripe Elements for one-time and saved-card payments. Coterie-managed auto-renew via scheduled charges; legacy Stripe-managed subscriptions still supported during migration. Donations with optional campaign attribution. Refund flow with idempotency.
-- **Public API**: Signup, public events (JSON + iCal), public announcements (JSON + RSS).
-- **Admin Dashboard**: Member management, event/announcement editors, manual payment + waive + refund + dues adjustment, audit log viewer, configurable type management (event types, announcement types, membership types), settings UI.
-- **Calendar System**: Events with public/member-only visibility, RSVP tracking, configurable event types.
-- **RSS / iCal Feeds**: Public announcements as RSS; events as iCal.
-- **Audit Logging**: Every admin action recorded with before/after; retention configurable.
-- **Email**: Dues reminders, payment-failure notifications, password reset, AdminAlert routing for operational events.
+See [ROADMAP.md](ROADMAP.md) and [TODO.md](TODO.md) for what's planned next.
 
-### Integrations
-- **Discord**: Member role sync based on dues status, expired-member role handling, daily reconcile cron, AdminAlert email backup when Discord is unreachable.
-- **Unifi Access**: API client wired up; access provisioning / revocation flow not yet built.
+## Routes & endpoints
 
-### Not Yet Built
-- TOTP/2FA
-- Member-facing receipt downloads (separates dues from donations for tax filing)
-- Public donation API endpoint (frontend hosts the form; POSTs to Coterie)
-- Member directory (opt-in)
-- Recurring donations
-- Recurring events (daily/weekly/monthly patterns, custom rules)
-- Discord push for announcement publish
-- Calendar two-way sync (Google, O365, CalDAV)
-- Expense tracking + transparency reports
-- Skills directory, achievement badges, voting/polls
+Browsers hitting `/` are redirected to login; `curl /` returns a JSON endpoint
+listing; `GET /health` is the health check.
 
-See [TODO.md](TODO.md) for the full open-items list.
+**Portal** (`/portal/*`, server-rendered):
 
-## Deployment
+| Route | Description |
+|-------|-------------|
+| `/login` | Login |
+| `/portal/dashboard` | Member dashboard |
+| `/portal/profile` | Profile, password, 2FA |
+| `/portal/events` | View and RSVP to events |
+| `/portal/payments` | Payment history and receipts |
+| `/portal/admin/*` | Admin: members, events, announcements, payments, settings, audit |
 
-### Quick deploy (recommended)
+**Public API** (`/public/*`, for your website):
 
-On a fresh Debian 13 host, as root:
+| Endpoint | Description |
+|----------|-------------|
+| `POST /public/signup` | Register a new member |
+| `POST /public/donate` | One-time donation (returns a Stripe Checkout URL) |
+| `GET /public/events` | Public events (JSON or iCal) |
+| `GET /public/announcements` | Public announcements |
+| `GET /public/feed/rss` | RSS feed |
+| `GET /public/feed/calendar` | iCal calendar feed |
 
-```bash
-curl -sfL https://raw.githubusercontent.com/IndustriousKraken/coterie/master/deploy/provision.sh \
-    -o /tmp/provision.sh
-sudo bash /tmp/provision.sh
-```
+`/api/*` is intentionally narrow — just the Stripe webhook and the saved-card
+(Stripe.js) endpoints. Admin actions live exclusively in the portal; see
+[CLAUDE.md](CLAUDE.md) for the rationale.
 
-The wizard prompts for your org name, portal domain, first admin
-credentials, and which integrations to enable (Stripe / Discord /
-UniFi / Caddy). Once it finishes, Coterie is running under systemd
-with the first admin already created and (optionally) Caddy serving
-with TLS. The wizard is idempotent — re-running it detects existing
-state and prompts before overwriting.
+## Deployment guides
 
-Non-interactive (IaC / CI) mode: every prompt has a matching env var
-(`COTERIE_PROVISION_<NAME>`) and `--flag` argument. See
-`coterie-provision install --help` after the bootstrap downloads the
-binary, or read the source at
-[`deploy/coterie-provision/`](deploy/coterie-provision/).
+For operators who want to drive each step, deploy on another platform, or run
+day-to-day operations:
 
-### Manual deploy (advanced)
-
-Walkthroughs for operators who'd rather drive each step themselves:
-
-- [`DEPLOY-DIGITALOCEAN.md`](deploy/DEPLOY-DIGITALOCEAN.md) —
-  end-to-end DO droplet (Ubuntu, ~45 min)
+- [`DEPLOY-DIGITALOCEAN.md`](deploy/DEPLOY-DIGITALOCEAN.md) — end-to-end DO
+  droplet (Ubuntu, ~45 min)
 - [`DEPLOY-AWS.md`](deploy/DEPLOY-AWS.md) — EC2 + EBS or Lightsail (Ubuntu)
-- [`DEPLOY-ALPINE.md`](deploy/DEPLOY-ALPINE.md) — Alpine Linux + OpenRC
+- [`DEPLOY-ALPINE.md`](deploy/DEPLOY-ALPINE.md) — Alpine Linux + OpenRC (no
+  Docker required)
+- [`STRIPE-SETUP.md`](deploy/STRIPE-SETUP.md) — wiring Coterie to a Stripe account
+- [`OPS.md`](deploy/OPS.md) — operations reference (secret rotation, logs,
+  upgrades, routine maintenance)
 - [`MIGRATION.md`](deploy/MIGRATION.md) — moving between hosts
 - [`RESTORE.md`](deploy/RESTORE.md) — restoring from a backup
-- [`OPS.md`](deploy/OPS.md) — operational reference (secret rotation,
-  logs, upgrades, routine maintenance)
 
-A multi-stage [`Dockerfile`](Dockerfile) is provided for container
-deploys; the daily backup script + systemd timer
-([`deploy/backup.sh`](deploy/backup.sh),
-[`coterie-backup.timer`](deploy/coterie-backup.timer)) handles
-SQLite snapshots and optional S3-compatible offsite copies.
+A multi-stage [`Dockerfile`](Dockerfile) is provided for container deploys; the
+daily backup script and systemd timer ([`deploy/backup.sh`](deploy/backup.sh),
+[`coterie-backup.timer`](deploy/coterie-backup.timer)) handle SQLite snapshots
+and optional S3-compatible offsite copies.
