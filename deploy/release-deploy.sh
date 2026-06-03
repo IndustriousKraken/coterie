@@ -184,7 +184,7 @@ First-install bootstrap complete. Next steps:
 
   1. Create /opt/coterie/.env from .env.example and fill in
      required settings (database URL, session secret, Stripe
-     keys, etc.). See deploy/SETUP.md for the field reference.
+     keys, etc.). See docs/deploy/SETUP.md for the field reference.
 
        cp /opt/coterie/.env.example /opt/coterie/.env
        chown coterie:coterie /opt/coterie/.env

@@ -22,11 +22,11 @@ a Coterie internal.
       headers, gzip (`deploy/Caddyfile.example`)
 - [x] `.env.example` annotated with every required setting and what
       breaks if it's missing
-- [x] Deploy guide for **DigitalOcean** (`deploy/DEPLOY-DIGITALOCEAN.md`)
-- [x] Deploy guide for **AWS** (`deploy/DEPLOY-AWS.md`)
-- [x] Deploy guide for **Alpine Linux** (`deploy/DEPLOY-ALPINE.md` —
+- [x] Deploy guide for **DigitalOcean** (`docs/deploy/DEPLOY-DIGITALOCEAN.md`)
+- [x] Deploy guide for **AWS** (`docs/deploy/DEPLOY-AWS.md`)
+- [x] Deploy guide for **Alpine Linux** (`docs/deploy/DEPLOY-ALPINE.md` —
       OpenRC + crond, fully musl-static, no Docker required)
-- [x] Migration runbook: DO ↔ AWS (`deploy/MIGRATION.md`)
+- [x] Migration runbook: DO ↔ AWS (`docs/deploy/MIGRATION.md`)
 
 ### 1.2 Backup
 - [x] SQLite `VACUUM INTO` to a timestamped file (`deploy/backup.sh`)
@@ -34,7 +34,7 @@ a Coterie internal.
       (`deploy/coterie-backup.{service,timer}`)
 - [x] Offsite copy hook with S3-compatible defaults; operator picks
       the bucket / provider (env-driven via `COTERIE_BACKUP_S3_URI`)
-- [x] Documented restore procedure (`deploy/RESTORE.md`) — needs one
+- [x] Documented restore procedure (`docs/deploy/RESTORE.md`) — needs one
       live test on a throwaway droplet before declaring 1.2 done
       end-to-end
 

@@ -756,7 +756,7 @@ fn print_exit_summary(inputs: &ResolvedInputs) {
     );
     if inputs.enable_stripe {
         println!("  2. Register a Stripe webhook at {portal_url}/api/payments/webhook/stripe");
-        println!("     See /opt/coterie/deploy/STRIPE-SETUP.md for events to subscribe to.");
+        println!("     See https://github.com/IndustriousKraken/coterie/blob/master/docs/deploy/STRIPE-SETUP.md for events to subscribe to.");
     }
     println!("  3. Log in at {portal_url}/login");
     println!("============================================================");

@@ -178,7 +178,7 @@ COTERIE__DATABASE__URL=sqlite://coterie.db
 ```
 
 See `.env.example` for the full set of options (Stripe, Discord,
-etc.). For Stripe specifically, `deploy/STRIPE-SETUP.md` walks
+etc.). For Stripe specifically, `STRIPE-SETUP.md` walks
 through the dashboard configuration (webhook URL, events to
 subscribe to, API version) end-to-end.
 

@@ -172,7 +172,7 @@ The encrypted SMTP password in the DB is keyed by `session_secret`.
 If `.env` was restored from a different host (which had a different
 `session_secret`), the ciphertext can't be decrypted. Re-enter the
 SMTP password through the admin UI; Coterie re-encrypts under the
-current secret. (See `deploy/OPS.md` for the full secret-rotation
+current secret. (See `OPS.md` for the full secret-rotation
 context.)
 
 **Stripe webhooks failing after restore.**

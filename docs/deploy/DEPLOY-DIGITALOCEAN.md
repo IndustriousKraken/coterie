@@ -345,7 +345,7 @@ COTERIE__DATABASE__URL=sqlite://coterie.db
 ```
 
 Add Stripe / Discord blocks if you're using them. For Stripe
-specifically, see `deploy/STRIPE-SETUP.md` for the full walk-through
+specifically, see `STRIPE-SETUP.md` for the full walk-through
 — it covers test vs. live mode, API keys, webhook registration
 (URL, events to subscribe to, API version), and the test-event
 verification step. Otherwise `.env.example` has the field list.

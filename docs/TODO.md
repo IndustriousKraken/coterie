@@ -72,7 +72,7 @@ Items still to do. Completed work lives in git history.
 
 - [ ] Monitoring and alerting setup
 - [ ] CI/CD pipeline (GitHub Actions) — staging-only flow exists in
-      `deploy/SETUP.md`; full release pipeline still TBD
+      `docs/deploy/SETUP.md`; full release pipeline still TBD
 - [ ] Pre-commit hooks
 - [x] **Full Debian provisioning script** — shipped via `a24-provisioning-wizard`
       as the `coterie-provision` Rust binary + thin `deploy/provision.sh` bash

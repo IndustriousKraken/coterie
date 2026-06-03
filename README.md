@@ -115,7 +115,7 @@ stripe listen --forward-to localhost:8080/api/payments/webhook/stripe
 It prints a signing secret (`whsec_...`); use that as `WEBHOOK_SECRET` above and
 leave it running while you test checkout. On a deployed server with a public URL
 you register the webhook in the Stripe dashboard instead and the CLI isn't
-needed. Full walkthrough: [`deploy/STRIPE-SETUP.md`](deploy/STRIPE-SETUP.md).
+needed. Full walkthrough: [`docs/deploy/STRIPE-SETUP.md`](docs/deploy/STRIPE-SETUP.md).
 
 ## How it works
 
@@ -150,7 +150,8 @@ from member management:
   HTMX and served by Coterie itself. This is the only admin surface.
 - **Coterie backend** — a single Rust binary serving both, backed by SQLite.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for integration examples and the
+See the [documentation index](docs/README.md) for all guides, and
+[ARCHITECTURE.md](docs/ARCHITECTURE.md) for integration examples and the
 surface-by-surface security model.
 
 **Stack**: Rust (Axum) · SQLite (WAL) · HTMX + Alpine.js portal · session auth
@@ -181,7 +182,7 @@ with Argon2id + TOTP 2FA · single-binary deploy behind Caddy.
 - **Integrations** — Discord role sync by dues status (with email fallback);
   UniFi Access API client wired up.
 
-See [ROADMAP.md](ROADMAP.md) and [TODO.md](TODO.md) for what's planned next.
+See [ROADMAP.md](docs/ROADMAP.md) and [TODO.md](docs/TODO.md) for what's planned next.
 
 ## Routes & endpoints
 
@@ -219,16 +220,16 @@ listing; `GET /health` is the health check.
 For operators who want to drive each step, deploy on another platform, or run
 day-to-day operations:
 
-- [`DEPLOY-DIGITALOCEAN.md`](deploy/DEPLOY-DIGITALOCEAN.md) — end-to-end DO
+- [`DEPLOY-DIGITALOCEAN.md`](docs/deploy/DEPLOY-DIGITALOCEAN.md) — end-to-end DO
   droplet (Ubuntu, ~45 min)
-- [`DEPLOY-AWS.md`](deploy/DEPLOY-AWS.md) — EC2 + EBS or Lightsail (Ubuntu)
-- [`DEPLOY-ALPINE.md`](deploy/DEPLOY-ALPINE.md) — Alpine Linux + OpenRC (no
+- [`DEPLOY-AWS.md`](docs/deploy/DEPLOY-AWS.md) — EC2 + EBS or Lightsail (Ubuntu)
+- [`DEPLOY-ALPINE.md`](docs/deploy/DEPLOY-ALPINE.md) — Alpine Linux + OpenRC (no
   Docker required)
-- [`STRIPE-SETUP.md`](deploy/STRIPE-SETUP.md) — wiring Coterie to a Stripe account
-- [`OPS.md`](deploy/OPS.md) — operations reference (secret rotation, logs,
+- [`STRIPE-SETUP.md`](docs/deploy/STRIPE-SETUP.md) — wiring Coterie to a Stripe account
+- [`OPS.md`](docs/deploy/OPS.md) — operations reference (secret rotation, logs,
   upgrades, routine maintenance)
-- [`MIGRATION.md`](deploy/MIGRATION.md) — moving between hosts
-- [`RESTORE.md`](deploy/RESTORE.md) — restoring from a backup
+- [`MIGRATION.md`](docs/deploy/MIGRATION.md) — moving between hosts
+- [`RESTORE.md`](docs/deploy/RESTORE.md) — restoring from a backup
 
 A multi-stage [`Dockerfile`](Dockerfile) is provided for container deploys; the
 daily backup script and systemd timer ([`deploy/backup.sh`](deploy/backup.sh),

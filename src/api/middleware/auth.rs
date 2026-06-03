@@ -279,7 +279,7 @@ pub async fn require_admin_redirect(
 // top of the application router as
 // `middleware::security::csrf_protect_unless_exempt` so adding a new
 // state-changing route can't accidentally skip protection — see
-// CLAUDE.md and ARCHITECTURE.md for the rationale.
+// CLAUDE.md and docs/ARCHITECTURE.md for the rationale.
 
 /// Middleware that optionally adds session info to requests.
 /// Useful for pages that work differently for logged-in vs logged-out users.
