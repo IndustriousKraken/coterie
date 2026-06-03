@@ -170,7 +170,19 @@
     <main class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
         {% block content %}{% endblock %}
     </main>
-    
+
+    <!-- Footer: "about this version" affordance.
+         Links to the release page for a real release build; dev builds
+         (no embedded tag) render the -dev string with no link. -->
+    <footer class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 text-center text-xs text-gray-400">
+        {% if let Some(url) = base.release_url.as_ref() %}
+        <a href="{{ url }}" target="_blank" rel="noopener noreferrer"
+           class="hover:text-gray-600">Coterie {{ base.version }}</a>
+        {% else %}
+        <span>Coterie {{ base.version }}</span>
+        {% endif %}
+    </footer>
+
     <!-- Loading indicator -->
     <div class="htmx-indicator fixed top-0 left-0 right-0 h-1 bg-blue-600"></div>
     

@@ -30,6 +30,15 @@ pub struct BaseContext {
     pub current_user: Option<UserInfo>,
     pub is_admin: bool,
     pub csrf_token: String,
+    /// The running version string (e.g. `"v1.2.3 (abc1234)"` or
+    /// `"0.1.0-dev (abc1234)"`), rendered in the footer's "about this
+    /// version" line on every portal page. See [`crate::version`].
+    pub version: String,
+    /// The GitHub release page URL when this is a real release build
+    /// (`crate::version::release_tag()` is `Some`); `None` for dev
+    /// builds, which have no release page and render the version with
+    /// no link.
+    pub release_url: Option<String>,
 }
 
 impl BaseContext {
@@ -55,6 +64,8 @@ impl BaseContext {
             }),
             is_admin: current_user.member.is_admin,
             csrf_token,
+            version: crate::version::current(),
+            release_url: crate::version::release_tag().map(crate::version::release_url),
         }
     }
 
@@ -64,7 +75,11 @@ impl BaseContext {
     /// to CSRF-exempt endpoints (login, signup) or supply tokens
     /// out-of-band (password reset link).
     pub fn for_anon() -> Self {
-        Self::default()
+        Self {
+            version: crate::version::current(),
+            release_url: crate::version::release_tag().map(crate::version::release_url),
+            ..Self::default()
+        }
     }
 }
 

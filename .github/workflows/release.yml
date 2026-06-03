@@ -99,6 +99,14 @@ jobs:
         # forward or delete the tag.
 
       - name: Build release binaries (musl-static)
+        env:
+          # Embed the release tag + short SHA at build time so the
+          # shipped binary reports its real version at /health, /api,
+          # and in the portal footer (see src/version.rs). option_env!
+          # is compile-time: these MUST be set on the build that
+          # produces the shipped binary or releases silently show -dev.
+          COTERIE_VERSION: ${{ steps.version.outputs.tag }}
+          COTERIE_GIT_SHA: ${{ steps.version.outputs.sha }}
         run: |
           cargo build --release \
             --target x86_64-unknown-linux-musl \
@@ -148,11 +156,35 @@ jobs:
 
           ls -lh dist/
 
+      - name: Extract changelog section for this tag
+        # Pull the CHANGELOG.md section whose header matches the tag
+        # (`## [<tag>] — YYYY-MM-DD`) into release-body.md, capturing
+        # everything up to the next `## [` header. If there's no
+        # matching section (or no CHANGELOG.md), the file is left empty
+        # and `generate_release_notes` below supplies the body — so a
+        # release body is never empty.
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          : > release-body.md
+          if [ -f CHANGELOG.md ]; then
+            awk -v tag="$TAG" '
+              index($0, "## [" tag "]") == 1 { capture=1; print; next }
+              capture && /^## \[/ { capture=0 }
+              capture { print }
+            ' CHANGELOG.md > release-body.md
+          fi
+          echo "----- extracted release body -----"
+          cat release-body.md
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.tag }}
+          # Body is the tag's CHANGELOG.md section; generate_release_notes
+          # appends GitHub's auto-notes (and is the sole content when the
+          # extracted section is empty), so the body is never empty.
+          body_path: release-body.md
           generate_release_notes: true
           fail_on_unmatched_files: true
           prerelease: ${{ steps.prerelease.outputs.prerelease }}

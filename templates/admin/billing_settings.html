@@ -24,7 +24,11 @@
         <!-- Stripe-subscription migration -->
         <div class="bg-white rounded-lg shadow-sm border mb-6">
             <div class="px-6 py-4 border-b">
-                <h2 class="text-lg font-semibold text-gray-900">Stripe-managed subscriptions</h2>
+                <div class="flex items-center justify-between">
+                    <h2 class="text-lg font-semibold text-gray-900">Stripe-managed subscriptions</h2>
+                    <a href="{{ stripe_guide_url }}" target="_blank" rel="noopener noreferrer"
+                       class="text-sm text-blue-600 hover:text-blue-800 whitespace-nowrap">Setup guide ↗</a>
+                </div>
                 <p class="text-sm text-gray-500 mt-1">
                     Members on a legacy Stripe-managed subscription (set up
                     before Coterie owned billing) can be migrated to

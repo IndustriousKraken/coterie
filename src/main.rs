@@ -10,6 +10,7 @@ mod payments;
 mod repository;
 mod service;
 mod util;
+mod version;
 mod web;
 
 use sqlx::{
