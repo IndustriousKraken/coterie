@@ -38,6 +38,10 @@ name = "install_flow"
 required-features = ["test-support"]
 
 [[test]]
+name = "update_flow"
+required-features = ["test-support"]
+
+[[test]]
 name = "caddyfile"
 required-features = ["test-support"]
 

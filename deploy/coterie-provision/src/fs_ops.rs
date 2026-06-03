@@ -16,6 +16,14 @@ pub trait FileSystem {
     fn rename(&self, from: &Path, to: &Path) -> Result<()>;
     fn remove_file(&self, path: &Path) -> Result<()>;
     fn remove_dir_all(&self, path: &Path) -> Result<()>;
+    /// Copy a single file's contents (and permission bits) from `from`
+    /// to `to`. Unlike [`rename`](Self::rename) this works across
+    /// filesystems/mount points — the update flow stages downloads in a
+    /// temp dir that may be on a different device than `/opt/coterie`.
+    fn copy_file(&self, from: &Path, to: &Path) -> Result<()>;
+    /// Recursively copy a directory tree from `from` into `to`,
+    /// creating `to` if needed.
+    fn copy_dir_all(&self, from: &Path, to: &Path) -> Result<()>;
 }
 
 pub struct RealFs;
@@ -104,5 +112,29 @@ impl FileSystem for RealFs {
     fn remove_dir_all(&self, path: &Path) -> Result<()> {
         std::fs::remove_dir_all(path)
             .with_context(|| format!("failed to remove dir {}", path.display()))
+    }
+
+    fn copy_file(&self, from: &Path, to: &Path) -> Result<()> {
+        std::fs::copy(from, to)
+            .map(|_| ())
+            .with_context(|| format!("failed to copy {} -> {}", from.display(), to.display()))
+    }
+
+    fn copy_dir_all(&self, from: &Path, to: &Path) -> Result<()> {
+        fn copy_into(from: &Path, to: &Path) -> std::io::Result<()> {
+            std::fs::create_dir_all(to)?;
+            for entry in std::fs::read_dir(from)? {
+                let entry = entry?;
+                let dest = to.join(entry.file_name());
+                if entry.file_type()?.is_dir() {
+                    copy_into(&entry.path(), &dest)?;
+                } else {
+                    std::fs::copy(entry.path(), &dest)?;
+                }
+            }
+            Ok(())
+        }
+        copy_into(from, to)
+            .with_context(|| format!("failed to copy dir {} -> {}", from.display(), to.display()))
     }
 }

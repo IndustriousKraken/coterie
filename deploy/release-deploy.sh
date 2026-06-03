@@ -1,65 +1,94 @@
 #!/bin/sh
-# Pull a tagged Coterie release from GitHub and install it.
+# release-deploy.sh — fetch a tagged Coterie release and apply it.
 #
-# Usage:
-#   release-deploy.sh                 # install the latest release
-#   release-deploy.sh v1.2.3          # install a specific tag (rollback)
+# As of openspec change a38 the in-place UPDATE logic — pre-update DB
+# snapshot, post-restart /health check, and automatic rollback — lives
+# in the testable `coterie-provision update` binary, NOT in this bash.
+# This script is now a thin shim that preserves the historical
+# positional-tag interface:
 #
-# Assumes:
-#   - /opt/coterie exists and is owned by the coterie user
-#   - The systemd unit (or OpenRC service) is named "coterie"
-#   - `curl`, `python3`, `tar`, `sha256sum` are installed
+#   release-deploy.sh            # latest stable release
+#   release-deploy.sh v1.2.3     # pin, or roll back, to a specific tag
 #
-# Idempotent: if the requested release is already installed (matches
-# /opt/coterie/VERSION), exits 0 without restarting the service.
+# Behaviour:
+#   * On an EXISTING install (a coterie binary is already present) it
+#     delegates to the single hardened update path
+#     (`coterie-provision update`, bootstrapping via update.sh if the
+#     binary isn't on the box). The positional tag becomes `--tag`.
+#   * On a FIRST install (no binary yet) it performs the minimal
+#     download + bootstrap, because there is no running service to
+#     health-check nor database to snapshot. That path is what
+#     `coterie-provision install` drives.
+#
+# Assumes: /opt/coterie exists; `curl`, `tar`, `sha256sum` installed
+# (first install additionally needs `python3`, in Debian's base).
 
 set -eu
 
 REPO="IndustriousKraken/coterie"
 INSTALL_DIR="/opt/coterie"
+TAG="${1:-}"
+
+# ---------------------------------------------------------------------
+# Update path: an install already exists → hand off to the hardened,
+# testable update flow so there is a single update code path.
+# ---------------------------------------------------------------------
+if [ -f "$INSTALL_DIR/coterie" ]; then
+    if [ -n "$TAG" ]; then
+        set -- --tag "$TAG"
+    else
+        set --
+    fi
+    if [ -x "$INSTALL_DIR/coterie-provision" ]; then
+        echo "release-deploy.sh: delegating to coterie-provision update"
+        exec "$INSTALL_DIR/coterie-provision" update "$@"
+    elif command -v coterie-provision >/dev/null 2>&1; then
+        echo "release-deploy.sh: delegating to coterie-provision update"
+        exec coterie-provision update "$@"
+    fi
+    SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)"
+    for cand in "$SCRIPT_DIR/update.sh" "$INSTALL_DIR/deploy/update.sh"; do
+        if [ -f "$cand" ]; then
+            echo "release-deploy.sh: delegating to $cand"
+            exec sh "$cand" "$@"
+        fi
+    done
+    echo "ERROR: could not locate coterie-provision or update.sh to perform the update" >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------------
+# First-install bootstrap (no existing binary). There is no service to
+# stop/restart and no database to snapshot, so this path stays inline.
+# ---------------------------------------------------------------------
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 # Resolve the requested tag (latest if no arg).
-if [ $# -ge 1 ]; then
-    TAG="$1"
+if [ -n "$TAG" ]; then
     API_URL="https://api.github.com/repos/$REPO/releases/tags/$TAG"
 else
     API_URL="https://api.github.com/repos/$REPO/releases/latest"
 fi
 
 echo "Querying GitHub for release: ${TAG:-latest}"
-# Fetch and parse with Python rather than jq. GitHub's API
-# occasionally returns release bodies with unescaped control bytes
-# (raw newlines lifted from commit messages, etc.) which strict JSON
-# parsers like jq reject. Python's json module is equally strict by
-# default but accepts `strict=False` which tolerates the cases we
-# see in practice. Python is in Debian's base install so this isn't
-# an extra dep beyond what jq was.
+# Fetch and parse with Python rather than jq. GitHub's API occasionally
+# returns release bodies with unescaped control bytes which strict JSON
+# parsers reject; Python's json with strict=False tolerates them, and
+# python3 is in Debian's base install.
 RELEASE_JSON_FILE="$TMP_DIR/release.json"
 curl -sfL "$API_URL" > "$RELEASE_JSON_FILE" || {
     echo "ERROR: couldn't fetch release info from $API_URL"
     exit 1
 }
 
-# Extract tag_name. Using Python with strict=False so embedded
-# raw control chars in the release body don't blow us up.
 TAG="$(python3 -c "
-import json, sys
+import json
 with open('$RELEASE_JSON_FILE') as f:
     data = json.load(f, strict=False)
 print(data['tag_name'])
 ")"
 echo "Resolved release: $TAG"
-
-# Skip if this version is already installed.
-if [ -f "$INSTALL_DIR/VERSION" ]; then
-    CURRENT="$(head -n 1 "$INSTALL_DIR/VERSION")"
-    if [ "$CURRENT" = "$TAG" ]; then
-        echo "Already on $TAG, nothing to do."
-        exit 0
-    fi
-fi
 
 # Find the tarball + checksum URLs.
 TARBALL_URL="$(python3 -c "
@@ -101,67 +130,28 @@ TARBALL="$(ls coterie-*.tar.gz)"
 tar xzf "$TARBALL"
 STAGE_DIR="$(basename "$TARBALL" .tar.gz)"
 
-# Detect first-install vs. update by checking if the binary is
-# already in place. First-install path skips the service stop/start
-# dance since the unit doesn't exist yet — instead it runs
-# install.sh from the extracted tarball after files are placed.
-FIRST_INSTALL=false
-if [ ! -f "$INSTALL_DIR/coterie" ]; then
-    FIRST_INSTALL=true
-    echo "First install detected (no existing binary at $INSTALL_DIR/coterie)."
-fi
+echo "First install detected (no existing binary at $INSTALL_DIR/coterie)."
 
-# Pick a service manager for later use. Default to systemd on
-# first-install since install.sh installs a systemd unit; the
-# OpenRC path is a TODO if we ever publish an Alpine-flavored
-# install.sh.
-if command -v systemctl >/dev/null 2>&1; then
-    SERVICE_MGR="systemd"
-elif command -v rc-service >/dev/null 2>&1; then
-    SERVICE_MGR="openrc"
-else
-    echo "ERROR: no service manager found (systemd or openrc)"
-    exit 1
-fi
-
-# Stop the service so we can swap files cleanly. Skipped on
-# first-install (no unit to stop).
-if [ "$FIRST_INSTALL" = "false" ]; then
-    if [ "$SERVICE_MGR" = "systemd" ]; then
-        systemctl stop coterie
-    else
-        rc-service coterie stop
-    fi
-fi
-
-# Ensure the install dir exists. On first install this creates it;
-# on update it's a no-op. install.sh later sets correct ownership.
+# Place the binaries. Anything in $INSTALL_DIR that's NOT in the release
+# stays (specifically: .env stays; /var/lib/coterie data is untouched).
 mkdir -p "$INSTALL_DIR"
-
-# Atomic file swaps where it matters. We replace the binaries
-# specifically and rsync the supporting files. Anything in
-# $INSTALL_DIR that's NOT in the release stays (specifically: .env
-# stays, /var/lib/coterie data is untouched — it's not under
-# $INSTALL_DIR anyway).
 install -m 0755 "$STAGE_DIR/coterie" "$INSTALL_DIR/coterie.new"
 install -m 0755 "$STAGE_DIR/seed"    "$INSTALL_DIR/seed.new"
 mv "$INSTALL_DIR/coterie.new" "$INSTALL_DIR/coterie"
 mv "$INSTALL_DIR/seed.new"    "$INSTALL_DIR/seed"
 
-# Static, migrations, deploy: just replace wholesale.
+# Static, migrations: replace wholesale.
 rm -rf "$INSTALL_DIR/static" "$INSTALL_DIR/migrations"
 cp -r "$STAGE_DIR/static"      "$INSTALL_DIR/"
 cp -r "$STAGE_DIR/migrations"  "$INSTALL_DIR/"
 
-# Keep .env.example up to date so operators can diff against their
-# live .env after upgrades to see what new settings exist. NEVER
-# touches .env itself.
+# Keep .env.example current so operators can diff against their live
+# .env. NEVER touches .env itself.
 if [ -f "$STAGE_DIR/.env.example" ]; then
     cp -f "$STAGE_DIR/.env.example" "$INSTALL_DIR/.env.example"
 fi
-# deploy/ scripts are kept up-to-date too, but don't overwrite a
-# possibly-modified config or install.sh aggressively — copy each
-# file individually so operators can pin local changes if needed.
+# deploy/ scripts kept up to date too (copied individually so operators
+# can pin local changes if needed).
 mkdir -p "$INSTALL_DIR/deploy"
 cp -f "$STAGE_DIR/deploy/"*.sh        "$INSTALL_DIR/deploy/" 2>/dev/null || true
 cp -f "$STAGE_DIR/deploy/"*.service   "$INSTALL_DIR/deploy/" 2>/dev/null || true
@@ -172,25 +162,22 @@ cp -f "$STAGE_DIR/deploy/Caddyfile.example" "$INSTALL_DIR/deploy/" 2>/dev/null |
 # Record the version.
 cp "$STAGE_DIR/VERSION" "$INSTALL_DIR/VERSION"
 
-if [ "$FIRST_INSTALL" = "true" ]; then
-    # On first install: run install.sh (creates coterie user,
-    # /var/lib/coterie, systemd unit). install.sh chowns $INSTALL_DIR
-    # itself but doesn't recurse into it, so we chown the contents
-    # afterwards.
-    if [ ! -f "$INSTALL_DIR/deploy/install.sh" ]; then
-        echo "ERROR: $INSTALL_DIR/deploy/install.sh not found"
-        echo "Cannot complete first-install bootstrap."
-        exit 1
-    fi
-    echo "Running install.sh to set up user, dirs, and systemd unit..."
-    bash "$INSTALL_DIR/deploy/install.sh"
+# Run install.sh (creates coterie user, /var/lib/coterie, systemd unit).
+# install.sh chowns $INSTALL_DIR itself but doesn't recurse, so we chown
+# the contents afterwards.
+if [ ! -f "$INSTALL_DIR/deploy/install.sh" ]; then
+    echo "ERROR: $INSTALL_DIR/deploy/install.sh not found"
+    echo "Cannot complete first-install bootstrap."
+    exit 1
+fi
+echo "Running install.sh to set up user, dirs, and systemd unit..."
+bash "$INSTALL_DIR/deploy/install.sh"
 
-    # chown the contents we placed (install.sh only chowns the dir).
-    if id coterie >/dev/null 2>&1; then
-        chown -R coterie:coterie "$INSTALL_DIR"
-    fi
+if id coterie >/dev/null 2>&1; then
+    chown -R coterie:coterie "$INSTALL_DIR"
+fi
 
-    cat <<EOF
+cat <<EOF
 
 ============================================================
 First-install bootstrap complete. Next steps:
@@ -212,22 +199,9 @@ First-install bootstrap complete. Next steps:
 
   4. Visit https://your-domain/setup to create the first admin.
 
-For subsequent updates, just re-run this script — it'll do the
-service-stop/swap/restart dance correctly once the unit exists.
+For subsequent updates, re-run this script (or update.sh) — it
+delegates to the hardened 'coterie-provision update' path.
 ============================================================
 EOF
-else
-    # Update path: chown then restart.
-    if id coterie >/dev/null 2>&1; then
-        chown -R coterie:coterie "$INSTALL_DIR"
-    fi
-    if [ "$SERVICE_MGR" = "systemd" ]; then
-        systemctl start coterie
-        systemctl status coterie --no-pager
-    else
-        rc-service coterie start
-        rc-service coterie status
-    fi
-fi
 
 echo "Installed Coterie $TAG"
