@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 After `add-fromref-impls-on-appstate` lands, `AppState` exposes `FromRef<AppState>` impls for every constituent service, repository, and piece of infrastructure. This change migrates the API-side handlers (`src/api/handlers/*.rs`) from `State<AppState>` extraction to granular `State<Arc<dyn TargetService>>` extraction.

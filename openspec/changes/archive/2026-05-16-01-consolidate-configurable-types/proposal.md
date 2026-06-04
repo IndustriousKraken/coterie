@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 The configurable-types triplet — event types, announcement types, membership types — exists at three layers and at each layer the duplication is significant:

@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `src/service/billing_service.rs` is a 150-line shell whose only job is to forward 12 method calls to one of three sub-services (`auto_renew::AutoRenew`, `notifications::Notifications`, `expiration::Expiration`). Every method on the facade has a doc-prefix that names the sub-service it belongs to:

@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `PaymentService::record_manual` (`src/service/payment_service.rs:74`) is the

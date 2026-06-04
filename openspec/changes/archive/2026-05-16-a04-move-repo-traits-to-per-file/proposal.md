@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `src/repository/mod.rs` is 321 lines of trait declarations plus a few auxiliary types. The repository module follows two patterns inconsistently:

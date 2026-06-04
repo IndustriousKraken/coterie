@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `src/web/portal/admin/events.rs` (~916 lines) follows the same inline-orchestration anti-pattern that `lift-member-admin-orchestration` already fixed for member handlers. Every admin event mutation — `admin_create_event`, `admin_update_event`, `admin_delete_event`, plus the recurring-series update/cancel variants — performs the repo update, audit-log emission, and `IntegrationEvent::EventPublished` dispatch inline.

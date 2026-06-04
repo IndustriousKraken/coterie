@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `MemberInfo` (in `src/web/portal/mod.rs`) and `AdminMemberInfo` (in `src/web/portal/admin/members.rs`) are template-context projections of `domain::Member`. Today they flatten everything to `String`:

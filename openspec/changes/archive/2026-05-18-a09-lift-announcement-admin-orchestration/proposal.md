@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `src/web/portal/admin/announcements.rs` (~678 lines) is the next file in the same anti-pattern that `lift-member-admin-orchestration` and `lift-event-admin-orchestration` have already fixed. Admin announcement handlers — `admin_create_announcement`, `admin_update_announcement`, `admin_delete_announcement`, `admin_publish_announcement`, `admin_unpublish_announcement` — perform their repo update + audit emission + `IntegrationEvent::AnnouncementPublished` dispatch inline.

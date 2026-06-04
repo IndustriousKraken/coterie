@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 The CLAUDE.md architectural rule states *"Side-effects (audit log, integration events) belong in the service so handlers can't accidentally skip them."* Today, member-admin handlers in `src/web/portal/admin/members.rs` (1586 lines) violate this rule: every action — `activate`, `suspend`, `update`, `extend-dues`, `set-dues`, `expire-now`, `update-discord-id`, `resend-verification`, `create` — performs the repo update, session invalidation, audit log, integration dispatch, and email send chain inline. The current `admin-members`, `audit-logging`, and `integration-events` specs explicitly codify this as observed-but-aspirationally-wrong (*"the CLAUDE.md 'side-effects in services' rule is aspirational; payments follow it, the rest do not"*).

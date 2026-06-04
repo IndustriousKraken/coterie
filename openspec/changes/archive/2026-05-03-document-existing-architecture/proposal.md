@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 Coterie has grown into a production system with three HTTP surfaces, layered security defaults, and a service/repository architecture — but none of it is captured as enforceable specs. The CLAUDE.md prose is load-bearing (a CSRF gap was reintroduced once and only caught because a contributor knew the rule), and onboarding any future contributor or AI agent currently depends on reading the code top-to-bottom. Capturing the existing behavior as OpenSpec specs gives us a contract future changes are checked against, makes the secure-by-default rules machine-verifiable, and turns "what does this app do?" from a code-reading exercise into a spec read.

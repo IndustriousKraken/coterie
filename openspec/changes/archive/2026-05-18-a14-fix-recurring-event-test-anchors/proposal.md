@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `tests/recurring_event_test.rs::weekly_creates_about_52_occurrences` fails today. The test pins a fixed anchor at `2026-05-05` and asserts that the materializer produces 50–53 occurrences, but the materializer's horizon is `now + 12 months` — not `anchor + 12 months`. As real-world "now" advances past the anchor, the window grows beyond a single year from the anchor and the count drifts upward. Today (2026-05-18) the count is 54, just outside the test's tolerance.

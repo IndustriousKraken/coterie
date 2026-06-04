@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `admin_refund_payment` in `src/web/portal/admin/members.rs` (~140 lines, roughly lines 628–770 as of this writing) is the last admin mutation handler that still does inline orchestration: rate-limit check, payment lookup, status validation, atomic claim-then-call-Stripe, audit log, integration dispatch. It was deliberately scoped out of `lift-member-admin-orchestration` at the time — the rationale was "it operates on payments, not members, so it doesn't fit MemberService."

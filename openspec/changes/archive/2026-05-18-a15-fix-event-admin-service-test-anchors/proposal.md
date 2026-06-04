@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `a14-fix-recurring-event-test-anchors` added an `admin-events` spec requirement that tests of the recurring-event materializer SHALL use anchors computed relative to `Utc::now()` at runtime. While implementing `a14`, the autocoder surfaced ~9 (actually 12, by exact grep) inline unit tests inside `src/service/event_admin_service.rs` that violate the same rule — they use hardcoded `2026-08-04` Tuesday anchors and `2026-10-01` untils, the same pattern just fixed in `tests/recurring_event_test.rs`.
