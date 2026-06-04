@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `src/web/portal/admin/members.rs` houses two distinct concerns:

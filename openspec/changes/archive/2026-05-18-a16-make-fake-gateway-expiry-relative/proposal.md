@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `src/payments/fake_gateway.rs:273` returns a hardcoded `exp_year: 2030` as the default `PaymentMethodDetails` from `retrieve_payment_method` when no canned response is queued. This is the "default valid card" test fixture — tests that don't explicitly queue a response for `retrieve_payment_method` get back a card "valid through December 2030."

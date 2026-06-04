@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `EmailTokenService` (`src/auth/email_tokens.rs`) is the security-critical

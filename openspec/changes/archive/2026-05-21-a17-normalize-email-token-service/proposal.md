@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `EmailTokenService` lives in a confused middle ground. It's a struct with two factory constructors (`verification(pool)` and `password_reset(pool)`) and two methods (`create`, `consume`). `ServiceContext` holds one Arc'd instance (the verification variant) and exposes it via dependency injection. But callers don't actually use the injected version — every caller constructs an ad-hoc local instance per request:

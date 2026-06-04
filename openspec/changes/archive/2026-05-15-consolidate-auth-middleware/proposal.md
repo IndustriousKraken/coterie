@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `src/api/middleware/auth.rs` defines five middleware variants — `require_auth`, `require_auth_redirect`, `require_restorable`, `require_admin_redirect`, `optional_auth` — that each repeat the same five mechanical steps: read session cookie → validate session → load member → check status → inject `CurrentUser` and `SessionInfo`. The only meaningful axes of variation are (a) the allowed status set, (b) whether to 401 or redirect on reject, and (c) for the admin variant, an additional `is_admin` + optional TOTP enforcement step.

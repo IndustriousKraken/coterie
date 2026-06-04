@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 Currently, `AppError::Database` eagerly converts `sqlx::Error` to a string using a `From` trait implementation. This "stringly-typed" approach prevents services from programmatically reacting to specific database errors, such as unique constraint violations (e.g., duplicate email during registration). This change will wrap the `sqlx::Error` directly, enabling richer error handling without parsing raw SQL error strings.

@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 After `add-fromref-impls-on-appstate` lands, `AppState` exposes `FromRef<AppState>` impls for every service, repository, and piece of infrastructure a handler might want. This change uses those impls — it migrates all portal-side and pre-auth-page handlers from `State(state): State<AppState>` extraction to granular `State(svc): State<Arc<dyn TargetService>>` extraction, one specific dependency at a time.

@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `src/payments/webhook_dispatcher.rs` has two handlers — `handle_invoice_paid` and `handle_invoice_payment_failed` — that are the entire billing flow for Stripe-subscription members. Every time a Stripe-managed subscription successfully bills, `invoice.paid` fires and `handle_invoice_paid` extends the member's `dues_paid_until`. Every time a charge fails, `invoice.payment_failed` fires and `handle_invoice_payment_failed` triggers `notify_subscription_payment_failed` (which emails the member and dispatches `AdminAlert`).

@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 Today every Axum handler in Coterie extracts the full `AppState` God Object via `State(state): State<AppState>`. The state contains the `ServiceContext` and thereby every service and repository in the application. Each handler has access to the entire domain, which breaks the principle of least privilege, complicates testing, and obscures the specific dependencies any given route actually needs.
