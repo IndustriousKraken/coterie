@@ -472,6 +472,58 @@ async fn export_escapes_special_characters_per_rfc_4180() {
 }
 
 #[tokio::test]
+async fn export_neutralizes_spreadsheet_formula_injection() {
+    // CWE-1236: a member can register a `full_name` that begins with a
+    // formula trigger. The export must prefix such a value with a single
+    // quote inside the RFC 4180 quoting so a spreadsheet renders it as
+    // literal text rather than evaluating it.
+    let h = build_harness().await;
+    seed_member(
+        &h,
+        "attacker@example.com",
+        "attacker",
+        "=cmd|'/c calc'!A1",
+        MemberStatus::Pending,
+        None,
+    )
+    .await;
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(auth_get(&h, "/portal/admin/members/export"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+
+    // The neutralized field has a `'` directly after the opening quote.
+    assert!(
+        text.contains("\"'=cmd"),
+        "expected neutralized full_name `\"'=cmd...`, got:\n{}",
+        text,
+    );
+    // And no bare start-of-field formula remains.
+    assert!(
+        !text.contains(",=cmd") && !text.contains("\"=cmd"),
+        "formula must not appear at the start of a field unneutralized, got:\n{}",
+        text,
+    );
+
+    // Round-trip: parsing the row yields the value with the leading `'`
+    // (the neutralization is intentionally part of the cell text).
+    let row_line = text
+        .lines()
+        .find(|l| l.contains("attacker@example.com"))
+        .expect("seeded row present");
+    let fields = parse_csv_row(row_line);
+    // Column order: id, email, username, full_name, status, ...
+    assert_eq!(fields[3], "'=cmd|'/c calc'!A1");
+}
+
+#[tokio::test]
 async fn export_writes_audit_row_for_acting_admin() {
     let h = build_harness().await;
     seed_member(

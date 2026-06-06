@@ -19,7 +19,7 @@ use crate::{
     auth::CsrfService,
     service::audit_service::AuditService,
     web::{
-        portal::admin::csv::push_csv,
+        portal::admin::csv::{push_csv, push_csv_user},
         templates::{BaseContext, HtmlTemplate},
     },
 };
@@ -206,6 +206,11 @@ pub async fn audit_log_export(
     let mut out = String::with_capacity(16 * 1024);
     out.push_str("timestamp,actor_id,actor_name,action,entity_type,entity_id,old_value,new_value,ip_address\n");
     for e in rows {
+        // Server-controlled columns (timestamp, actor_id, action,
+        // entity_type, ip_address) stay on plain `push_csv`. The
+        // member-influenced free-text columns (actor_name, entity_id,
+        // old_value, new_value) go through `push_csv_user` so a leading
+        // formula trigger is neutralized (CWE-1236).
         push_csv(&mut out, &e.created_at.to_rfc3339());
         out.push(',');
         push_csv(
@@ -213,17 +218,17 @@ pub async fn audit_log_export(
             &e.actor_id.map(|u| u.to_string()).unwrap_or_default(),
         );
         out.push(',');
-        push_csv(&mut out, e.actor_name.as_deref().unwrap_or(""));
+        push_csv_user(&mut out, e.actor_name.as_deref().unwrap_or(""));
         out.push(',');
         push_csv(&mut out, &e.action);
         out.push(',');
         push_csv(&mut out, &e.entity_type);
         out.push(',');
-        push_csv(&mut out, &e.entity_id);
+        push_csv_user(&mut out, &e.entity_id);
         out.push(',');
-        push_csv(&mut out, e.old_value.as_deref().unwrap_or(""));
+        push_csv_user(&mut out, e.old_value.as_deref().unwrap_or(""));
         out.push(',');
-        push_csv(&mut out, e.new_value.as_deref().unwrap_or(""));
+        push_csv_user(&mut out, e.new_value.as_deref().unwrap_or(""));
         out.push(',');
         push_csv(&mut out, e.ip_address.as_deref().unwrap_or(""));
         out.push('\n');

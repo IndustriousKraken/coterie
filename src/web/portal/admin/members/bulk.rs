@@ -116,7 +116,7 @@ pub async fn admin_members_export(
 /// `MemberExportRow`. Column order matches the
 /// `bulk-member-csv-export` capability spec exactly.
 fn build_members_csv(rows: &[crate::repository::MemberExportRow]) -> String {
-    use crate::web::portal::admin::csv::push_csv;
+    use crate::web::portal::admin::csv::{push_csv, push_csv_user};
 
     let mut out = String::with_capacity(1024 + rows.len() * 256);
     out.push_str(
@@ -125,13 +125,17 @@ fn build_members_csv(rows: &[crate::repository::MemberExportRow]) -> String {
     );
 
     for r in rows {
+        // Member-controlled free-text columns go through `push_csv_user`
+        // so a leading formula trigger is neutralized (CWE-1236);
+        // server-controlled columns (id, status, type, timestamps,
+        // booleans) stay on plain `push_csv`.
         push_csv(&mut out, &r.id.to_string());
         out.push(',');
-        push_csv(&mut out, &r.email);
+        push_csv_user(&mut out, &r.email);
         out.push(',');
-        push_csv(&mut out, &r.username);
+        push_csv_user(&mut out, &r.username);
         out.push(',');
-        push_csv(&mut out, &r.full_name);
+        push_csv_user(&mut out, &r.full_name);
         out.push(',');
         push_csv(&mut out, r.status.as_str());
         out.push(',');
@@ -150,7 +154,7 @@ fn build_members_csv(rows: &[crate::repository::MemberExportRow]) -> String {
         out.push(',');
         push_csv(&mut out, if r.bypass_dues { "true" } else { "false" });
         out.push(',');
-        push_csv(&mut out, r.discord_id.as_deref().unwrap_or(""));
+        push_csv_user(&mut out, r.discord_id.as_deref().unwrap_or(""));
         out.push(',');
         push_csv(
             &mut out,
@@ -159,7 +163,7 @@ fn build_members_csv(rows: &[crate::repository::MemberExportRow]) -> String {
                 .unwrap_or_default(),
         );
         out.push(',');
-        push_csv(&mut out, r.notes.as_deref().unwrap_or(""));
+        push_csv_user(&mut out, r.notes.as_deref().unwrap_or(""));
         out.push('\n');
     }
     out
