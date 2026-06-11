@@ -1,8 +1,19 @@
-use axum::{http::StatusCode, Json, response::IntoResponse};
+use std::sync::Arc;
+
+use axum::{
+    extract::State,
+    http::{header, HeaderMap, StatusCode},
+    response::{IntoResponse, Redirect, Response},
+    Json,
+};
+use axum_extra::extract::CookieJar;
 use serde::Serialize;
 use serde_json::json;
+use utoipa::ToSchema;
 
-#[derive(Serialize)]
+use crate::auth::AuthService;
+
+#[derive(Serialize, ToSchema)]
 pub struct ApiInfo {
     pub name: String,
     pub version: String,
@@ -10,34 +21,116 @@ pub struct ApiInfo {
     pub status: String,
 }
 
-pub async fn root() -> impl IntoResponse {
-    Json(json!({
-        "name": "Coterie API",
-        "version": env!("CARGO_PKG_VERSION"),
-        "description": "Member management system for clubs and organizations",
-        "status": "operational",
-        "endpoints": {
-            "health": "/health",
-            "api": "/api",
-            "auth": "/auth/login",
-            "public": "/public",
-            "admin": "/admin"
-        },
-        "documentation": "https://github.com/yourusername/coterie"
-    }))
+#[derive(Serialize, ToSchema)]
+pub struct HealthStatus {
+    pub status: String,
+    /// The version embedded at build time (release tag + short SHA for
+    /// release builds, a `-dev` marker otherwise). See [`crate::version`].
+    pub version: String,
+    /// RFC 3339 timestamp captured when the request was served.
+    pub timestamp: String,
 }
 
+/// Root endpoint with content negotiation:
+/// - Browsers (Accept: text/html): redirect to dashboard if logged in, else to login
+/// - API clients (Accept: application/json) get API info JSON
+#[utoipa::path(
+    get,
+    path = "/",
+    tag = "meta",
+    responses(
+        (status = 200, description = "API info JSON (when Accept is not text/html)"),
+        (status = 303, description = "Browser redirect to /portal/dashboard or /login"),
+    ),
+)]
+pub async fn root(
+    State(auth_service): State<Arc<AuthService>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> Response {
+    // Check if the client prefers HTML (browser)
+    let accepts_html = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("text/html"))
+        .unwrap_or(false);
+
+    if accepts_html {
+        // Check if user has a valid session
+        if let Some(session_cookie) = jar.get("session") {
+            if let Ok(Some(_session)) = auth_service.validate_session(session_cookie.value()).await
+            {
+                return Redirect::to("/portal/dashboard").into_response();
+            }
+        }
+        Redirect::to("/login").into_response()
+    } else {
+        Json(json!({
+            "name": "Coterie API",
+            "version": crate::version::current(),
+            "description": "Member management system for clubs and organizations",
+            "status": "operational",
+            "endpoints": {
+                "health": "GET /health - Health check",
+                "api_info": "GET /api - API information",
+                "public": {
+                    "signup": "POST /public/signup - Register new member",
+                    "events": "GET /public/events - List public events",
+                    "announcements": "GET /public/announcements - List public announcements",
+                    "rss": "GET /public/feed/rss - RSS feed",
+                    "calendar": "GET /public/feed/calendar - iCal feed"
+                },
+                "auth": {
+                    "login": "POST /api/auth/login - Authenticate",
+                    "logout": "POST /api/auth/logout - End session"
+                },
+                "members": "GET/POST /api/members - Member management (authenticated)",
+                "events": "GET/POST /api/events - Event management (authenticated)",
+                "payments": "GET/POST /api/payments - Payment management (authenticated)"
+            },
+            "portal": {
+                "login": "/login - Web login page",
+                "dashboard": "/portal/dashboard - Member dashboard",
+                "admin": "/portal/admin/members - Admin interface"
+            },
+            "documentation": "https://github.com/IndustriousKraken/coterie"
+        }))
+        .into_response()
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "meta",
+    responses(
+        (status = 200, description = "Liveness probe — always 200 if the process is up",
+            body = HealthStatus),
+    ),
+)]
 pub async fn health_check() -> impl IntoResponse {
-    (StatusCode::OK, Json(json!({
-        "status": "healthy",
-        "timestamp": chrono::Utc::now().to_rfc3339()
-    })))
+    (
+        StatusCode::OK,
+        Json(HealthStatus {
+            status: "healthy".to_string(),
+            version: crate::version::current(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        }),
+    )
 }
 
+#[utoipa::path(
+    get,
+    path = "/api",
+    tag = "meta",
+    responses(
+        (status = 200, description = "Static API metadata", body = ApiInfo),
+    ),
+)]
 pub async fn api_info() -> impl IntoResponse {
     Json(ApiInfo {
         name: "Coterie API".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: crate::version::current(),
         description: "Member management system for clubs and organizations".to_string(),
         status: "operational".to_string(),
     })

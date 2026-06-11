@@ -1,0 +1,260 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Payment Methods - Coterie{% endblock %}
+
+{% block head %}
+<meta name="csrf-token" content="{{ base.csrf_token }}">
+<script nonce="__CSP_NONCE__" src="https://js.stripe.com/v3/"></script>
+{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="mb-8">
+        <a href="/portal/payments" class="text-sm text-blue-600 hover:text-blue-800">&larr; Back to Payments</a>
+        <h1 class="text-3xl font-bold text-gray-900 mt-2">Payment Methods</h1>
+        <p class="mt-2 text-sm text-gray-600">Manage your saved payment methods for dues and donations</p>
+    </div>
+
+    {% if !stripe_enabled %}
+    <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
+        <p class="text-yellow-800 text-sm">
+            Online payment processing is not currently configured.
+        </p>
+    </div>
+    {% else %}
+    <!-- Saved Cards -->
+    <div class="bg-white rounded-lg shadow-sm border mb-6">
+        <div class="px-6 py-4 border-b">
+            <h2 class="text-lg font-semibold text-gray-900">Saved Cards</h2>
+        </div>
+        <div id="saved-cards" hx-get="/portal/api/payments/cards" hx-trigger="load" hx-swap="innerHTML">
+            <div class="p-6 text-center text-gray-500">Loading...</div>
+        </div>
+    </div>
+
+    <!-- Auto-renew -->
+    <div class="bg-white rounded-lg shadow-sm border mb-6">
+        <div class="px-6 py-4 border-b flex items-center justify-between">
+            <div>
+                <h2 class="text-lg font-semibold text-gray-900">Auto-renew</h2>
+                <p class="text-sm text-gray-500 mt-1">
+                    {% if is_stripe_subscription %}
+                    You're on a legacy Stripe-managed subscription. Switch to Coterie-managed auto-renew so dues, reminders, and card updates all live in one place.
+                    {% else if is_auto_renew %}
+                    We'll charge your default card automatically when your dues come up.
+                    {% else %}
+                    Renew manually each cycle. Turn this on to have us charge your default card automatically when dues come up.
+                    {% endif %}
+                </p>
+            </div>
+            <span id="auto-renew-status"
+                  class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+                         {% if is_stripe_subscription %}bg-amber-100 text-amber-800
+                         {% else if is_auto_renew %}bg-green-100 text-green-800
+                         {% else %}bg-gray-100 text-gray-700{% endif %}">
+                {% if is_stripe_subscription %}Stripe{% else if is_auto_renew %}On{% else %}Off{% endif %}
+            </span>
+        </div>
+        <div class="p-6">
+            {% if is_stripe_subscription %}
+            <button id="auto-renew-toggle" type="button"
+                    data-enable="true"
+                    hx-confirm="Switch from Stripe-managed billing to Coterie-managed auto-renew? Your existing card will keep working — Coterie will take over the renewal schedule."
+                    class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+                Switch to Coterie auto-renew
+            </button>
+            <button id="auto-renew-cancel" type="button"
+                    data-enable="false"
+                    hx-confirm="Cancel your Stripe subscription entirely? You'll keep access through your current paid-through date and renew manually after that."
+                    class="ml-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 text-sm font-medium">
+                Cancel subscription
+            </button>
+            {% else if is_auto_renew %}
+            <button id="auto-renew-toggle" type="button"
+                    data-enable="false"
+                    class="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 text-sm font-medium">
+                Turn off auto-renew
+            </button>
+            {% else %}
+            <button id="auto-renew-toggle" type="button"
+                    data-enable="true"
+                    {% if !has_default_card %}disabled title="Save a default card first"{% endif %}
+                    class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">
+                Turn on auto-renew
+            </button>
+            {% if !has_default_card %}
+            <p class="mt-2 text-xs text-gray-500">Add a default card below before enabling.</p>
+            {% endif %}
+            {% endif %}
+            <p id="auto-renew-error" class="mt-2 text-sm text-red-600 hidden"></p>
+        </div>
+    </div>
+
+    <!-- Add New Card -->
+    <div class="bg-white rounded-lg shadow-sm border">
+        <div class="px-6 py-4 border-b">
+            <h2 class="text-lg font-semibold text-gray-900">Add New Card</h2>
+        </div>
+        <div class="p-6">
+            <div id="card-form">
+                <div id="card-element" class="border rounded-md p-3 bg-gray-50"></div>
+                <div id="card-errors" class="text-red-600 text-sm mt-2" role="alert"></div>
+                <div class="mt-4 flex items-center">
+                    <input type="checkbox" id="set-default" class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded">
+                    <label for="set-default" class="ml-2 text-sm text-gray-700">Set as default payment method</label>
+                </div>
+                <button id="save-card-btn" type="button" class="mt-4 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">
+                    Save Card
+                </button>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+{% if stripe_enabled %}
+<script nonce="__CSP_NONCE__">
+(function() {
+    const stripe = Stripe('{{ stripe_publishable_key }}');
+    const elements = stripe.elements();
+
+    const style = {
+        base: {
+            fontSize: '16px',
+            color: '#374151',
+            '::placeholder': { color: '#9CA3AF' },
+        },
+        invalid: {
+            color: '#EF4444',
+        }
+    };
+
+    const cardElement = elements.create('card', { style: style });
+    cardElement.mount('#card-element');
+
+    const cardErrors = document.getElementById('card-errors');
+    cardElement.on('change', function(event) {
+        if (event.error) {
+            cardErrors.textContent = event.error.message;
+        } else {
+            cardErrors.textContent = '';
+        }
+    });
+
+    const saveBtn = document.getElementById('save-card-btn');
+    saveBtn.addEventListener('click', async function() {
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving...';
+
+        try {
+            // Get a SetupIntent client_secret
+            const setupResponse = await fetch('/api/payments/cards/setup-intent', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content,
+                },
+            });
+
+            if (!setupResponse.ok) {
+                throw new Error('Failed to create setup intent');
+            }
+
+            const { client_secret } = await setupResponse.json();
+
+            // Confirm the setup with Stripe.js
+            const { setupIntent, error } = await stripe.confirmCardSetup(client_secret, {
+                payment_method: {
+                    card: cardElement,
+                }
+            });
+
+            if (error) {
+                throw new Error(error.message);
+            }
+
+            // Save the payment method in our database
+            const setDefault = document.getElementById('set-default').checked;
+            const saveResponse = await fetch('/api/payments/cards', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content,
+                },
+                body: JSON.stringify({
+                    stripe_payment_method_id: setupIntent.payment_method,
+                    set_as_default: setDefault,
+                }),
+            });
+
+            if (!saveResponse.ok) {
+                throw new Error('Failed to save card');
+            }
+
+            // Refresh the saved cards list
+            htmx.trigger('#saved-cards', 'refresh');
+
+            // Clear the form
+            cardElement.clear();
+            document.getElementById('set-default').checked = false;
+            cardErrors.textContent = '';
+
+        } catch (err) {
+            cardErrors.textContent = err.message;
+        } finally {
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Save Card';
+        }
+    });
+
+    // Listen for refresh event
+    document.body.addEventListener('htmx:trigger', function(evt) {
+        if (evt.detail.name === 'refresh' && evt.target.id === 'saved-cards') {
+            htmx.ajax('GET', '/portal/api/payments/cards', '#saved-cards');
+        }
+    });
+
+    // Auto-renew toggle. We do a full page reload on success rather
+    // than swap chunks of UI — the status badge, button label, and
+    // descriptive text all flip together, and the page is cheap.
+    // The same handler binds to both the "switch to Coterie" and
+    // "cancel subscription" buttons on stripe-sub state; data-enable
+    // distinguishes them.
+    const autoRenewError = document.getElementById('auto-renew-error');
+    function bindAutoRenewBtn(btn) {
+        if (!btn) return;
+        btn.addEventListener('click', async function() {
+            autoRenewError.classList.add('hidden');
+            autoRenewError.textContent = '';
+            const enable = btn.dataset.enable === 'true';
+            const originalLabel = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = enable ? 'Switching…' : 'Cancelling…';
+            try {
+                const resp = await fetch('/portal/api/payments/auto-renew', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content,
+                    },
+                    body: JSON.stringify({ enable: enable }),
+                });
+                if (!resp.ok) {
+                    const data = await resp.json().catch(() => ({}));
+                    throw new Error(data.error || 'Update failed');
+                }
+                window.location.reload();
+            } catch (err) {
+                autoRenewError.textContent = err.message;
+                autoRenewError.classList.remove('hidden');
+                btn.disabled = false;
+                btn.textContent = originalLabel;
+            }
+        });
+    }
+    bindAutoRenewBtn(document.getElementById('auto-renew-toggle'));
+    bindAutoRenewBtn(document.getElementById('auto-renew-cancel'));
+})();
+</script>
+{% endif %}
+{% endblock %}

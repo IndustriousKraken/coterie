@@ -1,0 +1,47 @@
+{# Single-row HTMX swap target rendered after admin actions on a
+   member (activate, suspend, dues changes). The `flash` field
+   selects the row-tint and action-column flash text:
+
+     "active"    → green tint, "Activated!" badge
+     "suspended" → yellow tint, "Suspended" label
+     "dues"      → no tint, dues-only flash text
+
+   This partial is the HTMX response body — it replaces a single
+   `<tr>` in the members table without a full page reload. When
+   you change row markup (column order, badge style, etc.), edit
+   here and `members_table.html` together. #}
+<tr class="hover:bg-gray-50{% if flash == "active" %} bg-green-50{% else if flash == "suspended" %} bg-yellow-50{% endif %}" x-data="{ open: false }">
+    <td class="px-6 py-4 whitespace-nowrap">
+        <div class="flex items-center">
+            <div class="flex-shrink-0 h-10 w-10 bg-gray-200 rounded-full flex items-center justify-center">
+                <span class="text-gray-600 font-medium text-sm">{{ initials }}</span>
+            </div>
+            <div class="ml-4">
+                <div class="text-sm font-medium text-gray-900">{{ full_name }}</div>
+                <div class="text-sm text-gray-500">{{ email }}</div>
+                <div class="text-xs text-gray-400">@{{ username }}</div>
+            </div>
+        </div>
+    </td>
+    <td class="px-6 py-4 whitespace-nowrap">
+        {% if flash == "active" %}
+        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">Active</span>
+        {% else if flash == "suspended" %}
+        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-800">Suspended</span>
+        {% else %}
+        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800">{{ status }}</span>
+        {% endif %}
+    </td>
+    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ membership_type }}</td>
+    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ joined_at }}</td>
+    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ dues_paid_until }}</td>
+    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+        {% if flash == "active" %}
+        <span class="text-green-600">Activated!</span>
+        {% else if flash == "suspended" %}
+        <span class="text-yellow-600">Suspended</span>
+        {% else %}
+        <span class="text-blue-600">Updated</span>
+        {% endif %}
+    </td>
+</tr>

@@ -1,0 +1,20 @@
+[Unit]
+Description=Run Coterie backup daily
+Documentation=file:///opt/coterie/deploy/backup.sh
+
+[Timer]
+# 03:30 local time daily — late enough that the late-night billing
+# runner tick (top of the hour) is done; early enough that the result
+# can be uploaded offsite before business hours. RandomizedDelaySec
+# spreads out backups across many instances so we don't hammer S3.
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=15min
+
+# If the host was off during the scheduled window, run on next boot.
+Persistent=true
+
+# Tie the timer to the unit by name. Matches coterie-backup.service.
+Unit=coterie-backup.service
+
+[Install]
+WantedBy=timers.target

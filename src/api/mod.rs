@@ -1,162 +1,170 @@
+pub mod docs;
 pub mod handlers;
 pub mod middleware;
 pub mod state;
 
 use axum::{
+    http::{header, Method},
+    routing::{get, post},
     Router,
-    routing::{get, post, put, delete},
 };
 use tower_http::{
     compression::CompressionLayer,
-    cors::CorsLayer,
+    cors::{AllowOrigin, CorsLayer},
     trace::TraceLayer,
 };
-use std::sync::Arc;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
-use crate::{
-    config::Settings,
-    payments::StripeClient,
-    service::ServiceContext,
-};
+use crate::config::Settings;
 use state::AppState;
 
-pub fn create_app(
-    service_context: Arc<ServiceContext>,
-    stripe_client: Option<Arc<StripeClient>>,
-    settings: Arc<Settings>,
-) -> Router {
-    let app_state = AppState::new(service_context, stripe_client, settings);
+/// Build the API router on top of a caller-owned [`AppState`].
+///
+/// The caller (currently `main.rs`) constructs exactly one `AppState`
+/// for the process and hands the same value to `create_app` and
+/// `create_web_routes`. Sharing the state means the per-IP rate
+/// limiters (`login_limiter`, `money_limiter`) and the first-boot
+/// `setup_lock` are shared across both surfaces — without this an
+/// attacker hitting `/auth/login` on one router and `/login` on the
+/// other would get 2× the budget, and two concurrent setup-wizard
+/// POSTs (web vs api) could both pass the "no admin yet" check.
+pub fn create_app(app_state: AppState) -> Router {
+    let cors_layer = build_cors_layer(app_state.settings.as_ref());
 
     Router::new()
         // Root and health endpoints
         .route("/", get(handlers::root::root))
         .route("/health", get(handlers::root::health_check))
         .route("/api", get(handlers::root::api_info))
-        
+        // OpenAPI / Swagger UI for the public API. The UI is served at
+        // /api/docs and the raw spec at /api/docs/openapi.json so frontend
+        // developers can either browse interactively or codegen a client.
+        .merge(SwaggerUi::new("/api/docs").url("/api/docs/openapi.json", docs::ApiDoc::openapi()))
         // Auth routes
         .route("/auth/login", post(handlers::auth::login))
+        .route("/auth/login/totp", post(handlers::auth::login_totp))
         .route("/auth/logout", post(handlers::auth::logout))
-        
-        // API routes
+        // API routes — narrowly scoped to:
+        //   1. The Stripe webhook (Stripe POSTs here).
+        //   2. The saved-card endpoints the portal frontend calls
+        //      directly via `fetch()` (see payment_methods.html).
+        // Everything that used to live here (admin CRUD on members /
+        // events / announcements, JSON manual-payment / waive, the
+        // entire /admin/* mount) was deleted in favour of the portal
+        // admin pages, which are the single source of truth for admin
+        // actions and carry the audit-log + integration-event
+        // side-effects the JSON wrappers were missing.
         .nest("/api", api_routes(app_state.clone()))
-        
         // Public routes (for website integration)
         .nest("/public", public_routes(app_state.clone()))
-        
-        // Admin routes
-        .nest("/admin", admin_routes(app_state.clone()))
-        
         // Add state to the router
-        .with_state(app_state)
-        
-        // Middleware
+        .with_state(app_state.clone())
+        // Middleware. Order matters: `.layer()` calls wrap from the
+        // inside out, so the LAST `.layer(...)` is OUTERMOST and runs
+        // FIRST on incoming requests.
+        //
+        // CSRF protection is NOT layered here. It's applied once at the
+        // top of the merged app in `main.rs` so it covers BOTH the API
+        // surface and the portal/web routes that get added via
+        // `Router::merge`. Layers added before a `merge` call do not
+        // propagate to the merged routes in axum 0.7 — applying CSRF
+        // here would leave every state-changing /portal/* route
+        // unprotected.
+        .layer(axum::middleware::from_fn_with_state(
+            app_state.clone(),
+            middleware::security_headers::security_headers,
+        ))
         .layer(CompressionLayer::new())
-        .layer(CorsLayer::permissive()) // Configure properly for production
+        .layer(cors_layer)
         .layer(TraceLayer::new_for_http())
 }
 
+/// Build CORS layer from configuration. If `cors_origins` is set, only those
+/// origins are allowed. Otherwise the layer is restrictive (same-origin only).
+fn build_cors_layer(settings: &Settings) -> CorsLayer {
+    let origins: Vec<_> = settings
+        .server
+        .cors_origins
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse().ok())
+        .collect();
+
+    let layer = if origins.is_empty() {
+        // No configured origins → same-origin only (no Access-Control-Allow-Origin).
+        CorsLayer::new()
+    } else {
+        CorsLayer::new().allow_origin(AllowOrigin::list(origins))
+    };
+
+    layer
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            "X-CSRF-Token".parse().unwrap(),
+        ])
+        .allow_credentials(true)
+}
+
 fn api_routes(state: AppState) -> Router<AppState> {
-    Router::new()
-        .nest("/members", member_routes(state.clone()))
-        .nest("/events", event_routes_with_auth(state.clone()))
-        .nest("/announcements", announcement_routes_with_auth(state.clone()))
-        .nest("/payments", payment_routes(state.clone()))
-}
-
-fn member_routes(state: AppState) -> Router<AppState> {
-    Router::new()
-        .route("/", get(handlers::members::list))
-        .route("/", post(handlers::members::create))
-        .route("/:id", get(handlers::members::get))
-        .route("/:id", put(handlers::members::update))
-        .route("/:id", delete(handlers::members::delete))
-        .route("/:id/activate", post(handlers::members::activate))
-        .route("/:id/expire", post(handlers::members::expire))
-        .route_layer(axum::middleware::from_fn_with_state(
-            state,
-            middleware::auth::require_auth,
-        ))
-}
-
-fn event_routes_with_auth(state: AppState) -> Router<AppState> {
-    Router::new()
-        // Public routes (no auth required for viewing)
-        .route("/", get(handlers::events::list))
-        .route("/:id", get(handlers::events::get))
-        // Protected routes - wrapped in a nested router with auth middleware
-        .nest("/", Router::new()
-            .route("/", post(handlers::events::create))
-            .route("/:id", put(handlers::events::update))
-            .route("/:id", delete(handlers::events::delete))
-            .route("/:id/register", post(handlers::events::register))
-            .route("/:id/cancel", post(handlers::events::cancel))
-            .route_layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                middleware::auth::require_auth,
-            ))
-        )
-}
-
-fn announcement_routes_with_auth(state: AppState) -> Router<AppState> {
-    Router::new()
-        // Public routes (no auth required for viewing public announcements)
-        .route("/", get(handlers::announcements::list))
-        .route("/:id", get(handlers::announcements::get))
-        // Protected routes - require auth
-        .nest("/", Router::new()
-            .route("/", post(handlers::announcements::create))
-            .route("/:id", put(handlers::announcements::update))
-            .route("/:id", delete(handlers::announcements::delete))
-            .route_layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                middleware::auth::require_auth,
-            ))
-        )
+    Router::new().nest("/payments", payment_routes(state.clone()))
 }
 
 fn payment_routes(state: AppState) -> Router<AppState> {
     Router::new()
         // Public webhook endpoint (no auth)
         .route("/webhook/stripe", post(handlers::payments::stripe_webhook))
-        // Protected payment endpoints
-        .nest("/", Router::new()
-            .route("/", post(handlers::payments::create))
-            .route("/:id", get(handlers::payments::get))
-            .route("/member/:member_id", get(handlers::payments::list_by_member))
-            .route("/manual", post(handlers::payments::create_manual))
-            .route("/waive", post(handlers::payments::waive))
-            .route_layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                middleware::auth::require_auth,
-            ))
+        // Saved-card Stripe.js entry points. These are the only two
+        // endpoints under /api/payments/cards/*: the SetupIntent
+        // creation and the post-confirmation record-pm save. The
+        // portal frontend `fetch()`-es them directly from
+        // payment_methods.html because Stripe.js requires JSON in /
+        // JSON out. List, delete, and set-default flows live under
+        // /portal/api/payments/cards/* as HTML fragments for HTMX.
+        // CSRF is enforced at the application root by
+        // `csrf_protect_unless_exempt`; only the auth gate is layered
+        // here. The portal's fetch() calls stamp the X-CSRF-Token
+        // header from `<meta name="csrf-token">`.
+        .nest(
+            "/",
+            Router::new()
+                .route("/cards", post(handlers::payments::save_card))
+                .route(
+                    "/cards/setup-intent",
+                    post(handlers::payments::create_setup_intent),
+                )
+                .route_layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    middleware::auth::require_auth,
+                )),
         )
 }
 
 fn public_routes(_state: AppState) -> Router<AppState> {
     Router::new()
         .route("/signup", post(handlers::public::signup))
+        .route("/donate", post(handlers::public::donate))
         .route("/events", get(handlers::public::list_events))
+        .route(
+            "/events/private-count",
+            get(handlers::public::private_event_count),
+        )
         .route("/announcements", get(handlers::public::list_announcements))
+        .route(
+            "/announcements/private-count",
+            get(handlers::announcements::private_count),
+        )
         .route("/feed/rss", get(handlers::public::rss_feed))
         .route("/feed/calendar", get(handlers::public::calendar_feed))
-}
-
-fn admin_routes(state: AppState) -> Router<AppState> {
-    Router::new()
-        .route("/stats", get(handlers::admin::stats))
-        .route("/audit-log", get(handlers::admin::audit_log))
-        .route("/expired-check", post(handlers::admin::check_expired))
-        // Settings management routes
-        .route("/settings", get(handlers::settings::list_settings))
-        .route("/settings/batch", put(handlers::settings::batch_update))
-        .route("/settings/category/:category", get(handlers::settings::get_category))
-        .route("/settings/payment-config", get(handlers::settings::get_payment_config))
-        .route("/settings/membership-config", get(handlers::settings::get_membership_config))
-        .route("/settings/:key", get(handlers::settings::get_setting))
-        .route("/settings/:key", put(handlers::settings::update_setting))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            middleware::auth::require_admin,
-        ))
-        .with_state(state)
 }

@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "deploy/coterie-provision"]
+
 [package]
 name = "coterie"
 version = "0.1.0"
@@ -15,11 +18,15 @@ path = "src/main.rs"
 name = "seed"
 path = "src/bin/seed.rs"
 
+[[bin]]
+name = "create_admin"
+path = "src/bin/create_admin.rs"
+
 [dependencies]
 # Web framework
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.7", features = ["macros", "multipart"] }
 tower = "0.4"
-tower-http = { version = "0.5", features = ["trace", "cors", "compression-gzip"] }
+tower-http = { version = "0.5", features = ["trace", "cors", "compression-gzip", "fs"] }
 hyper = { version = "1.0", features = ["full"] }
 tokio = { version = "1", features = ["full"] }
 
@@ -32,9 +39,11 @@ serde_json = "1.0"
 
 # Authentication & Security
 argon2 = { version = "0.4", features = ["std"] }
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 rand = "0.8"
 axum-extra = { version = "0.9", features = ["cookie"] }
+multer = "3"
+futures-util = "0.3"
 cookie = "0.18"
 sha2 = "0.10"
 hex = "0.4"
@@ -57,10 +66,66 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Utilities
 uuid = { version = "1.0", features = ["v4", "serde"] }
-validator = { version = "0.18", features = ["derive"] }
+validator = { version = "0.20", features = ["derive"] }
 
-# Payment processing
-stripe = { package = "async-stripe", version = "0.39", default-features = false, features = ["runtime-tokio-hyper", "checkout", "webhook-events", "connect"] }
+# Templating
+askama = { version = "0.12", features = ["with-axum"] }
+askama_axum = "0.4"
+
+# Payment processing.
+# We use the rustls variant rather than the default native-tls / hyper-tls
+# combo so the whole binary links against rustls + ring, with no OpenSSL
+# dependency. This matches reqwest's "rustls-tls" feature and lets us
+# produce a fully static musl binary for Alpine deploys.
+stripe = { package = "async-stripe", version = "0.39", default-features = false, features = ["runtime-tokio-hyper-rustls", "checkout", "webhook-events", "connect"] }
+
+# Data generation for seeding (used by seed binary)
+fake = { version = "2.9", features = ["derive"] }
+
+# CLI argument parsing (used by seed binary)
+clap = { version = "4", features = ["derive"] }
+urlencoding = "2.1.3"
+tokio-util = { version = "0.7.18", features = ["io"] }
+
+# Email (SMTP via lettre, async on tokio + rustls)
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "hostname"] }
+
+# Symmetric encryption for secrets-at-rest (e.g. SMTP password stored in DB)
+chacha20poly1305 = "0.10"
+base64 = "0.22"
+
+# HMAC for stateless CSRF tokens
+hmac = "0.12"
+subtle = "2.6"
+
+# TOTP (RFC 6238) for admin/member 2FA + QR for the enrollment page.
+# `totp-rs` default features pull in qrcodegen-rs and a couple of
+# extras we don't need; we render the QR ourselves with `qrcode` so we
+# strip them.
+totp-rs = { version = "5", default-features = false, features = ["otpauth"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+
+# OpenAPI generation + Swagger UI for the public API surface
+# (/api/docs). `utoipa` handlers/DTOs are annotated with macros;
+# `utoipa-swagger-ui` exposes the assets via axum routes.
+utoipa = { version = "5", features = ["uuid", "chrono", "axum_extras"] }
+utoipa-swagger-ui = { version = "8", features = ["axum"] }
+
+# HTTP client for outbound integrations (Discord, future Unifi)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde_urlencoded = "0.7.1"
+
+# CSV parser for admin bulk-import (member CSV upload). Read-only
+# parsing of operator-supplied files; writes use the manual `push_csv`
+# helper in `web::portal::admin::csv` to stay aligned with the export
+# capability's exact column emission rules.
+csv = "1.3"
+
+[features]
+# Exposes test-only helpers (FakeStripeGateway, etc.) so integration
+# tests in tests/ can construct fixtures. Enabled automatically for
+# `cargo test`; production builds leave it off.
+test-utils = []
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

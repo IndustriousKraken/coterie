@@ -1,0 +1,160 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Billing dashboard - Coterie{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="max-w-6xl mx-auto">
+        <div class="mb-6">
+            <h1 class="text-3xl font-bold text-gray-900">Billing dashboard</h1>
+            <p class="mt-2 text-sm text-gray-600">
+                Read-only operator overview. Click any row to jump to the member's page for actions
+                (refund, retry, set dues, edit auto-renew).
+            </p>
+        </div>
+
+        <!-- Section 1: Upcoming scheduled payments (next 30 days) -->
+        <section class="bg-white rounded-lg shadow-sm border mb-6">
+            <div class="px-6 py-4 border-b flex justify-between items-baseline">
+                <div>
+                    <h2 class="text-lg font-semibold text-gray-900">
+                        Upcoming auto-renew charges
+                    </h2>
+                    <p class="text-sm text-gray-500 mt-1">
+                        Pending scheduled payments due in the next {{ upcoming_window_days }} days.
+                    </p>
+                </div>
+                <span class="text-sm text-gray-500">{{ upcoming.len() }} pending</span>
+            </div>
+            {% if upcoming.is_empty() %}
+            <p class="px-6 py-8 text-sm text-gray-500 text-center">
+                Nothing scheduled in the next {{ upcoming_window_days }} days.
+            </p>
+            {% else %}
+            <table class="w-full text-sm">
+                <thead class="bg-gray-50 text-xs text-gray-600 uppercase">
+                    <tr>
+                        <th class="px-6 py-3 text-left">Member</th>
+                        <th class="px-6 py-3 text-left">Due</th>
+                        <th class="px-6 py-3 text-right">Amount</th>
+                        <th class="px-6 py-3 text-left">Status</th>
+                        <th class="px-6 py-3 text-right">Retries</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                {% for row in upcoming %}
+                    <tr class="hover:bg-gray-50">
+                        <td class="px-6 py-3">
+                            <a href="/portal/admin/members/{{ row.member_id }}" class="text-blue-600 hover:text-blue-800">
+                                {{ row.member_name }}
+                            </a>
+                        </td>
+                        <td class="px-6 py-3 text-gray-700">{{ row.due_date }}</td>
+                        <td class="px-6 py-3 text-right font-mono text-gray-900">{{ row.amount_display }}</td>
+                        <td class="px-6 py-3 text-gray-700">{{ row.status }}</td>
+                        <td class="px-6 py-3 text-right text-gray-700">{{ row.retry_count }}</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+        </section>
+
+        <!-- Section 2: Recent failures (last 90 days) -->
+        <section class="bg-white rounded-lg shadow-sm border mb-6">
+            <div class="px-6 py-4 border-b flex justify-between items-baseline">
+                <div>
+                    <h2 class="text-lg font-semibold text-gray-900">
+                        Recent payment failures
+                    </h2>
+                    <p class="text-sm text-gray-500 mt-1">
+                        Failed scheduled payments from the last {{ failure_window_days }} days, with retry status.
+                    </p>
+                </div>
+                <span class="text-sm text-gray-500">{{ failures.len() }} failures</span>
+            </div>
+            {% if failures.is_empty() %}
+            <p class="px-6 py-8 text-sm text-gray-500 text-center">
+                No failures in the last {{ failure_window_days }} days.
+            </p>
+            {% else %}
+            <table class="w-full text-sm">
+                <thead class="bg-gray-50 text-xs text-gray-600 uppercase">
+                    <tr>
+                        <th class="px-6 py-3 text-left">Member</th>
+                        <th class="px-6 py-3 text-left">Last attempt</th>
+                        <th class="px-6 py-3 text-right">Amount</th>
+                        <th class="px-6 py-3 text-right">Retries</th>
+                        <th class="px-6 py-3 text-left">Reason</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                {% for row in failures %}
+                    <tr class="hover:bg-gray-50">
+                        <td class="px-6 py-3">
+                            <a href="/portal/admin/members/{{ row.member_id }}" class="text-blue-600 hover:text-blue-800">
+                                {{ row.member_name }}
+                            </a>
+                        </td>
+                        <td class="px-6 py-3 text-gray-700">{{ row.last_attempt_display }}</td>
+                        <td class="px-6 py-3 text-right font-mono text-gray-900">{{ row.amount_display }}</td>
+                        <td class="px-6 py-3 text-right text-gray-700">{{ row.retry_count }}</td>
+                        <td class="px-6 py-3 text-gray-700">
+                            <code class="text-xs">{{ row.failure_reason }}</code>
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+        </section>
+
+        <!-- Section 3: Revenue by month -->
+        <section class="bg-white rounded-lg shadow-sm border mb-6">
+            <div class="px-6 py-4 border-b">
+                <h2 class="text-lg font-semibold text-gray-900">
+                    Revenue by month
+                </h2>
+                <p class="text-sm text-gray-500 mt-1">
+                    Completed payments only — refunded and pending rows excluded.
+                    Last {{ revenue_window_months }} months.
+                </p>
+            </div>
+            {% if months.is_empty() %}
+            <p class="px-6 py-8 text-sm text-gray-500 text-center">
+                No completed payments yet.
+            </p>
+            {% else %}
+            <table class="w-full text-sm">
+                <thead class="bg-gray-50 text-xs text-gray-600 uppercase">
+                    <tr>
+                        <th class="px-6 py-3 text-left">Month</th>
+                        <th class="px-6 py-3 text-right">Dues</th>
+                        <th class="px-6 py-3 text-right">Donations</th>
+                        <th class="px-6 py-3 text-right border-l border-gray-200">Total</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                {% for row in months %}
+                    <tr class="hover:bg-gray-50">
+                        <td class="px-6 py-3 text-gray-900">{{ row.month_label }}</td>
+                        <td class="px-6 py-3 text-right">
+                            <div class="font-mono text-gray-900">{{ row.dues_dollars }}</div>
+                            <div class="text-xs text-gray-500">{{ row.dues_count }} payment{% if row.dues_count != 1 %}s{% endif %}</div>
+                        </td>
+                        <td class="px-6 py-3 text-right">
+                            <div class="font-mono text-gray-900">{{ row.donations_dollars }}</div>
+                            <div class="text-xs text-gray-500">{{ row.donations_count }} payment{% if row.donations_count != 1 %}s{% endif %}</div>
+                        </td>
+                        <td class="px-6 py-3 text-right font-mono font-semibold text-gray-900 border-l border-gray-200">
+                            {{ row.total_dollars }}
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+        </section>
+    </div>
+</div>
+{% endblock %}

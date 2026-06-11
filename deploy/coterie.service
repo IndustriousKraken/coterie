@@ -1,0 +1,73 @@
+[Unit]
+Description=Coterie Member Management System
+Documentation=https://github.com/your-org/coterie
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=coterie
+Group=coterie
+WorkingDirectory=/opt/coterie
+EnvironmentFile=/opt/coterie/.env
+ExecStart=/opt/coterie/coterie
+
+# Restart policy. on-failure rather than always — if Coterie exits 0
+# (e.g. you sent SIGTERM during a controlled shutdown) systemd should
+# leave it stopped. RestartSec=5 gives the OS a moment to release the
+# port and DB lock between restarts.
+Restart=on-failure
+RestartSec=5
+
+# Resource limits. SQLite can hold many file handles in WAL mode under
+# load; 65536 is well above what a single instance needs but cheap.
+LimitNOFILE=65536
+
+# Graceful shutdown: send SIGTERM, wait up to 30s for in-flight requests
+# (Stripe webhooks and outbound emails want to finish), then SIGKILL.
+TimeoutStopSec=30
+
+# --- Security hardening ----------------------------------------------
+# These are applied in order of "most likely to matter, least likely to
+# break". If something does break, comment from the bottom up.
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+
+# Coterie's only writable path is the data directory (SQLite + uploads).
+# We list both /var/lib/coterie (auto-detect default for new deploys
+# via install.sh and the DEPLOY-*.md guides) and /opt/coterie/data
+# (legacy layout used by the GHA staging flow in deploy/SETUP.md).
+# Whichever path exists on this host wins; the other is harmless.
+# Adjust if you put data elsewhere via COTERIE__SERVER__DATA_DIR.
+ReadWritePaths=-/var/lib/coterie -/opt/coterie/data
+
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+# Restrict syscalls to the @system-service set (a broad allow-list that
+# already excludes mounting, namespace manipulation, kernel modules,
+# etc.) and additionally deny @privileged. We do NOT deny @resources
+# because Tokio's runtime occasionally adjusts thread limits.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

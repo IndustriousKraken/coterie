@@ -1,0 +1,15 @@
+Hi {{ full_name }},
+
+This is a reminder that you're registered for {{ event_title }},
+coming up on {{ event_start }}.
+{% if let Some(loc) = event_location %}
+Location: {{ loc }}
+{% endif %}
+You can view the event in the member portal:
+
+{{ event_url }}
+
+If you can no longer attend, please cancel your RSVP through the
+member portal so others can take your spot.
+
+— {{ org_name }}

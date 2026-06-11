@@ -1,0 +1,8 @@
+{# Tiny dues-status pill rendered on the dashboard. Three states. #}
+{% if status == "current" %}
+<span class="text-green-600">Current</span>
+{% else if status == "expired" %}
+<span class="text-red-600">Expired</span>
+{% else %}
+<span class="text-yellow-600">Unpaid</span>
+{% endif %}

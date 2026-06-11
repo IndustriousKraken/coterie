@@ -1,0 +1,14 @@
+Hi {{ full_name }},
+
+Heads up: your {{ org_name }} membership is set to auto-renew on
+{{ due_date }} ({{ days_remaining }} days away). We'll charge
+{{ amount }} to {{ card_display }}.
+
+Nothing to do if that's fine — we'll handle the rest.
+
+If you want to update your payment method or cancel auto-renewal,
+visit the portal:
+
+{{ portal_url }}
+
+— {{ org_name }}

@@ -1,0 +1,12 @@
+Hi {{ full_name }},
+
+Welcome to {{ org_name }}! To finish creating your account, please verify
+your email address by clicking the link below:
+
+{{ verify_url }}
+
+This link expires in 24 hours.
+
+If you didn't sign up, you can ignore this message.
+
+— {{ org_name }}

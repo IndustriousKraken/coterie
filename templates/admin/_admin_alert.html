@@ -1,0 +1,22 @@
+{# Admin-action result alert. Rendered as the HTMX response body for
+   activate / suspend / extend-dues / refund / resend-verification
+   etc. — all the small green/red/yellow panels that live inside an
+   admin handler's swap target.
+
+   When autoreload is true, a 1.5s setTimeout reloads the page so the
+   underlying member-row reflects the new state. The reload is the
+   simplest way to refresh the table without re-rendering it client-
+   side; if a future row partial replaces this, drop autoreload. #}
+{% if kind == "success" %}
+<div class="p-3 bg-green-50 text-green-800 rounded-md text-sm">
+    {{ message }}
+    {% if autoreload %}<script nonce="__CSP_NONCE__">setTimeout(() => location.reload(), 1500)</script>{% endif %}
+</div>
+{% else if kind == "warning" %}
+<div class="p-3 bg-yellow-50 text-yellow-800 rounded-md text-sm">
+    {{ message }}
+    {% if autoreload %}<script nonce="__CSP_NONCE__">setTimeout(() => location.reload(), 1500)</script>{% endif %}
+</div>
+{% else %}
+<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">{{ message }}</div>
+{% endif %}

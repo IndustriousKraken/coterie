@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ base.csrf_token }}">
+    <title>{% block title %}Coterie{% endblock %}</title>
+    
+    <!-- HTMX (self-hosted from /static/js/) -->
+    <!-- Self-hosting eliminates the dependency on external CDN
+         availability and on visitors' networks not interfering
+         with CDN traffic. The version pin lives in the filename
+         convention — keep it in lock-step with whatever's in
+         static/js/ when upgrading. -->
+    <script nonce="__CSP_NONCE__" src="/static/js/htmx.min.js"></script>
+    <script nonce="__CSP_NONCE__" src="/static/js/htmx-json-enc.js"></script>
+
+    <!-- Alpine.js CSP build (no `Function()` so works without 'unsafe-eval'). -->
+    <script nonce="__CSP_NONCE__" defer src="/static/js/alpine.min.js"></script>
+
+    <!-- Tailwind CSS (locally built) -->
+    <link rel="stylesheet" href="/static/style.css">
+
+    <!-- Custom styles -->
+    <style>
+        [x-cloak] { display: none !important; }
+
+        .htmx-indicator {
+            display: none;
+        }
+        .htmx-request .htmx-indicator {
+            display: inline-block;
+        }
+        .htmx-request.htmx-indicator {
+            display: inline-block;
+        }
+    </style>
+    
+    {% block head %}{% endblock %}
+</head>
+<body class="bg-gray-50">
+    <!-- Navigation -->
+    <nav class="bg-white shadow-sm border-b">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <a href="/" class="text-xl font-semibold text-gray-900">
+                        Coterie
+                    </a>
+                    
+                    {% if base.current_user.is_some() %}
+                    <div class="ml-10 flex items-baseline space-x-4">
+                        <a href="/portal/dashboard" 
+                           class="text-gray-700 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
+                            Dashboard
+                        </a>
+                        <a href="/portal/events"
+                           class="text-gray-700 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
+                            Events
+                        </a>
+                        <a href="/portal/announcements"
+                           class="text-gray-700 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
+                            Announcements
+                        </a>
+                        <a href="/portal/payments"
+                           class="text-gray-700 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
+                            Payments
+                        </a>
+                        
+                        {% if base.is_admin %}
+                        <div class="relative" x-data="{ open: false }">
+                            <button @click="open = !open" 
+                                    class="text-gray-700 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
+                                Admin ▼
+                            </button>
+                            <div x-show="open" 
+                                 @click.away="open = false"
+                                 x-cloak
+                                 class="absolute z-10 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5">
+                                <a href="/portal/admin/members" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                    Manage Members
+                                </a>
+                                <a href="/portal/admin/events" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                    Manage Events
+                                </a>
+                                <a href="/portal/admin/announcements" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                    Announcements
+                                </a>
+                                <hr class="border-gray-200 my-1">
+                                <a href="/portal/admin/types" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                    Types
+                                </a>
+                                <a href="/portal/admin/settings" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                    Settings
+                                </a>
+                                <a href="/portal/admin/settings/email" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                    Email
+                                </a>
+                                <a href="/portal/admin/settings/discord" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                    Discord
+                                </a>
+                                <a href="/portal/admin/settings/billing" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                    Billing
+                                </a>
+                                <a href="/portal/admin/billing/dashboard" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                    Billing dashboard
+                                </a>
+                                <hr class="border-gray-200 my-1">
+                                <a href="/portal/admin/finance/expenses" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                    Finance
+                                </a>
+                                <hr class="border-gray-200 my-1">
+                                <a href="/portal/admin/audit" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                    Audit Log
+                                </a>
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+                </div>
+                
+                <div class="flex items-center">
+                    {% if let Some(user) = base.current_user.as_ref() %}
+                    <div class="relative" x-data="{ open: false }">
+                        <button @click="open = !open"
+                                class="flex items-center text-sm text-gray-700 hover:text-gray-900">
+                            <span class="mr-1">{{ user.username }}</span>
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                            </svg>
+                        </button>
+                        <div x-show="open"
+                             @click.away="open = false"
+                             x-cloak
+                             class="absolute right-0 z-10 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5">
+                            <a href="/portal/profile" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                Profile
+                            </a>
+                            <hr class="border-gray-200">
+                            <button hx-post="/logout"
+                                    hx-target="body"
+                                    class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                Logout
+                            </button>
+                        </div>
+                    </div>
+                    {% else %}
+                    <a href="/login" class="text-sm text-gray-700 hover:text-gray-900">
+                        Login
+                    </a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </nav>
+    {% if let Some(update) = base.update_banner.as_ref() %}
+    <!-- Admin-only "update available" banner (a40).
+         The server emits this only for admins running a release build
+         that is behind the cached latest stable. Dismissal is honored
+         here client-side: the banner starts hidden, and the nonce'd
+         script below removes it when the `update_dismissed` cookie
+         already matches this tag, or reveals it otherwise. A newer tag
+         no longer matches an older dismissed cookie, so the banner
+         returns on the next release. No new route, CSRF surface, or
+         schema — see design D6. -->
+    <div id="update-banner" data-tag="{{ update.tag }}"
+         class="hidden bg-amber-50 border-b border-amber-200">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between gap-4">
+            <p class="text-sm text-amber-800">
+                <span class="font-medium">Update available:</span>
+                Coterie <span class="font-mono">{{ update.tag }}</span> is out.
+                <a href="{{ update.notes_url }}" target="_blank" rel="noopener noreferrer"
+                   class="font-medium underline hover:text-amber-900">Release notes</a>
+                <span class="mx-1 text-amber-400">·</span>
+                <a href="{{ base.update_readme_url }}" target="_blank" rel="noopener noreferrer"
+                   class="font-medium underline hover:text-amber-900">How to update</a>
+            </p>
+            <button type="button" id="update-banner-dismiss"
+                    class="shrink-0 text-amber-700 hover:text-amber-900 text-sm font-medium">
+                Dismiss
+            </button>
+        </div>
+    </div>
+    <script nonce="__CSP_NONCE__">
+        (function () {
+            var el = document.getElementById('update-banner');
+            if (!el) return;
+            var tag = el.getAttribute('data-tag');
+            function readCookie(name) {
+                return document.cookie.split('; ').reduce(function (acc, pair) {
+                    var eq = pair.indexOf('=');
+                    var key = eq < 0 ? pair : pair.slice(0, eq);
+                    if (key === name) {
+                        return decodeURIComponent(eq < 0 ? '' : pair.slice(eq + 1));
+                    }
+                    return acc;
+                }, null);
+            }
+            // Already dismissed for this exact tag → don't show at all.
+            if (readCookie('update_dismissed') === tag) {
+                el.remove();
+                return;
+            }
+            el.classList.remove('hidden');
+            var btn = document.getElementById('update-banner-dismiss');
+            if (btn) {
+                btn.addEventListener('click', function () {
+                    document.cookie = 'update_dismissed=' + encodeURIComponent(tag) +
+                        '; path=/; max-age=31536000; samesite=lax';
+                    el.remove();
+                });
+            }
+        })();
+    </script>
+    {% endif %}
+    <!-- Toast notifications -->
+    <div id="toast-container" class="fixed top-4 right-4 z-50"></div>
+
+    {% if base.current_user.is_some() %}
+    <!-- Dues warning banner (loaded async; empty when dues are current) -->
+    <div id="dues-banner"
+         hx-get="/portal/api/dues-warning"
+         hx-trigger="load"
+         hx-swap="outerHTML"></div>
+    {% endif %}
+
+    <!-- Main content -->
+    <main class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Footer: "about this version" affordance.
+         Links to the release page for a real release build; dev builds
+         (no embedded tag) render the -dev string with no link. -->
+    <footer class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 text-center text-xs text-gray-400">
+        {% if let Some(url) = base.release_url.as_ref() %}
+        <a href="{{ url }}" target="_blank" rel="noopener noreferrer"
+           class="hover:text-gray-600">Coterie {{ base.version }}</a>
+        {% else %}
+        <span>Coterie {{ base.version }}</span>
+        {% endif %}
+    </footer>
+
+    <!-- Loading indicator -->
+    <div class="htmx-indicator fixed top-0 left-0 right-0 h-1 bg-blue-600"></div>
+    
+    <!-- Global scripts -->
+    <script nonce="__CSP_NONCE__">
+        // HTMX configuration
+        document.body.addEventListener('htmx:configRequest', (event) => {
+            event.detail.headers['X-Requested-With'] = 'XMLHttpRequest';
+
+            // Add CSRF token from meta tag if present
+            const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+            if (csrfMeta) {
+                event.detail.headers['X-CSRF-Token'] = csrfMeta.content;
+            }
+        });
+        
+        // Handle HTMX errors
+        document.body.addEventListener('htmx:responseError', (event) => {
+            console.error('HTMX error:', event.detail);
+            showToast('An error occurred. Please try again.', 'error');
+        });
+        
+        // Toast notifications
+        function showToast(message, type = 'info') {
+            const colors = {
+                'info': 'bg-blue-500',
+                'success': 'bg-green-500',
+                'error': 'bg-red-500',
+                'warning': 'bg-yellow-500'
+            };
+            
+            const toast = document.createElement('div');
+            toast.className = `${colors[type]} text-white px-6 py-3 rounded-lg shadow-lg mb-2`;
+            toast.textContent = message;
+            
+            document.getElementById('toast-container').appendChild(toast);
+            
+            setTimeout(() => {
+                toast.remove();
+            }, 5000);
+        }
+        
+        // Listen for server-sent events for notifications
+        document.body.addEventListener('htmx:afterSwap', (event) => {
+            if (event.detail.xhr.getResponseHeader('X-Toast')) {
+                const toast = JSON.parse(event.detail.xhr.getResponseHeader('X-Toast'));
+                showToast(toast.message, toast.type);
+            }
+        });
+    </script>
+    
+    {% block scripts %}{% endblock %}
+</body>
+</html>

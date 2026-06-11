@@ -1,0 +1,45 @@
+<div class="space-y-4">
+    <p class="text-sm text-gray-700">
+        Scan this QR with your authenticator app, or enter the secret manually.
+    </p>
+
+    {% if !qr_svg.is_empty() %}
+    <div class="flex justify-center bg-white p-4 border border-gray-200 rounded-md">
+        {{ qr_svg|safe }}
+    </div>
+    {% endif %}
+
+    <details class="text-sm">
+        <summary class="cursor-pointer text-gray-600">Can't scan? Enter the secret manually</summary>
+        <code class="mt-2 block p-2 bg-gray-100 rounded text-xs font-mono break-all">{{ secret_base32 }}</code>
+    </details>
+
+    <form class="space-y-3"
+          hx-post="/portal/profile/security/totp/enroll/confirm"
+          hx-target="#totp-section"
+          hx-swap="innerHTML">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="secret_base32" value="{{ secret_base32 }}">
+
+        <label for="confirm-code" class="block text-sm font-medium text-gray-900">
+            Enter the 6-digit code from your app
+        </label>
+        <input id="confirm-code"
+               type="text"
+               name="code"
+               required
+               autocomplete="one-time-code"
+               autofocus
+               placeholder="123 456"
+               class="block w-full max-w-xs px-3 py-2 font-mono text-center tracking-widest border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+
+        {% if let Some(msg) = error.as_ref() %}
+        <p class="text-sm text-red-700">{{ msg }}</p>
+        {% endif %}
+
+        <button type="submit"
+                class="px-4 py-2 text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+            Verify and enable
+        </button>
+    </form>
+</div>
