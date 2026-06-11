@@ -1,0 +1,118 @@
+use std::sync::Arc;
+use uuid::Uuid;
+
+use crate::{
+    domain::{
+        BillingPeriod, CreateMembershipTypeRequest, MembershipTypeConfig,
+        UpdateMembershipTypeRequest,
+    },
+    error::{AppError, Result},
+    repository::MembershipTypeRepository,
+    service::configurable_types::validate_hex_color_for_request,
+};
+
+pub struct MembershipTypeService {
+    repo: Arc<dyn MembershipTypeRepository>,
+}
+
+impl MembershipTypeService {
+    pub fn new(repo: Arc<dyn MembershipTypeRepository>) -> Self {
+        Self { repo }
+    }
+
+    /// List all membership types
+    pub async fn list(&self, include_inactive: bool) -> Result<Vec<MembershipTypeConfig>> {
+        self.repo.list(include_inactive).await
+    }
+
+    /// Get a membership type by ID
+    pub async fn get(&self, id: Uuid) -> Result<Option<MembershipTypeConfig>> {
+        self.repo.find_by_id(id).await
+    }
+
+    /// Get a membership type by slug
+    pub async fn get_by_slug(&self, slug: &str) -> Result<Option<MembershipTypeConfig>> {
+        self.repo.find_by_slug(slug).await
+    }
+
+    /// Create a new membership type
+    pub async fn create(
+        &self,
+        request: CreateMembershipTypeRequest,
+    ) -> Result<MembershipTypeConfig> {
+        validate_hex_color_for_request(request.color.as_deref())?;
+
+        // Validate billing period
+        if BillingPeriod::from_str(&request.billing_period).is_none() {
+            return Err(AppError::BadRequest(format!(
+                "Invalid billing period: {}. Expected one of: monthly, yearly, lifetime",
+                request.billing_period
+            )));
+        }
+
+        // Validate fee is non-negative
+        if request.fee_cents < 0 {
+            return Err(AppError::BadRequest("Fee cannot be negative".to_string()));
+        }
+
+        // Check for duplicate slug if provided
+        if let Some(ref slug) = request.slug {
+            if self.repo.find_by_slug(slug).await?.is_some() {
+                return Err(AppError::Conflict(format!(
+                    "Membership type with slug '{}' already exists",
+                    slug
+                )));
+            }
+        }
+
+        self.repo.create(request).await
+    }
+
+    /// Update an existing membership type
+    pub async fn update(
+        &self,
+        id: Uuid,
+        request: UpdateMembershipTypeRequest,
+    ) -> Result<MembershipTypeConfig> {
+        validate_hex_color_for_request(request.color.as_deref())?;
+
+        // Validate billing period if provided
+        if let Some(ref billing_period) = request.billing_period {
+            if BillingPeriod::from_str(billing_period).is_none() {
+                return Err(AppError::BadRequest(format!(
+                    "Invalid billing period: {}. Expected one of: monthly, yearly, lifetime",
+                    billing_period
+                )));
+            }
+        }
+
+        // Validate fee is non-negative if provided
+        if let Some(fee_cents) = request.fee_cents {
+            if fee_cents < 0 {
+                return Err(AppError::BadRequest("Fee cannot be negative".to_string()));
+            }
+        }
+
+        self.repo.update(id, request).await
+    }
+
+    /// Delete a membership type
+    pub async fn delete(&self, id: Uuid) -> Result<()> {
+        let _membership_type = self
+            .repo
+            .find_by_id(id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Membership type not found".to_string()))?;
+
+        // Cannot delete if in use
+        let usage_count = self.repo.count_usage(id).await?;
+        if usage_count > 0 {
+            return Err(AppError::Conflict(format!(
+                "Cannot delete membership type: {} members still use this type. Deactivate instead.",
+                usage_count
+            )));
+        }
+
+        self.repo.delete(id).await
+    }
+}

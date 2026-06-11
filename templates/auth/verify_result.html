@@ -1,0 +1,35 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}
+{% if success %}Email verified{% else %}Verification failed{% endif %} - Coterie
+{% endblock %}
+
+{% block content %}
+<div class="px-4 py-16">
+    <div class="max-w-md mx-auto bg-white rounded-lg shadow-sm p-8">
+        {% if success %}
+        <div class="flex items-center mb-4">
+            <svg class="h-8 w-8 text-green-500 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <h1 class="text-xl font-semibold text-gray-900">Email verified</h1>
+        </div>
+        <p class="text-sm text-gray-600 mb-6">{{ message }}</p>
+        <a href="/login" class="inline-block px-5 py-2.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+            Go to login
+        </a>
+        {% else %}
+        <div class="flex items-center mb-4">
+            <svg class="h-8 w-8 text-red-500 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+            </svg>
+            <h1 class="text-xl font-semibold text-gray-900">Verification failed</h1>
+        </div>
+        <p class="text-sm text-gray-600 mb-6">{{ message }}</p>
+        <a href="/login" class="inline-block text-sm text-blue-600 hover:underline">Return to login</a>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

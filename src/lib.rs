@@ -1,9 +1,15 @@
+pub mod admin_cli;
 pub mod api;
 pub mod auth;
 pub mod config;
 pub mod domain;
+pub mod email;
 pub mod error;
 pub mod integrations;
+pub mod jobs;
 pub mod payments;
 pub mod repository;
 pub mod service;
+pub mod util;
+pub mod version;
+pub mod web;

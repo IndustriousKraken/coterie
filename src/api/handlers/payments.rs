@@ -1,220 +1,259 @@
+//! JSON payment endpoints. Narrowed to:
+//!   - the inbound Stripe webhook (`stripe_webhook`),
+//!   - the two Stripe.js entry points (`create_setup_intent`,
+//!     `save_card`) that the portal frontend `fetch()`-es directly
+//!     because Stripe.js needs JSON in / JSON out.
+//!
+//! Listing, deleting, and default-flag-setting flows live under
+//! `/portal/api/payments/cards/*` as HTML fragments for HTMX; the
+//! previously-parallel JSON versions of those flows were deleted as
+//! vestigial (no frontend caller).
+//!
+//! All admin-side payment recording lives in `PaymentService` and is
+//! reachable via the portal admin UI; the previous JSON `create_manual`
+//! / `waive` endpoints were deleted because the portal doesn't use
+//! them and external callers shouldn't either (admin actions belong
+//! inside Coterie).
+
+use std::sync::Arc;
+
 use axum::{
-    extract::{Path, State, Query},
+    extract::State,
     http::{HeaderMap, StatusCode},
-    Json,
-    Extension,
     response::IntoResponse,
+    Extension, Json,
 };
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    api::{state::AppState, middleware::auth::CurrentUser},
-    domain::{Payment, PaymentStatus, MembershipType},
+    api::middleware::auth::CurrentUser,
+    domain::SavedCard,
     error::{AppError, Result},
+    integrations::IntegrationManager,
+    payments::{StripeClient, WebhookDispatcher},
+    repository::SavedCardRepository,
+    service::{audit_service::AuditService, billing_service::BillingService},
 };
 
-#[derive(Debug, Deserialize)]
-pub struct CreatePaymentRequest {
-    pub membership_type: MembershipType,
-    pub amount_cents: Option<i64>, // If not provided, use default for membership type
-}
-
-#[derive(Debug, Serialize)]
-pub struct CreatePaymentResponse {
-    pub payment_id: Uuid,
-    pub checkout_url: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ListPaymentsQuery {
-    pub status: Option<PaymentStatus>,
-    pub limit: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ManualPaymentRequest {
-    pub member_id: Uuid,
-    pub amount_cents: i64,
-    pub description: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct WaivePaymentRequest {
-    pub member_id: Uuid,
-    pub description: String,
-}
-
-pub async fn create(
-    State(state): State<AppState>,
-    Extension(user): Extension<CurrentUser>,
-    Json(request): Json<CreatePaymentRequest>,
-) -> Result<(StatusCode, Json<CreatePaymentResponse>)> {
-    // Check if Stripe is configured
-    if !state.stripe_client.is_some() {
-        return Err(AppError::ServiceUnavailable("Payment processing is not configured".to_string()));
-    }
-
-    let stripe_client = state.stripe_client.as_ref().unwrap();
-    
-    // Get payment configuration from settings
-    let payment_config = state.service_context.settings_service
-        .get_payment_config()
-        .await
-        .unwrap_or_else(|_| {
-            // Fallback to defaults if settings unavailable
-            crate::domain::PaymentConfig {
-                regular_membership_fee: 5000,
-                student_membership_fee: 2500,
-                corporate_membership_fee: 50000,
-                lifetime_membership_fee: 100000,
-                grace_period_days: 30,
-                reminder_days_before: 7,
-            }
-        });
-    
-    // Determine amount based on membership type
-    let amount_cents = request.amount_cents.unwrap_or_else(|| {
-        match request.membership_type {
-            MembershipType::Regular => payment_config.regular_membership_fee,
-            MembershipType::Student => payment_config.student_membership_fee,
-            MembershipType::Corporate => payment_config.corporate_membership_fee,
-            MembershipType::Lifetime => payment_config.lifetime_membership_fee,
-        }
-    });
-    
-    // Create checkout session
-    let checkout_url = stripe_client.create_membership_checkout_session(
-        user.member.id,
-        &format!("{:?}", request.membership_type),
-        amount_cents,
-        format!("{}/payment/success", state.settings.server.base_url),
-        format!("{}/payment/cancel", state.settings.server.base_url),
-    ).await?;
-    
-    let response = CreatePaymentResponse {
-        payment_id: Uuid::new_v4(), // This will be replaced with actual payment ID
-        checkout_url,
-    };
-    
-    Ok((StatusCode::CREATED, Json(response)))
-}
-
-pub async fn get(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Extension(user): Extension<CurrentUser>,
-) -> Result<Json<Payment>> {
-    let payment = state.service_context.payment_repo
-        .find_by_id(id)
-        .await?
-        .ok_or(AppError::NotFound("Payment not found".to_string()))?;
-    
-    // Check if user can view this payment (must be the payer or admin)
-    if payment.member_id != user.member.id {
-        // TODO: Add admin check
-        return Err(AppError::Forbidden);
-    }
-    
-    Ok(Json(payment))
-}
-
-pub async fn list_by_member(
-    State(state): State<AppState>,
-    Path(member_id): Path<Uuid>,
-    Query(params): Query<ListPaymentsQuery>,
-    Extension(user): Extension<CurrentUser>,
-) -> Result<Json<Vec<Payment>>> {
-    // Check if user can view these payments (must be the member or admin)
-    if member_id != user.member.id {
-        // TODO: Add admin check
-        return Err(AppError::Forbidden);
-    }
-    
-    let payments = state.service_context.payment_repo
-        .find_by_member(member_id)
-        .await?;
-    
-    // Filter by status if requested
-    let filtered: Vec<Payment> = if let Some(status) = params.status {
-        payments.into_iter()
-            .filter(|p| p.status == status)
-            .collect()
-    } else {
-        payments
-    };
-    
-    // Apply limit
-    let limited: Vec<Payment> = filtered.into_iter()
-        .take(params.limit.unwrap_or(50) as usize)
-        .collect();
-    
-    Ok(Json(limited))
-}
-
 pub async fn stripe_webhook(
-    State(state): State<AppState>,
+    State(webhook_dispatcher): State<Option<Arc<WebhookDispatcher>>>,
+    State(billing_service): State<Arc<BillingService>>,
+    State(integration_manager): State<Arc<IntegrationManager>>,
     headers: HeaderMap,
     body: String,
 ) -> Result<impl IntoResponse> {
-    // Check if Stripe is configured
-    if !state.stripe_client.is_some() {
-        return Ok(StatusCode::SERVICE_UNAVAILABLE);
-    }
+    let dispatcher = match webhook_dispatcher.as_ref() {
+        Some(d) => d,
+        None => return Ok(StatusCode::SERVICE_UNAVAILABLE),
+    };
 
-    let stripe_client = state.stripe_client.as_ref().unwrap();
-    
     // Get Stripe signature from headers
     let stripe_signature = headers
         .get("stripe-signature")
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| AppError::BadRequest("Missing Stripe signature".to_string()))?;
-    
-    // Handle the webhook
-    stripe_client.handle_webhook(&body, stripe_signature).await?;
-    
+
+    // The webhook handler needs BillingService to re-schedule auto-renew
+    // charges when an enrolled member pays early via Checkout (otherwise
+    // the queued ScheduledPayment fires at the wrong time and double-
+    // charges them).
+    let billing_service_ref = billing_service.as_ref();
+
+    // Handle the webhook. On signature failure, dispatch an admin
+    // alert before returning the error so an operator gets notified
+    // (in Discord, if configured) — bad signature usually means
+    // either Stripe rotated the webhook secret and we still have
+    // the old one, OR something is forging requests at our endpoint.
+    if let Err(e) = dispatcher
+        .handle_webhook(&body, stripe_signature, &billing_service_ref)
+        .await
+    {
+        if matches!(&e, AppError::BadRequest(msg) if msg.contains("Invalid signature")) {
+            integration_manager
+                .handle_event(crate::integrations::IntegrationEvent::AdminAlert {
+                    subject: "Stripe webhook signature failed".to_string(),
+                    body: format!(
+                        "A Stripe webhook arrived with an invalid signature. \
+                         If you recently rotated the webhook secret in Stripe, \
+                         update it in /portal/admin/settings (it lives in env \
+                         config currently — see deploy/.env). If you didn't \
+                         rotate anything, someone may be forging webhooks at \
+                         /api/payments/webhook/stripe."
+                    ),
+                })
+                .await;
+        } else if matches!(&e, AppError::BadRequest(msg) if msg.contains("clock drift")) {
+            // Without this alert, a >5min server clock skew would
+            // silently reject every Stripe webhook (signature is
+            // tied to the timestamp). Members would pay successfully
+            // but dues / refunds wouldn't update on our side until
+            // someone notices.
+            integration_manager
+                .handle_event(crate::integrations::IntegrationEvent::AdminAlert {
+                    subject: "Stripe webhook rejected — clock drift".to_string(),
+                    body: format!(
+                        "A Stripe webhook was rejected because the server's \
+                         clock has drifted more than Stripe's tolerance (~5 \
+                         min) from real time. Until this is fixed, EVERY \
+                         webhook will fail and payments will not be \
+                         processed. Check NTP / time sync on the host. \
+                         Error detail: {}",
+                        e,
+                    ),
+                })
+                .await;
+        }
+        return Err(e);
+    }
+
     Ok(StatusCode::OK)
 }
 
-pub async fn create_manual(
-    State(state): State<AppState>,
-    Extension(_user): Extension<CurrentUser>,
-    Json(request): Json<ManualPaymentRequest>,
-) -> Result<(StatusCode, Json<Payment>)> {
-    // TODO: Check if user is admin
-    
-    if !state.stripe_client.is_some() {
-        return Err(AppError::ServiceUnavailable("Payment processing is not configured".to_string()));
-    }
+// ============================================================
+// Saved Card (Payment Method) Handlers
+// ============================================================
 
-    let stripe_client = state.stripe_client.as_ref().unwrap();
-    
-    let payment = stripe_client.create_manual_payment(
-        request.member_id,
-        request.amount_cents,
-        request.description,
-    ).await?;
-    
-    Ok((StatusCode::CREATED, Json(payment)))
+#[derive(Debug, Serialize)]
+pub struct SetupIntentResponse {
+    pub client_secret: String,
 }
 
-pub async fn waive(
-    State(state): State<AppState>,
-    Extension(_user): Extension<CurrentUser>,
-    Json(request): Json<WaivePaymentRequest>,
-) -> Result<(StatusCode, Json<Payment>)> {
-    // TODO: Check if user is admin
-    
-    if !state.stripe_client.is_some() {
-        return Err(AppError::ServiceUnavailable("Payment processing is not configured".to_string()));
+#[derive(Debug, Serialize)]
+pub struct SavedCardResponse {
+    pub id: Uuid,
+    pub display_name: String,
+    pub exp_display: String,
+    pub is_default: bool,
+    pub is_expired: bool,
+}
+
+impl From<SavedCard> for SavedCardResponse {
+    fn from(card: SavedCard) -> Self {
+        SavedCardResponse {
+            id: card.id,
+            display_name: card.display_name(),
+            exp_display: card.exp_display(),
+            is_default: card.is_default,
+            is_expired: card.is_expired(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaveCardRequest {
+    pub stripe_payment_method_id: String,
+    pub set_as_default: Option<bool>,
+}
+
+/// Create a SetupIntent for adding a new payment method
+pub async fn create_setup_intent(
+    State(stripe_client): State<Option<Arc<StripeClient>>>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<SetupIntentResponse>> {
+    let stripe_client = stripe_client.as_ref().ok_or_else(|| {
+        AppError::ServiceUnavailable("Payment processing not configured".to_string())
+    })?;
+
+    let client_secret = stripe_client
+        .create_setup_intent(user.member.id, &user.member.email, &user.member.full_name)
+        .await?;
+
+    Ok(Json(SetupIntentResponse { client_secret }))
+}
+
+/// Save a payment method after SetupIntent succeeds
+pub async fn save_card(
+    State(stripe_client): State<Option<Arc<StripeClient>>>,
+    State(saved_card_repo): State<Arc<dyn SavedCardRepository>>,
+    State(billing_service): State<Arc<BillingService>>,
+    State(audit_service): State<Arc<AuditService>>,
+    Extension(user): Extension<CurrentUser>,
+    Json(request): Json<SaveCardRequest>,
+) -> Result<(StatusCode, Json<SavedCardResponse>)> {
+    let stripe_client = stripe_client.as_ref().ok_or_else(|| {
+        AppError::ServiceUnavailable("Payment processing not configured".to_string())
+    })?;
+
+    // Get card details from Stripe
+    let card_details = stripe_client
+        .get_payment_method_details(&request.stripe_payment_method_id)
+        .await?;
+
+    // Cross-member PM stapling guard. Stripe's PaymentMethod attaches
+    // to exactly one Customer; a PM ID belonging to another member's
+    // Customer would let the requester surface that card's last4 +
+    // brand in their own saved-cards list. Refuse unless the PM
+    // belongs to THIS member's Stripe Customer (or is unattached,
+    // which is the normal SetupIntent state — confirmCardSetup
+    // attaches it during this flow).
+    let member_customer_id = user.member.stripe_customer_id.as_deref();
+    match (card_details.customer_id.as_deref(), member_customer_id) {
+        (None, _) => { /* fresh SetupIntent PM, attached to this member's customer momentarily */ }
+        (Some(pm_cust), Some(my_cust)) if pm_cust == my_cust => { /* match */ }
+        _ => return Err(AppError::Forbidden),
     }
 
-    let stripe_client = state.stripe_client.as_ref().unwrap();
-    
-    let payment = stripe_client.waive_payment(
-        request.member_id,
-        request.description,
-    ).await?;
-    
-    Ok((StatusCode::CREATED, Json(payment)))
+    // Check if this is the first card (will be default)
+    let existing_cards = saved_card_repo.find_by_member(user.member.id).await?;
+    let is_default = existing_cards.is_empty() || request.set_as_default.unwrap_or(false);
+
+    // Create the saved card record
+    let card = SavedCard {
+        id: Uuid::new_v4(),
+        member_id: user.member.id,
+        stripe_payment_method_id: request.stripe_payment_method_id,
+        card_last_four: card_details.last_four,
+        card_brand: card_details.brand,
+        exp_month: card_details.exp_month,
+        exp_year: card_details.exp_year,
+        is_default,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+
+    let card = saved_card_repo.create(card).await?;
+
+    // If this card is default and there were existing cards, clear other defaults
+    if is_default && !existing_cards.is_empty() {
+        saved_card_repo.set_default(user.member.id, card.id).await?;
+    }
+
+    // If the member is on a Stripe-managed subscription, this card
+    // save is the trigger to migrate them to Coterie-managed
+    // auto-renew. Best-effort: log on failure but don't bounce the
+    // save itself — the card IS in Coterie's table either way, and
+    // an admin can finish the migration manually if needed.
+    if user.member.billing_mode == crate::domain::BillingMode::StripeSubscription {
+        match billing_service
+            .auto_renew
+            .migrate_to_coterie_managed(user.member.id)
+            .await
+        {
+            Ok(true) => {
+                audit_service
+                    .log(
+                        Some(user.member.id),
+                        "migrate_stripe_to_coterie",
+                        "member",
+                        &user.member.id.to_string(),
+                        None,
+                        Some("triggered by save_card"),
+                        None,
+                    )
+                    .await;
+            }
+            Ok(false) => {} // Wasn't actually on stripe_sub by the time we ran; harmless.
+            Err(e) => {
+                tracing::error!(
+                    "Card saved for member {} but stripe→coterie migration failed: {}",
+                    user.member.id,
+                    e,
+                );
+            }
+        }
+    }
+
+    Ok((StatusCode::CREATED, Json(card.into())))
 }

@@ -1,0 +1,374 @@
+//! Admin UI for email configuration. Lives at /portal/admin/settings/email
+//! with a dedicated form (rather than editing individual settings
+//! through the generic settings page), plus a "Send test email" button
+//! so admins can verify their SMTP setup without shelling into the
+//! server.
+
+use std::sync::Arc;
+
+use askama::Template;
+use axum::{
+    extract::State,
+    response::{IntoResponse, Response},
+    Extension, Form,
+};
+use serde::Deserialize;
+
+use crate::{
+    api::middleware::auth::{CurrentUser, SessionInfo},
+    auth::CsrfService,
+    config::Settings,
+    email::{
+        self,
+        templates::{WelcomeHtml, WelcomeText},
+        EmailSender,
+    },
+    service::{
+        audit_service::AuditService,
+        settings_service::{SettingsService, UpdateEmailConfig},
+    },
+    web::{
+        portal::admin::test_result::test_result_html,
+        templates::{BaseContext, HtmlTemplate},
+    },
+};
+
+#[derive(Template)]
+#[template(path = "admin/email_settings.html")]
+pub struct AdminEmailSettingsTemplate {
+    pub base: BaseContext,
+    pub mode: String,
+    pub from_address: String,
+    pub from_name: String,
+    pub smtp_host: String,
+    pub smtp_port: String,
+    pub smtp_username: String,
+    /// Whether a password is currently set (we never display the
+    /// plaintext — just "set" or "not set").
+    pub smtp_password_set: bool,
+    /// Last-test status: "never", "ok", or "failed".
+    pub last_test_status: String,
+    pub last_test_at: String,
+    pub last_test_error: String,
+    /// True when the stored SMTP password exists but can't be decrypted
+    /// (usually means session_secret was rotated). Triggers a banner
+    /// telling the admin they need to re-enter it.
+    pub password_undecryptable: bool,
+    pub flash_success: Option<String>,
+    pub flash_error: Option<String>,
+}
+
+pub async fn email_settings_page(
+    State(settings_service): State<Arc<SettingsService>>,
+    State(csrf_service): State<Arc<CsrfService>>,
+    Extension(current_user): Extension<CurrentUser>,
+    Extension(session_info): Extension<SessionInfo>,
+) -> Response {
+    render_page(
+        &settings_service,
+        &csrf_service,
+        &current_user,
+        &session_info,
+        None,
+        None,
+    )
+    .await
+}
+
+async fn render_page(
+    settings_service: &SettingsService,
+    csrf_service: &CsrfService,
+    current_user: &CurrentUser,
+    session_info: &SessionInfo,
+    flash_success: Option<String>,
+    flash_error: Option<String>,
+) -> Response {
+    let base = BaseContext::for_member(csrf_service, current_user, session_info).await;
+
+    // If the password is undecryptable (session_secret rotated), we
+    // still want to show the page — fall back to default config so
+    // the admin can see the warning banner and re-enter credentials.
+    let password_undecryptable = settings_service.smtp_password_undecryptable().await;
+
+    let cfg = settings_service
+        .get_email_config()
+        .await
+        .unwrap_or_default();
+
+    let last_test_at = settings_service
+        .get_value("email.last_test_at")
+        .await
+        .unwrap_or_default();
+    let last_test_ok = settings_service
+        .get_bool("email.last_test_ok")
+        .await
+        .unwrap_or(false);
+    let last_test_error = settings_service
+        .get_value("email.last_test_error")
+        .await
+        .unwrap_or_default();
+
+    let last_test_status = if last_test_at.is_empty() {
+        "never"
+    } else if last_test_ok {
+        "ok"
+    } else {
+        "failed"
+    }
+    .to_string();
+
+    HtmlTemplate(AdminEmailSettingsTemplate {
+        base,
+        mode: cfg.mode,
+        from_address: cfg.from_address,
+        from_name: cfg.from_name,
+        smtp_host: cfg.smtp_host,
+        smtp_port: cfg.smtp_port.to_string(),
+        smtp_username: cfg.smtp_username,
+        smtp_password_set: !cfg.smtp_password.is_empty(),
+        last_test_status,
+        last_test_at,
+        last_test_error,
+        password_undecryptable,
+        flash_success,
+        flash_error,
+    })
+    .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateEmailForm {
+    pub csrf_token: String,
+    pub mode: String,
+    pub from_address: String,
+    pub from_name: String,
+    pub smtp_host: String,
+    pub smtp_port: String,
+    pub smtp_username: String,
+    /// Blank string means "leave existing password alone". A special
+    /// sentinel "__CLEAR__" means "remove the stored password". Any
+    /// other value replaces it.
+    pub smtp_password: String,
+}
+
+pub async fn update_email_settings(
+    State(settings_service): State<Arc<SettingsService>>,
+    State(csrf_service): State<Arc<CsrfService>>,
+    State(audit_service): State<Arc<AuditService>>,
+    Extension(current_user): Extension<CurrentUser>,
+    Extension(session_info): Extension<SessionInfo>,
+    Form(form): Form<UpdateEmailForm>,
+) -> Response {
+    // CSRF is also enforced by middleware, but double-check explicitly
+    // so admins get a clear error if something went wrong.
+    let csrf_valid = csrf_service
+        .validate_token(&session_info.session_id, &form.csrf_token)
+        .await
+        .unwrap_or(false);
+    if !csrf_valid {
+        return render_page(
+            &settings_service,
+            &csrf_service,
+            &current_user,
+            &session_info,
+            None,
+            Some("Invalid CSRF token. Please reload and try again.".to_string()),
+        )
+        .await;
+    }
+
+    // Validate inputs
+    if form.mode != "log" && form.mode != "smtp" {
+        return render_page(
+            &settings_service,
+            &csrf_service,
+            &current_user,
+            &session_info,
+            None,
+            Some("Mode must be 'log' or 'smtp'.".to_string()),
+        )
+        .await;
+    }
+
+    let smtp_port: u16 = match form.smtp_port.parse() {
+        Ok(p) if p > 0 => p,
+        _ => {
+            return render_page(
+                &settings_service,
+                &csrf_service,
+                &current_user,
+                &session_info,
+                None,
+                Some(
+                    "SMTP port must be a positive number (common values: 587, 465, 25)."
+                        .to_string(),
+                ),
+            )
+            .await;
+        }
+    };
+
+    // Password field semantics:
+    //   ""            -> keep the existing stored password
+    //   "__CLEAR__"   -> clear the stored password
+    //   anything else -> update with the new value
+    let smtp_password = match form.smtp_password.as_str() {
+        "" => None,
+        "__CLEAR__" => Some(String::new()),
+        other => Some(other.to_string()),
+    };
+
+    let update = UpdateEmailConfig {
+        mode: form.mode,
+        from_address: form.from_address,
+        from_name: form.from_name,
+        smtp_host: form.smtp_host,
+        smtp_port,
+        smtp_username: form.smtp_username,
+        smtp_password,
+    };
+
+    match settings_service
+        .update_email_config(update, current_user.member.id)
+        .await
+    {
+        Ok(_) => {
+            // Audit: whose account made the change. Don't record the
+            // new values (they include an SMTP password in plaintext
+            // form on the way in — the audit row would defeat the
+            // encryption-at-rest we do for the settings table).
+            audit_service
+                .log(
+                    Some(current_user.member.id),
+                    "update_email_config",
+                    "settings",
+                    "email",
+                    None,
+                    None,
+                    None,
+                )
+                .await;
+            render_page(
+                &settings_service,
+                &csrf_service,
+                &current_user,
+                &session_info,
+                Some("Email settings saved.".to_string()),
+                None,
+            )
+            .await
+        }
+        Err(e) => {
+            tracing::error!("update_email_config failed: {}", e);
+            render_page(
+                &settings_service,
+                &csrf_service,
+                &current_user,
+                &session_info,
+                None,
+                Some(format!("Failed to save settings: {}", e)),
+            )
+            .await
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct TestEmailForm {
+    /// Optional override: send the test to this address instead of the
+    /// logged-in admin's. Handy for verifying delivery to a throwaway
+    /// Gmail / Outlook / etc. inbox without cluttering your real inbox.
+    #[serde(default)]
+    pub to: String,
+}
+
+/// Send a test email using the current (live, DB-sourced) configuration.
+/// Defaults to the logged-in admin's address; optionally overridden via
+/// the `to` form field. Returns an HTMX-friendly fragment that replaces
+/// the status area on the settings page.
+pub async fn send_test_email(
+    State(settings): State<Arc<Settings>>,
+    State(settings_service): State<Arc<SettingsService>>,
+    State(email_sender): State<Arc<dyn EmailSender>>,
+    Extension(current_user): Extension<CurrentUser>,
+    Form(form): Form<TestEmailForm>,
+) -> impl IntoResponse {
+    // Prefer the override, fall back to the admin's own address.
+    let admin_email = match form.to.trim() {
+        "" => current_user.member.email.clone(),
+        other => {
+            // Cheap validation — a real RFC 5322 parser is overkill here,
+            // and lettre will reject malformed addresses downstream.
+            if !other.contains('@') || other.contains(|c: char| c.is_whitespace()) {
+                return test_result_html("test-result", false, "Invalid email address.");
+            }
+            other.to_string()
+        }
+    };
+    let full_name = current_user.member.full_name.clone();
+
+    // Look up org name for the subject line / body.
+    let org_name = settings_service
+        .get_value("org.name")
+        .await
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Coterie".to_string());
+
+    let portal_url = format!(
+        "{}/portal/dashboard",
+        settings.server.base_url.trim_end_matches('/'),
+    );
+
+    // Borrow the welcome template as a generic "friendly test" body —
+    // keeps the template surface smaller. The admin sees it and knows
+    // SMTP is working.
+    // Test message: never includes the Discord-invite line — it's just
+    // a "your SMTP works" smoke test, not an actual welcome.
+    let html = WelcomeHtml {
+        full_name: &full_name,
+        org_name: &org_name,
+        portal_url: &portal_url,
+        discord_invite: None,
+    };
+    let text = WelcomeText {
+        full_name: &full_name,
+        org_name: &org_name,
+        portal_url: &portal_url,
+        discord_invite: None,
+    };
+    let message = match email::message_from_templates(
+        admin_email.clone(),
+        format!("[Test] Email from {} is working", org_name),
+        &html,
+        &text,
+    ) {
+        Ok(m) => m,
+        Err(e) => return test_result_html("test-result", false, &format!("Template error: {}", e)),
+    };
+
+    let (ok, error_text) = match email_sender.send(&message).await {
+        Ok(()) => (true, String::new()),
+        Err(e) => (false, e.to_string()),
+    };
+
+    // Record the test result so the settings page reflects it on next load.
+    // If recording fails, the email still went (or didn't) — the visible
+    // result is correct. Only the "last test status" panel goes stale.
+    if let Err(e) = settings_service
+        .record_email_test(ok, &error_text, current_user.member.id)
+        .await
+    {
+        tracing::warn!("Test email completed but result wasn't persisted: {}", e);
+    }
+
+    if ok {
+        test_result_html(
+            "test-result",
+            true,
+            &format!("Test email sent to {}.", admin_email),
+        )
+    } else {
+        test_result_html("test-result", false, &error_text)
+    }
+}

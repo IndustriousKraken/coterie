@@ -2,24 +2,39 @@ mod api;
 mod auth;
 mod config;
 mod domain;
+mod email;
 mod error;
 mod integrations;
+mod jobs;
 mod payments;
 mod repository;
 mod service;
+mod util;
+mod version;
+mod web;
 
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    Executor,
+};
+use std::str::FromStr;
 use std::sync::Arc;
-use sqlx::sqlite::SqlitePoolOptions;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
     config::Settings,
-    integrations::{IntegrationManager, discord::DiscordIntegration, unifi::UnifiIntegration},
+    integrations::{
+        admin_alert_email::AdminAlertEmailIntegration, discord::DiscordIntegration,
+        unifi::UnifiIntegration, IntegrationManager,
+    },
     service::ServiceContext,
 };
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load .env file if present (before anything else)
+    dotenvy::dotenv().ok();
+
     // Initialize tracing
     tracing_subscriber::registry()
         .with(
@@ -29,24 +44,63 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Load configuration
-    let settings = Settings::new().unwrap_or_else(|e| {
-        tracing::warn!("Failed to load config: {}. Using defaults.", e);
-        Settings::default()
-    });
+    // Load configuration — crash on missing/invalid config rather than silently using defaults
+    let settings = Settings::new().expect(
+        "Failed to load configuration. \
+         Ensure .env exists with all required fields (see .env.example).",
+    );
 
-    tracing::info!("Starting Coterie server on {}:{}", settings.server.host, settings.server.port);
+    tracing::info!(
+        "Starting Coterie server on {}:{}",
+        settings.server.host,
+        settings.server.port
+    );
 
-    // Initialize database
+    // Initialize database (resolves path relative to data_dir if needed)
+    let database_url = settings.database_url();
+    tracing::info!("Using database: {}", database_url);
+
+    // Ensure data directory exists
+    let data_dir = std::path::Path::new(&settings.server.data_dir);
+    if !data_dir.exists() {
+        std::fs::create_dir_all(data_dir)?;
+    }
+
+    // Per-connection PRAGMAs:
+    //   foreign_keys = ON — FK constraints are off by default in SQLite;
+    //     without this they're decorative and orphan rows can sneak in.
+    //   journal_mode = WAL — many readers + one writer, vs the default
+    //     rollback journal's whole-DB lock on write. Required for the
+    //     read-while-writing workload (admin browsing while the billing
+    //     runner ticks).
+    //   busy_timeout = 5000 — sqlx-sqlite defaults to zero, so any write
+    //     contention surfaces immediately as SQLITE_BUSY. With WAL a 5s
+    //     wait is plenty for a concurrent writer to finish.
+    //   synchronous = NORMAL — the WAL-recommended setting; FULL is for
+    //     rollback journals.
+    // Parse the URL into SqliteConnectOptions so we can opt into
+    // create_if_missing. Without this, a fresh deploy fails at
+    // `unable to open database file` because sqlx's default `.connect()`
+    // path doesn't create the file — operators have to remember to
+    // add `?mode=rwc` to the URL, which is a deploy footgun.
+    let connect_options = SqliteConnectOptions::from_str(&database_url)?.create_if_missing(true);
+
     let db_pool = SqlitePoolOptions::new()
         .max_connections(settings.database.max_connections)
-        .connect(&settings.database.url)
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                conn.execute("PRAGMA foreign_keys = ON").await?;
+                conn.execute("PRAGMA journal_mode = WAL").await?;
+                conn.execute("PRAGMA synchronous = NORMAL").await?;
+                conn.execute("PRAGMA busy_timeout = 5000").await?;
+                Ok(())
+            })
+        })
+        .connect_with(connect_options)
         .await?;
 
     // Run migrations
-    sqlx::migrate!("./migrations")
-        .run(&db_pool)
-        .await?;
+    sqlx::migrate!("./migrations").run(&db_pool).await?;
 
     // Initialize auth service
     let auth_service = Arc::new(auth::AuthService::new(
@@ -54,20 +108,88 @@ async fn main() -> anyhow::Result<()> {
         settings.auth.session_secret.clone(),
     ));
 
+    // Encryption helper for secrets-at-rest (e.g. SMTP password in
+    // settings). Key is derived from session_secret — if the operator
+    // rotates that, encrypted settings become unreadable and must be
+    // re-entered.
+    let crypto = Arc::new(auth::SecretCrypto::new(&settings.auth.session_secret));
+
+    // Settings service needs to exist before both the ServiceContext
+    // (which holds it) and the email sender (which reads live config
+    // from it on every send).
+    let settings_service = Arc::new(service::settings_service::SettingsService::new(
+        db_pool.clone(),
+        crypto.clone(),
+    ));
+
+    // Email sender reads config from the DB at send time so admins can
+    // change SMTP settings from the UI without a restart.
+    let email_sender: Arc<dyn email::EmailSender> =
+        Arc::new(email::DynamicSender::new(settings_service.clone()));
+
+    // CSRF tokens are stateless HMAC; the service derives its key from
+    // session_secret so rotating that secret invalidates outstanding
+    // tokens (users get a 403 on next submit and retry).
+    let csrf_service = Arc::new(auth::CsrfService::new(&settings.auth.session_secret));
+
+    // TOTP / 2FA. Issuer is the org name shown in authenticator apps;
+    // we look it up once at startup, fall back to "Coterie" if unset.
+    // Live org-name changes don't propagate without restart, but
+    // existing enrollments aren't affected (issuer is metadata in the
+    // enrolled otpauth URL, not part of the verification math).
+    let totp_issuer = settings_service
+        .get_setting("org.name")
+        .await
+        .ok()
+        .map(|s| s.value)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Coterie".to_string());
+    let totp_service = Arc::new(auth::TotpService::new(
+        db_pool.clone(),
+        crypto.clone(),
+        totp_issuer,
+    ));
+    let pending_login_service = Arc::new(auth::PendingLoginService::new(db_pool.clone()));
+
     // Initialize repositories
     let member_repo = Arc::new(repository::SqliteMemberRepository::new(db_pool.clone()));
     let event_repo = Arc::new(repository::SqliteEventRepository::new(db_pool.clone()));
-    let announcement_repo = Arc::new(repository::SqliteAnnouncementRepository::new(db_pool.clone()));
+    let announcement_repo = Arc::new(repository::SqliteAnnouncementRepository::new(
+        db_pool.clone(),
+    ));
     let payment_repo = Arc::new(repository::SqlitePaymentRepository::new(db_pool.clone()));
 
     // Initialize integration manager
     let integration_manager = Arc::new(IntegrationManager::new());
 
-    // Register integrations
-    if let Some(discord) = DiscordIntegration::new(settings.integrations.discord.clone()) {
-        integration_manager.register(Arc::new(discord)).await;
-    }
+    // Discord: always register the integration object — it reads its
+    // own config from the DB on each event and skips silently when
+    // disabled. Admin can flip discord.enabled at runtime via the
+    // settings page without a restart.
+    //
+    // Keep a separate handle so the daily reconcile task can call
+    // its concrete `reconcile_all` method (the Integration trait
+    // intentionally doesn't expose Discord-specific operations).
+    let discord_integration = Arc::new(DiscordIntegration::new(
+        settings_service.clone(),
+        settings.server.base_url.clone(),
+    ));
+    integration_manager
+        .register(discord_integration.clone())
+        .await;
 
+    // Email backup for AdminAlert events: ensures critical
+    // notifications still reach operators when Discord is down or
+    // unconfigured. Sends to org.contact_email.
+    integration_manager
+        .register(Arc::new(AdminAlertEmailIntegration::new(
+            settings_service.clone(),
+            email_sender.clone(),
+        )))
+        .await;
+
+    // Unifi: still env-var-driven for now (D5+ scope). Skip if config
+    // is absent.
     if let Some(unifi) = UnifiIntegration::new(settings.integrations.unifi.clone()) {
         integration_manager.register(Arc::new(unifi)).await;
     }
@@ -81,6 +203,46 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Initialize Stripe client up front (before ServiceContext) so
+    // PaymentAdminService can take it as a constructor dep. The
+    // companion WebhookDispatcher is built further down — it needs
+    // fields that live on ServiceContext. Stripe is wired only when
+    // both an API key AND a webhook secret are configured; missing
+    // either disables Stripe entirely.
+    let stripe_client: Option<Arc<payments::StripeClient>> = if settings.stripe.enabled {
+        match (
+            settings.stripe.secret_key.clone(),
+            settings.stripe.webhook_secret.clone(),
+        ) {
+            (Some(api_key), Some(_)) => {
+                tracing::info!("Stripe payment processing enabled");
+                Some(Arc::new(payments::StripeClient::new(
+                    api_key,
+                    payment_repo.clone(),
+                    member_repo.clone(),
+                )))
+            }
+            _ => {
+                tracing::warn!("Stripe enabled but missing configuration");
+                None
+            }
+        }
+    } else {
+        tracing::info!("Stripe payment processing disabled");
+        None
+    };
+
+    // Per-IP rate limiter for money-moving endpoints (charge, donate,
+    // refund). Built once and shared between AppState (login/charge
+    // handlers extract it via FromRef) and ServiceContext
+    // (PaymentAdminService holds it so the refund chain owns its own
+    // limit check). Both views must point at the same internal map or
+    // limits silently halve.
+    let money_limiter = api::state::MoneyLimiter(api::state::RateLimiter::new(
+        10,
+        std::time::Duration::from_secs(60),
+    ));
+
     // Create service context
     let service_context = Arc::new(ServiceContext::new(
         member_repo,
@@ -89,36 +251,313 @@ async fn main() -> anyhow::Result<()> {
         payment_repo.clone(),
         integration_manager,
         auth_service,
+        email_sender,
+        settings_service,
+        csrf_service,
+        totp_service,
+        pending_login_service,
+        stripe_client.clone(),
+        money_limiter.clone(),
+        settings.server.base_url.clone(),
         db_pool.clone(),
     ));
 
-    // Initialize Stripe client if configured
-    let stripe_client = if settings.stripe.enabled {
-        if let (Some(api_key), Some(webhook_secret)) = 
-            (settings.stripe.secret_key.clone(), settings.stripe.webhook_secret.clone()) {
-            tracing::info!("Stripe payment processing enabled");
-            Some(Arc::new(payments::StripeClient::new(
-                api_key,
-                webhook_secret,
-                payment_repo,
-            )))
-        } else {
-            tracing::warn!("Stripe enabled but missing configuration");
-            None
-        }
-    } else {
-        tracing::info!("Stripe payment processing disabled");
-        None
+    // Spawn background cleanup task (runs hourly) for expired sessions
+    // and for pruning old audit-log entries based on the operator-set
+    // retention window.
+    {
+        let auth_service = service_context.auth_service.clone();
+        let audit_service = service_context.audit_service.clone();
+        let settings_service = service_context.settings_service.clone();
+        let cleanup_pool = db_pool.clone();
+        tokio::spawn(async move {
+            let cleanup_interval = tokio::time::Duration::from_secs(60 * 60); // 1 hour
+            loop {
+                tokio::time::sleep(cleanup_interval).await;
+
+                // Expired sessions
+                match auth_service.cleanup_expired_sessions().await {
+                    Ok(count) if count > 0 => {
+                        tracing::info!("Cleaned up {} expired sessions", count);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to cleanup expired sessions: {:?}", e);
+                    }
+                    _ => {}
+                }
+
+                // Audit-log retention (default 365 days, clamped in
+                // `prune_older_than` to sane bounds).
+                let retention_days = settings_service
+                    .get_number("audit.retention_days")
+                    .await
+                    .unwrap_or(365);
+                match audit_service.prune_older_than(retention_days).await {
+                    Ok(count) if count > 0 => {
+                        tracing::info!(
+                            "Pruned {} audit-log entries older than {} days",
+                            count,
+                            retention_days
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to prune audit log: {:?}", e);
+                    }
+                    _ => {}
+                }
+
+                // Stripe webhook idempotency table. Stripe retries for
+                // ~3 days max; anything older than 30 days has zero
+                // chance of a legitimate replay. Without this prune
+                // the table grows unbounded over the lifetime of the
+                // deployment.
+                match sqlx::query(
+                    "DELETE FROM processed_stripe_events \
+                     WHERE processed_at < datetime('now', '-30 days')",
+                )
+                .execute(&cleanup_pool)
+                .await
+                {
+                    Ok(res) if res.rows_affected() > 0 => {
+                        tracing::info!(
+                            "Pruned {} processed_stripe_events older than 30 days",
+                            res.rows_affected(),
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to prune processed_stripe_events: {:?}", e);
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+
+    // Spawn daily Discord role reconcile. Catches drift from any
+    // events that didn't deliver during a Discord outage. Cheap
+    // enough at the volumes we expect (<1k members) that running
+    // every 24h is fine. The integration itself no-ops when Discord
+    // is disabled or unconfigured.
+    {
+        let discord = discord_integration.clone();
+        let members = service_context.member_repo.clone();
+        tokio::spawn(async move {
+            let interval = tokio::time::Duration::from_secs(24 * 60 * 60);
+            // Initial delay so we don't hammer Discord during a
+            // restart loop and so the first reconcile runs in the
+            // background after the server has settled.
+            tokio::time::sleep(tokio::time::Duration::from_secs(5 * 60)).await;
+            loop {
+                let summary = discord.reconcile_all(members.clone()).await;
+                tracing::info!(
+                    "Discord daily reconcile: processed={}, skipped_invalid_id={}, skipped_pending={}",
+                    summary.processed, summary.skipped_invalid_id, summary.skipped_pending,
+                );
+                tokio::time::sleep(interval).await;
+            }
+        });
+    }
+
+    // Spawn daily recurring-event horizon extension. Each active
+    // series gets its `materialized_through` rolled forward to
+    // (today + 12 months). One-time runs at startup catch any drift
+    // from prolonged downtime; the daily cadence keeps the calendar
+    // perpetually showing a year of meetings without operator action.
+    {
+        let recurring = service_context.recurring_event_service.clone();
+        tokio::spawn(async move {
+            let interval = tokio::time::Duration::from_secs(24 * 60 * 60);
+            // Run once shortly after boot so a fresh deploy with
+            // existing series catches up before the first daily tick.
+            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+            loop {
+                match recurring.extend_horizon_for_active_series().await {
+                    Ok(0) => {
+                        tracing::debug!("Recurring-event horizon extend: nothing to do");
+                    }
+                    Ok(n) => {
+                        tracing::info!("Recurring-event horizon extend: added {} occurrences", n);
+                    }
+                    Err(e) => {
+                        tracing::error!("Recurring-event horizon extend failed: {}", e);
+                    }
+                }
+                tokio::time::sleep(interval).await;
+            }
+        });
+    }
+
+    // Spawn daily "is a newer stable release available?" check. Mirrors
+    // the reconcile/horizon loops: a short initial delay so it never
+    // blocks startup, then every 24h. Each cycle reads
+    // `updates.check_enabled`; when off it clears the cache and skips
+    // the GitHub fetch. A fetch error leaves the cache unchanged and
+    // logs at debug — never an error surfaced to a page (a40 / D8). The
+    // cached result feeds the admin-only "update available" banner; the
+    // render path only ever reads this cache, never GitHub.
+    {
+        let settings_service = service_context.settings_service.clone();
+        tokio::spawn(async move {
+            let interval = tokio::time::Duration::from_secs(24 * 60 * 60);
+            let client = service::update_check::http_client();
+            // Initial delay so the first check runs in the background
+            // after the server has settled.
+            tokio::time::sleep(tokio::time::Duration::from_secs(90)).await;
+            loop {
+                let enabled = settings_service
+                    .get_bool("updates.check_enabled")
+                    .await
+                    .unwrap_or(true);
+                if enabled {
+                    if let Some(latest) = service::update_check::fetch_latest_stable(&client).await
+                    {
+                        service::update_check::store(Some(latest));
+                        tracing::debug!("update check: cached latest stable release");
+                    }
+                    // On a fetch/parse error, leave the cache unchanged.
+                } else {
+                    // Opt-out: clear any previously cached value so the
+                    // banner can't show from stale data.
+                    service::update_check::store(None);
+                }
+                tokio::time::sleep(interval).await;
+            }
+        });
+    }
+
+    // Stripe webhook dispatcher — paired with the StripeClient built
+    // above. Stays here (after ServiceContext::new) because it pulls
+    // several service_context-owned fields (processed_events_repo,
+    // membership_type_service, integration_manager). Built only when
+    // a configured stripe_client is present; the API-key / secret
+    // pair check already happened up top.
+    let webhook_dispatcher: Option<Arc<payments::WebhookDispatcher>> = match &stripe_client {
+        Some(client) => settings
+            .stripe
+            .webhook_secret
+            .clone()
+            .map(|webhook_secret| {
+                Arc::new(payments::WebhookDispatcher::new(
+                    client.gateway(),
+                    webhook_secret,
+                    payment_repo,
+                    service_context.member_repo.clone(),
+                    service_context.processed_events_repo.clone(),
+                    service_context.membership_type_service.clone(),
+                    service_context.integration_manager.clone(),
+                ))
+            }),
+        None => None,
     };
 
-    // Create and run app
-    let app = api::create_app(service_context, stripe_client, Arc::new(settings.clone()));
+    // Build BillingService once so the runner and every request share
+    // the same instance. Reconstructing per-request would silently lose
+    // any per-instance state a future field might carry (rate limiter,
+    // backoff cache, etc.); fixing the pattern now is cheap insurance.
+    let billing_service = Arc::new(
+        service_context.billing_service(stripe_client.clone(), settings.server.base_url.clone()),
+    );
 
-    let listener = tokio::net::TcpListener::bind(
-        format!("{}:{}", settings.server.host, settings.server.port)
-    ).await?;
+    // Spawn billing runner (runs every hour)
+    {
+        let runner = jobs::BillingRunner::new(
+            billing_service.clone(),
+            service_context.announcement_admin_service.clone(),
+            60 * 60,
+        );
+        runner.spawn();
+        tracing::info!("Billing runner spawned");
+    }
 
-    tracing::info!("Server listening on http://{}:{}", settings.server.host, settings.server.port);
+    // Bot-challenge verifier for /public/signup + /public/donate. Reuses
+    // a fresh reqwest client; reqwest::Client is internally Arc'd so a
+    // dedicated instance keeps its connection pool warm without
+    // entangling with the Stripe / Discord clients' pools.
+    let bot_challenge_verifier = api::middleware::bot_challenge::from_config(
+        &settings.bot_challenge,
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(
+                settings.bot_challenge.timeout_ms,
+            ))
+            .build()
+            .expect("reqwest client (bot_challenge) construction"),
+    );
+
+    // Build a single AppState shared by both the API router and the web
+    // router. Per-IP rate limiters and the first-boot setup_lock are
+    // fields on AppState; constructing two states would silently halve
+    // their effectiveness (login_limiter on /auth/login and /login would
+    // be different maps).
+    let app_state = api::state::AppState::new(
+        service_context,
+        stripe_client,
+        webhook_dispatcher,
+        billing_service,
+        Arc::new(settings.clone()),
+        bot_challenge_verifier,
+        money_limiter,
+    );
+
+    // Spawn periodic cleanup for the login rate limiter
+    {
+        let limiter = app_state.login_limiter.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(15 * 60)).await;
+                limiter.cleanup();
+            }
+        });
+    }
+
+    // And for the money-endpoint limiter. Shorter window means we
+    // sweep more often to keep the per-IP map small.
+    {
+        let limiter = app_state.money_limiter.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                limiter.cleanup();
+            }
+        });
+    }
+
+    let api_app = api::create_app(app_state.clone());
+    let web_app = web::create_web_routes(app_state.clone());
+
+    // Combine API and web routes, then apply outermost middleware.
+    //
+    // Layer order matters: `.layer()` wraps inside-out, so the LAST
+    // `.layer(...)` is OUTERMOST and runs FIRST on incoming requests.
+    // CSRF must be applied here (after the merge) — applying it inside
+    // `api::create_app` does not cover routes added via `Router::merge`
+    // in axum 0.7. The portal lives behind `merge`, so applying CSRF
+    // here is what makes the secure-by-default contract real.
+    //
+    // Setup-check sits inside CSRF: state-changing requests are
+    // rejected for missing/invalid tokens before the setup redirect
+    // would otherwise fire, which is the right precedence for both
+    // security (no body parsing on bad CSRF) and UX (GETs still
+    // redirect to the setup wizard during first-boot).
+    let app = api_app
+        .merge(web_app)
+        .layer(axum::middleware::from_fn_with_state(
+            app_state.clone(),
+            api::middleware::setup::require_setup,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            app_state,
+            api::middleware::security::csrf_protect_unless_exempt,
+        ));
+
+    let listener =
+        tokio::net::TcpListener::bind(format!("{}:{}", settings.server.host, settings.server.port))
+            .await?;
+
+    tracing::info!(
+        "Server listening on http://{}:{}",
+        settings.server.host,
+        settings.server.port
+    );
 
     axum::serve(listener, app).await?;
 

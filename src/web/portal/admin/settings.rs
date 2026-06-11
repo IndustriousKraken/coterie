@@ -1,0 +1,303 @@
+use std::sync::Arc;
+
+use askama::Template;
+use axum::{
+    extract::State,
+    response::{IntoResponse, Response},
+    Extension, Form,
+};
+use serde::Deserialize;
+
+use crate::{
+    api::middleware::auth::{CurrentUser, SessionInfo},
+    auth::CsrfService,
+    domain::{AppSetting, UpdateSettingRequest},
+    service::{audit_service::AuditService, settings_service::SettingsService},
+    web::templates::{BaseContext, HtmlTemplate},
+};
+
+// =============================================================================
+// Template Structs
+// =============================================================================
+
+/// Setting info for template display
+#[derive(Clone)]
+pub struct SettingInfo {
+    pub key: String,
+    pub display_name: String,
+    pub value: String,
+    pub value_type: String,
+    pub description: Option<String>,
+    pub is_sensitive: bool,
+}
+
+/// Category of settings for template display
+#[derive(Clone)]
+pub struct SettingsCategoryInfo {
+    pub name: String,
+    pub display_name: String,
+    pub description: String,
+    pub settings: Vec<SettingInfo>,
+}
+
+#[derive(Template)]
+#[template(path = "admin/settings.html")]
+pub struct AdminSettingsTemplate {
+    pub base: BaseContext,
+    pub categories: Vec<SettingsCategoryInfo>,
+    pub success_message: Option<String>,
+    pub error_message: Option<String>,
+}
+
+// =============================================================================
+// Form Structs
+// =============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateSettingForm {
+    pub csrf_token: String,
+    pub setting_key: String,
+    pub setting_value: String,
+}
+
+// =============================================================================
+// Handlers
+// =============================================================================
+
+pub async fn admin_settings_page(
+    State(settings_service): State<Arc<SettingsService>>,
+    State(csrf_service): State<Arc<CsrfService>>,
+    Extension(current_user): Extension<CurrentUser>,
+    Extension(session_info): Extension<SessionInfo>,
+) -> impl IntoResponse {
+    admin_settings_page_inner(
+        &settings_service,
+        &csrf_service,
+        &current_user,
+        &session_info,
+        None,
+        None,
+    )
+    .await
+}
+
+async fn admin_settings_page_inner(
+    settings_service: &SettingsService,
+    csrf_service: &CsrfService,
+    current_user: &CurrentUser,
+    session_info: &SessionInfo,
+    success_message: Option<String>,
+    error_message: Option<String>,
+) -> Response {
+    let base = BaseContext::for_member(csrf_service, current_user, session_info).await;
+
+    let categories = fetch_settings_by_category(settings_service).await;
+
+    HtmlTemplate(AdminSettingsTemplate {
+        base,
+        categories,
+        success_message,
+        error_message,
+    })
+    .into_response()
+}
+
+pub async fn admin_update_setting(
+    State(settings_service): State<Arc<SettingsService>>,
+    State(csrf_service): State<Arc<CsrfService>>,
+    State(audit_service): State<Arc<AuditService>>,
+    Extension(current_user): Extension<CurrentUser>,
+    Extension(session_info): Extension<SessionInfo>,
+    Form(form): Form<UpdateSettingForm>,
+) -> impl IntoResponse {
+    // Validate CSRF
+    let csrf_valid = csrf_service
+        .validate_token(&session_info.session_id, &form.csrf_token)
+        .await
+        .unwrap_or(false);
+
+    if !csrf_valid {
+        return admin_settings_page_inner(
+            &settings_service,
+            &csrf_service,
+            &current_user,
+            &session_info,
+            None,
+            Some("Invalid CSRF token. Please try again.".to_string()),
+        )
+        .await;
+    }
+
+    // Capture the old value (before the update) so the audit-log diff
+    // shows "was X, now Y". Sensitive settings get [REDACTED] on both
+    // sides — we don't want SMTP passwords or similar in the log.
+    let prior = settings_service.get_setting(&form.setting_key).await.ok();
+    let is_sensitive = prior.as_ref().map(|s| s.is_sensitive).unwrap_or(false);
+    let old_value: String = if is_sensitive {
+        "[REDACTED]".to_string()
+    } else {
+        prior.map(|s| s.value).unwrap_or_default()
+    };
+    let new_value_for_audit: String = if is_sensitive {
+        "[REDACTED]".to_string()
+    } else {
+        form.setting_value.clone()
+    };
+
+    // Update the setting
+    let update_request = UpdateSettingRequest {
+        value: form.setting_value.clone(),
+        reason: None,
+    };
+
+    match settings_service
+        .update_setting(&form.setting_key, update_request, current_user.member.id)
+        .await
+    {
+        Ok(_) => {
+            let display_name = form
+                .setting_key
+                .split('.')
+                .last()
+                .unwrap_or(&form.setting_key);
+            // Log to unified audit_logs with both before and after so
+            // the audit page can render the diff inline. (settings_audit
+            // also keeps the same data for richer queries; this row is
+            // for the unified view.)
+            audit_service
+                .log(
+                    Some(current_user.member.id),
+                    "update_setting",
+                    "setting",
+                    &form.setting_key,
+                    Some(&old_value),
+                    Some(&new_value_for_audit),
+                    None,
+                )
+                .await;
+            admin_settings_page_inner(
+                &settings_service,
+                &csrf_service,
+                &current_user,
+                &session_info,
+                Some(format!("Updated '{}'", display_name)),
+                None,
+            )
+            .await
+        }
+        Err(e) => {
+            tracing::error!("Failed to update setting {}: {:?}", form.setting_key, e);
+            admin_settings_page_inner(
+                &settings_service,
+                &csrf_service,
+                &current_user,
+                &session_info,
+                None,
+                Some(format!("Failed to update setting: {}", e)),
+            )
+            .await
+        }
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+async fn fetch_settings_by_category(
+    settings_service: &SettingsService,
+) -> Vec<SettingsCategoryInfo> {
+    let all_categories = settings_service
+        .get_all_settings()
+        .await
+        .unwrap_or_default();
+
+    let category_meta = [
+        (
+            "organization",
+            "Organization",
+            "Basic organization information",
+        ),
+        (
+            "membership",
+            "Membership",
+            "Membership approval and duration settings",
+        ),
+        ("payment", "Payment", "Payment amounts and timing"),
+        (
+            "features",
+            "Features",
+            "Enable or disable application features",
+        ),
+        (
+            "integrations",
+            "Integrations",
+            "Third-party service connections",
+        ),
+        ("audit", "Audit", "Audit log retention"),
+        ("auth", "Authentication", "Login policy and access controls"),
+        (
+            "updates",
+            "Updates",
+            "Update notifications. Enabling the check contacts the public GitHub releases API.",
+        ),
+    ];
+
+    let mut result = Vec::new();
+
+    for (name, display_name, description) in category_meta {
+        if let Some(category) = all_categories.iter().find(|c| c.name == name) {
+            let settings: Vec<SettingInfo> = category
+                .settings
+                .iter()
+                .map(|s| setting_to_info(s))
+                .collect();
+
+            if !settings.is_empty() {
+                result.push(SettingsCategoryInfo {
+                    name: name.to_string(),
+                    display_name: display_name.to_string(),
+                    description: description.to_string(),
+                    settings,
+                });
+            }
+        }
+    }
+
+    result
+}
+
+fn setting_to_info(setting: &AppSetting) -> SettingInfo {
+    // Extract display name from key (e.g., "org.name" -> "Name")
+    let display_name = setting
+        .key
+        .split('.')
+        .last()
+        .unwrap_or(&setting.key)
+        .replace('_', " ")
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let value = if setting.is_sensitive {
+        String::new() // Don't expose sensitive values
+    } else {
+        setting.value.clone()
+    };
+
+    SettingInfo {
+        key: setting.key.clone(),
+        display_name,
+        value,
+        value_type: setting.value_type.as_str().to_string(),
+        description: setting.description.clone(),
+        is_sensitive: setting.is_sensitive,
+    }
+}

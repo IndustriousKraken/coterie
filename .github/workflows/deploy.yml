@@ -1,0 +1,69 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:  # allows manual trigger from any branch
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build release (CSS + Rust binary)
+        run: make release
+
+      - name: Prepare deployment files
+        run: |
+          mkdir -p dist
+          cp target/release/coterie dist/
+          cp target/release/seed dist/
+          cp -r templates dist/
+          cp -r static dist/
+          cp -r migrations dist/
+          cp -r deploy dist/
+          cp -r config dist/
+          cp -r examples dist/
+
+      - name: Deploy to server
+        uses: easingthemes/ssh-deploy@main
+        with:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
+          REMOTE_USER: ${{ secrets.REMOTE_USER }}
+          SOURCE: "dist/"
+          TARGET: "/opt/coterie/"
+          SCRIPT_BEFORE: |
+            # Fix ownership so rsync can write files
+            sudo chown -R ${{ secrets.REMOTE_USER }}:${{ secrets.REMOTE_USER }} /opt/coterie || true
+          SCRIPT_AFTER: |
+            # Install service file if changed
+            sudo cp /opt/coterie/deploy/coterie.service /etc/systemd/system/
+            sudo systemctl daemon-reload
+
+            # Ensure correct ownership
+            sudo chown -R coterie:coterie /opt/coterie
+
+            # Restart the service
+            sudo systemctl restart coterie
+
+            echo "Deployment complete!"

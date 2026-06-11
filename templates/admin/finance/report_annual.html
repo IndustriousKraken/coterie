@@ -1,0 +1,86 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Annual Reconciliation - Coterie Admin{% endblock %}
+
+{% block head %}
+<meta name="csrf-token" content="{{ base.csrf_token }}">
+{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="mb-6">
+        <div class="flex items-center gap-2 text-sm text-gray-500 mb-2">
+            <span>Admin</span>
+            <span>/</span>
+            <span>Finance</span>
+            <span>/</span>
+            <span>Annual report</span>
+        </div>
+        <div class="flex justify-between items-center">
+            <h1 class="text-2xl font-bold text-gray-900">Annual reconciliation — {{ year }}</h1>
+            <div class="flex gap-2 text-sm">
+                <a href="?year={{ year - 1 }}" class="px-3 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200">← {{ year - 1 }}</a>
+                <a href="?year={{ year + 1 }}" class="px-3 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200">{{ year + 1 }} →</a>
+                <a href="/portal/admin/finance/reports/tax-prep?year={{ year }}" class="px-3 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">Tax-prep CSV</a>
+            </div>
+        </div>
+        <p class="mt-2 text-sm text-gray-500">
+            Cash-basis. Income groups by <code>payments.kind</code>.
+        </p>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+        <!-- Per-category expenses -->
+        <div class="bg-white rounded-lg shadow-sm">
+            <div class="px-6 py-4 border-b border-gray-200">
+                <h2 class="text-lg font-semibold text-gray-900">Expenses by category</h2>
+            </div>
+            <table class="w-full text-sm">
+                <thead class="bg-gray-50 text-xs text-gray-600 uppercase">
+                    <tr>
+                        <th class="px-6 py-3 text-left">Category</th>
+                        <th class="px-6 py-3 text-right">Total</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                    {% for row in category_rows %}
+                    <tr><td class="px-6 py-3 text-gray-700">{{ row.label }}</td><td class="px-6 py-3 text-right font-mono">{{ row.amount }}</td></tr>
+                    {% endfor %}
+                    {% if category_rows.is_empty() %}
+                    <tr><td colspan="2" class="px-6 py-8 text-center text-gray-500">No expenses this year.</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Income breakdown -->
+        <div class="bg-white rounded-lg shadow-sm">
+            <div class="px-6 py-4 border-b border-gray-200">
+                <h2 class="text-lg font-semibold text-gray-900">Income</h2>
+            </div>
+            <table class="w-full text-sm">
+                <tbody class="divide-y divide-gray-100">
+                    <tr><td class="px-6 py-3 text-gray-700">Dues</td><td class="px-6 py-3 text-right font-mono">{{ dues_total }}</td></tr>
+                    <tr><td class="px-6 py-3 text-gray-700">Donations</td><td class="px-6 py-3 text-right font-mono">{{ donations_total }}</td></tr>
+                    <tr><td class="px-6 py-3 text-gray-700">Other</td><td class="px-6 py-3 text-right font-mono">{{ other_total }}</td></tr>
+                    <tr class="bg-gray-50"><td class="px-6 py-3 font-semibold text-gray-900">Total income</td><td class="px-6 py-3 text-right font-mono font-semibold">{{ income_total }}</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Net -->
+    <div class="bg-white rounded-lg shadow-sm">
+        <div class="px-6 py-4 border-b border-gray-200">
+            <h2 class="text-lg font-semibold text-gray-900">Net</h2>
+        </div>
+        <table class="w-full text-sm">
+            <tbody class="divide-y divide-gray-100">
+                <tr><td class="px-6 py-3 text-gray-700">Income total</td><td class="px-6 py-3 text-right font-mono">{{ income_total }}</td></tr>
+                <tr><td class="px-6 py-3 text-gray-700">Expense total</td><td class="px-6 py-3 text-right font-mono">{{ expense_total }}</td></tr>
+                <tr class="bg-gray-50"><td class="px-6 py-3 font-semibold text-gray-900">Net</td><td class="px-6 py-3 text-right font-mono font-semibold">{{ net }}</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

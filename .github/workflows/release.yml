@@ -1,0 +1,195 @@
+name: Release
+
+# Build + publish a GitHub Release when a `v*` tag is pushed.
+#
+# Why tag-triggered (not branch-triggered): you explicitly decide
+# what becomes a production release by tagging. Master can be
+# whatever-state; only tagged commits get binaries published. Roll
+# back by tagging an earlier commit (or downloading an older
+# release on prod).
+#
+# What gets produced:
+#   - coterie-<tag>-x86_64-linux-musl.tar.gz containing:
+#       coterie binary (musl-static — runs on Debian/Ubuntu/Alpine)
+#       seed binary (for first-time setup)
+#       static/, migrations/, deploy/
+#       VERSION file (the tag + commit SHA)
+#   - SHA256SUMS file for integrity check on the prod side
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v1.0.0). Must already exist."
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # required to create releases
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0  # so we can compute commit count / changelog if needed
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF##*/}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Determine prerelease flag
+        id: prerelease
+        # Pure-semver tags (v1.2.3) are stable releases. Anything else
+        # — dev/alpha/beta/rc suffixes — is published with
+        # `prerelease: true` so `/releases/latest` only returns safe
+        # versions. This lets the provisioning wizard default to the
+        # latest stable without surprising operators with dev tags.
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+          else
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-musl-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-musl-release-
+            ${{ runner.os }}-cargo-
+
+      - name: Run tests
+        run: cargo test --features test-utils --release
+        # Tests gate the release. If anything fails here, no
+        # tarball is uploaded and the tag still exists but has
+        # no asset attached — operator can decide whether to fix
+        # forward or delete the tag.
+
+      - name: Build release binaries (musl-static)
+        env:
+          # Embed the release tag + short SHA at build time so the
+          # shipped binary reports its real version at /health, /api,
+          # and in the portal footer (see src/version.rs). option_env!
+          # is compile-time: these MUST be set on the build that
+          # produces the shipped binary or releases silently show -dev.
+          COTERIE_VERSION: ${{ steps.version.outputs.tag }}
+          COTERIE_GIT_SHA: ${{ steps.version.outputs.sha }}
+        run: |
+          cargo build --release \
+            --target x86_64-unknown-linux-musl \
+            --bins
+        # `--bins` builds every binary target (coterie + seed).
+        # `--target x86_64-unknown-linux-musl` produces a fully
+        # static binary that runs on any glibc OR musl Linux.
+        # Coterie is rustls-only so this works cleanly.
+
+      - name: Build coterie-provision (musl-static)
+        run: |
+          cargo build --release \
+            --target x86_64-unknown-linux-musl \
+            -p coterie-provision
+
+      - name: Stage release artifacts
+        run: |
+          STAGE="coterie-${{ steps.version.outputs.tag }}-x86_64-linux-musl"
+          mkdir -p "dist/$STAGE"
+          cp target/x86_64-unknown-linux-musl/release/coterie "dist/$STAGE/"
+          cp target/x86_64-unknown-linux-musl/release/seed "dist/$STAGE/"
+          # create_admin is built by the main `cargo build --bins` step.
+          [ -f target/x86_64-unknown-linux-musl/release/create_admin ] && \
+              cp target/x86_64-unknown-linux-musl/release/create_admin "dist/$STAGE/" || true
+          cp -r static "dist/$STAGE/"
+          cp -r migrations "dist/$STAGE/"
+          cp -r deploy "dist/$STAGE/"
+          cp .env.example "dist/$STAGE/"
+          # config/ holds default settings the binary reads at runtime
+          # if present; templates/ holds Askama templates (compile-time
+          # only, but ship them for parity with the staging deploy).
+          [ -d config ] && cp -r config "dist/$STAGE/" || true
+          [ -d templates ] && cp -r templates "dist/$STAGE/" || true
+          echo "${{ steps.version.outputs.tag }}" > "dist/$STAGE/VERSION"
+          echo "${{ steps.version.outputs.sha }}" >> "dist/$STAGE/VERSION"
+          (cd dist && tar czf "$STAGE.tar.gz" "$STAGE")
+          (cd dist && sha256sum "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256")
+
+          # Stage coterie-provision as its own tarball so the bash
+          # bootstrap can fetch just that binary without pulling down
+          # the full Coterie release.
+          PROVISION_STAGE="coterie-provision-${{ steps.version.outputs.tag }}-x86_64-unknown-linux-musl"
+          mkdir -p "dist/$PROVISION_STAGE"
+          cp target/x86_64-unknown-linux-musl/release/coterie-provision "dist/$PROVISION_STAGE/"
+          (cd dist && tar czf "$PROVISION_STAGE.tar.gz" -C "$PROVISION_STAGE" coterie-provision)
+          (cd dist && sha256sum "$PROVISION_STAGE.tar.gz" > "$PROVISION_STAGE.tar.gz.sha256")
+
+          ls -lh dist/
+
+      - name: Extract changelog section for this tag
+        # Pull the CHANGELOG.md section whose header matches the tag
+        # (`## [<tag>] — YYYY-MM-DD`) into release-body.md, capturing
+        # everything up to the next `## [` header. If there's no
+        # matching section (or no CHANGELOG.md), the file is left empty
+        # and `generate_release_notes` below supplies the body — so a
+        # release body is never empty.
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          : > release-body.md
+          if [ -f CHANGELOG.md ]; then
+            awk -v tag="$TAG" '
+              index($0, "## [" tag "]") == 1 { capture=1; print; next }
+              capture && /^## \[/ { capture=0 }
+              capture { print }
+            ' CHANGELOG.md > release-body.md
+          fi
+          echo "----- extracted release body -----"
+          cat release-body.md
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          # Body is the tag's CHANGELOG.md section; generate_release_notes
+          # appends GitHub's auto-notes (and is the sole content when the
+          # extracted section is empty), so the body is never empty.
+          body_path: release-body.md
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          prerelease: ${{ steps.prerelease.outputs.prerelease }}
+          files: |
+            dist/coterie-${{ steps.version.outputs.tag }}-x86_64-linux-musl.tar.gz
+            dist/coterie-${{ steps.version.outputs.tag }}-x86_64-linux-musl.tar.gz.sha256
+            dist/coterie-provision-${{ steps.version.outputs.tag }}-x86_64-unknown-linux-musl.tar.gz
+            dist/coterie-provision-${{ steps.version.outputs.tag }}-x86_64-unknown-linux-musl.tar.gz.sha256
