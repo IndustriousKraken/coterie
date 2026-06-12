@@ -227,8 +227,11 @@ pub async fn admin_announcements_page(
         .skip(offset)
         .take(per_page as usize)
         .map(|a| {
-            let content_preview = if a.content.len() > 100 {
-                format!("{}...", &a.content[..100])
+            // Char-boundary-safe truncation: `&a.content[..100]` would panic
+            // when byte index 100 lands inside a multi-byte UTF-8 character.
+            let preview = crate::util::string::truncate_chars(&a.content, 100);
+            let content_preview = if preview.len() < a.content.len() {
+                format!("{}...", preview)
             } else {
                 a.content.clone()
             };

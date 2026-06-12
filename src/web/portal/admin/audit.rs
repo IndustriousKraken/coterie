@@ -137,12 +137,8 @@ fn format_detail(old: Option<&str>, new: Option<&str>) -> String {
 }
 
 fn truncate(s: &str) -> &str {
-    const MAX: usize = 120;
-    if s.len() <= MAX {
-        s
-    } else {
-        &s[..MAX]
-    }
+    // Char-boundary-safe: never slice mid multi-byte UTF-8 sequence.
+    crate::util::string::truncate_chars(s, 120)
 }
 
 fn build_export_qs(q: &AuditLogQuery) -> String {
@@ -259,5 +255,24 @@ fn short_id(id: &str) -> String {
         format!("{}…", &id[..8])
     } else {
         id.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audit_truncate_handles_multibyte_boundary() {
+        // A value whose byte length exceeds the 120-char limit and whose
+        // multi-byte characters straddle the cut point: the old byte-index
+        // slice would panic here.
+        let value = "é".repeat(200);
+        let truncated = truncate(&value);
+        assert_eq!(truncated.chars().count(), 120);
+
+        // format_detail goes through the same truncation path.
+        let detail = format_detail(None, Some(&value));
+        assert_eq!(detail.chars().count(), 120);
     }
 }
