@@ -72,3 +72,18 @@ The admin detail page SHALL display the scheduled time if set, alongside the exi
 - **WHEN** the form has both `publish_now = true` AND `scheduled_publish_at = <future>`
 - **THEN** `publish_now` wins (the row goes Published immediately); the schedule field is dropped. This is the simpler precedence; alternative would be to reject the combo, but the current shape favors "publish now, don't get clever."
 
+### Requirement: Announcement list preview tolerates multi-byte bodies
+
+The admin announcements list (`GET /portal/admin/announcements`) SHALL build each row's content preview without panicking, regardless of the announcement body's length or UTF-8 content. The preview truncation SHALL cut on a UTF-8 character boundary, never on a raw byte index.
+
+#### Scenario: Announcement body with a multi-byte character at the truncation boundary renders safely
+
+- **GIVEN** an announcement whose body is longer than the preview limit and contains a multi-byte UTF-8 character (e.g. an emoji) straddling the limit
+- **WHEN** an admin loads `GET /portal/admin/announcements`
+- **THEN** the request SHALL complete without panicking and the preview SHALL be truncated on a character boundary with an ellipsis appended
+
+#### Scenario: Short ASCII bodies are shown in full
+
+- **WHEN** an announcement body is plain ASCII at or below the preview limit
+- **THEN** the preview SHALL equal the full body with no ellipsis appended
+
