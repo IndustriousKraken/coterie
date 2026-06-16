@@ -260,6 +260,23 @@ async fn scheduled_status(pool: &SqlitePool, id: Uuid) -> String {
         .expect("query scheduled_payments status")
 }
 
+async fn payments_count(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM payments")
+        .fetch_one(pool)
+        .await
+        .expect("count payments")
+}
+
+async fn member_dues_until(pool: &SqlitePool, member_id: Uuid) -> Option<String> {
+    sqlx::query_scalar::<_, Option<String>>(
+        "SELECT dues_paid_until FROM members WHERE id = ?",
+    )
+    .bind(member_id.to_string())
+    .fetch_one(pool)
+    .await
+    .expect("query member dues_paid_until")
+}
+
 // ---------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------
@@ -363,6 +380,67 @@ async fn transient_failure_does_not_dispatch_admin_alert() {
     assert!(
         alerts.is_empty(),
         "no AdminAlert should be dispatched on a transient retry; got {:?}",
+        alerts,
+    );
+}
+
+/// A worker whose atomic claim is lost (the row is already `processing`,
+/// claimed by a racer) must short-circuit: no charge, no `payments` row,
+/// no dues extension — and it returns `Ok(())` rather than erroring.
+#[tokio::test]
+async fn process_scheduled_payment_noops_when_claim_lost() {
+    let h = build_harness().await;
+    let (member_id, mt_id) = seed_coterie_managed_member(&h.pool).await;
+    seed_default_card(&h.saved_card_repo, member_id).await;
+
+    let scheduled_id = seed_scheduled_payment(&h.scheduled_repo, member_id, mt_id, 0).await;
+
+    // Simulate a racer that already claimed this payment: force the row
+    // to `processing` so our caller's guarded claim affects zero rows.
+    sqlx::query("UPDATE scheduled_payments SET status = 'processing' WHERE id = ?")
+        .bind(scheduled_id.to_string())
+        .execute(&h.pool)
+        .await
+        .expect("pre-set status to processing");
+
+    let payments_before = payments_count(&h.pool).await;
+    let dues_before = member_dues_until(&h.pool, member_id).await;
+
+    h.billing
+        .auto_renew
+        .process_scheduled_payment(scheduled_id)
+        .await
+        .expect("lost-claim path returns Ok(())");
+
+    // No charge fired, so the fake gateway minted nothing and no
+    // `payments` row exists.
+    assert_eq!(
+        payments_count(&h.pool).await,
+        payments_before,
+        "lost claim must not create a payments row"
+    );
+
+    // Dues unchanged — the per-payment_id idempotency of dues extension
+    // never ran because we never reached the charge.
+    assert_eq!(
+        member_dues_until(&h.pool, member_id).await,
+        dues_before,
+        "lost claim must not extend the member's dues"
+    );
+
+    // The row stays exactly as the racer left it.
+    assert_eq!(
+        scheduled_status(&h.pool, scheduled_id).await,
+        "processing",
+        "lost claim must not alter the scheduled-payment status"
+    );
+
+    // And it must not be a charge masquerading as a no-op: no AdminAlert
+    // (those only fire on the winner's success/terminal-failure paths).
+    let alerts = admin_alerts(&h.recorded_events);
+    assert!(
+        alerts.is_empty(),
+        "lost claim must not dispatch any AdminAlert; got {:?}",
         alerts,
     );
 }

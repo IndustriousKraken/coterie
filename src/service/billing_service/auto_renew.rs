@@ -522,22 +522,24 @@ impl AutoRenew {
             .await?
             .ok_or_else(|| AppError::NotFound("Scheduled payment not found".to_string()))?;
 
-        if sp.status != ScheduledPaymentStatus::Pending {
-            return Err(AppError::BadRequest(format!(
-                "Scheduled payment is {:?}, not pending",
-                sp.status
-            )));
+        // Atomically claim the Pending→Processing transition. This single
+        // guarded compare-and-swap replaces the prior read-then-act
+        // (`if sp.status != Pending { return Err }` + unconditional
+        // `update_status(Processing)`), which let two concurrent callers
+        // both pass the check and both flip the row — each then minting a
+        // distinct payment_id and extending dues twice for one charge.
+        // If we lose the claim (zero rows updated), another worker already
+        // owns this payment or it is no longer pending: no-op, do NOT
+        // charge or extend dues.
+        let claimed = self.scheduled_payment_repo.claim_for_processing(id).await?;
+        if !claimed {
+            return Ok(());
         }
 
         let stripe_client = self
             .stripe_client
             .as_ref()
             .ok_or_else(|| AppError::ServiceUnavailable("Stripe not configured".to_string()))?;
-
-        // Mark as processing
-        self.scheduled_payment_repo
-            .update_status(id, ScheduledPaymentStatus::Processing, None)
-            .await?;
 
         // Find the member's default card
         let default_card = self
