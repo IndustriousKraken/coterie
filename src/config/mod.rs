@@ -171,6 +171,17 @@ pub struct StripeConfig {
     pub enabled: bool,
 }
 
+/// Treat a blank or whitespace-only configured secret as absent. The
+/// shipped `config.toml` sets `webhook_secret = ""` and an unset
+/// `COTERIE__STRIPE__WEBHOOK_SECRET=` override also deserializes to
+/// `Some("")`; without this, an empty webhook secret would be used as a
+/// zero-length HMAC-SHA256 key, which any unauthenticated caller can
+/// forge a valid `Stripe-Signature` against. Normalizing to `None` makes
+/// the wiring treat it as unconfigured (dispatcher not built → 503).
+pub fn nonblank(value: Option<String>) -> Option<String> {
+    value.filter(|s| !s.trim().is_empty())
+}
+
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct IntegrationConfig {
     pub discord: Option<DiscordConfig>,
@@ -377,5 +388,26 @@ impl Default for SeedConfig {
                 },
             ],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nonblank_maps_empty_and_whitespace_to_none() {
+        assert_eq!(nonblank(Some("".into())), None);
+        assert_eq!(nonblank(Some("   ".into())), None);
+        assert_eq!(nonblank(Some("\t\n".into())), None);
+        assert_eq!(nonblank(None), None);
+    }
+
+    #[test]
+    fn nonblank_preserves_real_values() {
+        assert_eq!(
+            nonblank(Some("whsec_abc123".into())),
+            Some("whsec_abc123".into())
+        );
     }
 }

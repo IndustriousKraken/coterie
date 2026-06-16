@@ -5,7 +5,9 @@ TBD - created by archiving change document-existing-architecture. Update Purpose
 ## Requirements
 ### Requirement: Scheduled-payment lifecycle has explicit states
 
-A scheduled payment SHALL move through a finite set of states: `pending`, `attempted`, `succeeded`, `failed`, `cancelled`. State transitions SHALL be linear (e.g., `pending` → `attempted` → `succeeded` or `failed`); a `cancelled` row SHALL be terminal.
+A scheduled payment SHALL move through a finite set of states: `pending`, `processing`, `completed`, `failed`, `cancelled`. The normal path is `pending` → `processing` → `completed` (charge succeeded) or `failed` (charge failed after retries are exhausted). The terminal states are `completed`, `failed`, and `cancelled`; a row in a terminal state SHALL NOT be picked up by the runner.
+
+A transient charge failure that has NOT yet exhausted the configured retry count MAY return the row from `processing` back to `pending` so a later runner pass retries it — this is the only transition back to `pending`. A row that has reached the terminal `failed` state SHALL NOT spontaneously revive.
 
 #### Scenario: Pending row can be cancelled
 
@@ -14,8 +16,13 @@ A scheduled payment SHALL move through a finite set of states: `pending`, `attem
 
 #### Scenario: Failed row does not auto-revive
 
-- **WHEN** a scheduled payment moves to `failed`
+- **WHEN** a scheduled payment reaches the terminal `failed` state (retries exhausted)
 - **THEN** it SHALL NOT spontaneously transition back to `pending`; a new scheduled-payment row SHALL be created if a retry is desired
+
+#### Scenario: Transient failure before retries are exhausted returns to pending
+
+- **WHEN** a charge attempt fails and the retry count has NOT yet reached the configured maximum
+- **THEN** the row SHALL return from `processing` to `pending` (with the failure reason recorded) so a later runner pass retries it
 
 ### Requirement: Captured amount and currency are immutable on the row
 

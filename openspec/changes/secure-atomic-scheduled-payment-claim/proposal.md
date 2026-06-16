@@ -32,11 +32,11 @@ Make the Pending→Processing transition an atomic compare-and-swap so only one 
 
 Add an `ADDED` requirement to the `scheduled-payments` spec that the Pending→Processing transition is an atomic compare-and-swap and that a lost claim does not charge or extend dues.
 
-Also add a `MODIFIED` delta for the canonical "Scheduled-payment lifecycle has explicit states" requirement. That requirement currently lists fictional states (`attempted`, `succeeded`, `cancelled`) that never matched the implemented `ScheduledPaymentStatus` enum (`pending`, `processing`, `completed`, `failed`, `cancelled` — see `src/domain/scheduled_payment.rs`). Without this correction the new atomic-claim requirement (which speaks of `processing`/`completed`/`cancelled`) would contradict canon; the `MODIFIED` delta realigns canon with the actual lifecycle so the two requirements are consistent.
+(The canonical "Scheduled-payment lifecycle has explicit states" requirement once listed fictional states `attempted`/`succeeded`; that was corrected separately at its archive source to match the real `ScheduledPaymentStatus` enum — `pending`/`processing`/`completed`/`failed`/`cancelled` — so this change's `processing`/`completed`/`cancelled` vocabulary is consistent with canon and needs no `MODIFIED` delta here.)
 
 ## Impact
 
 - `src/repository/scheduled_payment_repository.rs` — add `claim_for_processing` (atomic guarded UPDATE returning a bool); add it to the `ScheduledPaymentRepository` trait and the Sqlite impl.
 - `src/service/billing_service/auto_renew.rs` — `process_scheduled_payment` uses the atomic claim and returns early on a lost claim (treat as a no-op `Ok(())`, since another worker owns it).
-- `openspec/specs/scheduled-payments/spec.md` — new requirement: atomic claim of a Pending scheduled payment; plus a corrected "lifecycle has explicit states" requirement (states realigned to the actual enum: `pending`/`processing`/`completed`/`failed`/`cancelled`).
+- `openspec/specs/scheduled-payments/spec.md` — new requirement: atomic claim of a Pending scheduled payment.
 - Tests: a test asserting that a second `claim_for_processing` on an already-`processing` row returns `false`, and that `process_scheduled_payment` short-circuits (no new `payments` row, no dues extension) when the claim is lost.

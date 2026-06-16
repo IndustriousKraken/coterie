@@ -209,11 +209,15 @@ async fn main() -> anyhow::Result<()> {
     // fields that live on ServiceContext. Stripe is wired only when
     // both an API key AND a webhook secret are configured; missing
     // either disables Stripe entirely.
+    // Normalize blank Stripe credentials to None so a half-configured
+    // deployment (notably the shipped `webhook_secret = ""`) is treated
+    // as unconfigured rather than building a forgeable webhook endpoint:
+    // an empty secret is a zero-length HMAC key any caller can forge.
+    let stripe_secret_key = config::nonblank(settings.stripe.secret_key.clone());
+    let stripe_webhook_secret = config::nonblank(settings.stripe.webhook_secret.clone());
+
     let stripe_client: Option<Arc<payments::StripeClient>> = if settings.stripe.enabled {
-        match (
-            settings.stripe.secret_key.clone(),
-            settings.stripe.webhook_secret.clone(),
-        ) {
+        match (stripe_secret_key, stripe_webhook_secret.clone()) {
             (Some(api_key), Some(_)) => {
                 tracing::info!("Stripe payment processing enabled");
                 Some(Arc::new(payments::StripeClient::new(
@@ -432,21 +436,17 @@ async fn main() -> anyhow::Result<()> {
     // a configured stripe_client is present; the API-key / secret
     // pair check already happened up top.
     let webhook_dispatcher: Option<Arc<payments::WebhookDispatcher>> = match &stripe_client {
-        Some(client) => settings
-            .stripe
-            .webhook_secret
-            .clone()
-            .map(|webhook_secret| {
-                Arc::new(payments::WebhookDispatcher::new(
-                    client.gateway(),
-                    webhook_secret,
-                    payment_repo,
-                    service_context.member_repo.clone(),
-                    service_context.processed_events_repo.clone(),
-                    service_context.membership_type_service.clone(),
-                    service_context.integration_manager.clone(),
-                ))
-            }),
+        Some(client) => stripe_webhook_secret.map(|webhook_secret| {
+            Arc::new(payments::WebhookDispatcher::new(
+                client.gateway(),
+                webhook_secret,
+                payment_repo,
+                service_context.member_repo.clone(),
+                service_context.processed_events_repo.clone(),
+                service_context.membership_type_service.clone(),
+                service_context.integration_manager.clone(),
+            ))
+        }),
         None => None,
     };
 
