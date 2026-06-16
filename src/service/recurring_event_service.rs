@@ -196,19 +196,28 @@ impl RecurringEventService {
         let rule: Recurrence = serde_json::from_str(&series.rule_json)
             .map_err(|e| AppError::Internal(format!("rule parse: {}", e)))?;
 
-        // Anchor: we re-derive from the FIRST occurrence so the
-        // generator stays consistent across calls. Pulling the anchor
-        // from the series row would require persisting it — using
-        // events.start_time avoids that extra column.
-        let first_occurrence_start: Option<chrono::NaiveDateTime> =
-            sqlx::query_scalar("SELECT MIN(start_time) FROM events WHERE series_id = ?")
-                .bind(series.id.to_string())
-                .fetch_one(&self.pool)
-                .await
-                .map_err(AppError::Database)?;
+        // Anchor: re-derive from the EARLIEST surviving occurrence so
+        // the generator stays consistent across calls without
+        // persisting an anchor column. Pull that occurrence's
+        // `occurrence_index` alongside its start: it is the occurrence's
+        // true position in the recurrence stream, which we need to
+        // number new occurrences correctly even when LEADING
+        // occurrences have been cancelled/deleted (see `base_index`
+        // below). Using `events.start_time` alone is not enough — a
+        // cancel hard-deletes the row, so `MIN(start_time)` can point at
+        // occurrence #2+ instead of #1.
+        let earliest: Option<(chrono::NaiveDateTime, i32)> = sqlx::query_as(
+            "SELECT start_time, occurrence_index FROM events \
+             WHERE series_id = ? AND occurrence_index IS NOT NULL \
+             ORDER BY start_time ASC, occurrence_index ASC LIMIT 1",
+        )
+        .bind(series.id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
 
-        let anchor = match first_occurrence_start {
-            Some(naive) => DateTime::from_naive_utc_and_offset(naive, Utc),
+        let (anchor, anchor_index) = match earliest {
+            Some((naive, idx)) => (DateTime::from_naive_utc_and_offset(naive, Utc), idx),
             None => {
                 // No occurrences left — series exists but everything
                 // was deleted. Don't spontaneously regenerate; that's
@@ -232,11 +241,36 @@ impl RecurringEventService {
             return Ok(0);
         }
 
-        let next_index = self
-            .event_repo
-            .max_occurrence_index_for_series(series.id)
-            .await?
-            .unwrap_or(0);
+        // Number new occurrences by their position in the recurrence
+        // stream, NOT by MAX(occurrence_index) over surviving rows.
+        // `cancel_event_occurrence` hard-deletes the cancelled
+        // occurrence's `events` row but leaves `materialized_through`
+        // unchanged, so deriving from surviving rows would drop the base
+        // below the true stream position whenever a TRAILING occurrence
+        // was cancelled — shifting every later index down by one and
+        // colliding a future occurrence with the past cancellation's
+        // exception (it would be skipped).
+        //
+        // Count stream positions from the earliest surviving occurrence
+        // (`anchor`) through `materialized_through`, then offset by that
+        // occurrence's true stream index (`anchor_index`, 1-based): the
+        // highest already-materialized stream position is
+        // `anchor_index - 1 + <count>`. The offset is what keeps this
+        // correct when LEADING occurrences were cancelled/deleted — a
+        // cancel hard-deletes the row, so `anchor` (the MIN survivor) can
+        // be occurrence #2+ rather than #1, and a naive count from it
+        // would undercount by exactly `anchor_index - 1` (the bug the
+        // reviewer flagged). This matches how
+        // `create_series_with_initial_materialization` assigns `(idx + 1)`
+        // (one index consumed per stream position, including cancelled ones).
+        let materialized_positions = generate_occurrences(
+            anchor,
+            &rule,
+            anchor,
+            series.materialized_through + Duration::seconds(1),
+        )
+        .len() as i32;
+        let base_index = (anchor_index - 1) + materialized_positions;
 
         // Use the first existing occurrence as the prototype for
         // titles/etc — the user might have edited the template since
@@ -245,7 +279,7 @@ impl RecurringEventService {
 
         let mut count = 0u64;
         for (i, start) in new_times.iter().enumerate() {
-            let occurrence_index = next_index + (i as i32) + 1;
+            let occurrence_index = base_index + (i as i32) + 1;
             let exception = self
                 .series_repo
                 .find_exception(series.id, occurrence_index)
