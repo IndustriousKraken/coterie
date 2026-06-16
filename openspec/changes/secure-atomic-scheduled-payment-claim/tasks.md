@@ -15,10 +15,6 @@
 - [ ] 2.2 After confirming the fetched row exists, call `let claimed = self.scheduled_payment_repo.claim_for_processing(id).await?;`. If `!claimed`, return `Ok(())` (another worker owns this payment, or it is no longer pending) WITHOUT charging or extending dues. This replaces the prior `if sp.status != Pending { return Err(...) }` early-return.
 - [ ] 2.3 Leave the subsequent `update_status(..., Failed, ...)` and `update_status(..., Completed, ...)` calls unchanged — they run only for the single claim winner.
 
-## 3. Spec update
-
-- [ ] 3.1 Apply the `ADDED Requirements` block from `specs/scheduled-payments/spec.md` in this change to `openspec/specs/scheduled-payments/spec.md`.
-
 ## 4. Tests
 
 - [ ] 4.1 Add a repository test `claim_for_processing_is_single_flight`: insert a Pending scheduled payment, assert the first `claim_for_processing(id)` returns `true` and flips status to `processing`, and a second `claim_for_processing(id)` returns `false` and leaves status `processing`.
