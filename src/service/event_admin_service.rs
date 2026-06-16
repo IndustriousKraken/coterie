@@ -1296,6 +1296,128 @@ mod tests {
             .is_some());
     }
 
+    /// Regression for the reviewer's anchor-shift concern: cancelling the
+    /// FIRST occurrence hard-deletes its row, so `MIN(start_time)` (the
+    /// re-derived anchor) jumps to occurrence #2. The base index must be
+    /// offset by the earliest survivor's true `occurrence_index`,
+    /// otherwise a naive count from the shifted anchor undercounts by one
+    /// and the first new occurrence collides with the surviving
+    /// occurrence #5's index — corrupting the stream numbering.
+    #[tokio::test]
+    async fn extend_horizon_after_cancelling_first_occurrence_keeps_indices_aligned() {
+        let pool = fresh_pool().await;
+        let svc = make_service(pool.clone());
+        let actor = make_actor(&pool).await;
+
+        // Materialize EXACTLY occurrences 1..=5 (N = 5 is the boundary).
+        let start = next_tuesday_anchor();
+        let until = start + Duration::weeks(4) + Duration::days(1);
+        let anchor = svc
+            .create(actor, recurring_input(start, until))
+            .await
+            .unwrap();
+        let series_id = anchor.series_id.unwrap();
+        let initial: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM events WHERE series_id = ?")
+            .bind(series_id.to_string())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(initial.0, 5);
+
+        // Open the series back up so extend_horizon can roll past the cap.
+        sqlx::query("UPDATE event_series SET until_date = NULL WHERE id = ?")
+            .bind(series_id.to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Cancel occurrence #1: deletes its events row (so MIN(start_time)
+        // now resolves to occurrence #2's start), writes a Cancelled
+        // exception at index 1, leaves materialized_through unchanged.
+        svc.cancel_event_occurrence(actor, series_id, 1, Some("first".into()))
+            .await
+            .unwrap();
+        assert!(
+            svc.event_repo
+                .find_by_series_and_index(series_id, 1)
+                .await
+                .unwrap()
+                .is_none(),
+            "occurrence 1 should be deleted after cancel"
+        );
+
+        // Roll the horizon forward to cover stream positions 6..=10.
+        let series = svc
+            .event_series_repo
+            .find_by_id(series_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let target = start + Duration::weeks(10);
+        let added = svc
+            .recurring_event_service
+            .extend_horizon(&series, target)
+            .await
+            .unwrap();
+        assert_eq!(
+            added, 5,
+            "stream positions 6..=10 should all be materialized"
+        );
+
+        // The first new occurrence lands at stream position 6 (anchor + 5
+        // weeks) and carries occurrence_index 6 — NOT 5. Under the buggy
+        // MIN-anchor count it would be assigned index 5, colliding with
+        // the surviving occurrence #5.
+        let next = svc
+            .event_repo
+            .find_by_series_and_index(series_id, 6)
+            .await
+            .unwrap()
+            .expect("occurrence at stream position 6 must be created");
+        assert_eq!(
+            next.start_time,
+            start + Duration::weeks(5),
+            "occurrence_index 6 must sit at stream position 6 (anchor + 5 weeks)"
+        );
+
+        // Every row aligns with its stream position: index k ⇔ start_time
+        // = anchor + (k-1) weeks, for the survivors (2..=5) and the new
+        // batch (6..=10) alike.
+        for idx in 2..=10 {
+            let occ = svc
+                .event_repo
+                .find_by_series_and_index(series_id, idx)
+                .await
+                .unwrap()
+                .unwrap_or_else(|| panic!("occurrence_index {idx} should exist"));
+            assert_eq!(
+                occ.start_time,
+                start + Duration::weeks((idx - 1) as i64),
+                "occurrence_index {idx} must align with its stream position",
+            );
+        }
+
+        // Full index set: survivors 2..=5 (1 was cancelled) plus the new
+        // 6..=10 — exactly the stream positions, no collision, no shift.
+        let mut indices: Vec<i32> = sqlx::query_scalar(
+            "SELECT occurrence_index FROM events WHERE series_id = ? ORDER BY occurrence_index ASC",
+        )
+        .bind(series_id.to_string())
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        indices.sort();
+        assert_eq!(indices, vec![2, 3, 4, 5, 6, 7, 8, 9, 10]);
+
+        // The cancelled first index stays cancelled.
+        assert!(svc
+            .event_series_repo
+            .find_exception(series_id, 1)
+            .await
+            .unwrap()
+            .is_some());
+    }
+
     /// Regression guard for the new stream-position base-index: with NO
     /// cancellations, extend_horizon must still continue the prior batch
     /// contiguously (no off-by-one, no gap, no duplicate index).
