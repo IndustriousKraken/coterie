@@ -1,5 +1,28 @@
 # scheduled-payments Specification Delta
 
+## MODIFIED Requirements
+
+### Requirement: Scheduled-payment lifecycle has explicit states
+
+A scheduled payment SHALL move through a finite set of states: `pending`, `processing`, `completed`, `failed`, `cancelled`. The normal path is `pending` → `processing` → `completed` (charge succeeded) or `failed` (charge failed after retries are exhausted). The terminal states are `completed`, `failed`, and `cancelled`; a row in a terminal state SHALL NOT be picked up by the runner.
+
+A transient charge failure that has NOT yet exhausted the configured retry count MAY return the row from `processing` back to `pending` so a later runner pass retries it — this is the only transition back to `pending`. A row that has reached the terminal `failed` state SHALL NOT spontaneously revive.
+
+#### Scenario: Pending row can be cancelled
+
+- **WHEN** an admin or the system cancels a pending scheduled payment
+- **THEN** the row SHALL transition to `cancelled` and SHALL NOT be picked up by the runner
+
+#### Scenario: Failed row does not auto-revive
+
+- **WHEN** a scheduled payment reaches the terminal `failed` state (retries exhausted)
+- **THEN** it SHALL NOT spontaneously transition back to `pending`; a new scheduled-payment row SHALL be created if a retry is desired
+
+#### Scenario: Transient failure before retries are exhausted returns to pending
+
+- **WHEN** a charge attempt fails and the retry count has NOT yet reached the configured maximum
+- **THEN** the row SHALL return from `processing` to `pending` (with the failure reason recorded) so a later runner pass retries it
+
 ## ADDED Requirements
 
 ### Requirement: Pending→Processing transition is an atomic compare-and-swap
@@ -20,5 +43,5 @@ A caller that loses the claim (the guarded update affects zero rows) SHALL NOT c
 
 #### Scenario: A non-pending scheduled payment is not reprocessed
 
-- **WHEN** `process_scheduled_payment` is invoked for a scheduled payment whose status is `completed`, `failed`, or `canceled`
+- **WHEN** `process_scheduled_payment` is invoked for a scheduled payment whose status is `completed`, `failed`, or `cancelled`
 - **THEN** the atomic claim SHALL affect zero rows and the call SHALL perform no charge and no dues extension

@@ -9,7 +9,7 @@
 
 Payments SHALL be recorded via exactly three entry points:
 
-- **`PaymentService::record_manual`** — for non-Stripe payments (Cash, Check, Waived, Other). Operator-initiated via the admin UI. The service SHALL reject `PaymentMethod::Stripe` with a `BadRequest`; Stripe payments SHALL go through one of the other two entry points.
+- **`PaymentService::record_manual`** — for non-Stripe payments (method `Manual` or `Waived` — cash, check, and in-kind are all recorded as `Manual` with detail in the description). Operator-initiated via the admin UI. The service SHALL reject `PaymentMethod::Stripe` with a `BadRequest`; Stripe payments SHALL go through one of the other two entry points.
 - **`WebhookDispatcher::handle_*`** — for Stripe-initiated events: customer paid an invoice, customer completed a checkout session, payment-intent succeeded. Inbound to Coterie, verified-signature, idempotency-claimed, dispatched per event type.
 - **`BillingService::process_scheduled_payment`** — for Coterie-initiated auto-renew charges against a saved card. The scheduled payment row is the Coterie-side trigger; the Stripe charge is a direct API call (not a webhook); on charge success, the `Payment` row is created from the charge result.
 

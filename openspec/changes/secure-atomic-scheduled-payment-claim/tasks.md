@@ -18,6 +18,7 @@
 ## 3. Spec update
 
 - [ ] 3.1 Apply the `ADDED Requirements` block from `specs/scheduled-payments/spec.md` in this change to `openspec/specs/scheduled-payments/spec.md`.
+- [ ] 3.2 Apply the `MODIFIED Requirements` block from `specs/scheduled-payments/spec.md` in this change: replace the canonical "Scheduled-payment lifecycle has explicit states" requirement so its state set matches the implemented `ScheduledPaymentStatus` enum (`pending`/`processing`/`completed`/`failed`/`cancelled`), including the `processing` → `pending` transient-retry transition and the `completed`/`failed`/`cancelled` terminal set.
 
 ## 4. Tests
 

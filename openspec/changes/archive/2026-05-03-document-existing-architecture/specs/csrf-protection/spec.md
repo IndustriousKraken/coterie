@@ -72,6 +72,7 @@ The current exempt entries are:
 - `POST /public/signup` — cross-origin from marketing site; gated by CORS allowlist + rate limit + bot challenge.
 - `POST /public/donate` — same as signup.
 - `POST /auth/login` — no session exists yet to bind a token to.
+- `POST /auth/login/totp` — same reason as `/auth/login`: the caller holds only a `pending_login` cookie at this step, not a `session` cookie, so there is no session id to bind a CSRF token to.
 
 `POST /auth/logout` is NOT exempt: every authenticated page renders a CSRF meta tag, and forced logout warrants protection.
 

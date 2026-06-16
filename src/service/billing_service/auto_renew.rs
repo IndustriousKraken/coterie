@@ -506,7 +506,7 @@ impl AutoRenew {
         for sp in pending {
             if sp.status == ScheduledPaymentStatus::Pending {
                 self.scheduled_payment_repo
-                    .update_status(sp.id, ScheduledPaymentStatus::Canceled, None)
+                    .update_status(sp.id, ScheduledPaymentStatus::Cancelled, None)
                     .await?;
                 count += 1;
             }

@@ -16,9 +16,9 @@ The system SHALL provide an outbound admin-alert email channel used for events t
 
 ### Requirement: Recipients are configured by setting, not hardcoded
 
-The recipient list SHALL come from a setting (e.g., `email.admin_alert_recipients`). Hardcoding recipients in source SHALL be forbidden.
+The recipient SHALL come from the `org.contact_email` setting (the org's configured contact address), re-read per event. Hardcoding recipients in source SHALL be forbidden; when `org.contact_email` is empty the channel SHALL skip sending.
 
 #### Scenario: Recipient setting drives the To: list
 
-- **WHEN** an admin updates `email.admin_alert_recipients`
-- **THEN** subsequent admin alerts SHALL go to the new recipient list without redeploy
+- **WHEN** an admin updates `org.contact_email`
+- **THEN** subsequent admin alerts SHALL go to the new recipient without redeploy

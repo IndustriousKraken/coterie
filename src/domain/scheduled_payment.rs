@@ -33,8 +33,8 @@ pub enum ScheduledPaymentStatus {
     Completed,
     /// Failed after all retries exhausted
     Failed,
-    /// Manually canceled (e.g., member downgraded or left)
-    Canceled,
+    /// Manually cancelled (e.g., member downgraded or left)
+    Cancelled,
 }
 
 impl ScheduledPaymentStatus {
@@ -44,7 +44,7 @@ impl ScheduledPaymentStatus {
             ScheduledPaymentStatus::Processing => "processing",
             ScheduledPaymentStatus::Completed => "completed",
             ScheduledPaymentStatus::Failed => "failed",
-            ScheduledPaymentStatus::Canceled => "canceled",
+            ScheduledPaymentStatus::Cancelled => "cancelled",
         }
     }
 
@@ -54,13 +54,13 @@ impl ScheduledPaymentStatus {
             "processing" => Some(ScheduledPaymentStatus::Processing),
             "completed" => Some(ScheduledPaymentStatus::Completed),
             "failed" => Some(ScheduledPaymentStatus::Failed),
-            "canceled" => Some(ScheduledPaymentStatus::Canceled),
+            "cancelled" => Some(ScheduledPaymentStatus::Cancelled),
             _ => None,
         }
     }
 
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Canceled)
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
     }
 }
 

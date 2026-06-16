@@ -4,7 +4,7 @@
 
 Payments SHALL be recorded via exactly two entry points:
 
-- **`PaymentService::record_manual`** — for non-Stripe payments (Cash, Check, Waived, Other). The service SHALL reject `PaymentMethod::Stripe` with a `BadRequest`; Stripe payments SHALL go through the webhook flow.
+- **`PaymentService::record_manual`** — for non-Stripe payments (method `Manual` or `Waived` — cash, check, and in-kind are all recorded as `Manual` with detail in the description). The service SHALL reject `PaymentMethod::Stripe` with a `BadRequest`; Stripe payments SHALL go through the webhook flow.
 - **`WebhookDispatcher::handle_*`** — for Stripe payments (PaymentIntent, CheckoutSession, Invoice). Verified-signature inbound, idempotency-claimed, dispatched per event type.
 
 Both entry points SHALL persist via `payment_repo.create(...)`. Direct `payment_repo.create` calls from handlers or services other than these two SHALL be forbidden.
@@ -32,7 +32,7 @@ Centralization SHALL prevent the four sites that previously duplicated this from
 
 #### Scenario: Cash dues payment audits as manual_payment
 
-- **WHEN** `record_manual` records a `(PaymentMethod::Cash, PaymentKind::Membership)` payment
+- **WHEN** `record_manual` records a `(PaymentMethod::Manual, PaymentKind::Membership)` payment
 - **THEN** the emitted audit row SHALL have `action = "manual_payment"`
 
 #### Scenario: Waived dues audits as waive_dues

@@ -32,7 +32,7 @@ The service SHALL dispatch `IntegrationEvent::EventPublished` when creating an e
 
 #### Scenario: Members-visible event creation dispatches the event
 
-- **WHEN** an admin creates an event with visibility `Members` or `Public`
+- **WHEN** an admin creates an event with visibility `MembersOnly` or `Public`
 - **THEN** `EventAdminService::create` SHALL emit `IntegrationEvent::EventPublished(event)` via `integration_manager.handle_event(...)` after the persist
 
 #### Scenario: Admin-only event creation does not dispatch

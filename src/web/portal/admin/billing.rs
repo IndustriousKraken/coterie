@@ -280,7 +280,7 @@ pub async fn billing_dashboard_page(
                 crate::domain::ScheduledPaymentStatus::Processing => "Processing",
                 crate::domain::ScheduledPaymentStatus::Completed => "Completed",
                 crate::domain::ScheduledPaymentStatus::Failed => "Failed",
-                crate::domain::ScheduledPaymentStatus::Canceled => "Canceled",
+                crate::domain::ScheduledPaymentStatus::Cancelled => "Cancelled",
             },
         });
     }

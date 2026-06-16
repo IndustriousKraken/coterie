@@ -48,7 +48,7 @@ from drifting.
 
 #### Scenario: Cash dues payment audits as manual_payment
 
-- **WHEN** `record_manual` records a `(PaymentMethod::Cash,
+- **WHEN** `record_manual` records a `(PaymentMethod::Manual,
   PaymentKind::Membership)` payment
 - **THEN** the emitted audit row SHALL have `action = "manual_payment"`
 
@@ -60,6 +60,6 @@ from drifting.
 
 #### Scenario: Cash donation audits as manual_donation
 
-- **WHEN** `record_manual` records a `(PaymentMethod::Cash,
+- **WHEN** `record_manual` records a `(PaymentMethod::Manual,
   PaymentKind::Donation { .. })` payment
 - **THEN** the emitted audit row SHALL have `action = "manual_donation"`
