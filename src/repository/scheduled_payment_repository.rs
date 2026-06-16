@@ -23,6 +23,18 @@ pub trait ScheduledPaymentRepository: Send + Sync {
         status: ScheduledPaymentStatus,
         failure_reason: Option<String>,
     ) -> Result<ScheduledPayment>;
+    /// Atomically claim a pending scheduled payment for processing.
+    ///
+    /// Runs a single guarded compare-and-swap
+    /// (`UPDATE … SET status = 'processing' … WHERE id = ? AND status = 'pending'`)
+    /// and returns `true` iff exactly one row was updated, i.e. the
+    /// caller won the claim. A return of `false` means the row was
+    /// already claimed by another worker or is no longer pending — the
+    /// caller MUST NOT charge the card or extend dues. This mirrors the
+    /// compare-and-swap idiom of `complete_pending_payment` /
+    /// `claim_payment_for_refund` on the payment repository and prevents
+    /// the TOCTOU/lost-update window of a read-then-unconditional-write.
+    async fn claim_for_processing(&self, id: Uuid) -> Result<bool>;
     async fn increment_retry(&self, id: Uuid) -> Result<ScheduledPayment>;
     async fn link_payment(&self, id: Uuid, payment_id: Uuid) -> Result<ScheduledPayment>;
     /// Failed scheduled payments whose last attempt landed in
@@ -232,6 +244,32 @@ impl ScheduledPaymentRepository for SqliteScheduledPaymentRepository {
         self.find_by_id(id).await?.ok_or_else(|| {
             AppError::Internal("Failed to retrieve updated scheduled payment".to_string())
         })
+    }
+
+    async fn claim_for_processing(&self, id: Uuid) -> Result<bool> {
+        let id_str = id.to_string();
+        let now = Utc::now().naive_utc();
+
+        // Atomic compare-and-swap: only the single caller whose UPDATE
+        // observes status = 'pending' flips the row to 'processing'.
+        // Concurrent callers for the same id see zero rows affected and
+        // must bail without charging. Mirrors the guarded-UPDATE idiom
+        // of complete_pending_payment / claim_payment_for_refund.
+        let result = sqlx::query(
+            r#"
+            UPDATE scheduled_payments
+            SET status = 'processing', last_attempt_at = ?, updated_at = ?
+            WHERE id = ? AND status = 'pending'
+            "#,
+        )
+        .bind(now)
+        .bind(now)
+        .bind(&id_str)
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+        Ok(result.rows_affected() == 1)
     }
 
     async fn increment_retry(&self, id: Uuid) -> Result<ScheduledPayment> {
