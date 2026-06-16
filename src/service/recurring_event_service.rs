@@ -232,11 +232,27 @@ impl RecurringEventService {
             return Ok(0);
         }
 
-        let next_index = self
-            .event_repo
-            .max_occurrence_index_for_series(series.id)
-            .await?
-            .unwrap_or(0);
+        // Number new occurrences by their position in the recurrence
+        // stream, NOT by MAX(occurrence_index) over surviving rows.
+        // `cancel_event_occurrence` hard-deletes the cancelled
+        // occurrence's `events` row but leaves `materialized_through`
+        // unchanged, so deriving from surviving rows would drop the base
+        // below the true stream position whenever a trailing occurrence
+        // was cancelled — shifting every later index down by one and
+        // colliding a future occurrence with the past cancellation's
+        // exception (it would be skipped). Counting stream positions from
+        // the anchor through `materialized_through` stays aligned
+        // regardless of how many trailing occurrences were
+        // cancelled/deleted, matching how
+        // `create_series_with_initial_materialization` assigns `(idx + 1)`
+        // (one index consumed per stream position, including cancelled ones).
+        let base_index = generate_occurrences(
+            anchor,
+            &rule,
+            anchor,
+            series.materialized_through + Duration::seconds(1),
+        )
+        .len() as i32;
 
         // Use the first existing occurrence as the prototype for
         // titles/etc — the user might have edited the template since
@@ -245,7 +261,7 @@ impl RecurringEventService {
 
         let mut count = 0u64;
         for (i, start) in new_times.iter().enumerate() {
-            let occurrence_index = next_index + (i as i32) + 1;
+            let occurrence_index = base_index + (i as i32) + 1;
             let exception = self
                 .series_repo
                 .find_exception(series.id, occurrence_index)
