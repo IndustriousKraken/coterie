@@ -405,9 +405,72 @@ async fn main() -> anyhow::Result<()> {
     let basic_type_repo = SqliteBasicTypeRepository::new(db_pool.clone());
     let membership_type_repo = SqliteMembershipTypeRepository::new(db_pool.clone());
 
+    seed_configurable_types(&config, &basic_type_repo, &membership_type_repo).await?;
+
+    let SeededMembers {
+        all_members,
+        admin_id,
+        generated,
+    } = seed_members(
+        &config,
+        &args,
+        &db_pool,
+        &member_repo,
+        &membership_type_repo,
+        &mut rng,
+    )
+    .await?;
+
+    let event_count = seed_events(&config, &all_members, admin_id, &event_repo, &mut rng).await?;
+
+    let announcement_count = seed_announcements(&config, admin_id, &announcement_repo).await?;
+
+    let payment_count = seed_payments(&config, &all_members, &payment_repo, &mut rng).await?;
+
     // =========================================================================
-    // CONFIGURABLE TYPES
+    // SUMMARY
     // =========================================================================
+    println!("\nDatabase seeding complete!");
+    println!("\nSummary:");
+    println!("   Example: {}", args.example);
+    println!("   Members: {} (including admin)", all_members.len() + 1);
+    println!("   Events: {}", event_count);
+    println!("   Payments: {}", payment_count);
+    println!("   Announcements: {}", announcement_count);
+    println!("   Event types: {}", config.event_types.len());
+    println!("   Announcement types: {}", config.announcement_types.len());
+    println!("   Membership types: {}", config.membership_types.len());
+
+    println!("\nCredentials:");
+    println!(
+        "   Admin: {} / {}",
+        config.admin.email, config.admin.password
+    );
+    if !config.test_users.is_empty() {
+        println!("\n   Test users:");
+        for user in &config.test_users {
+            println!(
+                "     {} - {}, {}",
+                user.email, user.membership_type, user.status
+            );
+        }
+    }
+    println!(
+        "\n   Plus {} randomly generated members (password: password123)",
+        generated
+    );
+
+    Ok(())
+}
+
+/// Seed the configurable event / announcement / membership types from
+/// the example config. Counts in the final summary come straight from
+/// the config lengths, so this phase returns nothing.
+async fn seed_configurable_types(
+    config: &ExampleConfig,
+    basic_type_repo: &SqliteBasicTypeRepository,
+    membership_type_repo: &SqliteMembershipTypeRepository,
+) -> anyhow::Result<()> {
     println!("Creating configurable types...");
 
     // Seed event types from config
@@ -466,9 +529,29 @@ async fn main() -> anyhow::Result<()> {
         config.membership_types.len()
     );
 
-    // =========================================================================
-    // MEMBERS
-    // =========================================================================
+    Ok(())
+}
+
+/// Outputs of the member-seeding phase that later phases and the final
+/// summary need: the created members (id + generation config), the admin
+/// account id (event / announcement author), and the count of randomly
+/// generated members.
+struct SeededMembers {
+    all_members: Vec<(Uuid, MemberGenConfig)>,
+    admin_id: Uuid,
+    generated: usize,
+}
+
+/// Seed the admin user, the configured test users, and the randomly
+/// generated members. Returns the created members plus the admin id.
+async fn seed_members(
+    config: &ExampleConfig,
+    args: &Args,
+    db_pool: &sqlx::SqlitePool,
+    member_repo: &SqliteMemberRepository,
+    membership_type_repo: &SqliteMembershipTypeRepository,
+    rng: &mut impl Rng,
+) -> anyhow::Result<SeededMembers> {
     println!("Creating members...");
 
     let mut all_members: Vec<(Uuid, MemberGenConfig)> = Vec::new();
@@ -552,7 +635,7 @@ async fn main() -> anyhow::Result<()> {
             .bind(joined)
             .bind(user_config.bypass_dues)
             .bind(member.id.to_string())
-            .execute(&db_pool)
+            .execute(db_pool)
             .await?;
 
         all_members.push((
@@ -581,11 +664,11 @@ async fn main() -> anyhow::Result<()> {
     while generated < random_count && attempts < MAX_ATTEMPTS {
         attempts += 1;
 
-        let first_name: String = FirstName().fake_with_rng(&mut rng);
-        let last_name: String = LastName().fake_with_rng(&mut rng);
+        let first_name: String = FirstName().fake_with_rng(rng);
+        let last_name: String = LastName().fake_with_rng(rng);
         let full_name = format!("{} {}", first_name, last_name);
 
-        let mut username = make_username(&first_name, &last_name, &mut rng);
+        let mut username = make_username(&first_name, &last_name, rng);
         if used_usernames.contains(&username) {
             username = format!("{}_{}", username, rng.gen_range(100..999));
         }
@@ -600,7 +683,7 @@ async fn main() -> anyhow::Result<()> {
             "demo.org",
             "sample.net",
         ];
-        let domain = email_domains.choose(&mut rng).unwrap();
+        let domain = email_domains.choose(rng).unwrap();
         let mut email = format!("{}@{}", username, domain);
         if used_emails.contains(&email) {
             email = format!(
@@ -614,7 +697,7 @@ async fn main() -> anyhow::Result<()> {
             continue;
         }
 
-        let gen_config = generate_member_config(&mut rng, &active_types);
+        let gen_config = generate_member_config(rng, &active_types);
 
         let member = member_repo
             .create(CreateMemberRequest {
@@ -649,7 +732,7 @@ async fn main() -> anyhow::Result<()> {
             .bind(gen_config.bypass_dues)
             .bind(&gen_config.notes)
             .bind(member.id.to_string())
-            .execute(&db_pool)
+            .execute(db_pool)
             .await?;
 
         all_members.push((member.id, gen_config));
@@ -660,9 +743,23 @@ async fn main() -> anyhow::Result<()> {
 
     println!("    Generated {} random members", generated);
 
-    // =========================================================================
-    // EVENTS
-    // =========================================================================
+    Ok(SeededMembers {
+        all_members,
+        admin_id: admin.id,
+        generated,
+    })
+}
+
+/// Seed events from config (plus generic monthly meetings when the
+/// config lists none) and register random attendees for past events.
+/// Returns the number of events created.
+async fn seed_events(
+    config: &ExampleConfig,
+    all_members: &[(Uuid, MemberGenConfig)],
+    admin_id: Uuid,
+    event_repo: &SqliteEventRepository,
+    rng: &mut impl Rng,
+) -> anyhow::Result<i64> {
     println!("Creating events...");
     let mut event_count = 0;
 
@@ -691,7 +788,7 @@ async fn main() -> anyhow::Result<()> {
             event_config.days_offset,
             event_config.duration_hours,
             event_config.location.as_deref(),
-            admin.id,
+            admin_id,
             event_config.image_url.as_deref(),
         );
 
@@ -702,7 +799,7 @@ async fn main() -> anyhow::Result<()> {
         if event_config.days_offset < 0 {
             let attendee_count = rng.gen_range(8..25);
             let mut shuffled: Vec<_> = all_members.iter().collect();
-            shuffled.shuffle(&mut rng);
+            shuffled.shuffle(rng);
             for (member_id, _) in shuffled.iter().take(attendee_count) {
                 let _ = event_repo
                     .register_attendance(created_event.id, *member_id)
@@ -727,7 +824,7 @@ async fn main() -> anyhow::Result<()> {
                 days_ahead,
                 2,
                 Some("Main Meeting Room"),
-                admin.id,
+                admin_id,
                 None,
             );
             event_repo.create(event).await?;
@@ -737,9 +834,16 @@ async fn main() -> anyhow::Result<()> {
 
     println!("    Created {} events", event_count);
 
-    // =========================================================================
-    // ANNOUNCEMENTS
-    // =========================================================================
+    Ok(event_count)
+}
+
+/// Seed announcements from config (plus a welcome announcement when the
+/// config lists none). Returns the number of announcements created.
+async fn seed_announcements(
+    config: &ExampleConfig,
+    admin_id: Uuid,
+    announcement_repo: &SqliteAnnouncementRepository,
+) -> anyhow::Result<i64> {
     println!("Creating announcements...");
     let mut announcement_count = 0;
 
@@ -763,7 +867,7 @@ async fn main() -> anyhow::Result<()> {
             image_url: ann_config.image_url.clone(),
             published_at: Some(Utc::now() - Duration::days(ann_config.days_ago)),
             scheduled_publish_at: None,
-            created_by: admin.id,
+            created_by: admin_id,
             created_at: Utc::now() - Duration::days(ann_config.days_ago),
             updated_at: Utc::now() - Duration::days(ann_config.days_ago),
         };
@@ -784,7 +888,7 @@ async fn main() -> anyhow::Result<()> {
             image_url: None,
             published_at: Some(Utc::now() - Duration::days(1)),
             scheduled_publish_at: None,
-            created_by: admin.id,
+            created_by: admin_id,
             created_at: Utc::now() - Duration::days(1),
             updated_at: Utc::now() - Duration::days(1),
         };
@@ -794,9 +898,17 @@ async fn main() -> anyhow::Result<()> {
 
     println!("    Created {} announcements", announcement_count);
 
-    // =========================================================================
-    // PAYMENTS
-    // =========================================================================
+    Ok(announcement_count)
+}
+
+/// Seed membership-dues payment history for non-bypass members. Returns
+/// the number of payment records created.
+async fn seed_payments(
+    config: &ExampleConfig,
+    all_members: &[(Uuid, MemberGenConfig)],
+    payment_repo: &SqlitePaymentRepository,
+    rng: &mut impl Rng,
+) -> anyhow::Result<i64> {
     println!("Creating payment records...");
     let mut payment_count = 0;
 
@@ -807,7 +919,7 @@ async fn main() -> anyhow::Result<()> {
         .map(|mt| mt.fee_cents as i64)
         .unwrap_or(5000);
 
-    for (member_id, gen_config) in &all_members {
+    for (member_id, gen_config) in all_members {
         if gen_config.bypass_dues {
             continue;
         }
@@ -868,38 +980,5 @@ async fn main() -> anyhow::Result<()> {
 
     println!("    Created {} payment records", payment_count);
 
-    // =========================================================================
-    // SUMMARY
-    // =========================================================================
-    println!("\nDatabase seeding complete!");
-    println!("\nSummary:");
-    println!("   Example: {}", args.example);
-    println!("   Members: {} (including admin)", all_members.len() + 1);
-    println!("   Events: {}", event_count);
-    println!("   Payments: {}", payment_count);
-    println!("   Announcements: {}", announcement_count);
-    println!("   Event types: {}", config.event_types.len());
-    println!("   Announcement types: {}", config.announcement_types.len());
-    println!("   Membership types: {}", config.membership_types.len());
-
-    println!("\nCredentials:");
-    println!(
-        "   Admin: {} / {}",
-        config.admin.email, config.admin.password
-    );
-    if !config.test_users.is_empty() {
-        println!("\n   Test users:");
-        for user in &config.test_users {
-            println!(
-                "     {} - {}, {}",
-                user.email, user.membership_type, user.status
-            );
-        }
-    }
-    println!(
-        "\n   Plus {} randomly generated members (password: password123)",
-        generated
-    );
-
-    Ok(())
+    Ok(payment_count)
 }

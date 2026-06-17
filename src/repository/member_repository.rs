@@ -659,48 +659,8 @@ impl MemberRepository for SqliteMemberRepository {
         // Build WHERE clause + bound params from the typed query.
         // Sort field/direction map to constant strings (no injection
         // risk); user-provided values (search, status, type) bind.
-        let search_pat = query
-            .search
-            .as_ref()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|s| format!("%{}%", s.to_lowercase()));
-        let status_str = query.status.as_ref().map(|s| s.as_str().to_string());
-        let mtype_id_str = query.membership_type_id.map(|id| id.to_string());
-
-        let mut where_clauses: Vec<&str> = Vec::new();
-        if search_pat.is_some() {
-            where_clauses
-                .push("(LOWER(full_name) LIKE ? OR LOWER(email) LIKE ? OR LOWER(username) LIKE ?)");
-        }
-        if status_str.is_some() {
-            where_clauses.push("status = ?");
-        }
-        if mtype_id_str.is_some() {
-            where_clauses.push("membership_type_id = ?");
-        }
-        let where_sql = if where_clauses.is_empty() {
-            String::new()
-        } else {
-            format!(" WHERE {}", where_clauses.join(" AND "))
-        };
-
-        // ORDER BY mapping. NULL dues_paid_until sorts to the bottom
-        // regardless of direction (admins want "set" rows above "not
-        // set" rows when sorting by that column).
-        let order_dir = match query.order {
-            SortOrder::Asc => "ASC",
-            SortOrder::Desc => "DESC",
-        };
-        let order_sql = match query.sort {
-            MemberSortField::Name => format!("LOWER(full_name) {}", order_dir),
-            MemberSortField::Status => format!("status {}", order_dir),
-            MemberSortField::MembershipType => format!("membership_type_id {}", order_dir),
-            MemberSortField::Joined => format!("joined_at {}", order_dir),
-            MemberSortField::DuesPaidUntil => {
-                format!("dues_paid_until IS NULL, dues_paid_until {}", order_dir)
-            }
-        };
+        let (where_sql, binds) = build_member_filter(&query, MemberQueryScope::Search);
+        let order_sql = build_member_order_by(&query, MemberQueryScope::Search);
 
         let select_sql = format!(
             "SELECT id, email, username, full_name, status, membership_type_id, \
@@ -717,17 +677,9 @@ impl MemberRepository for SqliteMemberRepository {
         // Bind WHERE params first (used by both queries), then LIMIT/OFFSET.
         let mut rows_q = sqlx::query_as::<_, MemberRow>(&select_sql);
         let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
-        if let Some(p) = &search_pat {
-            rows_q = rows_q.bind(p).bind(p).bind(p);
-            count_q = count_q.bind(p).bind(p).bind(p);
-        }
-        if let Some(s) = &status_str {
-            rows_q = rows_q.bind(s);
-            count_q = count_q.bind(s);
-        }
-        if let Some(t) = &mtype_id_str {
-            rows_q = rows_q.bind(t);
-            count_q = count_q.bind(t);
+        for b in &binds {
+            rows_q = rows_q.bind(b);
+            count_q = count_q.bind(b);
         }
         rows_q = rows_q.bind(query.limit).bind(query.offset);
 
@@ -748,46 +700,8 @@ impl MemberRepository for SqliteMemberRepository {
     }
 
     async fn export_rows(&self, query: MemberQuery) -> Result<Vec<MemberExportRow>> {
-        let search_pat = query
-            .search
-            .as_ref()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|s| format!("%{}%", s.to_lowercase()));
-        let status_str = query.status.as_ref().map(|s| s.as_str().to_string());
-        let mtype_id_str = query.membership_type_id.map(|id| id.to_string());
-
-        let mut where_clauses: Vec<&str> = Vec::new();
-        if search_pat.is_some() {
-            where_clauses.push(
-                "(LOWER(m.full_name) LIKE ? OR LOWER(m.email) LIKE ? OR LOWER(m.username) LIKE ?)",
-            );
-        }
-        if status_str.is_some() {
-            where_clauses.push("m.status = ?");
-        }
-        if mtype_id_str.is_some() {
-            where_clauses.push("m.membership_type_id = ?");
-        }
-        let where_sql = if where_clauses.is_empty() {
-            String::new()
-        } else {
-            format!(" WHERE {}", where_clauses.join(" AND "))
-        };
-
-        let order_dir = match query.order {
-            SortOrder::Asc => "ASC",
-            SortOrder::Desc => "DESC",
-        };
-        let order_sql = match query.sort {
-            MemberSortField::Name => format!("LOWER(m.full_name) {}", order_dir),
-            MemberSortField::Status => format!("m.status {}", order_dir),
-            MemberSortField::MembershipType => format!("LOWER(mt.name) {}", order_dir),
-            MemberSortField::Joined => format!("m.joined_at {}", order_dir),
-            MemberSortField::DuesPaidUntil => {
-                format!("m.dues_paid_until IS NULL, m.dues_paid_until {}", order_dir)
-            }
-        };
+        let (where_sql, binds) = build_member_filter(&query, MemberQueryScope::Export);
+        let order_sql = build_member_order_by(&query, MemberQueryScope::Export);
 
         let select_sql = format!(
             "SELECT m.id, m.email, m.username, m.full_name, m.status, \
@@ -801,14 +715,8 @@ impl MemberRepository for SqliteMemberRepository {
         );
 
         let mut q = sqlx::query_as::<_, ExportRow>(&select_sql);
-        if let Some(p) = &search_pat {
-            q = q.bind(p).bind(p).bind(p);
-        }
-        if let Some(s) = &status_str {
-            q = q.bind(s);
-        }
-        if let Some(t) = &mtype_id_str {
-            q = q.bind(t);
+        for b in &binds {
+            q = q.bind(b);
         }
 
         let rows = q.fetch_all(&self.pool).await.map_err(AppError::Database)?;
@@ -835,6 +743,93 @@ impl MemberRepository for SqliteMemberRepository {
                 })
             })
             .collect()
+    }
+}
+
+/// Column qualification for the shared member filter/sort builders.
+/// `search` queries `members` directly with bare columns; `export_rows`
+/// aliases it `m` and `LEFT JOIN`s `membership_types mt`, so its columns
+/// are `m.`-qualified and the membership-type sort uses the joined name.
+#[derive(Clone, Copy)]
+enum MemberQueryScope {
+    Search,
+    Export,
+}
+
+impl MemberQueryScope {
+    /// Column-name prefix for the queried `members` table.
+    fn prefix(self) -> &'static str {
+        match self {
+            MemberQueryScope::Search => "",
+            MemberQueryScope::Export => "m.",
+        }
+    }
+}
+
+/// Build the shared `WHERE` fragment + the ordered bound values for a
+/// member filter. Columns are qualified per `scope`. The returned values
+/// are in bind order: the search pattern (repeated for the three `LIKE`
+/// columns), then status, then membership type. Sort keys never reach
+/// this path, so no user input is interpolated into the SQL.
+fn build_member_filter(query: &MemberQuery, scope: MemberQueryScope) -> (String, Vec<String>) {
+    let col = scope.prefix();
+    let search_pat = query
+        .search
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("%{}%", s.to_lowercase()));
+    let status_str = query.status.as_ref().map(|s| s.as_str().to_string());
+    let mtype_id_str = query.membership_type_id.map(|id| id.to_string());
+
+    let mut where_clauses: Vec<String> = Vec::new();
+    let mut binds: Vec<String> = Vec::new();
+    if let Some(pat) = search_pat {
+        where_clauses.push(format!(
+            "(LOWER({col}full_name) LIKE ? OR LOWER({col}email) LIKE ? OR LOWER({col}username) LIKE ?)"
+        ));
+        binds.push(pat.clone());
+        binds.push(pat.clone());
+        binds.push(pat);
+    }
+    if let Some(s) = status_str {
+        where_clauses.push(format!("{col}status = ?"));
+        binds.push(s);
+    }
+    if let Some(t) = mtype_id_str {
+        where_clauses.push(format!("{col}membership_type_id = ?"));
+        binds.push(t);
+    }
+    let where_sql = if where_clauses.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", where_clauses.join(" AND "))
+    };
+    (where_sql, binds)
+}
+
+/// Build the `ORDER BY` fragment for a member filter, qualified per
+/// `scope`. NULL `dues_paid_until` sorts to the bottom regardless of
+/// direction (admins want "set" rows above "not set" rows when sorting
+/// by that column). Sort field/direction map to constant strings (no
+/// user input), preserving the injection-safety of the sort path.
+fn build_member_order_by(query: &MemberQuery, scope: MemberQueryScope) -> String {
+    let col = scope.prefix();
+    let order_dir = match query.order {
+        SortOrder::Asc => "ASC",
+        SortOrder::Desc => "DESC",
+    };
+    match query.sort {
+        MemberSortField::Name => format!("LOWER({col}full_name) {order_dir}"),
+        MemberSortField::Status => format!("{col}status {order_dir}"),
+        MemberSortField::MembershipType => match scope {
+            MemberQueryScope::Search => format!("{col}membership_type_id {order_dir}"),
+            MemberQueryScope::Export => format!("LOWER(mt.name) {order_dir}"),
+        },
+        MemberSortField::Joined => format!("{col}joined_at {order_dir}"),
+        MemberSortField::DuesPaidUntil => {
+            format!("{col}dues_paid_until IS NULL, {col}dues_paid_until {order_dir}")
+        }
     }
 }
 
