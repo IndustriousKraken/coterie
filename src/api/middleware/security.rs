@@ -60,6 +60,29 @@ use crate::{
 ///   the CORS allowed-origins list and rate-limited; that's the
 ///   security model for these endpoints.
 ///
+/// * **`POST /login`** — the browser portal login form
+///   (`templates/auth/login.html`) posts here; no `session` cookie
+///   exists yet to bind a CSRF token to. Gated by the per-IP login
+///   rate limiter and SameSite=Lax cookies (the same model as
+///   `/auth/login`).
+///
+/// * **`POST /login/totp`** — the second-factor step of the portal
+///   login; the caller holds only a `pending_login` cookie at this
+///   point, not a `session` cookie, so there's no session id to bind
+///   a CSRF token to.
+///
+/// * **`POST /forgot-password`** — anonymous password-reset request;
+///   no session exists. Gated by the per-IP login rate limiter and an
+///   enumeration-safe response.
+///
+/// * **`POST /reset-password`** — anonymous; authorization is the
+///   single-use, time-limited reset token carried in the form body,
+///   not a session.
+///
+/// * **`POST /setup`** — the first-run admin-creation wizard; runs
+///   before any admin or session exists. Gated by the one-shot "no
+///   admin yet" check + `setup_lock`.
+///
 /// * **`POST /auth/login`** — by definition no session exists yet,
 ///   so there's nothing to bind a CSRF token to. Login CSRF is a
 ///   real but separate threat (an attacker forces you to log into
@@ -83,6 +106,16 @@ const CSRF_EXEMPT_PATHS: &[(&str, &str)] = &[
     ("POST", "/api/payments/webhook/stripe"),
     ("POST", "/public/signup"),
     ("POST", "/public/donate"),
+    // Browser portal web-auth forms: the caller has no `session`
+    // cookie yet (these endpoints exist to authenticate or first-
+    // provision them), so there is no session id to bind a CSRF token
+    // to. See the doc comment above for each entry's rationale.
+    ("POST", "/login"),
+    ("POST", "/login/totp"),
+    ("POST", "/forgot-password"),
+    ("POST", "/reset-password"),
+    ("POST", "/setup"),
+    // JSON auth API: same session-less rationale as the web forms.
     ("POST", "/auth/login"),
     ("POST", "/auth/login/totp"),
 ];
