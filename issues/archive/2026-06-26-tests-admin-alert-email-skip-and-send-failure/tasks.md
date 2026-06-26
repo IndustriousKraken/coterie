@@ -21,26 +21,26 @@ Invoke the handler via the `Integration` trait:
 `integration.handle_event(&IntegrationEvent::AdminAlert { subject, body })`.
 
 ## 1. Empty recipient setting → no send
-- [ ] 1.1 `admin_alert_email_skips_when_contact_email_unset` — with
+- [x] 1.1 `admin_alert_email_skips_when_contact_email_unset` — with
   `org.contact_email` empty/unset and a `RecordingSender`, call
   `handle_event(&AdminAlert { subject: "x".into(), body: "y".into() })`;
   assert it returns `Ok(())` AND the recorder is empty (sender never called).
 
 ## 2. Send failure is absorbed, not propagated
-- [ ] 2.1 `admin_alert_email_send_failure_is_swallowed` — with
+- [x] 2.1 `admin_alert_email_send_failure_is_swallowed` — with
   `org.contact_email = "ops@example.org"` and a `FailingSender`, call
   `handle_event(&AdminAlert { .. })`; assert it returns `Ok(())` (the
   sender's `Err` does not surface).
 
 ## 3. Configured recipient drives the To: list
-- [ ] 3.1 `admin_alert_email_sends_to_configured_recipient` — with
+- [x] 3.1 `admin_alert_email_sends_to_configured_recipient` — with
   `org.contact_email = "ops@example.org"` and a `RecordingSender`, call
   `handle_event(&AdminAlert { .. })`; assert it returns `Ok(())`, the
   recorder holds exactly one `EmailMessage`, and that message's recipient
   equals `"ops@example.org"`.
 
 ## 4. Non-AdminAlert events are a no-op
-- [ ] 4.1 `admin_alert_email_ignores_non_alert_events` — with a
+- [x] 4.1 `admin_alert_email_ignores_non_alert_events` — with a
   `RecordingSender`, call `handle_event` with any non-`AdminAlert`
   `IntegrationEvent` variant; assert it returns `Ok(())` and the recorder is
   empty.
