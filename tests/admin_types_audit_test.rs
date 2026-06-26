@@ -23,6 +23,7 @@ use coterie::{
         state::{AnnouncementBasicTypeService, EventBasicTypeService},
     },
     domain::{BasicTypeKind, CreateBasicTypeRequest, CreateMembershipTypeRequest, Member},
+    error::AppError,
     repository::{
         BasicTypeRepository, MembershipTypeRepository, SqliteBasicTypeRepository,
         SqliteMembershipTypeRepository,
@@ -478,6 +479,166 @@ async fn delete_membership_type_writes_audit_row() {
     assert_eq!(row.action, "delete_membership_type");
     assert_eq!(row.old_value.as_deref(), Some("Annual"));
     assert_eq!(row.new_value, None);
+}
+
+// ---------------------------------------------------------------------
+// In-use deletion is rejected (the Conflict guard, not the happy path)
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn delete_membership_type_in_use_is_rejected() {
+    let h = build_harness().await;
+
+    let created = h
+        .membership_svc
+        .create(CreateMembershipTypeRequest {
+            name: "Annual".to_string(),
+            slug: Some("annual".to_string()),
+            description: None,
+            color: None,
+            icon: None,
+            fee_cents: 1000,
+            billing_period: "monthly".to_string(),
+        })
+        .await
+        .expect("seed membership type");
+
+    // Point the seeded member at the new type so count_usage > 0.
+    sqlx::query("UPDATE members SET membership_type_id = ? WHERE id = ?")
+        .bind(created.id.to_string())
+        .bind(h.current_user.member.id.to_string())
+        .execute(&h.pool)
+        .await
+        .expect("point member at membership type");
+
+    let err = h
+        .membership_svc
+        .delete(created.id)
+        .await
+        .expect_err("in-use membership type must not delete");
+    match err {
+        AppError::Conflict(msg) => {
+            assert!(msg.contains("Cannot delete membership type"), "msg: {msg}");
+            assert!(msg.contains("Deactivate instead."), "msg: {msg}");
+        }
+        other => panic!("expected Conflict, got {other:?}"),
+    }
+
+    assert!(
+        h.membership_svc
+            .get(created.id)
+            .await
+            .expect("get")
+            .is_some(),
+        "rejected delete must leave the membership type row intact"
+    );
+}
+
+#[tokio::test]
+async fn delete_event_type_in_use_is_rejected() {
+    let h = build_harness().await;
+
+    let created = h
+        .event_svc
+        .create(CreateBasicTypeRequest {
+            name: "Workshop".to_string(),
+            slug: Some("workshop".to_string()),
+            description: None,
+            color: None,
+            icon: None,
+        })
+        .await
+        .expect("seed event type");
+
+    // Insert one event referencing the type so count_usage > 0.
+    sqlx::query(
+        "INSERT INTO events (id, title, event_type, event_type_id, start_time, created_by) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind("Spring Hackathon")
+    .bind("Workshop")
+    .bind(created.id.to_string())
+    .bind("2026-01-01 00:00:00")
+    .bind(h.current_user.member.id.to_string())
+    .execute(&h.pool)
+    .await
+    .expect("insert referencing event");
+
+    let err = h
+        .event_svc
+        .delete(created.id)
+        .await
+        .expect_err("in-use event type must not delete");
+    match err {
+        AppError::Conflict(msg) => {
+            assert!(msg.contains("Cannot delete event type"), "msg: {msg}");
+            assert!(msg.contains("Deactivate instead."), "msg: {msg}");
+        }
+        other => panic!("expected Conflict, got {other:?}"),
+    }
+
+    assert!(
+        h.event_svc.get(created.id).await.expect("get").is_some(),
+        "rejected delete must leave the event type row intact"
+    );
+}
+
+#[tokio::test]
+async fn delete_announcement_type_in_use_is_rejected() {
+    let h = build_harness().await;
+
+    let created = h
+        .announcement_svc
+        .create(CreateBasicTypeRequest {
+            name: "Newsletter".to_string(),
+            slug: Some("newsletter".to_string()),
+            description: None,
+            color: None,
+            icon: None,
+        })
+        .await
+        .expect("seed announcement type");
+
+    // Insert one announcement referencing the type so count_usage > 0.
+    sqlx::query(
+        "INSERT INTO announcements (id, title, content, announcement_type, announcement_type_id, created_by) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind("Q1 Update")
+    .bind("Body text")
+    .bind("Newsletter")
+    .bind(created.id.to_string())
+    .bind(h.current_user.member.id.to_string())
+    .execute(&h.pool)
+    .await
+    .expect("insert referencing announcement");
+
+    let err = h
+        .announcement_svc
+        .delete(created.id)
+        .await
+        .expect_err("in-use announcement type must not delete");
+    match err {
+        AppError::Conflict(msg) => {
+            assert!(
+                msg.contains("Cannot delete announcement type"),
+                "msg: {msg}"
+            );
+            assert!(msg.contains("Deactivate instead."), "msg: {msg}");
+        }
+        other => panic!("expected Conflict, got {other:?}"),
+    }
+
+    assert!(
+        h.announcement_svc
+            .get(created.id)
+            .await
+            .expect("get")
+            .is_some(),
+        "rejected delete must leave the announcement type row intact"
+    );
 }
 
 // ---------------------------------------------------------------------
