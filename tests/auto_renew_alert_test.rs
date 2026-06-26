@@ -268,13 +268,11 @@ async fn payments_count(pool: &SqlitePool) -> i64 {
 }
 
 async fn member_dues_until(pool: &SqlitePool, member_id: Uuid) -> Option<String> {
-    sqlx::query_scalar::<_, Option<String>>(
-        "SELECT dues_paid_until FROM members WHERE id = ?",
-    )
-    .bind(member_id.to_string())
-    .fetch_one(pool)
-    .await
-    .expect("query member dues_paid_until")
+    sqlx::query_scalar::<_, Option<String>>("SELECT dues_paid_until FROM members WHERE id = ?")
+        .bind(member_id.to_string())
+        .fetch_one(pool)
+        .await
+        .expect("query member dues_paid_until")
 }
 
 // ---------------------------------------------------------------------

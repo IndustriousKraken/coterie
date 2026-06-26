@@ -220,10 +220,13 @@ pub async fn update_password(
 
     // Mint a fresh session for the caller so they aren't logged out on
     // the device they just changed their password from.
-    let new_jar = match auth_service.create_session(current_user.member.id, 24).await {
+    let new_jar = match auth_service
+        .create_session(current_user.member.id, 24)
+        .await
+    {
         Ok((_session, token)) => {
-            let cookie = auth_service
-                .create_session_cookie(&token, settings.server.cookies_are_secure());
+            let cookie =
+                auth_service.create_session_cookie(&token, settings.server.cookies_are_secure());
             jar.add(cookie)
         }
         Err(e) => {
