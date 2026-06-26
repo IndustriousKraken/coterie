@@ -199,11 +199,7 @@ fn form_body(csrf_token: &str, current: &str, new: &str, confirm: &str) -> Strin
         ("new_password", new),
         ("confirm_password", confirm),
     ] {
-        parts.push(format!(
-            "{}={}",
-            urlencode(k),
-            urlencode(v)
-        ));
+        parts.push(format!("{}={}", urlencode(k), urlencode(v)));
     }
     parts.join("&")
 }
@@ -242,10 +238,7 @@ fn password_change_request(session_token: &str, body: String) -> Request<Body> {
         .method("POST")
         .uri("/portal/profile/password")
         .header(header::COOKIE, format!("session={}", session_token))
-        .header(
-            header::CONTENT_TYPE,
-            "application/x-www-form-urlencoded",
-        )
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
         .body(Body::from(body))
         .unwrap()
 }
@@ -309,8 +302,8 @@ async fn password_change_invalidates_other_sessions() {
 
     // The response MUST carry a fresh session cookie so the caller
     // stays signed in on this device.
-    let new_token_a = extract_session_cookie(resp.headers())
-        .expect("response must set a new session cookie");
+    let new_token_a =
+        extract_session_cookie(resp.headers()).expect("response must set a new session cookie");
     assert!(
         !new_token_a.is_empty(),
         "freshly issued session cookie value must be non-empty"

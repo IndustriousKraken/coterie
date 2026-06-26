@@ -243,7 +243,10 @@ async fn does_not_expire_member_within_grace_period() {
         .await
         .expect("sweep ok");
 
-    assert_eq!(count, 0, "member 1 day past dues with 3-day grace must not flip");
+    assert_eq!(
+        count, 0,
+        "member 1 day past dues with 3-day grace must not flip"
+    );
     assert_eq!(member_status(&h.pool, member_id).await, "Active");
     assert!(
         member_expired_ids(&h.recorded_events).is_empty(),

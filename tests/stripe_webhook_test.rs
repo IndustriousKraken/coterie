@@ -265,6 +265,16 @@ async fn member_billing_mode(pool: &SqlitePool, member_id: Uuid) -> String {
         .expect("query billing_mode")
 }
 
+async fn member_subscription_id(pool: &SqlitePool, member_id: Uuid) -> Option<String> {
+    sqlx::query_scalar::<_, Option<String>>(
+        "SELECT stripe_subscription_id FROM members WHERE id = ?",
+    )
+    .bind(member_id.to_string())
+    .fetch_one(pool)
+    .await
+    .expect("query stripe_subscription_id")
+}
+
 // ---------------------------------------------------------------------
 // JSON builders for stripe-rs types
 // ---------------------------------------------------------------------
@@ -1106,5 +1116,228 @@ async fn invoice_payment_failed_for_unknown_subscription_is_noop() {
     assert_eq!(
         dues_after, seeded_dues,
         "seeded member's dues_paid_until must not change",
+    );
+}
+
+// ---------------------------------------------------------------------
+// 7. payment_intent.payment_failed: flips the matching Pending row to
+//    Failed; unknown payment id is a silent no-op.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn failed_payment_flips_matching_payment_to_failed() {
+    let h = build_harness().await;
+    let member_id = insert_member(&h.pool, Some("cus_pi_failed"), BillingMode::Manual).await;
+    let payment_id = Uuid::new_v4();
+    let pi_id = "pi_failed";
+
+    insert_pending_payment(
+        &h.pool,
+        Payment {
+            id: payment_id,
+            payer: Payer::Member(member_id),
+            amount_cents: 50_00,
+            currency: "USD".to_string(),
+            status: PaymentStatus::Pending,
+            payment_method: PaymentMethod::Stripe,
+            external_id: Some(StripeRef::PaymentIntent(pi_id.to_string())),
+            description: "Dues".to_string(),
+            kind: PaymentKind::Membership,
+            paid_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        },
+    )
+    .await;
+
+    h.dispatcher
+        .dispatch_failed_payment(pi_id.to_string())
+        .await
+        .expect("dispatch ok");
+
+    assert_eq!(payment_status(&h.pool, payment_id).await, "Failed");
+}
+
+#[tokio::test]
+async fn failed_payment_for_unknown_id_is_noop() {
+    let h = build_harness().await;
+    let member_id =
+        insert_member(&h.pool, Some("cus_pi_failed_unknown"), BillingMode::Manual).await;
+    let payment_id = Uuid::new_v4();
+
+    // A Pending row exists, but keyed to a DIFFERENT PI than the one the
+    // webhook references — so the handler must leave it untouched.
+    insert_pending_payment(
+        &h.pool,
+        Payment {
+            id: payment_id,
+            payer: Payer::Member(member_id),
+            amount_cents: 50_00,
+            currency: "USD".to_string(),
+            status: PaymentStatus::Pending,
+            payment_method: PaymentMethod::Stripe,
+            external_id: Some(StripeRef::PaymentIntent("pi_real".to_string())),
+            description: "Dues".to_string(),
+            kind: PaymentKind::Membership,
+            paid_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        },
+    )
+    .await;
+
+    h.dispatcher
+        .dispatch_failed_payment("pi_does_not_exist".into())
+        .await
+        .expect("unknown id dispatch should succeed quietly");
+
+    assert_eq!(
+        payment_status(&h.pool, payment_id).await,
+        "Pending",
+        "unmatched payment row must not change status",
+    );
+}
+
+// ---------------------------------------------------------------------
+// 8. checkout.session.expired: flips the matching Pending row to Failed;
+//    unknown session id is a silent no-op.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn expired_session_flips_pending_payment_to_failed() {
+    let h = build_harness().await;
+    let member_id = insert_member(&h.pool, Some("cus_cs_expired"), BillingMode::Manual).await;
+    let payment_id = Uuid::new_v4();
+    let cs_id = "cs_expired";
+
+    insert_pending_payment(
+        &h.pool,
+        Payment {
+            id: payment_id,
+            payer: Payer::Member(member_id),
+            amount_cents: 50_00,
+            currency: "USD".to_string(),
+            status: PaymentStatus::Pending,
+            payment_method: PaymentMethod::Stripe,
+            external_id: Some(StripeRef::CheckoutSession(cs_id.to_string())),
+            description: "Dues".to_string(),
+            kind: PaymentKind::Membership,
+            paid_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        },
+    )
+    .await;
+
+    let session = build_checkout_session(cs_id, None, json!({}));
+    h.dispatcher
+        .dispatch_expired_session(session)
+        .await
+        .expect("dispatch ok");
+
+    assert_eq!(payment_status(&h.pool, payment_id).await, "Failed");
+}
+
+#[tokio::test]
+async fn expired_session_for_unknown_session_is_noop() {
+    let h = build_harness().await;
+    let member_id = insert_member(&h.pool, Some("cus_cs_unknown"), BillingMode::Manual).await;
+    let payment_id = Uuid::new_v4();
+
+    // Pending row keyed to a different session id than the expired one.
+    insert_pending_payment(
+        &h.pool,
+        Payment {
+            id: payment_id,
+            payer: Payer::Member(member_id),
+            amount_cents: 50_00,
+            currency: "USD".to_string(),
+            status: PaymentStatus::Pending,
+            payment_method: PaymentMethod::Stripe,
+            external_id: Some(StripeRef::CheckoutSession("cs_real".to_string())),
+            description: "Dues".to_string(),
+            kind: PaymentKind::Membership,
+            paid_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        },
+    )
+    .await;
+
+    let session = build_checkout_session("cs_does_not_exist", None, json!({}));
+    h.dispatcher
+        .dispatch_expired_session(session)
+        .await
+        .expect("unknown session dispatch should succeed quietly");
+
+    assert_eq!(
+        payment_status(&h.pool, payment_id).await,
+        "Pending",
+        "unmatched payment row must not change status",
+    );
+}
+
+// ---------------------------------------------------------------------
+// 9. customer.subscription.updated: refreshes the member's stored
+//    subscription id; unknown customer is a silent no-op.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn subscription_updated_refreshes_stored_subscription_id() {
+    let h = build_harness().await;
+    let customer_id = "cus_sub_updated";
+    let member_id =
+        insert_member(&h.pool, Some(customer_id), BillingMode::StripeSubscription).await;
+    // Seed the old subscription id so we can prove it gets replaced.
+    set_member_subscription_state(
+        &h.pool,
+        member_id,
+        Utc::now() + Duration::days(30),
+        "sub_old",
+    )
+    .await;
+
+    let sub = build_subscription("sub_new", customer_id);
+    h.dispatcher
+        .dispatch_subscription_updated(sub)
+        .await
+        .expect("dispatch ok");
+
+    assert_eq!(
+        member_subscription_id(&h.pool, member_id).await.as_deref(),
+        Some("sub_new"),
+        "member's stored subscription id must be refreshed to the new value",
+    );
+    // billing_mode is carried through unchanged by the handler.
+    assert_eq!(
+        member_billing_mode(&h.pool, member_id).await,
+        "stripe_subscription",
+    );
+}
+
+#[tokio::test]
+async fn subscription_updated_for_unknown_customer_is_noop() {
+    let h = build_harness().await;
+    let member_id =
+        insert_member(&h.pool, Some("cus_known"), BillingMode::StripeSubscription).await;
+    set_member_subscription_state(
+        &h.pool,
+        member_id,
+        Utc::now() + Duration::days(30),
+        "sub_kept",
+    )
+    .await;
+
+    // Subscription event for a customer that maps to no member.
+    let sub = build_subscription("sub_unknown_update", "cus_NEVER_HEARD_OF");
+    h.dispatcher
+        .dispatch_subscription_updated(sub)
+        .await
+        .expect("unknown customer dispatch should succeed quietly");
+
+    assert_eq!(
+        member_subscription_id(&h.pool, member_id).await.as_deref(),
+        Some("sub_kept"),
+        "known member's subscription id must not be mutated for an unrelated customer",
     );
 }

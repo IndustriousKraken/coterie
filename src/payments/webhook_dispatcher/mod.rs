@@ -256,4 +256,19 @@ impl WebhookDispatcher {
         self.handle_invoice_payment_failed(invoice, billing_service)
             .await
     }
+
+    pub async fn dispatch_failed_payment(&self, stripe_payment_id: String) -> Result<()> {
+        self.handle_failed_payment(stripe_payment_id).await
+    }
+
+    pub async fn dispatch_expired_session(&self, session: CheckoutSession) -> Result<()> {
+        self.handle_expired_session(session).await
+    }
+
+    pub async fn dispatch_subscription_updated(
+        &self,
+        subscription: stripe::Subscription,
+    ) -> Result<()> {
+        self.handle_subscription_updated(subscription).await
+    }
 }

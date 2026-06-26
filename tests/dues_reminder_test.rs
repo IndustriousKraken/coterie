@@ -174,10 +174,12 @@ async fn set_dues_window(pool: &SqlitePool, member_id: Uuid, days_from_now: i64)
     .await
     .expect("set dues window");
 
-    sqlx::query("UPDATE app_settings SET value = '7' WHERE key = 'membership.reminder_days_before'")
-        .execute(pool)
-        .await
-        .expect("set reminder_days_before");
+    sqlx::query(
+        "UPDATE app_settings SET value = '7' WHERE key = 'membership.reminder_days_before'",
+    )
+    .execute(pool)
+    .await
+    .expect("set reminder_days_before");
 }
 
 /// Default card for the member. `valid` controls expiry: far-future when
@@ -191,7 +193,11 @@ async fn seed_default_card(repo: &Arc<SqliteSavedCardRepository>, member_id: Uui
         card_last_four: "4242".to_string(),
         card_brand: "visa".to_string(),
         exp_month: 12,
-        exp_year: if valid { now.year() + 5 } else { now.year() - 1 },
+        exp_year: if valid {
+            now.year() + 5
+        } else {
+            now.year() - 1
+        },
         is_default: true,
         created_at: now,
         updated_at: now,
