@@ -125,31 +125,21 @@ impl WebhookDispatcher {
         }
 
         let pi_id = intent.id.to_string();
-        let won_flip = self
-            .payment_repo
-            .complete_pending_payment(payment_id, &pi_id)
-            .await?;
-        if !won_flip {
-            tracing::debug!(
-                "PI {} succeeded but payment {} was already completed; sync path won the race",
-                intent.id,
-                payment_id,
-            );
-            return Ok(());
-        }
 
-        tracing::info!(
-            "Self-healing payment {} via PI.succeeded webhook (payer: {:?})",
-            payment_id,
-            payment.payer,
-        );
-
-        // Post-work depends on payment kind. Donations have none —
-        // the row flip is the entire job. Membership payments need
-        // dues extended and (if auto-renew enrolled) the next renewal
-        // rescheduled. We look up the slug from the member's current
-        // membership_type since saved-card charges don't carry it on
-        // the Payment row.
+        // Post-work depends on payment kind. Donations have none — the
+        // row flip is the entire job, so it stays terminal for them.
+        // Membership payments need dues extended and (if auto-renew
+        // enrolled) the next renewal rescheduled. We look up the slug
+        // from the member's current membership_type since saved-card
+        // charges don't carry it on the Payment row.
+        //
+        // Critically, membership dues extend BEFORE the irreversible
+        // Completed flip. extend_dues_for_payment_atomic is an
+        // idempotent per-payment claim, so running it first is
+        // retry-safe; if it errors transiently the `?` returns Err
+        // BEFORE the flip, leaving the row Pending so the dispatcher's
+        // claim release lets Stripe's retry recover it. Flip-first would
+        // strand a paid-but-unextended member the retry can't fix.
         if matches!(payment.kind, PaymentKind::Membership) {
             // Membership payments must have a member; data integrity
             // violation otherwise (CHECK constraint should prevent it).
@@ -169,9 +159,11 @@ impl WebhookDispatcher {
                 Some(m) => m,
                 None => {
                     tracing::warn!(
-                        "Self-healed payment {} for missing member {}; skipping post-work",
-                        payment_id,
+                        "PI {} succeeded but member {} missing for payment {}; \
+                         skipping post-work (row left Pending for review)",
+                        intent.id,
                         member_id,
+                        payment_id,
                     );
                     return Ok(());
                 }
@@ -182,27 +174,72 @@ impl WebhookDispatcher {
                 Some(t) => t.slug,
                 None => {
                     tracing::warn!(
-                        "Member {}'s membership_type {} not found; can't extend dues for self-healed payment {}",
+                        "Member {}'s membership_type {} not found; can't extend dues for payment {} \
+                         (row left Pending for review)",
                         member_id, mt_id, payment_id,
                     );
                     return Ok(());
                 }
             };
+
+            // Extend FIRST (idempotent, retry-safe), then flip.
             billing_service
                 .auto_renew
                 .extend_member_dues_by_slug(payment_id, member_id, &slug)
                 .await?;
-            if let Err(e) = billing_service
-                .auto_renew
-                .reschedule_after_payment(member_id, &slug)
-                .await
-            {
-                tracing::error!(
-                    "Self-healed payment {} but reschedule failed: {}",
+
+            let won_flip = self
+                .payment_repo
+                .complete_pending_payment(payment_id, &pi_id)
+                .await?;
+            if won_flip {
+                tracing::info!(
+                    "Self-healing payment {} via PI.succeeded webhook (payer: {:?})",
                     payment_id,
-                    e,
+                    payment.payer,
+                );
+                // Reschedule only when we actually flipped — avoids
+                // double cancel/queue churn on the sync/webhook race.
+                // Soft-failed: a reschedule failure must not roll back a
+                // completed payment.
+                if let Err(e) = billing_service
+                    .auto_renew
+                    .reschedule_after_payment(member_id, &slug)
+                    .await
+                {
+                    tracing::error!(
+                        "Self-healed payment {} but reschedule failed: {}",
+                        payment_id,
+                        e,
+                    );
+                }
+            } else {
+                tracing::debug!(
+                    "PI {} succeeded but payment {} was already completed; sync path won the race",
+                    intent.id,
+                    payment_id,
                 );
             }
+        } else {
+            // Donation / other — no dues post-work, so the flip is the
+            // entire job and stays terminal.
+            let won_flip = self
+                .payment_repo
+                .complete_pending_payment(payment_id, &pi_id)
+                .await?;
+            if !won_flip {
+                tracing::debug!(
+                    "PI {} succeeded but payment {} was already completed; sync path won the race",
+                    intent.id,
+                    payment_id,
+                );
+                return Ok(());
+            }
+            tracing::info!(
+                "Self-healing payment {} via PI.succeeded webhook (payer: {:?})",
+                payment_id,
+                payment.payer,
+            );
         }
 
         Ok(())
