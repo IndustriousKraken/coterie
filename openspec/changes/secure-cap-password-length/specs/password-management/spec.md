@@ -4,7 +4,7 @@
 
 ### Requirement: Password complexity is validated at change/reset/signup
 
-`crate::auth::validate_password` SHALL be invoked before hashing on every code path that sets a password (signup, in-portal change, reset). The validator's rules are the single source of truth for complexity. The validator SHALL enforce both a minimum length AND a maximum length: a password longer than the upper bound (128 characters) SHALL be rejected before it is Argon2-hashed, so an unauthenticated caller cannot force expensive hashing of an oversized input (an Argon2 CPU-amplification denial of service).
+`crate::auth::validate_password` SHALL be invoked before hashing on every code path that sets a password (signup, in-portal change, reset, setup). The validator's rules are the single source of truth for complexity. The validator SHALL enforce both a minimum length AND a maximum length: a password longer than the upper bound (128 characters) SHALL be rejected before it is Argon2-hashed, so an unauthenticated caller cannot force expensive hashing of an oversized input (an Argon2 CPU-amplification denial of service).
 
 #### Scenario: Weak password rejected at change
 
