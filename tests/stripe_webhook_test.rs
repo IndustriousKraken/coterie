@@ -223,6 +223,30 @@ async fn insert_pending_payment(pool: &SqlitePool, payment: Payment) {
     repo.create(payment).await.expect("insert payment");
 }
 
+/// Insert an active membership_type with an exact slug + billing period.
+/// Used by the dues-extension regression tests to make a previously
+/// unresolvable slug resolvable on the recovering retry. Returns the id.
+async fn create_membership_type(pool: &SqlitePool, slug: &str, billing_period: &str) -> Uuid {
+    let id = Uuid::new_v4();
+    let now = Utc::now().naive_utc();
+    sqlx::query(
+        "INSERT INTO membership_types \
+         (id, name, slug, description, color, icon, sort_order, is_active, \
+          fee_cents, billing_period, created_at, updated_at) \
+         VALUES (?, ?, ?, NULL, NULL, NULL, 99, 1, 5000, ?, ?, ?)",
+    )
+    .bind(id.to_string())
+    .bind(format!("Ghost {}", slug))
+    .bind(slug)
+    .bind(billing_period)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await
+    .expect("create membership type");
+    id
+}
+
 async fn payment_dues_extended_at(
     pool: &SqlitePool,
     payment_id: Uuid,
@@ -697,6 +721,292 @@ async fn public_donation_checkout_completion_marks_payment_completed() {
             .await
             .expect("query stripe_payment_id");
     assert_eq!(stripe_id.as_deref(), Some("pi_public_donation"));
+}
+
+// ---------------------------------------------------------------------
+// 4b. Reorder regression: the irreversible Completed flip must be the
+//     LAST must-succeed step on the membership path. A transient dues-
+//     extension failure must leave the row Pending so Stripe's retry can
+//     recover it, and the recovered retry must advance dues exactly once.
+//     (stripe-webhook → "Failed processing releases the claim for retry"
+//     + "Event processing is idempotent via atomic claim".)
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn checkout_completed_leaves_payment_pending_when_dues_extend_fails() {
+    let h = build_harness().await;
+    let member_id = insert_member(&h.pool, Some("cus_extend_fail"), BillingMode::Manual).await;
+    let payment_id = Uuid::new_v4();
+    let session_id = "cs_extend_fail";
+    let slug = "ghost-tier"; // not in the membership-type registry (yet)
+
+    insert_pending_payment(
+        &h.pool,
+        Payment {
+            id: payment_id,
+            payer: Payer::Member(member_id),
+            amount_cents: 50_00,
+            currency: "USD".to_string(),
+            status: PaymentStatus::Pending,
+            payment_method: PaymentMethod::Stripe,
+            external_id: Some(StripeRef::CheckoutSession(session_id.to_string())),
+            description: "Dues".to_string(),
+            kind: PaymentKind::Membership,
+            paid_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        },
+    )
+    .await;
+
+    let session = build_checkout_session(
+        session_id,
+        Some("pi_extend_fail"),
+        json!({
+            "payment_type": "membership",
+            "membership_type_slug": slug,
+        }),
+    );
+
+    // First dispatch: the slug doesn't resolve, so extend_member_dues_by_slug
+    // returns NotFound. Because extend now runs BEFORE the flip, the error
+    // propagates (dispatch returns Err) and the row stays Pending — the
+    // dispatcher's claim release then lets Stripe's retry recover it.
+    let first = h
+        .dispatcher
+        .dispatch_checkout_session_completed(session.clone(), &h.billing)
+        .await;
+    assert!(
+        first.is_err(),
+        "dispatch must return Err when the dues extension fails",
+    );
+    assert_eq!(
+        payment_status(&h.pool, payment_id).await,
+        "Pending",
+        "row must stay Pending on a transient extend failure — NOT Completed",
+    );
+    assert!(
+        payment_dues_extended_at(&h.pool, payment_id)
+            .await
+            .is_none(),
+        "dues_extended_at must not be stamped when the slug can't resolve",
+    );
+
+    // Recovery: create the membership type for that slug, then re-dispatch
+    // the same event. Extend now succeeds, the row flips to Completed, and
+    // dues advance by exactly one billing period (extend ran exactly once).
+    create_membership_type(&h.pool, slug, "monthly").await;
+
+    h.dispatcher
+        .dispatch_checkout_session_completed(session, &h.billing)
+        .await
+        .expect("retry dispatch ok once the slug resolves");
+
+    assert_eq!(
+        payment_status(&h.pool, payment_id).await,
+        "Completed",
+        "row must be Completed after the recovering retry",
+    );
+    let dues_after = member_dues_paid_until(&h.pool, member_id)
+        .await
+        .expect("dues_paid_until set after recovery");
+    // Member started with no dues anchor; one monthly period lands ~a
+    // month out (27 days clears any month-length / leap-day wobble).
+    assert!(
+        dues_after > Utc::now() + Duration::days(27),
+        "dues_paid_until {} must advance ~one month from now",
+        dues_after,
+    );
+    assert!(
+        payment_dues_extended_at(&h.pool, payment_id)
+            .await
+            .is_some(),
+        "dues_extended_at must be stamped exactly once after recovery",
+    );
+}
+
+#[tokio::test]
+async fn pi_succeeded_leaves_payment_pending_when_membership_type_missing() {
+    let h = build_harness().await;
+    let member_id = insert_member(&h.pool, Some("cus_pi_no_mt"), BillingMode::Manual).await;
+
+    // Point the member at a membership type that doesn't exist, so the
+    // slug can't be resolved on the first dispatch. members.membership_type_id
+    // has an FK, so briefly drop enforcement for this one setup write (the
+    // pool is pinned to a single connection, so the PRAGMA sticks).
+    let ghost_mt_id = Uuid::new_v4();
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&h.pool)
+        .await
+        .expect("fk off");
+    sqlx::query("UPDATE members SET membership_type_id = ? WHERE id = ?")
+        .bind(ghost_mt_id.to_string())
+        .bind(member_id.to_string())
+        .execute(&h.pool)
+        .await
+        .expect("point member at missing membership type");
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&h.pool)
+        .await
+        .expect("fk on");
+
+    let payment_id = Uuid::new_v4();
+    insert_pending_payment(
+        &h.pool,
+        Payment {
+            id: payment_id,
+            payer: Payer::Member(member_id),
+            amount_cents: 50_00,
+            currency: "USD".to_string(),
+            status: PaymentStatus::Pending,
+            payment_method: PaymentMethod::Stripe,
+            external_id: None,
+            description: "Dues".to_string(),
+            kind: PaymentKind::Membership,
+            paid_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        },
+    )
+    .await;
+
+    let pi = build_payment_intent(
+        "pi_no_mt",
+        50_00,
+        json!({
+            "payment_id": payment_id.to_string(),
+            "member_id": member_id.to_string(),
+        }),
+    );
+
+    // First dispatch: membership type missing → handler skips the dues
+    // work and leaves the row Pending (the flip now follows the extend,
+    // so it never runs here).
+    h.dispatcher
+        .dispatch_payment_intent_succeeded(pi.clone(), &h.billing)
+        .await
+        .expect("first dispatch is a quiet no-op");
+    assert_eq!(
+        payment_status(&h.pool, payment_id).await,
+        "Pending",
+        "row must stay Pending when the membership type can't be resolved",
+    );
+    assert!(
+        member_dues_paid_until(&h.pool, member_id).await.is_none(),
+        "dues must not advance while the membership type is missing",
+    );
+
+    // Make it resolvable: point the member back at the seeded 'member' type.
+    let mt_id: String =
+        sqlx::query_scalar("SELECT id FROM membership_types WHERE slug = 'member' LIMIT 1")
+            .fetch_one(&h.pool)
+            .await
+            .expect("seeded 'member' membership_type");
+    sqlx::query("UPDATE members SET membership_type_id = ? WHERE id = ?")
+        .bind(&mt_id)
+        .bind(member_id.to_string())
+        .execute(&h.pool)
+        .await
+        .expect("restore resolvable membership type");
+
+    // Retry: extend succeeds, row flips to Completed, dues advance once.
+    h.dispatcher
+        .dispatch_payment_intent_succeeded(pi, &h.billing)
+        .await
+        .expect("retry dispatch ok once the type resolves");
+    assert_eq!(
+        payment_status(&h.pool, payment_id).await,
+        "Completed",
+        "row must be Completed after the recovering retry",
+    );
+    let dues_after = member_dues_paid_until(&h.pool, member_id)
+        .await
+        .expect("dues_paid_until set after recovery");
+    assert!(
+        dues_after > Utc::now() + Duration::days(27),
+        "dues_paid_until {} must advance ~one month from now (extend ran once)",
+        dues_after,
+    );
+    assert!(
+        payment_dues_extended_at(&h.pool, payment_id)
+            .await
+            .is_some(),
+        "dues_extended_at must be stamped exactly once after recovery",
+    );
+}
+
+#[tokio::test]
+async fn checkout_membership_completion_is_idempotent_under_retry() {
+    // Both deliveries succeed (Stripe's at-least-once semantics). Dues
+    // must advance exactly once — the per-payment dues_extended_at claim
+    // makes the extend a no-op on the second pass and the flip is already
+    // Completed. Mirrors the existing invoice.paid idempotency coverage.
+    let h = build_harness().await;
+    let member_id = insert_member(&h.pool, Some("cus_chk_idem"), BillingMode::Manual).await;
+    let payment_id = Uuid::new_v4();
+    let session_id = "cs_chk_idem";
+
+    insert_pending_payment(
+        &h.pool,
+        Payment {
+            id: payment_id,
+            payer: Payer::Member(member_id),
+            amount_cents: 50_00,
+            currency: "USD".to_string(),
+            status: PaymentStatus::Pending,
+            payment_method: PaymentMethod::Stripe,
+            external_id: Some(StripeRef::CheckoutSession(session_id.to_string())),
+            description: "Dues".to_string(),
+            kind: PaymentKind::Membership,
+            paid_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        },
+    )
+    .await;
+
+    // Seeded 'member' slug resolves, so the first extend succeeds.
+    let session = build_checkout_session(
+        session_id,
+        Some("pi_chk_idem"),
+        json!({
+            "payment_type": "membership",
+            "membership_type_slug": "member",
+        }),
+    );
+
+    h.dispatcher
+        .dispatch_checkout_session_completed(session.clone(), &h.billing)
+        .await
+        .expect("first dispatch ok");
+    assert_eq!(payment_status(&h.pool, payment_id).await, "Completed");
+    let extended_first = payment_dues_extended_at(&h.pool, payment_id)
+        .await
+        .expect("dues_extended_at set after first run");
+    let dues_first = member_dues_paid_until(&h.pool, member_id)
+        .await
+        .expect("dues_paid_until set after first run");
+
+    // Second delivery of the same successful event.
+    h.dispatcher
+        .dispatch_checkout_session_completed(session, &h.billing)
+        .await
+        .expect("second dispatch ok");
+
+    let extended_second = payment_dues_extended_at(&h.pool, payment_id)
+        .await
+        .expect("dues_extended_at still set");
+    assert_eq!(
+        extended_first, extended_second,
+        "dues_extended_at must NOT be re-stamped on retry — the per-payment claim holds",
+    );
+    let dues_second = member_dues_paid_until(&h.pool, member_id)
+        .await
+        .expect("dues_paid_until still set");
+    assert_eq!(
+        dues_first, dues_second,
+        "member.dues_paid_until must advance exactly once across original + retry",
+    );
 }
 
 // ---------------------------------------------------------------------
