@@ -94,9 +94,29 @@ pub async fn signup(
         return Err(AppError::Forbidden);
     }
 
-    // Validate email format
-    if !request.email.contains('@') {
-        return Err(AppError::BadRequest("Invalid email format".to_string()));
+    // Bound and validate the free-text fields before persisting. This
+    // is an unauthenticated endpoint, so unbounded/empty input is a
+    // storage-abuse vector. Caps mirror the public-donate handler.
+    let email = request.email.trim();
+    let username = request.username.trim();
+    let full_name = request.full_name.trim();
+    if email.is_empty() || !email.contains('@') {
+        return Err(AppError::BadRequest("Valid email is required".to_string()));
+    }
+    if email.len() > 254 {
+        return Err(AppError::BadRequest("Email too long".to_string()));
+    }
+    if full_name.is_empty() {
+        return Err(AppError::BadRequest("Full name is required".to_string()));
+    }
+    if full_name.len() > 200 {
+        return Err(AppError::BadRequest("Full name too long".to_string()));
+    }
+    if username.is_empty() {
+        return Err(AppError::BadRequest("Username is required".to_string()));
+    }
+    if username.len() > 100 {
+        return Err(AppError::BadRequest("Username too long".to_string()));
     }
 
     // Validate password strength
@@ -122,9 +142,9 @@ pub async fn signup(
 
     // Create member with Pending status
     let create_request = CreateMemberRequest {
-        email: request.email,
-        username: request.username,
-        full_name: request.full_name,
+        email: email.to_string(),
+        username: username.to_string(),
+        full_name: full_name.to_string(),
         password: request.password,
         membership_type_id,
         ..Default::default()
