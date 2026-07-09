@@ -185,7 +185,7 @@ pub fn run<S: SystemCommand, F: FileSystem, P: Prompter, O: Output>(
 
     exec.apt_update()?;
     exec.apt_install(inputs.enable_caddy)?;
-    exec.fetch_release_deploy()?;
+    exec.fetch_release_deploy(&inputs.version)?;
     exec.run_release_deploy(&inputs.version)?;
     exec.assert_binaries_present()?;
     exec.render_and_write_env(&inputs)?;
@@ -915,10 +915,12 @@ impl<'a, S: SystemCommand, F: FileSystem> Executor<'a, S, F> {
         self.run("apt-get", &args, "apt-get install")
     }
 
-    fn fetch_release_deploy(&self) -> Result<()> {
-        // Provided by the release tarball alongside the binary, but
-        // we may also need it before the first release-deploy.sh run.
-        // Use the install dir's copy if it exists.
+    fn fetch_release_deploy(&self, tag: &str) -> Result<()> {
+        // release-deploy.sh ships inside the main release tarball at
+        // /opt/coterie/deploy/, so on an existing box we reuse that copy.
+        // On a first install nothing has placed it yet (the provision
+        // tarball carries only this binary), so fetch it from the pinned
+        // tag — release-deploy.sh is what then downloads the main tarball.
         let from = Path::new("/opt/coterie/deploy/release-deploy.sh");
         let to = Path::new(RELEASE_DEPLOY_PATH);
         if self.fs.is_file(from) {
@@ -928,11 +930,18 @@ impl<'a, S: SystemCommand, F: FileSystem> Executor<'a, S, F> {
                 self.fs.write(to, body.as_bytes())?;
                 self.fs.chmod(to, 0o755)?;
             }
-        } else {
-            self.announce(&format!(
-                "release-deploy.sh not yet present at {} — release-deploy.sh will run from the extracted tarball.",
-                from.display()
-            ));
+            return Ok(());
+        }
+        let url = format!(
+            "https://raw.githubusercontent.com/IndustriousKraken/coterie/{tag}/deploy/release-deploy.sh"
+        );
+        self.run(
+            "curl",
+            &["-sfL", "-o", RELEASE_DEPLOY_PATH, url.as_str()],
+            "fetch release-deploy.sh",
+        )?;
+        if !self.dry_run {
+            self.fs.chmod(to, 0o755)?;
         }
         Ok(())
     }

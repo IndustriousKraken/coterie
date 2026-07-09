@@ -100,18 +100,13 @@ for a in data['assets']:
         print(a['browser_download_url'])
         break
 ")"
-CHECKSUM_URL="$(python3 -c "
-import json
-with open('$RELEASE_JSON_FILE') as f:
-    data = json.load(f, strict=False)
-for a in data['assets']:
-    if a['name'].endswith('.sha256'):
-        print(a['browser_download_url'])
-        break
-")"
+# The checksum asset is always the tarball's URL + .sha256. Deriving it
+# (rather than searching assets for the first *.sha256) avoids matching
+# the coterie-provision tarball's checksum, which GitHub can list first.
+CHECKSUM_URL="${TARBALL_URL}.sha256"
 
-if [ -z "$TARBALL_URL" ] || [ -z "$CHECKSUM_URL" ]; then
-    echo "ERROR: couldn't find release assets in $TAG"
+if [ -z "$TARBALL_URL" ]; then
+    echo "ERROR: couldn't find release tarball in $TAG"
     exit 1
 fi
 
