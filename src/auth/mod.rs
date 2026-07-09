@@ -135,6 +135,12 @@ pub fn validate_password(password: &str) -> std::result::Result<(), &'static str
     if password.len() < 10 {
         return Err("Password must be at least 10 characters");
     }
+    // Upper bound guards against Argon2 CPU-amplification DoS: the Blake2b
+    // pre-hash cost scales with input length, so an unauthenticated caller
+    // must not be able to force hashing of an oversized password.
+    if password.len() > 128 {
+        return Err("Password must be at most 128 characters");
+    }
     if !password.chars().any(|c| c.is_ascii_uppercase()) {
         return Err("Password must contain at least one uppercase letter");
     }
@@ -162,4 +168,34 @@ pub async fn get_member_by_email(pool: &SqlitePool, email: &str) -> Result<Optio
 
     let repo = SqliteMemberRepository::new(pool.clone());
     repo.find_by_email(email).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_password;
+
+    // A valid complexity prefix ("Aa1") padded with lowercase 'a' to `len`.
+    fn valid_of_len(len: usize) -> String {
+        let mut s = String::from("Aa1");
+        s.push_str(&"a".repeat(len - s.len()));
+        s
+    }
+
+    #[test]
+    fn accepts_128_rejects_129() {
+        assert!(validate_password(&valid_of_len(128)).is_ok());
+        assert_eq!(
+            validate_password(&valid_of_len(129)),
+            Err("Password must be at most 128 characters")
+        );
+    }
+
+    #[test]
+    fn rejects_multi_kilobyte_password() {
+        // Argon2 DoS guard: an oversized input is rejected before hashing.
+        assert_eq!(
+            validate_password(&valid_of_len(10_000)),
+            Err("Password must be at most 128 characters")
+        );
+    }
 }
