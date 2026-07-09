@@ -543,7 +543,15 @@ mod tests {
 
         let (ok_count, race_count) = [&r1, &r2].iter().fold((0, 0), |(ok, race), r| match r {
             Ok(_) => (ok + 1, race),
-            Err(RefundError::AnotherActorClaimedFirst) => (ok, race + 1),
+            // The loser legitimately observes the race two ways depending on
+            // scheduling: it either read `Completed` and then lost the atomic
+            // claim (AnotherActorClaimedFirst), or — when the winner finished
+            // marking the row Refunded before the loser's find_by_id read (more
+            // likely on a slow/loaded CI runner) — it saw the refunded row
+            // (AlreadyRefunded). Both correctly prevent a double refund.
+            Err(RefundError::AnotherActorClaimedFirst | RefundError::AlreadyRefunded) => {
+                (ok, race + 1)
+            }
             Err(e) => panic!("unexpected error: {:?}", e),
         });
         assert_eq!(ok_count, 1, "exactly one call should succeed");
