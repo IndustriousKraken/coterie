@@ -1,0 +1,10 @@
+# Keeps SHA-pinned GitHub Actions fresh: Dependabot reads the `# vX.Y.Z`
+# comment next to each pinned SHA and opens PRs that bump both the SHA and
+# the comment when a new release lands. Without this, SHA pins go stale
+# silently and miss security patches.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
