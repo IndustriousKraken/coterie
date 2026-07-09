@@ -85,6 +85,7 @@
                                     required
                                     class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
                                 <option value="monthly" {% if let Some(t) = membership_type.as_ref() %}{% if t.billing_period == "monthly" %}selected{% endif %}{% endif %}>Monthly</option>
+                                <option value="semiannual" {% if let Some(t) = membership_type.as_ref() %}{% if t.billing_period == "semiannual" %}selected{% endif %}{% endif %}>Every 6 months</option>
                                 <option value="yearly" {% if let Some(t) = membership_type.as_ref() %}{% if t.billing_period == "yearly" %}selected{% endif %}{% endif %}>Yearly</option>
                                 <option value="lifetime" {% if let Some(t) = membership_type.as_ref() %}{% if t.billing_period == "lifetime" %}selected{% endif %}{% endif %}>Lifetime (one-time)</option>
                             </select>

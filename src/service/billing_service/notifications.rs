@@ -396,9 +396,12 @@ impl Notifications {
             }
 
             // Case 3: auto-renew + card valid + long period → renewal notice.
+            // Semi-annual is a "long period" like yearly — a $432 charge
+            // every 6 months warrants a heads-up, unlike the silent
+            // monthly auto-renew above.
             if is_auto_renew
                 && card_good_at_charge
-                && matches!(billing_period, BillingPeriod::Yearly)
+                && matches!(billing_period, BillingPeriod::Yearly | BillingPeriod::SemiAnnual)
             {
                 // Amount display for the renewal notice.
                 let amount = match mt_id_opt.as_ref().and_then(|s| Uuid::parse_str(s).ok()) {

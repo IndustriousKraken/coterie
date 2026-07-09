@@ -518,6 +518,9 @@ impl PaymentRepository for SqlitePaymentRepository {
             BillingPeriod::Monthly => base_date
                 .checked_add_months(Months::new(1))
                 .unwrap_or(base_date),
+            BillingPeriod::SemiAnnual => base_date
+                .checked_add_months(Months::new(6))
+                .unwrap_or(base_date),
             BillingPeriod::Yearly => base_date
                 .checked_add_months(Months::new(12))
                 .unwrap_or(base_date),

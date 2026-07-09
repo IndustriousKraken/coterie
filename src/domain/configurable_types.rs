@@ -104,6 +104,7 @@ pub type UpdateAnnouncementTypeRequest = UpdateBasicTypeRequest;
 #[sqlx(type_name = "TEXT")]
 pub enum BillingPeriod {
     Monthly,
+    SemiAnnual,
     Yearly,
     Lifetime,
 }
@@ -112,6 +113,7 @@ impl BillingPeriod {
     pub fn as_str(&self) -> &'static str {
         match self {
             BillingPeriod::Monthly => "monthly",
+            BillingPeriod::SemiAnnual => "semiannual",
             BillingPeriod::Yearly => "yearly",
             BillingPeriod::Lifetime => "lifetime",
         }
@@ -120,6 +122,7 @@ impl BillingPeriod {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "monthly" => Some(BillingPeriod::Monthly),
+            "semiannual" => Some(BillingPeriod::SemiAnnual),
             "yearly" => Some(BillingPeriod::Yearly),
             "lifetime" => Some(BillingPeriod::Lifetime),
             _ => None,
@@ -236,6 +239,17 @@ mod tests {
             Some(BillingPeriod::Yearly)
         );
         assert_eq!(BillingPeriod::from_str("invalid"), None);
+
+        // Semi-annual (6-month) round-trips and is case-insensitive.
+        assert_eq!(BillingPeriod::SemiAnnual.as_str(), "semiannual");
+        assert_eq!(
+            BillingPeriod::from_str("semiannual"),
+            Some(BillingPeriod::SemiAnnual)
+        );
+        assert_eq!(
+            BillingPeriod::from_str("SemiAnnual"),
+            Some(BillingPeriod::SemiAnnual)
+        );
     }
 
     #[test]
