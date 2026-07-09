@@ -188,7 +188,13 @@ pub struct IntegrationConfig {
     pub unifi: Option<UnifiConfig>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+// `#[serde(default)]` at the container level so a PARTIAL table — e.g. the
+// provisioning wizard writes only `…DISCORD__ENABLED=false` for a disabled
+// integration — deserializes with the remaining fields defaulting to empty,
+// instead of failing `Settings::new()` on the first missing field. The
+// integration is gated on `enabled`, so empty credentials never get used.
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(default)]
 pub struct DiscordConfig {
     pub enabled: bool,
     pub bot_token: String,
@@ -197,7 +203,8 @@ pub struct DiscordConfig {
     pub expired_role_id: String,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(default)]
 pub struct UnifiConfig {
     pub enabled: bool,
     pub controller_url: String,
