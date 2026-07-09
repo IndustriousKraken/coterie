@@ -920,29 +920,20 @@ impl<'a, S: SystemCommand, F: FileSystem> Executor<'a, S, F> {
     }
 
     fn fetch_release_deploy(&self, tag: &str) -> Result<()> {
-        // release-deploy.sh ships inside the main release tarball at
-        // /opt/coterie/deploy/, so on an existing box we reuse that copy.
-        // On a first install nothing has placed it yet (the provision
-        // tarball carries only this binary), so fetch it from the pinned
-        // tag — release-deploy.sh is what then downloads the main tarball.
-        let from = Path::new("/opt/coterie/deploy/release-deploy.sh");
+        // Always fetch the release-deploy.sh pinned to the tag we're
+        // installing, rather than trusting whatever is already at
+        // /opt/coterie/deploy/. A leftover copy from a failed or older
+        // install (e.g. a buggy v1.0.2 bootstrap script) would otherwise
+        // shadow the version we mean to install. This is the install path
+        // only; updates go through `coterie-provision update`.
         let to = Path::new(RELEASE_DEPLOY_PATH);
-        if self.fs.is_file(from) {
-            self.announce(&format!("copying {} -> {}", from.display(), to.display()));
-            if !self.dry_run {
-                let body = self.fs.read_to_string(from)?;
-                self.fs.write(to, body.as_bytes())?;
-                self.fs.chmod(to, 0o755)?;
-            }
-            return Ok(());
-        }
         let url = format!(
             "https://raw.githubusercontent.com/IndustriousKraken/coterie/{tag}/deploy/release-deploy.sh"
         );
         self.run(
             "curl",
             &["-sfL", "-o", RELEASE_DEPLOY_PATH, url.as_str()],
-            "fetch release-deploy.sh",
+            "fetch release-deploy.sh (pinned to install tag)",
         )?;
         if !self.dry_run {
             self.fs.chmod(to, 0o755)?;
