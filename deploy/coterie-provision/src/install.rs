@@ -993,6 +993,13 @@ impl<'a, S: SystemCommand, F: FileSystem> Executor<'a, S, F> {
 
         let base_url = format!("https://{}", inputs.portal_domain);
         let mut env_config = EnvConfig::defaults_for(&base_url, inputs.session_secret.clone());
+        // A marketing domain means a separate marketing site's browser
+        // will call /public/*; allow its origin(s) through CORS. No
+        // marketing domain leaves cors_origins None (same-origin default).
+        env_config.cors_origins = inputs
+            .marketing_domain
+            .as_deref()
+            .map(env_template::cors_origins_for);
         // When test mode is selected, route to a separate sqlite file so
         // test charges/members don't land in what will become the
         // production DB. The switchover subcommand rewrites this back to
