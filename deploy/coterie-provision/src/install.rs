@@ -18,6 +18,9 @@ use crate::stripe_check;
 use crate::system::SystemCommand;
 
 const INSTALL_DIR: &str = "/opt/coterie";
+/// Auto-detect default data dir (matches install.sh + config's
+/// default_data_dir). The SQLite DB and uploads live here.
+const DATA_DIR: &str = "/var/lib/coterie";
 const ENV_PATH: &str = "/opt/coterie/.env";
 pub(crate) const ENV_LIVE_PATH: &str = "/opt/coterie/.env.live";
 const ENV_EXAMPLE_PATH: &str = "/opt/coterie/.env.example";
@@ -191,6 +194,7 @@ pub fn run<S: SystemCommand, F: FileSystem, P: Prompter, O: Output>(
     exec.render_and_write_env(&inputs)?;
     exec.write_live_overlay_if_needed(&inputs)?;
     exec.bootstrap_admin(&inputs)?;
+    exec.chown_data_dir()?;
     if inputs.enable_caddy {
         exec.write_caddyfile(&inputs)?;
     }
@@ -1180,6 +1184,18 @@ impl<'a, S: SystemCommand, F: FileSystem> Executor<'a, S, F> {
                 out.stderr
             )),
         }
+    }
+
+    /// create_admin runs as root and creates the SQLite DB as its very
+    /// first operation, so the db (+ -wal/-shm) land root-owned. The
+    /// service runs as `coterie` and must be able to write them, so chown
+    /// the data dir after bootstrap. Idempotent on re-runs.
+    fn chown_data_dir(&self) -> Result<()> {
+        self.run(
+            "chown",
+            &["-R", "coterie:coterie", DATA_DIR],
+            "chown data dir (coterie owns the DB create_admin made as root)",
+        )
     }
 
     fn write_caddyfile(&self, inputs: &ResolvedInputs) -> Result<()> {

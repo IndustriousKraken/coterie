@@ -24,8 +24,13 @@ use sqlx::SqlitePool;
 #[tokio::main]
 async fn main() {
     // Load .env if present so COTERIE__DATABASE__URL etc. work the same
-    // way they do for the server binary.
+    // way they do for the server binary. Provisioning invokes this binary
+    // before the service exists, from a working dir that is NOT the install
+    // dir, so also load the deployed /opt/coterie/.env as a fallback — the
+    // canonical location the systemd unit reads. dotenvy does not override
+    // vars already set, so a cwd .env (dev) still wins.
     dotenvy::dotenv().ok();
+    dotenvy::from_path("/opt/coterie/.env").ok();
 
     let cli = Cli::parse();
     if let Err(e) = run(cli).await {
