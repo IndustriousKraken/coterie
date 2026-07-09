@@ -130,10 +130,15 @@ echo "First install detected (no existing binary at $INSTALL_DIR/coterie)."
 # Place the binaries. Anything in $INSTALL_DIR that's NOT in the release
 # stays (specifically: .env stays; /var/lib/coterie data is untouched).
 mkdir -p "$INSTALL_DIR"
-install -m 0755 "$STAGE_DIR/coterie" "$INSTALL_DIR/coterie.new"
-install -m 0755 "$STAGE_DIR/seed"    "$INSTALL_DIR/seed.new"
-mv "$INSTALL_DIR/coterie.new" "$INSTALL_DIR/coterie"
-mv "$INSTALL_DIR/seed.new"    "$INSTALL_DIR/seed"
+# create_admin is required: `coterie-provision install` runs it to bootstrap
+# the first admin, and asserts it is present. Ships in the tarball alongside
+# coterie/seed, so place it the same way.
+install -m 0755 "$STAGE_DIR/coterie"      "$INSTALL_DIR/coterie.new"
+install -m 0755 "$STAGE_DIR/seed"         "$INSTALL_DIR/seed.new"
+install -m 0755 "$STAGE_DIR/create_admin" "$INSTALL_DIR/create_admin.new"
+mv "$INSTALL_DIR/coterie.new"      "$INSTALL_DIR/coterie"
+mv "$INSTALL_DIR/seed.new"         "$INSTALL_DIR/seed"
+mv "$INSTALL_DIR/create_admin.new" "$INSTALL_DIR/create_admin"
 
 # Static, migrations: replace wholesale.
 rm -rf "$INSTALL_DIR/static" "$INSTALL_DIR/migrations"
