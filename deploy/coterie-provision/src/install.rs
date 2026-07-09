@@ -275,6 +275,23 @@ pub struct ResolvedInputs {
     pub session_secret: SecretString,
 }
 
+/// Normalize the operator-supplied marketing domain to the trimmed apex:
+/// strip surrounding whitespace and a single leading `www.`. Returns
+/// `None` for blank (or bare `www.`) input. Both downstream consumers —
+/// the Caddy vhost (`{apex}, www.{apex}`) and the CORS allowlist
+/// (`https://{apex},https://www.{apex}`) — then derive the same apex+www
+/// pair, instead of diverging into a `www.www.` vhost for a `www.`-prefixed
+/// input.
+fn normalize_marketing_domain(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let apex = trimmed.strip_prefix("www.").unwrap_or(trimmed);
+    if apex.is_empty() {
+        None
+    } else {
+        Some(apex.to_string())
+    }
+}
+
 fn gather_inputs<P: Prompter>(
     args: &InstallArgs,
     prompts: &P,
@@ -308,11 +325,7 @@ fn gather_inputs<P: Prompter>(
         no_prompt,
         || prompts.prompt_text("Marketing domain (optional, blank to skip)", Some("")),
     )?;
-    let marketing_domain = if marketing_domain_raw.trim().is_empty() {
-        None
-    } else {
-        Some(marketing_domain_raw)
-    };
+    let marketing_domain = normalize_marketing_domain(&marketing_domain_raw);
 
     let contact_email = resolve(
         "contact-email",
@@ -1432,5 +1445,22 @@ mod tests {
         let out = CaptureOutput::new();
         let err = run(args, &sys, &fs, &prompts, &out).unwrap_err();
         assert!(err.to_string().contains("pk_test_") || err.to_string().contains("pk_live_"));
+    }
+
+    #[test]
+    fn normalize_marketing_domain_trims_and_strips_www() {
+        // Trimmed apex passes through; blank/bare-www => None; a `www.`
+        // prefix is stripped to the apex so the Caddy vhost and CORS
+        // allowlist derive the same apex+www pair.
+        assert_eq!(
+            normalize_marketing_domain("  example.org  "),
+            Some("example.org".to_string())
+        );
+        assert_eq!(
+            normalize_marketing_domain("www.example.org"),
+            Some("example.org".to_string())
+        );
+        assert_eq!(normalize_marketing_domain("   "), None);
+        assert_eq!(normalize_marketing_domain("www."), None);
     }
 }
