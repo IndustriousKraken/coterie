@@ -1,0 +1,63 @@
+name: CI
+
+# Runs tests on every push to master and every PR, and — on master only —
+# warms the shared build cache that the tag-triggered Release workflow reads.
+#
+# Why this exists: GitHub Actions caches are only readable from the same ref,
+# its base, or the DEFAULT branch. Release builds run on tag refs, so they can
+# only reuse a cache produced on master. Nothing built on master before, so
+# every release started from a cold cache (~10 min). This job produces that
+# cache under the SAME key release.yml looks up, so releases restore deps and
+# only recompile the leaf crates.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test and warm cache
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      # SAME key as release.yml so a master run's cache is what tag builds read.
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-musl-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-musl-release-
+            ${{ runner.os }}-cargo-
+
+      # Debug tests: fast to compile, same correctness signal as release-mode.
+      - name: Test
+        run: cargo test --features test-utils
+
+      # Warm the exact artifacts the Release build needs (musl-static, release
+      # profile). Only on master — a PR's cache saves to the PR ref, which tag
+      # builds can't read, so warming on PRs would just waste minutes.
+      - name: Warm release build (musl)
+        if: github.event_name == 'push'
+        run: |
+          cargo build --release --target x86_64-unknown-linux-musl --bins
+          cargo build --release --target x86_64-unknown-linux-musl -p coterie-provision

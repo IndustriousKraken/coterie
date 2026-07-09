@@ -92,7 +92,9 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Run tests
-        run: cargo test --features test-utils --release
+        # Debug (not --release): far faster to compile, same correctness
+        # signal. The shipped binaries are still built optimized below.
+        run: cargo test --features test-utils
         # Tests gate the release. If anything fails here, no
         # tarball is uploaded and the tag still exists but has
         # no asset attached — operator can decide whether to fix
