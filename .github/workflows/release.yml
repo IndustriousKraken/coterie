@@ -79,17 +79,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y musl-tools
 
-      - name: Cache cargo registry and target
-        uses: actions/cache@v4
+      # A release build creates two multi-GB target trees (host debug for
+      # tests + musl release). Reclaim ~20GB of unused preinstalled SDKs so a
+      # cold build can't exhaust the runner disk. None are used by a Rust build.
+      - name: Free up runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      # rust-cache trims target/ to dependency artifacts before saving, so the
+      # cache stays small (no runner disk-full like raw actions/cache on the
+      # full target/) and never restores a stale workspace binary. Restore only:
+      # tag builds reuse the master-warmed cache (see ci.yml) but don't save a
+      # useless tag-scoped one.
+      - name: Rust build cache (restore master-warmed deps)
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-musl-release-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-musl-release-
-            ${{ runner.os }}-cargo-
+          shared-key: musl-release
+          save-if: false
 
       - name: Run tests
         # Debug (not --release): far faster to compile, same correctness

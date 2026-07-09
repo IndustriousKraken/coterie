@@ -36,18 +36,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y musl-tools
 
+      # Reclaim ~20GB of unused preinstalled SDKs so the heavy build can't
+      # exhaust the runner disk. None are used by a Rust build.
+      - name: Free up runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+          df -h /
+
       # SAME key as release.yml so a master run's cache is what tag builds read.
-      - name: Cache cargo registry and target
-        uses: actions/cache@v4
+      # Shared cache with release.yml (same shared-key). Saves only on master
+      # pushes so the default-branch cache stays warm for tag builds to restore;
+      # PRs restore but don't save. rust-cache keeps target/ trimmed to deps, so
+      # the cache stays small enough to avoid runner disk-full.
+      - name: Rust build cache (save on master, restore on PRs)
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-musl-release-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-musl-release-
-            ${{ runner.os }}-cargo-
+          shared-key: musl-release
+          save-if: ${{ github.event_name == 'push' }}
 
       # Debug tests: fast to compile, same correctness signal as release-mode.
       - name: Test
