@@ -347,7 +347,15 @@ impl Integration for DiscordIntegration {
                     crate::domain::EventVisibility::MembersOnly => "**[Members only]** ",
                     _ => "",
                 };
-                let when = event.start_time.format("%a %b %d, %Y at %H:%M UTC");
+                // `start_time` is the event's local wall-clock; label it
+                // with the event's real zone abbreviation, not "UTC" (a
+                // remote member reading a wrong zone would show up off by
+                // the org's offset).
+                let when = format!(
+                    "{} {}",
+                    event.start_time.format("%a %b %d, %Y at %H:%M"),
+                    event.zone_abbr()
+                );
                 let location = event.location.as_deref().unwrap_or("(no location set)");
                 let link = format!(
                     "{}/portal/events/{}",

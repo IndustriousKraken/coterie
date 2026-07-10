@@ -9,6 +9,7 @@
 //! renew lifecycle and expiration sweeps that share none of its deps.
 
 use chrono::{Duration, Utc};
+use chrono_tz::OffsetName;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -401,7 +402,10 @@ impl Notifications {
             // monthly auto-renew above.
             if is_auto_renew
                 && card_good_at_charge
-                && matches!(billing_period, BillingPeriod::Yearly | BillingPeriod::SemiAnnual)
+                && matches!(
+                    billing_period,
+                    BillingPeriod::Yearly | BillingPeriod::SemiAnnual
+                )
             {
                 // Amount display for the renewal notice.
                 let amount = match mt_id_opt.as_ref().and_then(|s| Uuid::parse_str(s).ok()) {
@@ -602,7 +606,12 @@ impl Notifications {
                 continue;
             }
 
-            let start_formatted = row.event_start.format("%B %d, %Y at %H:%M UTC").to_string();
+            // Render the event's own local time with its zone
+            // abbreviation (e.g. "7:00 PM EDT"), derived from the stored
+            // (wall-clock, zone) — not the wall-clock mislabeled as UTC.
+            let local = row.start_utc().with_timezone(&row.tz());
+            let abbr = local.offset().abbreviation().unwrap_or("UTC");
+            let start_formatted = format!("{} {}", local.format("%B %d, %Y at %H:%M"), abbr);
             let event_url = format!("{}/portal/events", base);
             let location_ref = row.event_location.as_deref();
 

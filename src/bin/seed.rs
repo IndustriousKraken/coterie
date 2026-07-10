@@ -240,6 +240,7 @@ fn make_event(
         visibility,
         start_time: start,
         end_time: Some(start + Duration::hours(duration_hours)),
+        timezone: "UTC".to_string(),
         location: location.map(String::from),
         max_attendees: Some(30),
         rsvp_required: true,

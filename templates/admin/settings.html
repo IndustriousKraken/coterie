@@ -104,6 +104,14 @@
                                    value="{{ setting.value }}"
                                    class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
                                    {% if setting.is_sensitive %}placeholder="Enter new value"{% endif %}>
+                            {% else if setting.is_timezone %}
+                            <select id="{{ setting.key }}"
+                                    name="setting_value"
+                                    class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                                {% for tz in setting.timezone_options %}
+                                <option value="{{ tz.value }}"{% if tz.selected %} selected{% endif %}>{{ tz.value }}</option>
+                                {% endfor %}
+                            </select>
                             {% else %}
                             {% if setting.is_sensitive %}
                             <input type="password"

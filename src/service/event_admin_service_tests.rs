@@ -112,6 +112,7 @@ fn single_input(start: DateTime<Utc>, visibility: EventVisibility) -> CreateEven
         visibility,
         start_time: start,
         end_time: None,
+        timezone: "UTC".to_string(),
         location: None,
         max_attendees: None,
         rsvp_required: false,

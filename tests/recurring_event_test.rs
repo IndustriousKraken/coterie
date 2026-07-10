@@ -143,6 +143,7 @@ fn template(creator: Uuid, start: DateTime<Utc>) -> Event {
         visibility: EventVisibility::MembersOnly,
         start_time: start,
         end_time: Some(start + Duration::hours(2)),
+        timezone: "UTC".to_string(),
         location: Some("HQ".to_string()),
         max_attendees: Some(20),
         rsvp_required: true,

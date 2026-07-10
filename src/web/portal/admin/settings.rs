@@ -29,7 +29,46 @@ pub struct SettingInfo {
     pub value_type: String,
     pub description: Option<String>,
     pub is_sensitive: bool,
+    /// True for `org.timezone` — the template renders a zone dropdown
+    /// instead of a free-text field. `timezone_options` holds the
+    /// choices (current value first, marked selected).
+    pub is_timezone: bool,
+    pub timezone_options: Vec<TzOption>,
 }
+
+/// One option in the timezone dropdown.
+#[derive(Clone)]
+pub struct TzOption {
+    pub value: String,
+    pub selected: bool,
+}
+
+/// Common IANA zones offered in the settings dropdown. Not exhaustive —
+/// a stored value outside this list is prepended so it stays selectable.
+const COMMON_TIMEZONES: &[&str] = &[
+    "UTC",
+    "America/New_York",
+    "America/Chicago",
+    "America/Denver",
+    "America/Phoenix",
+    "America/Los_Angeles",
+    "America/Anchorage",
+    "Pacific/Honolulu",
+    "America/Toronto",
+    "America/Sao_Paulo",
+    "Europe/London",
+    "Europe/Paris",
+    "Europe/Berlin",
+    "Europe/Madrid",
+    "Europe/Moscow",
+    "Asia/Kolkata",
+    "Asia/Dubai",
+    "Asia/Shanghai",
+    "Asia/Singapore",
+    "Asia/Tokyo",
+    "Australia/Sydney",
+    "Pacific/Auckland",
+];
 
 /// Category of settings for template display
 #[derive(Clone)]
@@ -292,6 +331,26 @@ fn setting_to_info(setting: &AppSetting) -> SettingInfo {
         setting.value.clone()
     };
 
+    let is_timezone = setting.key == "org.timezone";
+    let timezone_options = if is_timezone {
+        // Current value first (so a custom zone stays selectable), then
+        // the common list minus any duplicate of the current value.
+        std::iter::once(setting.value.as_str())
+            .chain(
+                COMMON_TIMEZONES
+                    .iter()
+                    .copied()
+                    .filter(|z| *z != setting.value),
+            )
+            .map(|z| TzOption {
+                value: z.to_string(),
+                selected: z == setting.value,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     SettingInfo {
         key: setting.key.clone(),
         display_name,
@@ -299,5 +358,7 @@ fn setting_to_info(setting: &AppSetting) -> SettingInfo {
         value_type: setting.value_type.as_str().to_string(),
         description: setting.description.clone(),
         is_sensitive: setting.is_sensitive,
+        is_timezone,
+        timezone_options,
     }
 }

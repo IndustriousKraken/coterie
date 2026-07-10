@@ -139,11 +139,19 @@ pub async fn upcoming_events(
             .map(|s| matches!(s, AttendanceStatus::Registered))
             .unwrap_or(false);
 
+        // Wall-clock + zone abbr, so a remote member reads the right
+        // local time (server-rendered; no browser conversion).
+        let time = format!(
+            "{} {}",
+            event.start_time.format("%l:%M %p"),
+            event.zone_abbr()
+        );
+
         event_summaries.push(EventSummary {
             id: event.id.to_string(),
             title: event.title,
             date: event.start_time.format("%B %d, %Y").to_string(),
-            time: event.start_time.format("%l:%M %p").to_string(),
+            time,
             location: event.location,
             image_url: event.image_url,
             attending,

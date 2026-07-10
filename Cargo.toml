@@ -63,6 +63,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Time handling
 chrono = { version = "0.4", features = ["serde"] }
+# IANA timezone database (prebuilt data; no build-script codegen on
+# default features). Used to derive UTC from a stored (wall-clock, zone).
+chrono-tz = "0.10"
 
 # Utilities
 uuid = { version = "1.0", features = ["v4", "serde"] }
