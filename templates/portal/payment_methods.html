@@ -191,26 +191,19 @@
                 throw new Error('Failed to save card');
             }
 
-            // Refresh the saved cards list
-            htmx.trigger('#saved-cards', 'refresh');
-
-            // Clear the form
-            cardElement.clear();
-            document.getElementById('set-default').checked = false;
-            cardErrors.textContent = '';
+            // Reload so the newly-added card appears in the list. The old
+            // htmx.trigger('#saved-cards','refresh') silently never worked:
+            // it dispatched a 'refresh' event, but the listener waited for
+            // 'htmx:trigger', so the list never updated without a manual
+            // page refresh.
+            window.location.reload();
+            return;
 
         } catch (err) {
             cardErrors.textContent = err.message;
         } finally {
             saveBtn.disabled = false;
             saveBtn.textContent = 'Save Card';
-        }
-    });
-
-    // Listen for refresh event
-    document.body.addEventListener('htmx:trigger', function(evt) {
-        if (evt.detail.name === 'refresh' && evt.target.id === 'saved-cards') {
-            htmx.ajax('GET', '/portal/api/payments/cards', '#saved-cards');
         }
     });
 
@@ -224,6 +217,13 @@
     function bindAutoRenewBtn(btn) {
         if (!btn) return;
         btn.addEventListener('click', async function() {
+            // Confirm before a destructive/irreversible action. The button
+            // carries an hx-confirm message, but this JS fetch path bypasses
+            // HTMX, so hx-confirm never fired — surface it as a native confirm.
+            const confirmMsg = btn.getAttribute('hx-confirm');
+            if (confirmMsg && !window.confirm(confirmMsg)) {
+                return;
+            }
             autoRenewError.classList.add('hidden');
             autoRenewError.textContent = '';
             const enable = btn.dataset.enable === 'true';
