@@ -61,11 +61,13 @@ coterie.example.com {
         format json
     }
 
-    # Stripe webhook bodies can be slightly larger than typical API
-    # requests (especially payment_intent.succeeded with full PM
-    # metadata). 1 MB is a comfortable ceiling.
+    # Body-size ceiling. This gates EVERY proxied request, not just the
+    # Stripe webhook — including multipart image uploads (event flyers,
+    # member photos), which Coterie caps at 10 MB and buffers up to 12 MB.
+    # Keep this at or above Coterie's 12 MB buffer so the app returns its
+    # own friendly "max 10 MB" error instead of Caddy 502-ing the upload.
     request_body {
-        max_size 1MB
+        max_size 12MB
     }
 }
 
