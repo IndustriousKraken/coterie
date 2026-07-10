@@ -378,25 +378,28 @@ pub struct StatementLineDisplay {
 /// `year` (by `paid_at`, falling back to `created_at`), in cents. This
 /// IS the annual dues statement total — the statement page and any
 /// caller that needs the number share this one definition so they can't
-/// drift apart.
-pub fn annual_dues_cents(payments: &[Payment], year: i32) -> i64 {
+/// drift apart. `tz` is the org timezone: the tax year is the member's
+/// LOCAL calendar year, so a payment at 11pm on Dec 31 local (already
+/// Jan 1 in UTC) counts toward the year it was actually paid.
+pub fn annual_dues_cents(payments: &[Payment], year: i32, tz: chrono_tz::Tz) -> i64 {
     use crate::domain::{PaymentKind, PaymentStatus};
     payments
         .iter()
         .filter(|p| {
             p.status == PaymentStatus::Completed
                 && p.kind == PaymentKind::Membership
-                && payment_year(p) == year
+                && payment_year(p, tz) == year
         })
         .map(|p| p.amount_cents)
         .sum()
 }
 
-/// Calendar year a payment counts toward: `paid_at` if present, else
-/// `created_at`.
-fn payment_year(p: &Payment) -> i32 {
+/// Calendar year a payment counts toward, in the org timezone: `paid_at`
+/// if present, else `created_at`.
+fn payment_year(p: &Payment, tz: chrono_tz::Tz) -> i32 {
+    use chrono::Datelike;
     let when = p.paid_at.unwrap_or(p.created_at);
-    when.format("%Y").to_string().parse::<i32>().unwrap_or(0)
+    when.with_timezone(&tz).year()
 }
 
 /// Build the annual dues statement for `member_id` and `year`. The total
@@ -412,18 +415,19 @@ async fn build_statement(
 ) -> Result<StatementTemplate, AppError> {
     use crate::domain::{PaymentKind, PaymentStatus};
 
+    let tz = settings_service.org_timezone().await;
     let payments = payment_repo.find_by_member(member_id).await?;
-    let dues_cents = annual_dues_cents(&payments, year);
+    let dues_cents = annual_dues_cents(&payments, year, tz);
 
     let mut lines: Vec<StatementLineDisplay> = payments
         .iter()
         .filter(|p| {
             p.status == PaymentStatus::Completed
                 && p.kind == PaymentKind::Membership
-                && payment_year(p) == year
+                && payment_year(p, tz) == year
         })
         .map(|p| {
-            let when = p.paid_at.unwrap_or(p.created_at);
+            let when = p.paid_at.unwrap_or(p.created_at).with_timezone(&tz);
             StatementLineDisplay {
                 date: when.format("%Y-%m-%d").to_string(),
                 description: p.description.clone(),
