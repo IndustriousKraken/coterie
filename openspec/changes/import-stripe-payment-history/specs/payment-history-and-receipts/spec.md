@@ -8,7 +8,11 @@ The system SHALL backfill historical payments from Stripe: for each member
 with a Stripe customer, it SHALL create a local payment record per historical
 charge or invoice. The backfill SHALL be idempotent, keyed on the Stripe id
 and relying on the existing per-Stripe-id uniqueness, so that a re-run imports
-nothing new and never double-counts.
+nothing new and never double-counts. The backfill is the fourth
+payment-recording entry point (see the MODIFIED `payment-recording`
+requirement): it persists via `payment_repo.create` and emits its own
+`import_payment` and `import_payments_batch` audit rows, so it does not skip
+the audit trail; it does NOT extend dues or dispatch integration events.
 
 #### Scenario: Historical charges become local payment rows
 
@@ -28,7 +32,11 @@ The system SHALL backfill saved cards from Stripe: for each member's Stripe
 customer, it SHALL insert a local card record per attached card, skipping any
 whose card fingerprint already exists for that member so a card is not stored
 twice. The member's default card SHALL be set from the Stripe customer's
-default payment method when one is known.
+default payment method when one is known. This backfill imports references to
+cards ALREADY attached to the Stripe customer and therefore does not use the
+SetupIntent flow (see the MODIFIED `saved-card-management` requirement); it
+receives no raw card numbers, only `pm_*` ids and display metadata from
+Stripe.
 
 #### Scenario: A member's Stripe card becomes visible in Coterie
 
