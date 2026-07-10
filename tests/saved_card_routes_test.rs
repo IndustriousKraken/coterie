@@ -167,8 +167,13 @@ async fn build_harness() -> Harness {
 
     let app_state = coterie::api::state::AppState::new(
         service_context.clone(),
-        Some(stripe_client),
-        None, // webhook_dispatcher not needed for these tests
+        // Preloaded handle: the SetupIntent / save-card handlers read
+        // this fake-gateway client from the Stripe slot. No webhook
+        // dispatcher needed for these tests.
+        Arc::new(coterie::payments::StripeHandle::preloaded(
+            Some(stripe_client),
+            None,
+        )),
         billing_service,
         settings,
         Arc::new(coterie::api::middleware::bot_challenge::DisabledVerifier),

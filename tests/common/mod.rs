@@ -204,10 +204,21 @@ async fn build_app_state_with_services(
     let billing_service =
         Arc::new(service_context.billing_service(None, settings.server.base_url.clone()));
 
+    // Empty Stripe handle — no router-test path needs the real Stripe
+    // surface, and the DB has no Stripe config so the runtime stays
+    // unconfigured.
+    let stripe_handle = Arc::new(coterie::payments::StripeHandle::new(
+        service_context.settings_service.clone(),
+        service_context.payment_repo.clone(),
+        service_context.member_repo.clone(),
+        service_context.processed_events_repo.clone(),
+        service_context.membership_type_service.clone(),
+        service_context.integration_manager.clone(),
+    ));
+
     AppState::new(
         service_context,
-        None,
-        None,
+        stripe_handle,
         billing_service,
         settings,
         Arc::new(DisabledVerifier),

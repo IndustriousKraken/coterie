@@ -231,6 +231,17 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
             "/settings/discord/reconcile",
             post(admin::discord::reconcile_roles),
         )
+        // Stripe settings (dedicated page with test-connection button).
+        // Stripe config is DB-backed + hot-reloaded on save.
+        .route("/settings/stripe", get(admin::stripe::stripe_settings_page))
+        .route(
+            "/settings/stripe",
+            post(admin::stripe::update_stripe_settings),
+        )
+        .route(
+            "/settings/stripe/test",
+            post(admin::stripe::test_stripe_connection),
+        )
         // Billing settings (Stripe-sub → Coterie-managed bulk migration)
         .route(
             "/settings/billing",

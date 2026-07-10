@@ -98,6 +98,48 @@ pub struct UpdateDiscordConfig {
     pub bot_token: Option<String>,
 }
 
+/// Keys for Stripe integration settings. DB-backed so an admin can add
+/// or rotate Stripe credentials from the portal without a restart (the
+/// old `integrations.stripe.*` toggle was dead — read nowhere).
+pub mod stripe_keys {
+    pub const ENABLED: &str = "stripe.enabled";
+    pub const PUBLISHABLE_KEY: &str = "stripe.publishable_key";
+    pub const SECRET_KEY: &str = "stripe.secret_key";
+    pub const WEBHOOK_SECRET: &str = "stripe.webhook_secret";
+    pub const SUCCESS_URL: &str = "stripe.success_url";
+    pub const CANCEL_URL: &str = "stripe.cancel_url";
+    pub const LAST_TEST_AT: &str = "stripe.last_test_at";
+    pub const LAST_TEST_OK: &str = "stripe.last_test_ok";
+    pub const LAST_TEST_ERROR: &str = "stripe.last_test_error";
+}
+
+/// Full Stripe configuration loaded from the settings table. The secret
+/// key and webhook signing secret are decrypted into plaintext for
+/// in-process use — they only live in memory, never leave the process.
+#[derive(Debug, Clone, Default)]
+pub struct DbStripeConfig {
+    pub enabled: bool,
+    pub publishable_key: String,
+    pub secret_key: String,
+    pub webhook_secret: String,
+    pub success_url: String,
+    pub cancel_url: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateStripeConfig {
+    pub enabled: bool,
+    pub publishable_key: String,
+    pub success_url: String,
+    pub cancel_url: String,
+    /// None = leave existing secret key unchanged. Some(empty) = clear
+    /// it. Some(nonempty) = encrypt and replace. (Mirror the SMTP
+    /// password / Discord bot token convention.)
+    pub secret_key: Option<String>,
+    /// Same convention as `secret_key`, for the webhook signing secret.
+    pub webhook_secret: Option<String>,
+}
+
 #[derive(FromRow)]
 struct SettingRow {
     key: String,
@@ -500,6 +542,179 @@ impl SettingsService {
         Ok(())
     }
 
+    /// Load the full Stripe configuration. The secret key and webhook
+    /// signing secret are decrypted into plaintext for use. A decrypt
+    /// failure (e.g. session_secret was rotated) surfaces as `Err` —
+    /// callers treat that as "unconfigured" and the settings page shows
+    /// the failure, the same fail-safe as Discord/email.
+    pub async fn get_stripe_config(&self) -> Result<DbStripeConfig> {
+        let enabled = self.get_bool(stripe_keys::ENABLED).await.unwrap_or(false);
+        let publishable_key = self
+            .get_value(stripe_keys::PUBLISHABLE_KEY)
+            .await
+            .unwrap_or_default();
+        let success_url = self
+            .get_value(stripe_keys::SUCCESS_URL)
+            .await
+            .unwrap_or_default();
+        let cancel_url = self
+            .get_value(stripe_keys::CANCEL_URL)
+            .await
+            .unwrap_or_default();
+        let encrypted_secret = self
+            .get_value(stripe_keys::SECRET_KEY)
+            .await
+            .unwrap_or_default();
+        let secret_key = self.crypto.decrypt(&encrypted_secret)?;
+        let encrypted_webhook = self
+            .get_value(stripe_keys::WEBHOOK_SECRET)
+            .await
+            .unwrap_or_default();
+        let webhook_secret = self.crypto.decrypt(&encrypted_webhook)?;
+
+        Ok(DbStripeConfig {
+            enabled,
+            publishable_key,
+            secret_key,
+            webhook_secret,
+            success_url,
+            cancel_url,
+        })
+    }
+
+    /// True if an encrypted Stripe secret exists but won't decrypt —
+    /// same shape as `smtp_password_undecryptable` /
+    /// `discord_token_undecryptable`. Drives the admin UI's rotation
+    /// warning banner.
+    pub async fn stripe_secret_undecryptable(&self) -> bool {
+        for key in [stripe_keys::SECRET_KEY, stripe_keys::WEBHOOK_SECRET] {
+            let encrypted = self.get_value(key).await.unwrap_or_default();
+            if !encrypted.is_empty() && self.crypto.decrypt(&encrypted).is_err() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Persist updated Stripe configuration. The secret key and webhook
+    /// signing secret are encrypted before storage; each is left
+    /// unchanged when its field is `None` (form submitted blank).
+    pub async fn update_stripe_config(
+        &self,
+        config: UpdateStripeConfig,
+        updated_by: Uuid,
+    ) -> Result<()> {
+        self.set_value_raw(
+            stripe_keys::ENABLED,
+            if config.enabled { "true" } else { "false" },
+            updated_by,
+        )
+        .await?;
+        self.set_value_raw(
+            stripe_keys::PUBLISHABLE_KEY,
+            &config.publishable_key,
+            updated_by,
+        )
+        .await?;
+        self.set_value_raw(stripe_keys::SUCCESS_URL, &config.success_url, updated_by)
+            .await?;
+        self.set_value_raw(stripe_keys::CANCEL_URL, &config.cancel_url, updated_by)
+            .await?;
+
+        if let Some(new_secret) = config.secret_key {
+            let encrypted = self.crypto.encrypt(&new_secret)?;
+            self.set_value_raw(stripe_keys::SECRET_KEY, &encrypted, updated_by)
+                .await?;
+        }
+        if let Some(new_webhook) = config.webhook_secret {
+            let encrypted = self.crypto.encrypt(&new_webhook)?;
+            self.set_value_raw(stripe_keys::WEBHOOK_SECRET, &encrypted, updated_by)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// True if the DB already carries meaningful Stripe config — i.e.
+    /// anyone has enabled Stripe or stored any of the three keys. Used
+    /// by the one-time `.env` seed to decide whether the database is
+    /// still pristine. Reads the raw (still-encrypted) secret values, so
+    /// it doesn't care whether they decrypt.
+    pub async fn has_stripe_config(&self) -> bool {
+        if self.get_bool(stripe_keys::ENABLED).await.unwrap_or(false) {
+            return true;
+        }
+        for key in [
+            stripe_keys::PUBLISHABLE_KEY,
+            stripe_keys::SECRET_KEY,
+            stripe_keys::WEBHOOK_SECRET,
+        ] {
+            if !self
+                .get_value(key)
+                .await
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// One-time `.env` → DB seed. When the database holds no Stripe
+    /// config but the provisioning environment provides a secret key,
+    /// copy the env values in (encrypting the secrets) so wizard/IaC
+    /// installs come up configured. Returns `true` if it seeded.
+    /// Thereafter `has_stripe_config` is true and this is a no-op — the
+    /// database is authoritative and env Stripe values are ignored.
+    pub async fn seed_stripe_from_env(
+        &self,
+        env: &crate::config::StripeConfig,
+        updated_by: Uuid,
+    ) -> Result<bool> {
+        let env_secret = crate::config::nonblank(env.secret_key.clone());
+        // Nothing to seed from, or the DB is already configured.
+        if env_secret.is_none() || self.has_stripe_config().await {
+            return Ok(false);
+        }
+
+        self.update_stripe_config(
+            UpdateStripeConfig {
+                enabled: env.enabled,
+                publishable_key: env.publishable_key.clone().unwrap_or_default(),
+                success_url: String::new(),
+                cancel_url: String::new(),
+                secret_key: env_secret,
+                webhook_secret: crate::config::nonblank(env.webhook_secret.clone()),
+            },
+            updated_by,
+        )
+        .await?;
+        tracing::info!(
+            "Seeded Stripe configuration from environment into the database (one-time); \
+             the database is now authoritative and .env Stripe values are ignored"
+        );
+        Ok(true)
+    }
+
+    /// Record the result of a Stripe connection test so the admin UI can
+    /// show health at a glance.
+    pub async fn record_stripe_test(&self, ok: bool, error: &str, updated_by: Uuid) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.set_value_raw(stripe_keys::LAST_TEST_AT, &now, updated_by)
+            .await?;
+        self.set_value_raw(
+            stripe_keys::LAST_TEST_OK,
+            if ok { "true" } else { "false" },
+            updated_by,
+        )
+        .await?;
+        self.set_value_raw(stripe_keys::LAST_TEST_ERROR, error, updated_by)
+            .await?;
+        Ok(())
+    }
+
     /// Record the result of a test-email attempt so the admin UI can
     /// show health at a glance.
     pub async fn record_email_test(&self, ok: bool, error: &str, updated_by: Uuid) -> Result<()> {
@@ -520,13 +735,23 @@ impl SettingsService {
     /// Write a setting value directly without going through the audit
     /// log (used for bulk updates like `update_email_config` and for
     /// system-recorded state like test-result timestamps).
+    ///
+    /// `updated_by` is the acting member. The nil UUID is the "system"
+    /// actor (e.g. the one-time `.env` Stripe seed at startup, which
+    /// runs before any admin exists) and is stored as NULL — binding a
+    /// non-existent member id would violate the `updated_by` FK.
     async fn set_value_raw(&self, key: &str, value: &str, updated_by: Uuid) -> Result<()> {
         let now = Utc::now().naive_utc();
+        let updated_by = if updated_by.is_nil() {
+            None
+        } else {
+            Some(updated_by.to_string())
+        };
         sqlx::query(
             "UPDATE app_settings SET value = ?, updated_by = ?, updated_at = ? WHERE key = ?",
         )
         .bind(value)
-        .bind(updated_by.to_string())
+        .bind(updated_by)
         .bind(now)
         .bind(key)
         .execute(&self.pool)

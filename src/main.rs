@@ -203,38 +203,53 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Initialize Stripe client up front (before ServiceContext) so
-    // PaymentAdminService can take it as a constructor dep. The
-    // companion WebhookDispatcher is built further down — it needs
-    // fields that live on ServiceContext. Stripe is wired only when
-    // both an API key AND a webhook secret are configured; missing
-    // either disables Stripe entirely.
-    // Normalize blank Stripe credentials to None so a half-configured
-    // deployment (notably the shipped `webhook_secret = ""`) is treated
-    // as unconfigured rather than building a forgeable webhook endpoint:
-    // an empty secret is a zero-length HMAC key any caller can forge.
-    let stripe_secret_key = config::nonblank(settings.stripe.secret_key.clone());
-    let stripe_webhook_secret = config::nonblank(settings.stripe.webhook_secret.clone());
+    // Stripe config is DB-backed (app_settings, `stripe.*`) so admins
+    // can add / rotate keys from the portal without a restart. On first
+    // boot, seed the DB once from `COTERIE__STRIPE__*` if it's present
+    // and the DB is still pristine — so wizard/IaC installs come up
+    // configured. Thereafter the DB is authoritative and env Stripe
+    // values are ignored.
+    if let Err(e) = settings_service
+        .seed_stripe_from_env(&settings.stripe, payments::runtime::SYSTEM_ACTOR)
+        .await
+    {
+        tracing::warn!("Stripe .env→DB seed check failed: {}", e);
+    }
 
-    let stripe_client: Option<Arc<payments::StripeClient>> = if settings.stripe.enabled {
-        match (stripe_secret_key, stripe_webhook_secret.clone()) {
-            (Some(api_key), Some(_)) => {
-                tracing::info!("Stripe payment processing enabled");
-                Some(Arc::new(payments::StripeClient::new(
-                    api_key,
-                    payment_repo.clone(),
-                    member_repo.clone(),
-                )))
-            }
-            _ => {
-                tracing::warn!("Stripe enabled but missing configuration");
+    // Build the Stripe client the *services* capture at construction
+    // (PaymentAdminService refunds, BillingService auto-renew) from the
+    // current DB config. The portal-facing client + inbound webhook
+    // dispatcher are held behind a hot-swappable handle built further
+    // down (after ServiceContext, whose fields the dispatcher needs).
+    // A blank secret / decrypt failure → None (unconfigured).
+    let stripe_client: Option<Arc<payments::StripeClient>> =
+        match settings_service.get_stripe_config().await {
+            Ok(cfg) if cfg.enabled => match config::nonblank(Some(cfg.secret_key)) {
+                Some(api_key) => {
+                    tracing::info!("Stripe payment processing enabled");
+                    Some(Arc::new(payments::StripeClient::new(
+                        api_key,
+                        payment_repo.clone(),
+                        member_repo.clone(),
+                    )))
+                }
+                None => {
+                    tracing::warn!("Stripe enabled but secret key missing/blank");
+                    None
+                }
+            },
+            Ok(_) => {
+                tracing::info!("Stripe payment processing disabled");
                 None
             }
-        }
-    } else {
-        tracing::info!("Stripe payment processing disabled");
-        None
-    };
+            Err(e) => {
+                tracing::warn!(
+                    "Stripe config could not be decrypted ({}); treating as unconfigured",
+                    e
+                );
+                None
+            }
+        };
 
     // Per-IP rate limiter for money-moving endpoints (charge, donate,
     // refund). Built once and shared between AppState (login/charge
@@ -429,26 +444,23 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Stripe webhook dispatcher — paired with the StripeClient built
-    // above. Stays here (after ServiceContext::new) because it pulls
-    // several service_context-owned fields (processed_events_repo,
-    // membership_type_service, integration_manager). Built only when
-    // a configured stripe_client is present; the API-key / secret
-    // pair check already happened up top.
-    let webhook_dispatcher: Option<Arc<payments::WebhookDispatcher>> = match &stripe_client {
-        Some(client) => stripe_webhook_secret.map(|webhook_secret| {
-            Arc::new(payments::WebhookDispatcher::new(
-                client.gateway(),
-                webhook_secret,
-                payment_repo,
-                service_context.member_repo.clone(),
-                service_context.processed_events_repo.clone(),
-                service_context.membership_type_service.clone(),
-                service_context.integration_manager.clone(),
-            ))
-        }),
-        None => None,
-    };
+    // Hot-swappable Stripe handle: holds the portal-facing client + the
+    // inbound webhook dispatcher, rebuilt from DB config after a
+    // settings save so key/secret changes take effect with no restart.
+    // Built here (after ServiceContext::new) because the dispatcher
+    // pulls several service_context-owned fields (processed_events_repo,
+    // membership_type_service, integration_manager). `rebuild()` loads
+    // the current DB config; when Stripe is disabled/unconfigured the
+    // runtime stays empty and the webhook endpoint returns 503.
+    let stripe_handle = Arc::new(payments::StripeHandle::new(
+        service_context.settings_service.clone(),
+        service_context.payment_repo.clone(),
+        service_context.member_repo.clone(),
+        service_context.processed_events_repo.clone(),
+        service_context.membership_type_service.clone(),
+        service_context.integration_manager.clone(),
+    ));
+    stripe_handle.rebuild().await;
 
     // Build BillingService once so the runner and every request share
     // the same instance. Reconstructing per-request would silently lose
@@ -490,8 +502,7 @@ async fn main() -> anyhow::Result<()> {
     // be different maps).
     let app_state = api::state::AppState::new(
         service_context,
-        stripe_client,
-        webhook_dispatcher,
+        stripe_handle,
         billing_service,
         Arc::new(settings.clone()),
         bot_challenge_verifier,

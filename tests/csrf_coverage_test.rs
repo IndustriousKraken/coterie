@@ -129,8 +129,7 @@ async fn build_app() -> Router {
 
     let app_state = coterie::api::state::AppState::new(
         service_context,
-        None,
-        None,
+        std::sync::Arc::new(coterie::payments::StripeHandle::preloaded(None, None)),
         billing_service,
         settings,
         std::sync::Arc::new(coterie::api::middleware::bot_challenge::DisabledVerifier),
