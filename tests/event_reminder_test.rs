@@ -89,6 +89,18 @@ struct H {
 /// member, an event at `event_start`, and an attendance row in the
 /// given `status` (typically "Registered").
 async fn build_with(email: Arc<FakeEmailSender>, event_start: DateTime<Utc>, status: &str) -> H {
+    build_with_tz(email, event_start, status, "UTC").await
+}
+
+/// Like `build_with` but lets the event's frozen IANA zone be set, so a
+/// non-UTC org's reminder window/label can be exercised. `event_start`
+/// is the event's local wall-clock (a naive time in a UTC container).
+async fn build_with_tz(
+    email: Arc<FakeEmailSender>,
+    event_start: DateTime<Utc>,
+    status: &str,
+    timezone: &str,
+) -> H {
     let pool = fresh_pool().await;
 
     let member_repo: Arc<dyn MemberRepository> =
@@ -147,7 +159,7 @@ async fn build_with(email: Arc<FakeEmailSender>, event_start: DateTime<Utc>, sta
         visibility: EventVisibility::MembersOnly,
         start_time: event_start,
         end_time: Some(event_start + Duration::hours(2)),
-        timezone: "UTC".to_string(),
+        timezone: timezone.to_string(),
         location: Some("HQ".to_string()),
         max_attendees: None,
         rsvp_required: true,
@@ -318,6 +330,80 @@ async fn send_failure_keeps_row_stamped() {
         .await
         .expect("mark");
     assert!(!claim_again);
+}
+
+// A non-UTC org's reminder fires on the event's TRUE instant (derived
+// from wall-clock + zone), not the wall-clock mislabeled as UTC, and the
+// email carries the event's local time + zone abbreviation.
+//
+// America/Phoenix is a fixed UTC-7 (no DST), so the true instant is 7h
+// AFTER the stored wall-clock. A wall-clock 10h out => true instant 17h
+// out => inside the default 24h lead window.
+#[tokio::test]
+async fn non_utc_org_reminder_uses_true_instant_and_local_label() {
+    let email = FakeEmailSender::ok();
+    let h = build_with_tz(
+        email.clone(),
+        Utc::now() + Duration::hours(10),
+        "Registered",
+        "America/Phoenix",
+    )
+    .await;
+
+    let sent = h
+        .billing
+        .notifications
+        .send_event_reminders()
+        .await
+        .expect("send");
+
+    assert_eq!(
+        sent, 1,
+        "true instant (wall-clock + 7h) is within the 24h lead"
+    );
+    let msg = email.first().await.unwrap();
+    assert!(
+        msg.text_body.contains("MST"),
+        "email should label the event's local zone, got: {:?}",
+        msg.text_body
+    );
+    assert!(
+        !msg.text_body.contains("UTC"),
+        "wall-clock must not be mislabeled UTC, got: {:?}",
+        msg.text_body
+    );
+}
+
+// The old code compared the wall-clock to UTC and would fire ~offset
+// hours early. A Phoenix event with wall-clock 20h out has a TRUE
+// instant 27h out — beyond the 24h lead — so it must NOT fire yet, even
+// though the wall-clock (20h) sits inside the window.
+#[tokio::test]
+async fn non_utc_org_reminder_not_fired_early() {
+    let email = FakeEmailSender::ok();
+    let h = build_with_tz(
+        email.clone(),
+        Utc::now() + Duration::hours(20),
+        "Registered",
+        "America/Phoenix",
+    )
+    .await;
+
+    let sent = h
+        .billing
+        .notifications
+        .send_event_reminders()
+        .await
+        .expect("send");
+
+    assert_eq!(
+        sent, 0,
+        "true instant is 27h out; must not fire early on the wall-clock"
+    );
+    assert_eq!(email.count().await, 0);
+    assert!(reminder_sent_at(&h.pool, h.event_id, h.member)
+        .await
+        .is_none());
 }
 
 // LogSender import kept for parity with neighbour test files; suppresses

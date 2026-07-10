@@ -1,10 +1,11 @@
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
+use chrono_tz::Tz;
 use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
 
 use crate::{
-    domain::{AttendanceStatus, Event, EventType, EventVisibility},
+    domain::{wall_clock_to_utc, AttendanceStatus, Event, EventType, EventVisibility},
     error::{AppError, Result},
 };
 
@@ -16,11 +17,31 @@ use crate::{
 pub struct EventReminderRow {
     pub event_id: Uuid,
     pub event_title: String,
+    /// The event's local wall-clock (naive component of the container),
+    /// paired with `timezone`. Derive the true instant via `start_utc`;
+    /// do NOT treat this as UTC. Same model as `Event::start_time`.
     pub event_start: DateTime<Utc>,
+    /// IANA zone the wall-clock is in, frozen on the event row.
+    pub timezone: String,
     pub event_location: Option<String>,
     pub member_id: Uuid,
     pub member_email: String,
     pub member_full_name: String,
+}
+
+impl EventReminderRow {
+    /// The event's IANA zone, falling back to UTC. Mirrors `Event::tz`.
+    pub fn tz(&self) -> Tz {
+        self.timezone.parse().unwrap_or(Tz::UTC)
+    }
+
+    /// The true UTC instant, derived from the stored (wall-clock, zone).
+    /// The reminder window filter and the email render both use this so
+    /// a non-UTC org's reminders fire at the real instant rather than
+    /// the wall-clock mislabeled as UTC. Same as `Event::start_utc`.
+    pub fn start_utc(&self) -> DateTime<Utc> {
+        wall_clock_to_utc(self.event_start.naive_utc(), self.tz())
+    }
 }
 
 #[async_trait]
@@ -646,17 +667,25 @@ impl EventRepository for SqliteEventRepository {
         now: DateTime<Utc>,
         until: DateTime<Utc>,
     ) -> Result<Vec<EventReminderRow>> {
+        // `e.start_time` is a naive wall-clock, so it can't be compared
+        // to the UTC `now`/`until` directly (that's the org-offset bug
+        // this change fixes elsewhere). The SQL bound is a coarse
+        // pre-filter widened by the widest possible IANA offset (~14h);
+        // the exact `(now, until]` test on the derived UTC happens in
+        // Rust below, where the tz database is available.
+        let margin = Duration::hours(15);
         let rows: Vec<(
             String,
             String,
             NaiveDateTime,
+            String,
             Option<String>,
             String,
             String,
             String,
         )> = sqlx::query_as(
             r#"
-                SELECT e.id, e.title, e.start_time, e.location,
+                SELECT e.id, e.title, e.start_time, e.timezone, e.location,
                        m.id, m.email, m.full_name
                 FROM event_attendance ea
                 JOIN events e ON e.id = ea.event_id
@@ -667,27 +696,38 @@ impl EventRepository for SqliteEventRepository {
                   AND e.start_time <= ?
                 "#,
         )
-        .bind(now.naive_utc())
-        .bind(until.naive_utc())
+        .bind((now - margin).naive_utc())
+        .bind((until + margin).naive_utc())
         .fetch_all(&self.pool)
         .await
         .map_err(AppError::Database)?;
 
-        rows.into_iter()
-            .map(|(eid, title, start, location, mid, email, full_name)| {
-                Ok(EventReminderRow {
-                    event_id: Uuid::parse_str(&eid)
-                        .map_err(|e| AppError::Internal(e.to_string()))?,
-                    event_title: title,
-                    event_start: DateTime::from_naive_utc_and_offset(start, Utc),
-                    event_location: location,
-                    member_id: Uuid::parse_str(&mid)
-                        .map_err(|e| AppError::Internal(e.to_string()))?,
-                    member_email: email,
-                    member_full_name: full_name,
-                })
-            })
-            .collect()
+        let mut out: Vec<EventReminderRow> = rows
+            .into_iter()
+            .map(
+                |(eid, title, start, timezone, location, mid, email, full_name)| {
+                    Ok(EventReminderRow {
+                        event_id: Uuid::parse_str(&eid)
+                            .map_err(|e| AppError::Internal(e.to_string()))?,
+                        event_title: title,
+                        event_start: DateTime::from_naive_utc_and_offset(start, Utc),
+                        timezone,
+                        event_location: location,
+                        member_id: Uuid::parse_str(&mid)
+                            .map_err(|e| AppError::Internal(e.to_string()))?,
+                        member_email: email,
+                        member_full_name: full_name,
+                    })
+                },
+            )
+            .collect::<Result<_>>()?;
+
+        // Exact window test on the derived instant, not the wall-clock.
+        out.retain(|row| {
+            let start_utc = row.start_utc();
+            start_utc > now && start_utc <= until
+        });
+        Ok(out)
     }
 
     async fn mark_reminder_sent(&self, event_id: Uuid, member_id: Uuid) -> Result<bool> {
