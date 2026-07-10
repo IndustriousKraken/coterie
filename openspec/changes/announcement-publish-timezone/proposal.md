@@ -40,7 +40,11 @@ targeted events).
 
 - **Spec:** `scheduled-announcement-publish` — MODIFIED the "future publish
   time" and "background runner publishes at their time" requirements to
-  specify org-local semantics with UTC derived at compare time.
+  specify org-local semantics with UTC derived at compare time. And
+  `admin-announcements` — MODIFIED "Admin announcement form accepts optional
+  scheduled publish time" to interpret the `datetime-local` field as an
+  org-timezone wall-clock (dropping the "treat as UTC for v1" clause), since
+  the form-input parsing is pinned there too.
 - **Code:** a `scheduled_publish_timezone` column on `announcements`
   (annotation migration, defaulted from `org.timezone`, no value shift);
   the announcement domain/service to carry the zone and derive the instant;
