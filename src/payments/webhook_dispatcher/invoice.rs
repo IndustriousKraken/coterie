@@ -109,13 +109,6 @@ impl WebhookDispatcher {
 
         let payment = self.payment_repo.create(payment).await?;
 
-        // Email the member a receipt for this live charge. No-ops when
-        // email is unconfigured; never fails the webhook.
-        billing_service
-            .notifications
-            .send_payment_receipt(&member.email, &member.full_name, &payment)
-            .await;
-
         // Extend dues - look up membership type from member's current type
         let membership_type_slug = self
             .membership_type_service
@@ -136,6 +129,15 @@ impl WebhookDispatcher {
                 .extend_dues_for_payment_atomic(payment_id, member_uuid, BillingPeriod::Monthly)
                 .await?;
         }
+
+        // Receipt goes out only AFTER dues are actually extended: if the
+        // extension errors (and the webhook retries), we don't want the
+        // member holding a receipt for a membership that wasn't renewed.
+        // No-ops when email is unconfigured; never fails the webhook.
+        billing_service
+            .notifications
+            .send_payment_receipt(&member.email, &member.full_name, &payment)
+            .await;
 
         tracing::info!(
             "Subscription invoice paid for member {} (subscription: {})",
