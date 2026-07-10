@@ -188,11 +188,23 @@ async fn main() -> anyhow::Result<()> {
         )))
         .await;
 
-    // Unifi: still env-var-driven for now (D5+ scope). Skip if config
-    // is absent.
-    if let Some(unifi) = UnifiIntegration::new(settings.integrations.unifi.clone()) {
-        integration_manager.register(Arc::new(unifi)).await;
+    // UniFi config is DB-backed (app_settings, `unifi.*`) and read at
+    // operation time, so the integration is always registered and re-checks
+    // enable/configured state on every event — an admin can flip it from the
+    // portal without a restart. On first boot, seed the DB once from
+    // `COTERIE__INTEGRATION__UNIFI__*` if present and the DB is still
+    // pristine; thereafter the DB is authoritative and env values are ignored.
+    if let Some(env_unifi) = settings.integrations.unifi.clone() {
+        if let Err(e) = settings_service
+            .seed_unifi_from_env(&env_unifi, payments::runtime::SYSTEM_ACTOR)
+            .await
+        {
+            tracing::warn!("UniFi .env→DB seed check failed: {}", e);
+        }
     }
+    integration_manager
+        .register(Arc::new(UnifiIntegration::new(settings_service.clone())))
+        .await;
 
     // Check integration health
     let health_results = integration_manager.health_check_all().await;

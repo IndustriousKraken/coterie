@@ -140,6 +140,45 @@ pub struct UpdateStripeConfig {
     pub webhook_secret: Option<String>,
 }
 
+/// Keys for UniFi integration settings. DB-backed (mirrors Discord) so an
+/// admin can add / rotate controller credentials from the portal without a
+/// restart. The old `integrations.unifi.enabled` toggle was dead — read
+/// nowhere; UniFi ran entirely from `.env`.
+pub mod unifi_keys {
+    pub const ENABLED: &str = "unifi.enabled";
+    pub const CONTROLLER_URL: &str = "unifi.controller_url";
+    pub const USERNAME: &str = "unifi.username";
+    pub const PASSWORD: &str = "unifi.password";
+    pub const SITE_ID: &str = "unifi.site_id";
+    pub const LAST_TEST_AT: &str = "unifi.last_test_at";
+    pub const LAST_TEST_OK: &str = "unifi.last_test_ok";
+    pub const LAST_TEST_ERROR: &str = "unifi.last_test_error";
+}
+
+/// Full UniFi configuration loaded from the settings table. The password
+/// is decrypted into plaintext for in-process use — it only lives in
+/// memory, never leaves the process.
+#[derive(Debug, Clone, Default)]
+pub struct DbUnifiConfig {
+    pub enabled: bool,
+    pub controller_url: String,
+    pub username: String,
+    pub password: String,
+    pub site_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateUnifiConfig {
+    pub enabled: bool,
+    pub controller_url: String,
+    pub username: String,
+    pub site_id: String,
+    /// None = leave existing password unchanged. Some(empty) = clear it.
+    /// Some(nonempty) = encrypt and replace. (Mirrors the SMTP password /
+    /// Discord bot token / Stripe secret convention.)
+    pub password: Option<String>,
+}
+
 #[derive(FromRow)]
 struct SettingRow {
     key: String,
@@ -711,6 +750,167 @@ impl SettingsService {
         )
         .await?;
         self.set_value_raw(stripe_keys::LAST_TEST_ERROR, error, updated_by)
+            .await?;
+        Ok(())
+    }
+
+    /// Load the full UniFi configuration. The password is decrypted into
+    /// plaintext for the integration's use. A decrypt failure (e.g.
+    /// session_secret was rotated) surfaces as `Err` — callers treat that
+    /// as "unconfigured" and the settings page shows the failure, the same
+    /// fail-safe as Stripe/Discord/email.
+    pub async fn get_unifi_config(&self) -> Result<DbUnifiConfig> {
+        let enabled = self.get_bool(unifi_keys::ENABLED).await.unwrap_or(false);
+        let controller_url = self
+            .get_value(unifi_keys::CONTROLLER_URL)
+            .await
+            .unwrap_or_default();
+        let username = self
+            .get_value(unifi_keys::USERNAME)
+            .await
+            .unwrap_or_default();
+        let site_id = self
+            .get_value(unifi_keys::SITE_ID)
+            .await
+            .unwrap_or_default();
+        let encrypted_password = self
+            .get_value(unifi_keys::PASSWORD)
+            .await
+            .unwrap_or_default();
+        let password = self.crypto.decrypt(&encrypted_password)?;
+
+        Ok(DbUnifiConfig {
+            enabled,
+            controller_url,
+            username,
+            password,
+            site_id,
+        })
+    }
+
+    /// True if an encrypted UniFi password exists but won't decrypt — same
+    /// shape as `stripe_secret_undecryptable`. Drives the admin UI's
+    /// rotation warning banner.
+    pub async fn unifi_password_undecryptable(&self) -> bool {
+        let encrypted = self
+            .get_value(unifi_keys::PASSWORD)
+            .await
+            .unwrap_or_default();
+        if encrypted.is_empty() {
+            return false;
+        }
+        self.crypto.decrypt(&encrypted).is_err()
+    }
+
+    /// Persist updated UniFi configuration. The password is encrypted
+    /// before storage; it's left unchanged when `password` is `None` (form
+    /// submitted blank).
+    pub async fn update_unifi_config(
+        &self,
+        config: UpdateUnifiConfig,
+        updated_by: Uuid,
+    ) -> Result<()> {
+        self.set_value_raw(
+            unifi_keys::ENABLED,
+            if config.enabled { "true" } else { "false" },
+            updated_by,
+        )
+        .await?;
+        self.set_value_raw(
+            unifi_keys::CONTROLLER_URL,
+            &config.controller_url,
+            updated_by,
+        )
+        .await?;
+        self.set_value_raw(unifi_keys::USERNAME, &config.username, updated_by)
+            .await?;
+        self.set_value_raw(unifi_keys::SITE_ID, &config.site_id, updated_by)
+            .await?;
+
+        if let Some(new_password) = config.password {
+            let encrypted = self.crypto.encrypt(&new_password)?;
+            self.set_value_raw(unifi_keys::PASSWORD, &encrypted, updated_by)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// True if the DB already carries meaningful UniFi config — i.e. anyone
+    /// has enabled UniFi or stored a controller URL or password. Used by
+    /// the one-time `.env` seed to decide whether the database is still
+    /// pristine. Reads the raw (still-encrypted) password, so it doesn't
+    /// care whether it decrypts.
+    pub async fn has_unifi_config(&self) -> bool {
+        if self.get_bool(unifi_keys::ENABLED).await.unwrap_or(false) {
+            return true;
+        }
+        for key in [unifi_keys::CONTROLLER_URL, unifi_keys::PASSWORD] {
+            if !self
+                .get_value(key)
+                .await
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// One-time `.env` → DB seed. When the database holds no UniFi config
+    /// but the provisioning environment provides a controller URL, copy the
+    /// env values in (encrypting the password) so wizard/IaC installs come
+    /// up configured. Returns `true` if it seeded. Thereafter
+    /// `has_unifi_config` is true and this is a no-op — the database is
+    /// authoritative and env UniFi values are ignored.
+    pub async fn seed_unifi_from_env(
+        &self,
+        env: &crate::config::UnifiConfig,
+        updated_by: Uuid,
+    ) -> Result<bool> {
+        // Nothing to seed from, or the DB is already configured.
+        if env.controller_url.trim().is_empty() || self.has_unifi_config().await {
+            return Ok(false);
+        }
+
+        let password = if env.password.trim().is_empty() {
+            None
+        } else {
+            Some(env.password.clone())
+        };
+        self.update_unifi_config(
+            UpdateUnifiConfig {
+                enabled: env.enabled,
+                controller_url: env.controller_url.clone(),
+                username: env.username.clone(),
+                site_id: env.site_id.clone(),
+                password,
+            },
+            updated_by,
+        )
+        .await?;
+        tracing::info!(
+            "Seeded UniFi configuration from environment into the database (one-time); \
+             the database is now authoritative and .env UniFi values are ignored"
+        );
+        Ok(true)
+    }
+
+    /// Record the result of a UniFi connection test so the admin UI can
+    /// show health at a glance.
+    pub async fn record_unifi_test(&self, ok: bool, error: &str, updated_by: Uuid) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.set_value_raw(unifi_keys::LAST_TEST_AT, &now, updated_by)
+            .await?;
+        self.set_value_raw(
+            unifi_keys::LAST_TEST_OK,
+            if ok { "true" } else { "false" },
+            updated_by,
+        )
+        .await?;
+        self.set_value_raw(unifi_keys::LAST_TEST_ERROR, error, updated_by)
             .await?;
         Ok(())
     }

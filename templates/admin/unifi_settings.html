@@ -1,0 +1,141 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}UniFi Settings - Coterie{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="max-w-3xl mx-auto">
+        <div class="mb-6">
+            <h1 class="text-3xl font-bold text-gray-900">UniFi settings</h1>
+            <p class="mt-2 text-sm text-gray-600">
+                Coterie can grant and revoke UniFi Access door permissions as
+                members are activated or expire. Point it at your controller
+                and give it an admin account. Changes take effect immediately —
+                no restart needed.
+            </p>
+        </div>
+
+        {% if let Some(msg) = flash_success %}
+        <div class="mb-4 p-3 bg-green-50 border border-green-200 rounded-md text-sm text-green-900">{{ msg }}</div>
+        {% endif %}
+        {% if let Some(msg) = flash_error %}
+        <div class="mb-4 p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-900">{{ msg }}</div>
+        {% endif %}
+
+        {% if password_undecryptable %}
+        <div class="mb-4 p-4 bg-amber-50 border-l-4 border-amber-500 rounded-md">
+            <h3 class="text-sm font-semibold text-amber-900">Password can't be decrypted</h3>
+            <p class="mt-1 text-sm text-amber-800">
+                There's an encrypted controller password in the database, but
+                Coterie can't decrypt it. This usually means
+                <code class="font-mono bg-amber-100 px-1 rounded">session_secret</code>
+                was changed since it was saved. Paste the password below and
+                save — Coterie will re-encrypt it.
+            </p>
+        </div>
+        {% endif %}
+
+        <!-- Status -->
+        <div class="mb-6 bg-white rounded-lg shadow-sm p-5">
+            <div class="flex items-start justify-between">
+                <div>
+                    <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">Connection status</h2>
+                    <p class="mt-2 text-sm">
+                        Mode: {% if enabled %}<span class="font-mono text-green-700">enabled</span>{% else %}<span class="font-mono text-gray-500">disabled</span>{% endif %}
+                    </p>
+                    <p class="mt-1 text-sm">
+                        Last test:
+                        {% if last_test_status == "never" %}
+                            <span class="text-gray-500">never tested</span>
+                        {% else if last_test_status == "ok" %}
+                            <span class="text-green-700">✓ succeeded</span>
+                            <span class="text-gray-500">at {{ last_test_at }}</span>
+                        {% else %}
+                            <span class="text-red-700">✗ failed</span>
+                            <span class="text-gray-500">at {{ last_test_at }}</span>
+                            {% if !last_test_error.is_empty() %}
+                            <span class="block mt-1 text-xs font-mono text-red-800 break-all">{{ last_test_error }}</span>
+                            {% endif %}
+                        {% endif %}
+                    </p>
+                </div>
+                <div class="flex-shrink-0">
+                    <button
+                        hx-post="/portal/admin/settings/unifi/test"
+                        hx-headers='{"X-CSRF-Token": "{{ base.csrf_token }}"}'
+                        hx-include="[name='controller_url'], [name='username'], [name='password']"
+                        hx-target="#unifi-test-result"
+                        hx-swap="outerHTML"
+                        class="px-4 py-2 bg-gray-700 text-white rounded-md hover:bg-gray-800 text-sm font-medium">
+                        Test connection
+                    </button>
+                </div>
+            </div>
+            <div id="unifi-test-result"></div>
+            <p class="mt-3 text-xs text-gray-500">
+                Tests the credentials in the form below (or the stored ones if left blank) without saving them.
+            </p>
+        </div>
+
+        <!-- Form -->
+        <form method="POST" action="/portal/admin/settings/unifi"
+              class="bg-white rounded-lg shadow-sm divide-y divide-gray-200">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+
+            <div class="p-6 space-y-4">
+                <label class="flex items-center gap-2">
+                    <input type="checkbox" name="enabled" value="on" {% if enabled %}checked{% endif %}
+                           class="h-4 w-4 text-blue-600 rounded border-gray-300">
+                    <span class="text-sm font-medium text-gray-900">Enable UniFi integration</span>
+                </label>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Controller URL</label>
+                    <input type="url" name="controller_url" value="{{ controller_url }}"
+                           placeholder="https://192.168.1.1"
+                           class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-mono focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    <p class="mt-1 text-xs text-gray-500">
+                        Base URL of your UniFi controller (UniFi OS console or self-hosted Network application).
+                    </p>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Username</label>
+                    <input type="text" name="username" value="{{ username }}"
+                           autocomplete="off"
+                           placeholder="coterie-service"
+                           class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    <p class="mt-1 text-xs text-gray-500">A controller admin account with permission to manage access.</p>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Password</label>
+                    <input type="password" name="password" value="" autocomplete="new-password"
+                           placeholder="{% if password_set %}(stored — leave blank to keep){% else %}controller password{% endif %}"
+                           class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    <p class="mt-1 text-xs text-gray-500">
+                        Encrypted at rest. Leave blank to keep the current value.
+                        Type <code class="font-mono bg-gray-100 px-1 rounded">__CLEAR__</code> to remove it.
+                    </p>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Site ID</label>
+                    <input type="text" name="site_id" value="{{ site_id }}"
+                           placeholder="default"
+                           class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-mono focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    <p class="mt-1 text-xs text-gray-500">Usually <code class="font-mono bg-gray-100 px-1 rounded">default</code> unless you run multiple sites.</p>
+                </div>
+            </div>
+
+            <div class="p-6 flex items-center justify-between">
+                <a href="/portal/admin/settings" class="text-sm text-gray-600 hover:text-gray-900">← All settings</a>
+                <button type="submit"
+                        class="px-5 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+                    Save UniFi settings
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

@@ -13,3 +13,4 @@ pub mod settings;
 pub mod stripe;
 pub mod test_result;
 pub mod types;
+pub mod unifi;
