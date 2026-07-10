@@ -18,6 +18,34 @@
     <!-- Alpine.js CSP build (no `Function()` so works without 'unsafe-eval'). -->
     <script nonce="__CSP_NONCE__" defer src="/static/js/alpine.min.js"></script>
 
+    <!-- Alpine components. The CSP build forbids inline expressions
+         (object literals, assignments, comparisons) in x-data/@click/etc.,
+         so every component is registered here and templates reference only
+         property getters and no-arg methods. Runs during parse, before the
+         deferred Alpine boots, so the alpine:init listener is in place. -->
+    <script nonce="__CSP_NONCE__">
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('dropdown', () => ({
+                open: false,
+                toggle() { this.open = !this.open; },
+                close() { this.open = false; },
+                get chevron() { return this.open ? 'rotate-180' : ''; },
+            }));
+            Alpine.data('emailMode', (initial) => ({
+                mode: initial,
+                get isSmtp() { return this.mode === 'smtp'; },
+            }));
+            Alpine.data('recurrence', () => ({
+                kind: 'none',
+                get notNone() { return this.kind !== 'none'; },
+                get isWeekly() { return this.kind === 'weekly'; },
+                get notWeekly() { return this.kind !== 'weekly'; },
+                get isMonthlyDom() { return this.kind === 'monthly_dom'; },
+                get isMonthlyWeekday() { return this.kind === 'monthly_weekday'; },
+            }));
+        });
+    </script>
+
     <!-- Tailwind CSS (locally built) -->
     <link rel="stylesheet" href="/static/style.css">
 
@@ -68,13 +96,13 @@
                         </a>
                         
                         {% if base.is_admin %}
-                        <div class="relative" x-data="{ open: false }">
-                            <button @click="open = !open" 
+                        <div class="relative" x-data="dropdown">
+                            <button @click="toggle()" 
                                     class="text-gray-700 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
                                 Admin ▼
                             </button>
                             <div x-show="open" 
-                                 @click.away="open = false"
+                                 @click.away="close()"
                                  x-cloak
                                  class="absolute z-10 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5">
                                 <a href="/portal/admin/members" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
@@ -122,8 +150,8 @@
                 
                 <div class="flex items-center">
                     {% if let Some(user) = base.current_user.as_ref() %}
-                    <div class="relative" x-data="{ open: false }">
-                        <button @click="open = !open"
+                    <div class="relative" x-data="dropdown">
+                        <button @click="toggle()"
                                 class="flex items-center text-sm text-gray-700 hover:text-gray-900">
                             <span class="mr-1">{{ user.username }}</span>
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -131,7 +159,7 @@
                             </svg>
                         </button>
                         <div x-show="open"
-                             @click.away="open = false"
+                             @click.away="close()"
                              x-cloak
                              class="absolute right-0 z-10 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5">
                             <a href="/portal/profile" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">

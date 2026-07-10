@@ -193,12 +193,12 @@
         </form>
 
         <!-- Help -->
-        <div class="mt-8 bg-white rounded-lg shadow-sm p-6" x-data="{ open: false }">
-            <button type="button" @click="open = !open"
+        <div class="mt-8 bg-white rounded-lg shadow-sm p-6" x-data="dropdown">
+            <button type="button" @click="toggle()"
                     class="w-full flex items-center justify-between text-left">
                 <h2 class="text-lg font-semibold text-gray-900">How to set up the Discord side</h2>
                 <svg class="h-5 w-5 text-gray-400 transition-transform"
-                     :class="open ? 'rotate-180' : ''"
+                     :class="chevron"
                      fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
                 </svg>

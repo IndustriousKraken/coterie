@@ -10,7 +10,7 @@
    `<tr>` in the members table without a full page reload. When
    you change row markup (column order, badge style, etc.), edit
    here and `members_table.html` together. #}
-<tr class="hover:bg-gray-50{% if flash == "active" %} bg-green-50{% else if flash == "suspended" %} bg-yellow-50{% endif %}" x-data="{ open: false }">
+<tr class="hover:bg-gray-50{% if flash == "active" %} bg-green-50{% else if flash == "suspended" %} bg-yellow-50{% endif %}" x-data="dropdown">
     <td class="px-6 py-4 whitespace-nowrap">
         <div class="flex items-center">
             <div class="flex-shrink-0 h-10 w-10 bg-gray-200 rounded-full flex items-center justify-center">

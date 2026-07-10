@@ -111,7 +111,7 @@
                     </div>
                 </div>
 
-                <div x-data="{ kind: 'none' }" class="border-t pt-4">
+                <div x-data="recurrence" class="border-t pt-4">
                     <label class="block text-sm font-medium text-gray-700 mb-2">Repeat</label>
                     <div class="space-y-2">
                         <label class="flex items-center gap-2">
@@ -136,16 +136,16 @@
                         </label>
                     </div>
 
-                    <div x-show="kind !== 'none'" class="mt-4 space-y-3 pl-6 border-l-2 border-blue-100">
+                    <div x-show="notNone" class="mt-4 space-y-3 pl-6 border-l-2 border-blue-100">
                         <div class="flex items-center gap-2">
                             <label class="text-sm text-gray-700">Every</label>
                             <input type="number" name="repeat_interval" value="1" min="1" max="52"
                                    class="w-20 px-2 py-1 border border-gray-300 rounded-md text-sm">
-                            <span class="text-sm text-gray-700" x-show="kind === 'weekly'">week(s)</span>
-                            <span class="text-sm text-gray-700" x-show="kind !== 'weekly'">month(s)</span>
+                            <span class="text-sm text-gray-700" x-show="isWeekly">week(s)</span>
+                            <span class="text-sm text-gray-700" x-show="notWeekly">month(s)</span>
                         </div>
 
-                        <div x-show="kind === 'weekly'">
+                        <div x-show="isWeekly">
                             <label class="block text-sm text-gray-700 mb-1">On these days</label>
                             <div class="flex flex-wrap gap-3">
                                 <label class="flex items-center gap-1"><input type="checkbox" name="repeat_weekdays" value="mon" class="h-4 w-4 text-blue-600 rounded border-gray-300"><span class="text-sm">Mon</span></label>
@@ -158,7 +158,7 @@
                             </div>
                         </div>
 
-                        <div x-show="kind === 'monthly_dom'">
+                        <div x-show="isMonthlyDom">
                             <label class="block text-sm text-gray-700 mb-1">Day of month (1–31)</label>
                             <input type="number" name="repeat_day" min="1" max="31"
                                    class="w-24 px-2 py-1 border border-gray-300 rounded-md text-sm">
@@ -167,7 +167,7 @@
                             </p>
                         </div>
 
-                        <div x-show="kind === 'monthly_weekday'" class="flex items-center gap-2">
+                        <div x-show="isMonthlyWeekday" class="flex items-center gap-2">
                             <label class="text-sm text-gray-700">The</label>
                             <select name="repeat_ordinal"
                                     class="px-2 py-1 border border-gray-300 rounded-md text-sm">

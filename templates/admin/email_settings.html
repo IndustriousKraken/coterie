@@ -87,7 +87,7 @@
             <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
 
             <!-- Mode + envelope -->
-            <div class="p-6 space-y-4" x-data="{ mode: '{{ mode }}' }">
+            <div class="p-6 space-y-4" x-data="emailMode('{{ mode }}')">
                 <div>
                     <label class="block text-sm font-medium text-gray-700">Mode</label>
                     <select name="mode"
@@ -114,7 +114,7 @@
                 </div>
 
                 <!-- SMTP-only fields -->
-                <div x-show="mode === 'smtp'" x-cloak class="space-y-4 pt-2 border-t">
+                <div x-show="isSmtp" x-cloak class="space-y-4 pt-2 border-t">
                     <div>
                         <label class="block text-sm font-medium text-gray-700">SMTP host</label>
                         <input type="text" name="smtp_host" value="{{ smtp_host }}"
@@ -179,12 +179,12 @@
         </div>
 
         <!-- Help section -->
-        <div class="mt-8 bg-white rounded-lg shadow-sm p-6" x-data="{ open: false }">
-            <button type="button" @click="open = !open"
+        <div class="mt-8 bg-white rounded-lg shadow-sm p-6" x-data="dropdown">
+            <button type="button" @click="toggle()"
                     class="w-full flex items-center justify-between text-left">
                 <h2 class="text-lg font-semibold text-gray-900">Setup guide: deliverability in 20 minutes</h2>
                 <svg class="h-5 w-5 text-gray-400 transition-transform"
-                     :class="open ? 'rotate-180' : ''"
+                     :class="chevron"
                      fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
                 </svg>
