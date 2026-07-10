@@ -326,7 +326,14 @@ impl EventRepository for SqliteEventRepository {
     }
 
     async fn list_upcoming(&self, limit: i64) -> Result<Vec<Event>> {
-        let now = Utc::now().naive_utc();
+        // `start_time` is a naive wall-clock, so comparing it to UTC `now`
+        // in SQL drops non-UTC-org events by the org's offset (a 7 PM EDT
+        // event would fall out of "upcoming" at 3 PM). Widen the SQL bound
+        // by the widest IANA offset (~14h) as a coarse pre-filter, then do
+        // the exact `start_utc() > now` test in Rust and apply the limit
+        // there — the same pattern as `list_pending_reminders`.
+        let now = Utc::now();
+        let margin = Duration::hours(15);
 
         let rows = sqlx::query_as::<_, EventRow>(
             r#"
@@ -337,16 +344,22 @@ impl EventRepository for SqliteEventRepository {
             FROM events
             WHERE start_time > ?
             ORDER BY start_time ASC
-            LIMIT ?
             "#,
         )
-        .bind(now)
-        .bind(limit)
+        .bind((now - margin).naive_utc())
         .fetch_all(&self.pool)
         .await
         .map_err(AppError::Database)?;
 
-        rows.into_iter().map(Self::row_to_event).collect()
+        let mut events: Vec<Event> = rows
+            .into_iter()
+            .map(Self::row_to_event)
+            .collect::<Result<Vec<_>>>()?;
+        // Exact test + ordering on the derived instant, then the limit.
+        events.retain(|e| e.start_utc() > now);
+        events.sort_by(|a, b| a.start_utc().cmp(&b.start_utc()));
+        events.truncate(limit as usize);
+        Ok(events)
     }
 
     async fn list_public(&self) -> Result<Vec<Event>> {
@@ -394,23 +407,39 @@ impl EventRepository for SqliteEventRepository {
     }
 
     async fn count_members_only_upcoming(&self) -> Result<i64> {
+        // Count on the derived UTC instant, not the raw wall-clock (which
+        // would mis-count by the org's offset near evening events). SQLite
+        // can't do the tz math, so fetch the widened candidate set and
+        // count those still upcoming by their true instant — same pattern
+        // as `list_upcoming`.
         let visibility_str = Self::visibility_to_str(&EventVisibility::MembersOnly);
-        let now = Utc::now().naive_utc();
+        let now = Utc::now();
+        let margin = Duration::hours(15);
 
-        let count: (i64,) = sqlx::query_as(
+        let rows = sqlx::query_as::<_, EventRow>(
             r#"
-            SELECT COUNT(*) as count
+            SELECT id, title, description, event_type, event_type_id, visibility,
+                   start_time, end_time, timezone, location, max_attendees, rsvp_required,
+                   image_url, created_by, created_at, updated_at,
+                   series_id, occurrence_index
             FROM events
             WHERE visibility = ? AND start_time > ?
             "#,
         )
         .bind(visibility_str)
-        .bind(now)
-        .fetch_one(&self.pool)
+        .bind((now - margin).naive_utc())
+        .fetch_all(&self.pool)
         .await
         .map_err(AppError::Database)?;
 
-        Ok(count.0)
+        let count = rows
+            .into_iter()
+            .map(Self::row_to_event)
+            .collect::<Result<Vec<_>>>()?
+            .iter()
+            .filter(|e| e.start_utc() > now)
+            .count();
+        Ok(count as i64)
     }
 
     async fn update(&self, id: Uuid, event: Event) -> Result<Event> {

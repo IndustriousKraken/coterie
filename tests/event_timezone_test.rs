@@ -275,3 +275,51 @@ async fn annotation_preserves_wallclock_and_defaults_zone() {
         "2026-07-23T19:00"
     );
 }
+
+// list_upcoming (member events list + dashboard) must filter on the derived
+// UTC instant, not the raw wall-clock — otherwise a non-UTC-org evening event
+// drops off "upcoming" by the org's offset before it starts.
+#[tokio::test]
+async fn list_upcoming_uses_true_instant_not_wall_clock() {
+    let pool = fresh_pool().await;
+    let actor = make_actor(&pool).await;
+    let admin = make_event_admin(&pool);
+    let settings = settings(&pool);
+
+    // America/Phoenix is UTC-7 with no DST — deterministic offset.
+    settings
+        .update_setting(
+            "org.timezone",
+            UpdateSettingRequest {
+                value: "America/Phoenix".to_string(),
+                reason: None,
+            },
+            actor,
+        )
+        .await
+        .unwrap();
+    let zone = settings.org_timezone().await.name().to_string();
+
+    // A wall-clock 3h in the PAST in Phoenix is a true instant ~4h in the
+    // FUTURE (local + 7h = UTC). The old raw-wall-clock filter dropped it
+    // from "upcoming"; the derived filter keeps it.
+    let wall_naive = (Utc::now() - chrono::Duration::hours(3)).naive_utc();
+    let created = admin
+        .create(actor, single_input(wall_naive, &zone))
+        .await
+        .expect("create event");
+
+    let repo = SqliteEventRepository::new(pool.clone());
+
+    // Sanity: its derived instant really is in the future.
+    let stored = repo.find_by_id(created.id).await.unwrap().unwrap();
+    assert!(stored.start_utc() > Utc::now());
+
+    // The event must appear in upcoming (fails against the old raw filter).
+    let upcoming = repo.list_upcoming(50).await.unwrap();
+    assert!(
+        upcoming.iter().any(|e| e.id == created.id),
+        "an event whose wall-clock is past but whose true instant is ~4h out \
+         must appear in list_upcoming"
+    );
+}
