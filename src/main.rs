@@ -228,40 +228,10 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("Stripe .env→DB seed check failed: {}", e);
     }
 
-    // Build the Stripe client the *services* capture at construction
-    // (PaymentAdminService refunds, BillingService auto-renew) from the
-    // current DB config. The portal-facing client + inbound webhook
-    // dispatcher are held behind a hot-swappable handle built further
-    // down (after ServiceContext, whose fields the dispatcher needs).
-    // A blank secret / decrypt failure → None (unconfigured).
-    let stripe_client: Option<Arc<payments::StripeClient>> =
-        match settings_service.get_stripe_config().await {
-            Ok(cfg) if cfg.enabled => match config::nonblank(Some(cfg.secret_key)) {
-                Some(api_key) => {
-                    tracing::info!("Stripe payment processing enabled");
-                    Some(Arc::new(payments::StripeClient::new(
-                        api_key,
-                        payment_repo.clone(),
-                        member_repo.clone(),
-                    )))
-                }
-                None => {
-                    tracing::warn!("Stripe enabled but secret key missing/blank");
-                    None
-                }
-            },
-            Ok(_) => {
-                tracing::info!("Stripe payment processing disabled");
-                None
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Stripe config could not be decrypted ({}); treating as unconfigured",
-                    e
-                );
-                None
-            }
-        };
+    // The Stripe client + webhook dispatcher are now built inside the
+    // hot-swappable `StripeHandle` (owned by ServiceContext), so there's
+    // no startup-captured client to construct here — every path (webhook,
+    // per-request charges, auto-renew, refunds) reads the live handle.
 
     // Per-IP rate limiter for money-moving endpoints (charge, donate,
     // refund). Built once and shared between AppState (login/charge
@@ -287,7 +257,6 @@ async fn main() -> anyhow::Result<()> {
         csrf_service,
         totp_service,
         pending_login_service,
-        stripe_client.clone(),
         money_limiter.clone(),
         settings.server.base_url.clone(),
         db_pool.clone(),
@@ -456,31 +425,21 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Hot-swappable Stripe handle: holds the portal-facing client + the
-    // inbound webhook dispatcher, rebuilt from DB config after a
-    // settings save so key/secret changes take effect with no restart.
-    // Built here (after ServiceContext::new) because the dispatcher
-    // pulls several service_context-owned fields (processed_events_repo,
-    // membership_type_service, integration_manager). `rebuild()` loads
-    // the current DB config; when Stripe is disabled/unconfigured the
-    // runtime stays empty and the webhook endpoint returns 503.
-    let stripe_handle = Arc::new(payments::StripeHandle::new(
-        service_context.settings_service.clone(),
-        service_context.payment_repo.clone(),
-        service_context.member_repo.clone(),
-        service_context.processed_events_repo.clone(),
-        service_context.membership_type_service.clone(),
-        service_context.integration_manager.clone(),
-    ));
-    stripe_handle.rebuild().await;
+    // Load the Stripe handle (owned by ServiceContext) from DB config.
+    // The handle backs the portal-facing client + inbound webhook
+    // dispatcher AND the background services (auto-renew, refunds), so a
+    // later portal settings save calls `rebuild()` again and every path
+    // picks up the new key/secret with no restart. When Stripe is
+    // disabled/unconfigured the runtime stays empty and the webhook
+    // endpoint returns 503.
+    service_context.stripe_handle.rebuild().await;
 
     // Build BillingService once so the runner and every request share
     // the same instance. Reconstructing per-request would silently lose
     // any per-instance state a future field might carry (rate limiter,
     // backoff cache, etc.); fixing the pattern now is cheap insurance.
-    let billing_service = Arc::new(
-        service_context.billing_service(stripe_client.clone(), settings.server.base_url.clone()),
-    );
+    let billing_service =
+        Arc::new(service_context.billing_service(settings.server.base_url.clone()));
 
     // Spawn billing runner (runs every hour)
     {
@@ -513,8 +472,8 @@ async fn main() -> anyhow::Result<()> {
     // their effectiveness (login_limiter on /auth/login and /login would
     // be different maps).
     let app_state = api::state::AppState::new(
-        service_context,
-        stripe_handle,
+        service_context.clone(),
+        service_context.stripe_handle.clone(),
         billing_service,
         Arc::new(settings.clone()),
         bot_challenge_verifier,

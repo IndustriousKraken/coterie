@@ -425,6 +425,125 @@ async fn generic_settings_page_has_no_stripe_rows() {
 }
 
 // ---------------------------------------------------------------------
+// Background-service hot-reload (the revision): a service built while
+// Stripe is unconfigured must pick up a client added by a later
+// rebuild(). Refunds (and auto-renew charges) read the shared handle at
+// use time, not a client captured at construction — so a portal key
+// add/rotation takes effect for those money paths with no restart.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn refund_service_picks_up_client_after_rebuild_no_restart() {
+    use coterie::{
+        api::state::{MoneyLimiter, RateLimiter},
+        domain::{
+            CreateMemberRequest, Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus,
+            StripeRef,
+        },
+        repository::MemberRepository,
+        service::{
+            audit_service::AuditService,
+            payment_admin_service::{PaymentAdminService, RefundError},
+        },
+    };
+    use std::net::IpAddr;
+    use std::time::Duration;
+
+    let pool = fresh_pool().await;
+    let svc = settings_service(&pool);
+    let handle = build_handle(&pool, &svc);
+
+    // Stripe is unconfigured at construction time.
+    handle.rebuild().await;
+    assert!(handle.current().client.is_none(), "starts unconfigured");
+
+    let payment_repo: Arc<dyn PaymentRepository> =
+        Arc::new(SqlitePaymentRepository::new(pool.clone()));
+    let member_repo = SqliteMemberRepository::new(pool.clone());
+    let audit = Arc::new(AuditService::new(pool.clone()));
+    let integrations = Arc::new(IntegrationManager::new());
+    let limiter = MoneyLimiter(RateLimiter::new(1000, Duration::from_secs(60)));
+
+    // The service captures the SHARED handle — the same one rebuild()
+    // swaps — not a client snapshot taken now.
+    let admin = PaymentAdminService::new(
+        payment_repo.clone(),
+        handle.clone(),
+        audit,
+        integrations,
+        limiter,
+    );
+
+    // Seed a member + a completed Stripe payment with a Stripe reference.
+    let member = member_repo
+        .create(CreateMemberRequest {
+            email: "refund@example.com".into(),
+            username: format!("u_{}", Uuid::new_v4().simple()),
+            full_name: "Refund Target".into(),
+            password: "p4ssword_long_enough".into(),
+            membership_type_id: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let now = chrono::Utc::now();
+    let payment = payment_repo
+        .create(Payment {
+            id: Uuid::new_v4(),
+            payer: Payer::Member(member.id),
+            amount_cents: 5000,
+            currency: "USD".into(),
+            status: PaymentStatus::Completed,
+            payment_method: PaymentMethod::Stripe,
+            kind: PaymentKind::Membership,
+            external_id: Some(StripeRef::PaymentIntent("pi_refund_me".into())),
+            description: "test".into(),
+            paid_at: Some(now),
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .unwrap();
+
+    let ip: IpAddr = [127, 0, 0, 1].into();
+
+    // Unconfigured handle → refund rejected, row left Completed for retry.
+    let err = admin.refund(member.id, payment.id, ip).await.unwrap_err();
+    assert!(
+        matches!(err, RefundError::StripeNotConfigured),
+        "unconfigured handle → StripeNotConfigured, got {:?}",
+        err
+    );
+
+    // Admin adds Stripe from the portal AFTER startup, then rebuild().
+    svc.update_stripe_config(
+        UpdateStripeConfig {
+            enabled: true,
+            publishable_key: "pk".into(),
+            success_url: String::new(),
+            cancel_url: String::new(),
+            secret_key: Some("sk_test_live".into()),
+            webhook_secret: Some("whsec_live".into()),
+        },
+        Uuid::nil(),
+    )
+    .await
+    .unwrap();
+    handle.rebuild().await;
+    assert!(handle.current().client.is_some());
+
+    // The SAME pre-built service now issues the refund via the fake —
+    // no restart, no reconstruction.
+    let outcome = admin.refund(member.id, payment.id, ip).await.unwrap();
+    assert!(
+        outcome.stripe_refund_id.is_some(),
+        "refund must go through Stripe after the handle was rebuilt"
+    );
+    let after = payment_repo.find_by_id(payment.id).await.unwrap().unwrap();
+    assert_eq!(after.status, PaymentStatus::Refunded);
+}
+
+// ---------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------
 
@@ -463,7 +582,7 @@ async fn build_billing(
         settings.clone(),
         email_sender,
         integrations,
-        None,
+        Arc::new(StripeHandle::preloaded(None, None)),
         "http://localhost:3000".to_string(),
         pool.clone(),
     )

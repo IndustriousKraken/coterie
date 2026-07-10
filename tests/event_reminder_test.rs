@@ -119,7 +119,7 @@ async fn build_with(email: Arc<FakeEmailSender>, event_start: DateTime<Utc>, sta
         settings,
         email_for_billing,
         integrations,
-        None,
+        Arc::new(coterie::payments::StripeHandle::preloaded(None, None)),
         "http://localhost:3000".to_string(),
         pool.clone(),
     );

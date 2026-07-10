@@ -117,14 +117,13 @@ async fn build_harness() -> Harness {
         csrf_service.clone(),
         totp_service,
         pending_login_service,
-        None,
         money_limiter.clone(),
         settings.server.base_url.clone(),
         pool.clone(),
     ));
 
     let billing_service =
-        Arc::new(service_context.billing_service(None, settings.server.base_url.clone()));
+        Arc::new(service_context.billing_service(settings.server.base_url.clone()));
 
     let app_state = AppState::new(
         service_context,

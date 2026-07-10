@@ -20,7 +20,7 @@ use crate::{
     },
     error::{AppError, Result},
     integrations::{IntegrationEvent, IntegrationManager},
-    payments::StripeClient,
+    payments::StripeHandle,
     repository::{
         MemberRepository, PaymentRepository, SavedCardRepository, ScheduledPaymentRepository,
     },
@@ -44,7 +44,10 @@ pub struct AutoRenew {
     membership_type_service: Arc<MembershipTypeService>,
     settings_service: Arc<SettingsService>,
     integration_manager: Arc<IntegrationManager>,
-    stripe_client: Option<Arc<StripeClient>>,
+    /// Hot-swappable Stripe wiring — read `current().client` at charge
+    /// time (not captured once) so a portal key rotation reaches the
+    /// scheduled-charge / migrate / disable paths without a restart.
+    stripe_handle: Arc<StripeHandle>,
     /// Absolute URL to this Coterie instance — used to build the
     /// member-detail link in the terminal-failure AdminAlert body.
     /// Threaded in from `BillingService::new` (same source as
@@ -62,7 +65,7 @@ impl AutoRenew {
         membership_type_service: Arc<MembershipTypeService>,
         settings_service: Arc<SettingsService>,
         integration_manager: Arc<IntegrationManager>,
-        stripe_client: Option<Arc<StripeClient>>,
+        stripe_handle: Arc<StripeHandle>,
         base_url: String,
     ) -> Self {
         Self {
@@ -73,7 +76,7 @@ impl AutoRenew {
             membership_type_service,
             settings_service,
             integration_manager,
-            stripe_client,
+            stripe_handle,
             base_url,
         }
     }
@@ -180,8 +183,9 @@ impl AutoRenew {
             ))
         })?;
 
-        let stripe = self
-            .stripe_client
+        let runtime = self.stripe_handle.current();
+        let stripe = runtime
+            .client
             .as_ref()
             .ok_or_else(|| AppError::ServiceUnavailable("Stripe not configured".to_string()))?;
 
@@ -473,8 +477,9 @@ impl AutoRenew {
         // failure, roll back so the operator can retry without us
         // leaving them in 'manual' while Stripe keeps billing.
         if let Some(sub_id) = stripe_sub_to_cancel {
-            let stripe = self
-                .stripe_client
+            let runtime = self.stripe_handle.current();
+            let stripe = runtime
+                .client
                 .as_ref()
                 .ok_or_else(|| AppError::ServiceUnavailable("Stripe not configured".to_string()))?;
             if let Err(e) = stripe.cancel_subscription(&sub_id).await {
@@ -536,8 +541,9 @@ impl AutoRenew {
             return Ok(());
         }
 
-        let stripe_client = self
-            .stripe_client
+        let runtime = self.stripe_handle.current();
+        let stripe_client = runtime
+            .client
             .as_ref()
             .ok_or_else(|| AppError::ServiceUnavailable("Stripe not configured".to_string()))?;
 
