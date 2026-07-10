@@ -188,8 +188,11 @@
         </form>
     </div>
 
-    <!-- Members Table -->
-    <div id="members-table-container" class="bg-white rounded-lg shadow-sm overflow-hidden">
+    <!-- Members Table. overflow-x-auto (not overflow-hidden): a long name or
+         email in a whitespace-nowrap cell can widen the table past the
+         container; hidden would clip the right-hand Actions column (the
+         3-dot menu) off-screen for every row on that page. -->
+    <div id="members-table-container" class="bg-white rounded-lg shadow-sm overflow-x-auto">
         <table class="min-w-full divide-y divide-gray-200">
             <thead class="bg-gray-50">
                 <tr>
