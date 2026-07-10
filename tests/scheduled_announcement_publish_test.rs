@@ -124,6 +124,7 @@ async fn seed_announcement(
     h: &H,
     published_at: Option<DateTime<Utc>>,
     scheduled_publish_at: Option<DateTime<Utc>>,
+    scheduled_publish_timezone: &str,
 ) -> Announcement {
     let now = Utc::now();
     let row = Announcement {
@@ -137,6 +138,7 @@ async fn seed_announcement(
         image_url: None,
         published_at,
         scheduled_publish_at,
+        scheduled_publish_timezone: scheduled_publish_timezone.to_string(),
         created_by: h.actor,
         created_at: now,
         updated_at: now,
@@ -175,7 +177,7 @@ async fn past_due_draft_fires_publishes_audits_and_dispatches() {
     let h = build().await;
 
     let scheduled = Utc::now() - Duration::minutes(5);
-    let row = seed_announcement(&h, None, Some(scheduled)).await;
+    let row = seed_announcement(&h, None, Some(scheduled), "UTC").await;
 
     let count = h
         .service
@@ -220,7 +222,7 @@ async fn future_draft_is_not_touched() {
     let h = build().await;
 
     let scheduled = Utc::now() + Duration::hours(2);
-    let row = seed_announcement(&h, None, Some(scheduled)).await;
+    let row = seed_announcement(&h, None, Some(scheduled), "UTC").await;
 
     let count = h
         .service
@@ -257,7 +259,7 @@ async fn already_published_row_is_not_double_dispatched() {
     // past-due scheduled_publish_at. The runner should not touch it.
     let already_published = Some(Utc::now() - Duration::hours(1));
     let scheduled = Some(Utc::now() - Duration::minutes(5));
-    let row = seed_announcement(&h, already_published, scheduled).await;
+    let row = seed_announcement(&h, already_published, scheduled, "UTC").await;
 
     let count = h
         .service
@@ -292,7 +294,7 @@ async fn concurrent_mark_published_now_only_one_wins() {
     // atomic conditional UPDATE is what guarantees this.
     let h = build().await;
     let scheduled = Utc::now() - Duration::minutes(5);
-    let row = seed_announcement(&h, None, Some(scheduled)).await;
+    let row = seed_announcement(&h, None, Some(scheduled), "UTC").await;
 
     let repo_a = h.repo.clone();
     let repo_b = h.repo.clone();
@@ -308,5 +310,94 @@ async fn concurrent_mark_published_now_only_one_wins() {
     assert_eq!(
         winners, 1,
         "exactly one of the two concurrent calls must win"
+    );
+}
+
+// Task 4.1 — the core timezone fix. An America/New_York (EDT, UTC-4 in
+// summer) org schedules a Draft for a wall-clock one hour in the PAST.
+// Its true instant is +4/+5h from the wall-clock, i.e. still ~3-4h in the
+// FUTURE. The old bug compared the raw wall-clock (already past) to `now`
+// and published up to four hours early; the fix compares the DERIVED
+// instant and holds the row.
+#[tokio::test]
+async fn non_utc_org_draft_does_not_publish_early() {
+    let h = build().await;
+
+    let wall_naive = (Utc::now() - Duration::hours(1)).naive_utc();
+    let wall = DateTime::from_naive_utc_and_offset(wall_naive, Utc);
+    let row = seed_announcement(&h, None, Some(wall), "America/New_York").await;
+
+    // Sanity: the derived instant IS still in the future — otherwise the
+    // test would prove nothing about early publishing.
+    let fetched = h.repo.find_by_id(row.id).await.unwrap().unwrap();
+    assert!(
+        fetched.scheduled_publish_utc().unwrap() > Utc::now(),
+        "New York wall-clock (now-1h) should derive to a future instant",
+    );
+
+    let count = h
+        .service
+        .publish_scheduled()
+        .await
+        .expect("publish_scheduled");
+    assert_eq!(
+        count, 0,
+        "must not publish before the true instant (no offset-early fire)"
+    );
+
+    let after = h.repo.find_by_id(row.id).await.unwrap().unwrap();
+    assert!(after.published_at.is_none(), "row should still be Draft");
+    assert_eq!(h.fake_integration.announcement_published_count().await, 0);
+}
+
+// A New York Draft whose DERIVED instant is already past DOES fire — the
+// runner publishes on the true instant, not offset-hours late either.
+#[tokio::test]
+async fn non_utc_org_draft_fires_once_true_instant_passes() {
+    let h = build().await;
+
+    // Wall-clock 8h in the past → derived ~4-5h in the past for NY → due.
+    let wall_naive = (Utc::now() - Duration::hours(8)).naive_utc();
+    let wall = DateTime::from_naive_utc_and_offset(wall_naive, Utc);
+    let row = seed_announcement(&h, None, Some(wall), "America/New_York").await;
+
+    let count = h
+        .service
+        .publish_scheduled()
+        .await
+        .expect("publish_scheduled");
+    assert_eq!(count, 1, "past-true-instant NY Draft should publish");
+
+    let after = h.repo.find_by_id(row.id).await.unwrap().unwrap();
+    assert!(after.published_at.is_some(), "row should be Published");
+    assert_eq!(h.fake_integration.announcement_published_count().await, 1);
+}
+
+// Task 4.2 — the zone column is a pure annotation. Two Drafts with the
+// SAME wall-clock but different frozen zones store and render the SAME
+// wall-clock value; only the DERIVED instant differs. (This mirrors what
+// the migration does: add + backfill the zone, shift no stored value.)
+#[tokio::test]
+async fn zone_annotation_does_not_shift_stored_wallclock() {
+    let h = build().await;
+    let wall_naive = (Utc::now() + Duration::days(3)).naive_utc();
+    let wall = DateTime::from_naive_utc_and_offset(wall_naive, Utc);
+
+    let utc_row = seed_announcement(&h, None, Some(wall), "UTC").await;
+    let ny_row = seed_announcement(&h, None, Some(wall), "America/New_York").await;
+
+    let utc_fetched = h.repo.find_by_id(utc_row.id).await.unwrap().unwrap();
+    let ny_fetched = h.repo.find_by_id(ny_row.id).await.unwrap().unwrap();
+
+    // Stored (and hence admin-rendered) wall-clock is identical.
+    assert_eq!(
+        utc_fetched.scheduled_publish_at, ny_fetched.scheduled_publish_at,
+        "the zone must not shift the stored wall-clock",
+    );
+    // But the derived instant reflects the NY offset (~4-5h earlier UTC).
+    assert_ne!(
+        utc_fetched.scheduled_publish_utc(),
+        ny_fetched.scheduled_publish_utc(),
+        "derived instant should reflect the frozen zone offset",
     );
 }

@@ -53,14 +53,14 @@ Wire shape (URLs, form bodies, HTMX response fragments) is unchanged.
 
 ### Requirement: Admin announcement form accepts optional scheduled publish time
 
-The new-announcement form (`POST /portal/admin/announcements/new`) and edit-announcement form (`POST /portal/admin/announcements/:id/update`) SHALL each accept an optional `scheduled_publish_at` form field. The field SHALL be rendered as an HTML `datetime-local` input. Empty input means "no schedule." A non-empty input parses as a `DateTime<Utc>` (treating the form value as UTC for v1; per-timezone handling is a future change).
+The new-announcement form (`POST /portal/admin/announcements/new`) and edit-announcement form (`POST /portal/admin/announcements/:id/update`) SHALL each accept an optional `scheduled_publish_at` form field. The field SHALL be rendered as an HTML `datetime-local` input. Empty input means "no schedule." A non-empty input SHALL be interpreted as a **wall-clock in the organization timezone** and stored as a naive wall-clock paired with a `scheduled_publish_timezone` IANA zone frozen from `org.timezone` at submission; the true UTC instant is derived from (wall-clock, zone) at compare time (see the `scheduled-announcement-publish` capability).
 
-The admin detail page SHALL display the scheduled time if set, alongside the existing status indicator.
+The admin detail page SHALL display the scheduled time in the org timezone with its zone abbreviation (e.g. "9:00 AM EDT"), alongside the existing status indicator.
 
 #### Scenario: Form submission with schedule
 
-- **WHEN** an admin submits the new-announcement form with `scheduled_publish_at = "2026-06-01T09:00"`
-- **THEN** the resulting `CreateAnnouncementInput` carries `scheduled_publish_at = Some(2026-06-01T09:00 UTC)`; the row is saved as Draft with that timestamp; `publish_now` is implicitly false
+- **WHEN** an admin submits the new-announcement form with `scheduled_publish_at = "2026-06-01T09:00"` and the org timezone is `America/New_York`
+- **THEN** the resulting `CreateAnnouncementInput` carries the wall-clock `2026-06-01T09:00` and zone `America/New_York` (derived instant `2026-06-01T13:00Z`); the row is saved as Draft with that wall-clock and zone; `publish_now` is implicitly false
 
 #### Scenario: Form submission without schedule
 

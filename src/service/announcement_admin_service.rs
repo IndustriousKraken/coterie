@@ -36,10 +36,14 @@ pub struct CreateAnnouncementInput {
     pub featured: bool,
     pub image_url: Option<String>,
     pub publish_now: bool,
-    /// Optional future-publish time. Ignored when `publish_now` is
-    /// true (publish-now wins). A Draft row with this set is what the
-    /// background runner picks up at-or-after the scheduled time.
+    /// Optional future-publish time, a wall-clock in
+    /// `scheduled_publish_timezone`. Ignored when `publish_now` is true
+    /// (publish-now wins). A Draft row with this set is what the
+    /// background runner picks up at-or-after its derived instant.
     pub scheduled_publish_at: Option<DateTime<Utc>>,
+    /// IANA zone the `scheduled_publish_at` wall-clock is in. Frozen
+    /// from `org.timezone` by the handler at submission.
+    pub scheduled_publish_timezone: String,
 }
 
 /// Typed input for updating an announcement. Carries the editable
@@ -54,9 +58,13 @@ pub struct UpdateAnnouncementInput {
     pub is_public: bool,
     pub featured: bool,
     pub image_url: Option<String>,
-    /// Optional future-publish time. Persisted as-is on the row;
+    /// Optional future-publish time, a wall-clock in
+    /// `scheduled_publish_timezone`. Persisted as-is on the row;
     /// empty/None clears any prior schedule.
     pub scheduled_publish_at: Option<DateTime<Utc>>,
+    /// IANA zone the `scheduled_publish_at` wall-clock is in. Frozen
+    /// from `org.timezone` by the handler at submission.
+    pub scheduled_publish_timezone: String,
 }
 
 pub struct AnnouncementAdminService {
@@ -108,6 +116,7 @@ impl AnnouncementAdminService {
             image_url: input.image_url,
             published_at,
             scheduled_publish_at,
+            scheduled_publish_timezone: input.scheduled_publish_timezone,
             created_by: actor_id,
             created_at: now,
             updated_at: now,
@@ -167,6 +176,7 @@ impl AnnouncementAdminService {
             image_url: input.image_url,
             published_at: existing.published_at,
             scheduled_publish_at: input.scheduled_publish_at,
+            scheduled_publish_timezone: input.scheduled_publish_timezone,
             created_by: existing.created_by,
             created_at: existing.created_at,
             updated_at: Utc::now(),
@@ -439,6 +449,7 @@ mod tests {
             image_url: None,
             publish_now,
             scheduled_publish_at: None,
+            scheduled_publish_timezone: "UTC".to_string(),
         }
     }
 
@@ -523,6 +534,7 @@ mod tests {
             featured: true,
             image_url: None,
             scheduled_publish_at: None,
+            scheduled_publish_timezone: "UTC".to_string(),
         };
 
         let result = svc.update(actor, announcement.id, input).await.unwrap();
@@ -641,6 +653,7 @@ mod tests {
             featured: true,
             image_url: None,
             scheduled_publish_at: None,
+            scheduled_publish_timezone: "UTC".to_string(),
         }
     }
 
