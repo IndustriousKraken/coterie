@@ -18,7 +18,7 @@ use std::sync::Arc;
 use crate::{
     email::EmailSender,
     integrations::IntegrationManager,
-    payments::StripeClient,
+    payments::StripeHandle,
     repository::{
         EventRepository, MemberRepository, PaymentRepository, SavedCardRepository,
         ScheduledPaymentRepository,
@@ -44,7 +44,7 @@ impl BillingService {
         settings_service: Arc<SettingsService>,
         email_sender: Arc<dyn EmailSender>,
         integration_manager: Arc<IntegrationManager>,
-        stripe_client: Option<Arc<StripeClient>>,
+        stripe_handle: Arc<StripeHandle>,
         base_url: String,
         db_pool: SqlitePool,
     ) -> Self {
@@ -56,7 +56,7 @@ impl BillingService {
             membership_type_service.clone(),
             settings_service.clone(),
             integration_manager.clone(),
-            stripe_client,
+            stripe_handle,
             base_url.clone(),
         );
         let notifications = notifications::Notifications::new(

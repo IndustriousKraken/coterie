@@ -20,7 +20,7 @@ use crate::auth::{AuthService, CsrfService, PendingLoginService, TotpService};
 use crate::domain::BasicTypeKind;
 use crate::email::EmailSender;
 use crate::integrations::IntegrationManager;
-use crate::payments::StripeClient;
+use crate::payments::StripeHandle;
 use crate::repository::*;
 use announcement_admin_service::AnnouncementAdminService;
 use audit_service::AuditService;
@@ -70,6 +70,13 @@ pub struct ServiceContext {
     pub event_admin_service: Arc<EventAdminService>,
     pub announcement_admin_service: Arc<AnnouncementAdminService>,
     pub payment_admin_service: Arc<PaymentAdminService>,
+    /// Hot-swappable Stripe wiring (client + inbound webhook dispatcher),
+    /// rebuilt from DB config on a portal settings save. Owned here so the
+    /// background services (auto-renew, refunds) and the per-request /
+    /// webhook paths all read the SAME handle — a key rotation reaches
+    /// every path without a restart. Built empty; `rebuild()` at startup
+    /// loads DB config.
+    pub stripe_handle: Arc<StripeHandle>,
     pub expense_service: Arc<ExpenseService>,
     pub expense_category_service: Arc<ExpenseCategoryService>,
     pub expense_account_service: Arc<ExpenseAccountService>,
@@ -89,7 +96,6 @@ impl ServiceContext {
         csrf_service: Arc<CsrfService>,
         totp_service: Arc<TotpService>,
         pending_login_service: Arc<PendingLoginService>,
-        stripe_client: Option<Arc<StripeClient>>,
         money_limiter: MoneyLimiter,
         base_url: String,
         db_pool: SqlitePool,
@@ -142,6 +148,21 @@ impl ServiceContext {
         let membership_type_service =
             Arc::new(MembershipTypeService::new(membership_type_repo.clone()));
 
+        // Single hot-swappable Stripe handle, shared by the background
+        // services below (refunds, auto-renew) AND the per-request /
+        // webhook paths (via AppState). Built empty; the caller runs
+        // `rebuild()` once at startup to load DB config, and the portal
+        // settings save calls `rebuild()` again so a key rotation reaches
+        // every path with no restart. All deps it needs exist by now.
+        let stripe_handle = Arc::new(StripeHandle::new(
+            settings_service.clone(),
+            payment_repo.clone(),
+            member_repo.clone(),
+            processed_events_repo.clone(),
+            membership_type_service.clone(),
+            integration_manager.clone(),
+        ));
+
         let payment_service = Arc::new(PaymentService::new(
             payment_repo.clone(),
             member_repo.clone(),
@@ -177,7 +198,7 @@ impl ServiceContext {
 
         let payment_admin_service = Arc::new(PaymentAdminService::new(
             payment_repo.clone(),
-            stripe_client,
+            stripe_handle.clone(),
             audit_service.clone(),
             integration_manager.clone(),
             money_limiter,
@@ -227,6 +248,7 @@ impl ServiceContext {
             event_admin_service,
             announcement_admin_service,
             payment_admin_service,
+            stripe_handle,
             expense_repo,
             expense_category_repo,
             expense_account_repo,
@@ -242,11 +264,7 @@ impl ServiceContext {
     /// is stored on `AppState` and shared by every handler. Was a
     /// per-request factory before — see the BillingService field
     /// doc on AppState for why.
-    pub fn billing_service(
-        &self,
-        stripe_client: Option<Arc<crate::payments::StripeClient>>,
-        base_url: String,
-    ) -> billing_service::BillingService {
+    pub fn billing_service(&self, base_url: String) -> billing_service::BillingService {
         billing_service::BillingService::new(
             self.scheduled_payment_repo.clone(),
             self.payment_repo.clone(),
@@ -257,7 +275,7 @@ impl ServiceContext {
             self.settings_service.clone(),
             self.email_sender.clone(),
             self.integration_manager.clone(),
-            stripe_client,
+            self.stripe_handle.clone(),
             base_url,
             self.db_pool.clone(),
         )

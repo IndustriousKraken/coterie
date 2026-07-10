@@ -38,6 +38,20 @@
     </div>
     {% endif %}
 
+    <!-- Dedicated settings pages (config that doesn't fit the generic
+         key/value form: encrypted secrets, test buttons, etc.) -->
+    <div class="mb-8 bg-white rounded-lg shadow-sm px-6 py-4">
+        <h2 class="text-lg font-semibold text-gray-900">Integrations</h2>
+        <p class="text-sm text-gray-500 mb-3">Dedicated pages for services with secrets and test buttons.</p>
+        <div class="flex flex-wrap gap-3 text-sm">
+            <a href="/portal/admin/settings/email" class="text-blue-600 hover:text-blue-900 underline">Email</a>
+            <a href="/portal/admin/settings/discord" class="text-blue-600 hover:text-blue-900 underline">Discord</a>
+            <a href="/portal/admin/settings/stripe" class="text-blue-600 hover:text-blue-900 underline">Stripe</a>
+            <a href="/portal/admin/settings/unifi" class="text-blue-600 hover:text-blue-900 underline">UniFi</a>
+            <a href="/portal/admin/settings/billing" class="text-blue-600 hover:text-blue-900 underline">Billing</a>
+        </div>
+    </div>
+
     <!-- Settings Sections -->
     <div class="space-y-8">
         {% for category in categories %}

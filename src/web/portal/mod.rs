@@ -231,6 +231,25 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
             "/settings/discord/reconcile",
             post(admin::discord::reconcile_roles),
         )
+        // Stripe settings (dedicated page with test-connection button).
+        // Stripe config is DB-backed + hot-reloaded on save.
+        .route("/settings/stripe", get(admin::stripe::stripe_settings_page))
+        .route(
+            "/settings/stripe",
+            post(admin::stripe::update_stripe_settings),
+        )
+        .route(
+            "/settings/stripe/test",
+            post(admin::stripe::test_stripe_connection),
+        )
+        // UniFi settings (dedicated page with test-connection button).
+        // UniFi config is DB-backed + read at operation time.
+        .route("/settings/unifi", get(admin::unifi::unifi_settings_page))
+        .route("/settings/unifi", post(admin::unifi::update_unifi_settings))
+        .route(
+            "/settings/unifi/test",
+            post(admin::unifi::test_unifi_connection),
+        )
         // Billing settings (Stripe-sub → Coterie-managed bulk migration)
         .route(
             "/settings/billing",

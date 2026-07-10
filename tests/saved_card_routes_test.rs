@@ -143,7 +143,6 @@ async fn build_harness() -> Harness {
         csrf_service.clone(),
         totp_service,
         pending_login_service,
-        None, // stripe_client not needed for these tests
         money_limiter.clone(),
         settings.server.base_url.clone(),
         pool.clone(),
@@ -160,15 +159,22 @@ async fn build_harness() -> Harness {
         member_repo.clone(),
     ));
 
-    let billing_service = Arc::new(service_context.billing_service(
-        Some(stripe_client.clone()),
-        settings.server.base_url.clone(),
-    ));
+    // billing_service reads Stripe from the ServiceContext-owned handle
+    // (unconfigured here). The save-card / setup-intent handlers reach the
+    // fake via the preloaded AppState handle below; the billing auto-renew
+    // path no-ops for this non-subscription member, so it never needs it.
+    let billing_service =
+        Arc::new(service_context.billing_service(settings.server.base_url.clone()));
 
     let app_state = coterie::api::state::AppState::new(
         service_context.clone(),
-        Some(stripe_client),
-        None, // webhook_dispatcher not needed for these tests
+        // Preloaded handle: the SetupIntent / save-card handlers read
+        // this fake-gateway client from the Stripe slot. No webhook
+        // dispatcher needed for these tests.
+        Arc::new(coterie::payments::StripeHandle::preloaded(
+            Some(stripe_client),
+            None,
+        )),
         billing_service,
         settings,
         Arc::new(coterie::api::middleware::bot_challenge::DisabledVerifier),

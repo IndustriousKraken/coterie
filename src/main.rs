@@ -188,11 +188,23 @@ async fn main() -> anyhow::Result<()> {
         )))
         .await;
 
-    // Unifi: still env-var-driven for now (D5+ scope). Skip if config
-    // is absent.
-    if let Some(unifi) = UnifiIntegration::new(settings.integrations.unifi.clone()) {
-        integration_manager.register(Arc::new(unifi)).await;
+    // UniFi config is DB-backed (app_settings, `unifi.*`) and read at
+    // operation time, so the integration is always registered and re-checks
+    // enable/configured state on every event — an admin can flip it from the
+    // portal without a restart. On first boot, seed the DB once from
+    // `COTERIE__INTEGRATION__UNIFI__*` if present and the DB is still
+    // pristine; thereafter the DB is authoritative and env values are ignored.
+    if let Some(env_unifi) = settings.integrations.unifi.clone() {
+        if let Err(e) = settings_service
+            .seed_unifi_from_env(&env_unifi, payments::runtime::SYSTEM_ACTOR)
+            .await
+        {
+            tracing::warn!("UniFi .env→DB seed check failed: {}", e);
+        }
     }
+    integration_manager
+        .register(Arc::new(UnifiIntegration::new(settings_service.clone())))
+        .await;
 
     // Check integration health
     let health_results = integration_manager.health_check_all().await;
@@ -203,38 +215,23 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Initialize Stripe client up front (before ServiceContext) so
-    // PaymentAdminService can take it as a constructor dep. The
-    // companion WebhookDispatcher is built further down — it needs
-    // fields that live on ServiceContext. Stripe is wired only when
-    // both an API key AND a webhook secret are configured; missing
-    // either disables Stripe entirely.
-    // Normalize blank Stripe credentials to None so a half-configured
-    // deployment (notably the shipped `webhook_secret = ""`) is treated
-    // as unconfigured rather than building a forgeable webhook endpoint:
-    // an empty secret is a zero-length HMAC key any caller can forge.
-    let stripe_secret_key = config::nonblank(settings.stripe.secret_key.clone());
-    let stripe_webhook_secret = config::nonblank(settings.stripe.webhook_secret.clone());
+    // Stripe config is DB-backed (app_settings, `stripe.*`) so admins
+    // can add / rotate keys from the portal without a restart. On first
+    // boot, seed the DB once from `COTERIE__STRIPE__*` if it's present
+    // and the DB is still pristine — so wizard/IaC installs come up
+    // configured. Thereafter the DB is authoritative and env Stripe
+    // values are ignored.
+    if let Err(e) = settings_service
+        .seed_stripe_from_env(&settings.stripe, payments::runtime::SYSTEM_ACTOR)
+        .await
+    {
+        tracing::warn!("Stripe .env→DB seed check failed: {}", e);
+    }
 
-    let stripe_client: Option<Arc<payments::StripeClient>> = if settings.stripe.enabled {
-        match (stripe_secret_key, stripe_webhook_secret.clone()) {
-            (Some(api_key), Some(_)) => {
-                tracing::info!("Stripe payment processing enabled");
-                Some(Arc::new(payments::StripeClient::new(
-                    api_key,
-                    payment_repo.clone(),
-                    member_repo.clone(),
-                )))
-            }
-            _ => {
-                tracing::warn!("Stripe enabled but missing configuration");
-                None
-            }
-        }
-    } else {
-        tracing::info!("Stripe payment processing disabled");
-        None
-    };
+    // The Stripe client + webhook dispatcher are now built inside the
+    // hot-swappable `StripeHandle` (owned by ServiceContext), so there's
+    // no startup-captured client to construct here — every path (webhook,
+    // per-request charges, auto-renew, refunds) reads the live handle.
 
     // Per-IP rate limiter for money-moving endpoints (charge, donate,
     // refund). Built once and shared between AppState (login/charge
@@ -260,7 +257,6 @@ async fn main() -> anyhow::Result<()> {
         csrf_service,
         totp_service,
         pending_login_service,
-        stripe_client.clone(),
         money_limiter.clone(),
         settings.server.base_url.clone(),
         db_pool.clone(),
@@ -429,34 +425,21 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Stripe webhook dispatcher — paired with the StripeClient built
-    // above. Stays here (after ServiceContext::new) because it pulls
-    // several service_context-owned fields (processed_events_repo,
-    // membership_type_service, integration_manager). Built only when
-    // a configured stripe_client is present; the API-key / secret
-    // pair check already happened up top.
-    let webhook_dispatcher: Option<Arc<payments::WebhookDispatcher>> = match &stripe_client {
-        Some(client) => stripe_webhook_secret.map(|webhook_secret| {
-            Arc::new(payments::WebhookDispatcher::new(
-                client.gateway(),
-                webhook_secret,
-                payment_repo,
-                service_context.member_repo.clone(),
-                service_context.processed_events_repo.clone(),
-                service_context.membership_type_service.clone(),
-                service_context.integration_manager.clone(),
-            ))
-        }),
-        None => None,
-    };
+    // Load the Stripe handle (owned by ServiceContext) from DB config.
+    // The handle backs the portal-facing client + inbound webhook
+    // dispatcher AND the background services (auto-renew, refunds), so a
+    // later portal settings save calls `rebuild()` again and every path
+    // picks up the new key/secret with no restart. When Stripe is
+    // disabled/unconfigured the runtime stays empty and the webhook
+    // endpoint returns 503.
+    service_context.stripe_handle.rebuild().await;
 
     // Build BillingService once so the runner and every request share
     // the same instance. Reconstructing per-request would silently lose
     // any per-instance state a future field might carry (rate limiter,
     // backoff cache, etc.); fixing the pattern now is cheap insurance.
-    let billing_service = Arc::new(
-        service_context.billing_service(stripe_client.clone(), settings.server.base_url.clone()),
-    );
+    let billing_service =
+        Arc::new(service_context.billing_service(settings.server.base_url.clone()));
 
     // Spawn billing runner (runs every hour)
     {
@@ -489,9 +472,8 @@ async fn main() -> anyhow::Result<()> {
     // their effectiveness (login_limiter on /auth/login and /login would
     // be different maps).
     let app_state = api::state::AppState::new(
-        service_context,
-        stripe_client,
-        webhook_dispatcher,
+        service_context.clone(),
+        service_context.stripe_handle.clone(),
         billing_service,
         Arc::new(settings.clone()),
         bot_challenge_verifier,

@@ -15,7 +15,7 @@ use crate::{
     config::Settings,
     email::EmailSender,
     integrations::IntegrationManager,
-    payments::{StripeClient, WebhookDispatcher},
+    payments::{StripeClient, StripeHandle, WebhookDispatcher},
     repository::{
         AnnouncementRepository, BasicTypeRepository, DonationCampaignRepository, EventRepository,
         EventSeriesRepository, ExpenseAccountRepository, ExpenseCategoryRepository,
@@ -131,10 +131,13 @@ impl RateLimiter {
 #[derive(Clone)]
 pub struct AppState {
     pub service_context: Arc<ServiceContext>,
-    pub stripe_client: Option<Arc<StripeClient>>,
-    /// Inbound webhook dispatcher. `Some` exactly when `stripe_client`
-    /// is `Some` (both depend on Stripe being configured).
-    pub webhook_dispatcher: Option<Arc<WebhookDispatcher>>,
+    /// Hot-swappable Stripe wiring (client + inbound webhook
+    /// dispatcher). Held behind a handle rather than captured once at
+    /// startup so a portal settings save takes effect without a restart.
+    /// Handlers read the current value per request via the
+    /// `Option<Arc<StripeClient>>` / `Option<Arc<WebhookDispatcher>>`
+    /// FromRef impls below.
+    pub stripe: Arc<StripeHandle>,
     /// Billing operations (auto-renew lifecycle, dues extension, the
     /// scheduled-payment runner). Built once at startup; handlers
     /// borrow this Arc instead of reconstructing per-request — that
@@ -178,8 +181,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(
         service_context: Arc<ServiceContext>,
-        stripe_client: Option<Arc<StripeClient>>,
-        webhook_dispatcher: Option<Arc<WebhookDispatcher>>,
+        stripe: Arc<StripeHandle>,
         billing_service: Arc<BillingService>,
         settings: Arc<Settings>,
         bot_challenge_verifier: Arc<dyn BotChallengeVerifier>,
@@ -187,8 +189,7 @@ impl AppState {
     ) -> Self {
         Self {
             service_context,
-            stripe_client,
-            webhook_dispatcher,
+            stripe,
             billing_service,
             settings,
             login_limiter: RateLimiter::new(5, Duration::from_secs(15 * 60)),
@@ -448,15 +449,24 @@ impl FromRef<AppState> for Arc<BillingService> {
     }
 }
 
+// Read the CURRENT Stripe wiring per request. FromRef runs on each
+// extraction, so a `rebuild()` after a settings save is picked up by
+// the next request with no restart.
 impl FromRef<AppState> for Option<Arc<StripeClient>> {
     fn from_ref(state: &AppState) -> Self {
-        state.stripe_client.clone()
+        state.stripe.current().client.clone()
     }
 }
 
 impl FromRef<AppState> for Option<Arc<WebhookDispatcher>> {
     fn from_ref(state: &AppState) -> Self {
-        state.webhook_dispatcher.clone()
+        state.stripe.current().webhook_dispatcher.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<StripeHandle> {
+    fn from_ref(state: &AppState) -> Self {
+        state.stripe.clone()
     }
 }
 

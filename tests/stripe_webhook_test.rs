@@ -152,7 +152,8 @@ async fn build_harness() -> Harness {
         settings,
         email_sender,
         integrations,
-        None, // stripe_client — none of our tests invoke billing paths that need it
+        // none of these tests invoke billing paths that need Stripe
+        Arc::new(coterie::payments::StripeHandle::preloaded(None, None)),
         "http://localhost:3000".to_string(),
         pool.clone(),
     );

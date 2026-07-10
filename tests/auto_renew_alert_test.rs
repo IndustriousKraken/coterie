@@ -141,7 +141,10 @@ async fn build_harness() -> Harness {
         settings,
         email,
         integrations,
-        Some(stripe_client),
+        Arc::new(coterie::payments::StripeHandle::preloaded(
+            Some(stripe_client),
+            None,
+        )),
         "http://localhost:3000".to_string(),
         pool.clone(),
     );

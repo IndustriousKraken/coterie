@@ -24,7 +24,7 @@ use crate::{
     domain::{PaymentMethod, PaymentStatus},
     error::AppError,
     integrations::{IntegrationEvent, IntegrationManager},
-    payments::StripeClient,
+    payments::StripeHandle,
     repository::PaymentRepository,
     service::audit_service::AuditService,
 };
@@ -88,7 +88,10 @@ impl RefundError {
 
 pub struct PaymentAdminService {
     payment_repo: Arc<dyn PaymentRepository>,
-    stripe_client: Option<Arc<StripeClient>>,
+    /// Hot-swappable Stripe wiring — read `current().client` at refund
+    /// time (not captured once) so a portal key rotation reaches this
+    /// path without a restart, same as the webhook + per-request charges.
+    stripe_handle: Arc<StripeHandle>,
     audit_service: Arc<AuditService>,
     integration_manager: Arc<IntegrationManager>,
     money_limiter: MoneyLimiter,
@@ -97,14 +100,14 @@ pub struct PaymentAdminService {
 impl PaymentAdminService {
     pub fn new(
         payment_repo: Arc<dyn PaymentRepository>,
-        stripe_client: Option<Arc<StripeClient>>,
+        stripe_handle: Arc<StripeHandle>,
         audit_service: Arc<AuditService>,
         integration_manager: Arc<IntegrationManager>,
         money_limiter: MoneyLimiter,
     ) -> Self {
         Self {
             payment_repo,
-            stripe_client,
+            stripe_handle,
             audit_service,
             integration_manager,
             money_limiter,
@@ -188,7 +191,11 @@ impl PaymentAdminService {
                         return Err(RefundError::NoStripeReferenceOnRecord);
                     }
                 };
-                let stripe_client = match self.stripe_client.as_ref() {
+                // Read the CURRENT client from the hot-swappable handle so
+                // a portal key rotation is picked up here without a restart
+                // (same handle the webhook + per-request charge paths read).
+                let runtime = self.stripe_handle.current();
+                let stripe_client = match runtime.client.as_ref() {
                     Some(c) => c,
                     None => {
                         let _ = self.payment_repo.unclaim_refund(payment.id).await;
@@ -272,6 +279,7 @@ mod tests {
     use crate::{
         api::state::RateLimiter,
         domain::{Payer, Payment, PaymentKind, StripeRef},
+        payments::StripeClient,
         repository::{PaymentRepository, SqlitePaymentRepository},
     };
     use sqlx::{Executor, SqlitePool};
@@ -308,9 +316,12 @@ mod tests {
             Arc::new(SqlitePaymentRepository::new(pool.clone()));
         let audit = Arc::new(AuditService::new(pool.clone()));
         let integrations = Arc::new(IntegrationManager::new());
+        // Wrap the (optional) client in a fixed handle — these unit tests
+        // exercise the present/absent-client refund branch, not hot-reload.
+        let stripe_handle = Arc::new(StripeHandle::preloaded(stripe_client, None));
         let svc = PaymentAdminService::new(
             payment_repo.clone(),
-            stripe_client,
+            stripe_handle,
             audit,
             integrations,
             money_limiter,

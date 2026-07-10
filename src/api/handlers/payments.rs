@@ -77,9 +77,9 @@ pub async fn stripe_webhook(
                     body: format!(
                         "A Stripe webhook arrived with an invalid signature. \
                          If you recently rotated the webhook secret in Stripe, \
-                         update it in /portal/admin/settings (it lives in env \
-                         config currently — see deploy/.env). If you didn't \
-                         rotate anything, someone may be forging webhooks at \
+                         update it at /portal/admin/settings/stripe (it takes \
+                         effect immediately, no restart). If you didn't rotate \
+                         anything, someone may be forging webhooks at \
                          /api/payments/webhook/stripe."
                     ),
                 })
