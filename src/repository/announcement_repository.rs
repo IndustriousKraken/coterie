@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
 
@@ -39,6 +39,7 @@ struct AnnouncementRow {
     image_url: Option<String>,
     published_at: Option<NaiveDateTime>,
     scheduled_publish_at: Option<NaiveDateTime>,
+    scheduled_publish_timezone: String,
     created_by: String,
     created_at: NaiveDateTime,
     updated_at: NaiveDateTime,
@@ -76,6 +77,7 @@ impl SqliteAnnouncementRepository {
             scheduled_publish_at: row
                 .scheduled_publish_at
                 .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
+            scheduled_publish_timezone: row.scheduled_publish_timezone,
             created_by: Uuid::parse_str(&row.created_by)
                 .map_err(|e| AppError::Internal(e.to_string()))?,
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
@@ -125,8 +127,9 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
             r#"
             INSERT INTO announcements (
                 id, title, content, announcement_type, announcement_type_id, is_public, featured,
-                image_url, published_at, scheduled_publish_at, created_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                image_url, published_at, scheduled_publish_at, scheduled_publish_timezone,
+                created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&id_str)
@@ -139,6 +142,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         .bind(&announcement.image_url)
         .bind(published_at_naive)
         .bind(scheduled_publish_at_naive)
+        .bind(&announcement.scheduled_publish_timezone)
         .bind(&created_by_str)
         .bind(now)
         .bind(now)
@@ -156,7 +160,8 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         let row = sqlx::query_as::<_, AnnouncementRow>(
             r#"
             SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
-                   image_url, published_at, scheduled_publish_at, created_by, created_at, updated_at
+                   image_url, published_at, scheduled_publish_at, scheduled_publish_timezone,
+                   created_by, created_at, updated_at
             FROM announcements
             WHERE id = ?
             "#,
@@ -176,7 +181,8 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         let rows = sqlx::query_as::<_, AnnouncementRow>(
             r#"
             SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
-                   image_url, published_at, scheduled_publish_at, created_by, created_at, updated_at
+                   image_url, published_at, scheduled_publish_at, scheduled_publish_timezone,
+                   created_by, created_at, updated_at
             FROM announcements
             ORDER BY created_at DESC
             LIMIT ? OFFSET ?
@@ -195,7 +201,8 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         let rows = sqlx::query_as::<_, AnnouncementRow>(
             r#"
             SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
-                   image_url, published_at, scheduled_publish_at, created_by, created_at, updated_at
+                   image_url, published_at, scheduled_publish_at, scheduled_publish_timezone,
+                   created_by, created_at, updated_at
             FROM announcements
             WHERE published_at IS NOT NULL
             ORDER BY published_at DESC
@@ -214,7 +221,8 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         let rows = sqlx::query_as::<_, AnnouncementRow>(
             r#"
             SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
-                   image_url, published_at, scheduled_publish_at, created_by, created_at, updated_at
+                   image_url, published_at, scheduled_publish_at, scheduled_publish_timezone,
+                   created_by, created_at, updated_at
             FROM announcements
             WHERE is_public = 1 AND published_at IS NOT NULL
             ORDER BY published_at DESC
@@ -257,7 +265,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
             UPDATE announcements
             SET title = ?, content = ?, announcement_type = ?, announcement_type_id = ?,
                 is_public = ?, featured = ?, image_url = ?, published_at = ?,
-                scheduled_publish_at = ?, updated_at = ?
+                scheduled_publish_at = ?, scheduled_publish_timezone = ?, updated_at = ?
             WHERE id = ?
             "#,
         )
@@ -270,6 +278,7 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
         .bind(&announcement.image_url)
         .bind(published_at_naive)
         .bind(scheduled_publish_at_naive)
+        .bind(&announcement.scheduled_publish_timezone)
         .bind(now)
         .bind(&id_str)
         .execute(&self.pool)
@@ -293,11 +302,21 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
     }
 
     async fn list_due_for_publish(&self, now: DateTime<Utc>) -> Result<Vec<Announcement>> {
-        let now_naive = now.naive_utc();
+        // `scheduled_publish_at` is a naive wall-clock, so comparing it
+        // to UTC `now` in SQL publishes non-UTC-org rows by the org's
+        // offset (a 9 AM EDT row would fire at 5 AM Eastern — four hours
+        // early). Widen the SQL bound by the widest IANA offset (~15h) as
+        // a coarse pre-filter, then do the exact `scheduled_publish_utc()
+        // <= now` test in Rust — the same pattern as `list_upcoming`.
+        // Any row whose raw wall-clock is past `now + 15h` cannot be due
+        // yet (its derived instant is even later), so the pre-filter
+        // drops nothing that could be ready.
+        let margin = Duration::hours(15);
         let rows = sqlx::query_as::<_, AnnouncementRow>(
             r#"
             SELECT id, title, content, announcement_type, announcement_type_id, is_public, featured,
-                   image_url, published_at, scheduled_publish_at, created_by, created_at, updated_at
+                   image_url, published_at, scheduled_publish_at, scheduled_publish_timezone,
+                   created_by, created_at, updated_at
             FROM announcements
             WHERE published_at IS NULL
               AND scheduled_publish_at IS NOT NULL
@@ -305,12 +324,19 @@ impl AnnouncementRepository for SqliteAnnouncementRepository {
             ORDER BY scheduled_publish_at ASC
             "#,
         )
-        .bind(now_naive)
+        .bind((now + margin).naive_utc())
         .fetch_all(&self.pool)
         .await
         .map_err(AppError::Database)?;
 
-        rows.into_iter().map(Self::row_to_announcement).collect()
+        let mut due: Vec<Announcement> = rows
+            .into_iter()
+            .map(Self::row_to_announcement)
+            .collect::<Result<Vec<_>>>()?;
+        // Exact test on the derived instant, then order by it.
+        due.retain(|a| a.scheduled_publish_utc().is_some_and(|utc| utc <= now));
+        due.sort_by_key(|a| a.scheduled_publish_utc());
+        Ok(due)
     }
 
     async fn mark_published_now(&self, id: Uuid) -> Result<bool> {

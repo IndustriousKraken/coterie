@@ -19,6 +19,7 @@ use crate::{
     service::announcement_admin_service::{
         AnnouncementAdminService, CreateAnnouncementInput, UpdateAnnouncementInput,
     },
+    service::settings_service::SettingsService,
     web::portal::admin::partials,
     web::templates::{BaseContext, HtmlTemplate},
     web::uploads::save_uploaded_file,
@@ -26,6 +27,10 @@ use crate::{
 
 /// Parse the form's `scheduled_publish_at` value (HTML `datetime-local`,
 /// `YYYY-MM-DDTHH:MM` or with seconds) into an Option<DateTime<Utc>>.
+/// The value is a **local wall-clock** in the org timezone; it is stored
+/// naive-as-is in a `DateTime<Utc>` container (paired with a frozen zone
+/// on the row), NOT converted to a real UTC instant here — the runner
+/// derives the true instant from (wall-clock, zone) at compare time.
 /// Empty input or unparseable input → None (we treat invalid as "not
 /// scheduled" rather than rejecting the whole form for v1 — form-side
 /// validation can be tightened later).
@@ -309,7 +314,7 @@ pub struct AdminAnnouncementDetail {
     pub created_at: String,
     pub updated_at: String,
     /// Form-input value for the `datetime-local` field — empty string
-    /// if not scheduled, else `YYYY-MM-DDTHH:MM` (UTC).
+    /// if not scheduled, else the `YYYY-MM-DDTHH:MM` org-local wall-clock.
     pub scheduled_publish_at_input: String,
     /// Human-friendly display for the sidebar — None if not scheduled.
     pub scheduled_publish_at_display: Option<String>,
@@ -347,9 +352,15 @@ pub async fn admin_announcement_detail_page(
         .scheduled_publish_at
         .map(|dt| dt.format("%Y-%m-%dT%H:%M").to_string())
         .unwrap_or_default();
-    let scheduled_publish_at_display = announcement
-        .scheduled_publish_at
-        .map(|dt| dt.format("%b %d, %Y %H:%M UTC").to_string());
+    // Render the stored wall-clock labeled with the org zone abbreviation
+    // (e.g. "9:00 AM EDT"), not a mislabeled "UTC" — the value is a local
+    // wall-clock, and its derived instant may be offset-hours from UTC.
+    let scheduled_publish_at_display = announcement.scheduled_publish_at.map(|dt| {
+        let abbr = announcement
+            .scheduled_zone_abbr()
+            .unwrap_or_else(|| "UTC".to_string());
+        format!("{} {}", dt.format("%b %d, %Y %H:%M"), abbr)
+    });
 
     let detail = AdminAnnouncementDetail {
         id: announcement.id.to_string(),
@@ -437,6 +448,7 @@ pub async fn admin_new_announcement_page(
 
 pub async fn admin_create_announcement(
     State(settings): State<Arc<Settings>>,
+    State(settings_service): State<Arc<SettingsService>>,
     State(announcement_admin_service): State<Arc<AnnouncementAdminService>>,
     Extension(current_user): Extension<CurrentUser>,
     mut multipart: Multipart,
@@ -520,6 +532,10 @@ pub async fn admin_create_announcement(
     };
 
     let scheduled_publish_at = parse_scheduled_publish_at(&scheduled_publish_at_str);
+    // Freeze the schedule's zone from the current org setting. The naive
+    // form input is stored as-is (no conversion); the zone is what lets
+    // the runner derive the correct publish instant. Mirrors event create.
+    let scheduled_publish_timezone = settings_service.org_timezone().await.name().to_string();
 
     let input = CreateAnnouncementInput {
         title,
@@ -531,6 +547,7 @@ pub async fn admin_create_announcement(
         image_url,
         publish_now,
         scheduled_publish_at,
+        scheduled_publish_timezone,
     };
 
     match announcement_admin_service
@@ -552,6 +569,7 @@ pub async fn admin_create_announcement(
 
 pub async fn admin_update_announcement(
     State(settings): State<Arc<Settings>>,
+    State(settings_service): State<Arc<SettingsService>>,
     State(announcement_repo): State<Arc<dyn AnnouncementRepository>>,
     State(announcement_admin_service): State<Arc<AnnouncementAdminService>>,
     Extension(current_user): Extension<CurrentUser>,
@@ -671,6 +689,9 @@ pub async fn admin_update_announcement(
     };
 
     let scheduled_publish_at = parse_scheduled_publish_at(&scheduled_publish_at_str);
+    // Re-freeze the schedule's zone from the current org setting on each
+    // submission (the edit form re-submits the schedule wall-clock too).
+    let scheduled_publish_timezone = settings_service.org_timezone().await.name().to_string();
 
     let input = UpdateAnnouncementInput {
         title,
@@ -681,6 +702,7 @@ pub async fn admin_update_announcement(
         featured,
         image_url,
         scheduled_publish_at,
+        scheduled_publish_timezone,
     };
 
     match announcement_admin_service
