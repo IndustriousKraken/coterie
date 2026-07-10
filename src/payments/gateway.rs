@@ -287,6 +287,16 @@ pub struct RealStripeGateway {
 
 impl RealStripeGateway {
     pub fn new(api_key: String) -> Self {
+        // No API-version pin here: async-stripe 0.39 already hardcodes the
+        // `Stripe-Version` header (its `VERSION` const, 2023-10-16) on every
+        // request and exposes no public setter to override it — `Client`
+        // only offers `with_client_id` / `with_stripe_account` /
+        // `with_strategy` / `with_app_info`. So the request is already
+        // version-pinned; the cancel deserialization failure is an
+        // async-stripe object-model gap on the returned (cancelled)
+        // Subscription, not an account-vs-client version mismatch. The
+        // `delete_subscription` parse-tolerance above is the fix; a fuller
+        // remedy would require upgrading or forking async-stripe.
         Self {
             client: Client::new(api_key),
         }
@@ -600,15 +610,38 @@ impl StripeGateway for RealStripeGateway {
         let sub_id: SubscriptionId = subscription_id.parse().map_err(|_| {
             AppError::BadRequest(format!("Invalid subscription ID: {}", subscription_id))
         })?;
-        timed(Subscription::delete(&self.client, &sub_id))
+
+        // Don't route the cancel through `timed`: that flattens every
+        // `StripeError` variant into one opaque `External` string, which
+        // hides the one case we must treat specially. `Subscription::delete`
+        // sends NO request body, so a (de)serialize error on THIS call is
+        // always the *response* — Stripe already accepted the DELETE and
+        // cancelled the sub, then returned an object async-stripe 0.39
+        // can't deserialize. Tolerate that as success; the
+        // `customer.subscription.deleted` webhook is the authoritative
+        // reconciler of member state. Surface only a genuine API error
+        // (a returned error status) or a transport error (network / timeout).
+        match tokio::time::timeout(STRIPE_TIMEOUT, Subscription::delete(&self.client, &sub_id))
             .await
-            .map_err(|e| match e {
-                AppError::External(msg) => {
-                    AppError::External(format!("Stripe cancel failed: {}", msg))
-                }
-                other => other,
-            })?;
-        Ok(())
+        {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(stripe::StripeError::JSONSerialize(_)))
+            | Ok(Err(stripe::StripeError::QueryStringSerialize(_))) => {
+                tracing::warn!(
+                    "Stripe cancel of {} was accepted but its response could not be \
+                     parsed; treating the cancel as successful — the \
+                     customer.subscription.deleted webhook will reconcile the \
+                     member's billing state.",
+                    subscription_id,
+                );
+                Ok(())
+            }
+            Ok(Err(e)) => Err(AppError::External(format!("Stripe cancel failed: {}", e))),
+            Err(_) => Err(AppError::External(format!(
+                "Stripe cancel timed out after {}s",
+                STRIPE_TIMEOUT.as_secs(),
+            ))),
+        }
     }
 
     async fn retrieve_invoice(&self, invoice_id: &str) -> Result<RetrievedInvoice> {

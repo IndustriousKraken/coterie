@@ -273,10 +273,13 @@ impl AutoRenew {
             .set_billing_mode(member_id, BillingMode::CoterieManaged, None)
             .await?;
 
-        // 3. Cancel the Stripe subscription. If this fails, roll
-        // back the local flip so the operator can retry — leaving
-        // local in coterie_managed while Stripe still bills would
-        // be the worst of both worlds.
+        // 3. Cancel the Stripe subscription. `cancel_subscription` is
+        // resilient: a cancel Stripe accepts but whose response can't be
+        // parsed returns Ok, so it does NOT reach this rollback and no
+        // longer races the customer.subscription.deleted webhook. Only a
+        // genuine API/transport failure lands here — roll back the local
+        // flip so the operator can retry; leaving local in coterie_managed
+        // while Stripe still bills would be the worst of both worlds.
         if let Err(e) = stripe.cancel_subscription(&stashed_sub_id).await {
             self.member_repo
                 .set_billing_mode(
@@ -487,9 +490,13 @@ impl AutoRenew {
             .set_billing_mode(member_id, BillingMode::Manual, None)
             .await?;
 
-        // Cancel the Stripe subscription if the member had one. On
-        // failure, roll back so the operator can retry without us
-        // leaving them in 'manual' while Stripe keeps billing.
+        // Cancel the Stripe subscription if the member had one. The
+        // resilient `cancel_subscription` returns Ok when Stripe accepted
+        // the cancel but the response was unparseable, so a cosmetic
+        // parse failure no longer false-fails here or races the
+        // customer.subscription.deleted webhook. On a genuine failure,
+        // roll back so the operator can retry without us leaving them in
+        // 'manual' while Stripe keeps billing.
         if let Some(sub_id) = stripe_sub_to_cancel {
             let runtime = self.stripe_handle.current();
             let stripe = runtime
