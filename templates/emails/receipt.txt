@@ -1,0 +1,16 @@
+Hi {{ full_name }},
+
+Thanks — we've received your payment to {{ org_name }}.
+
+  Amount:  {{ amount }}
+  Date:    {{ date }}
+  For:     {{ description }}
+  Receipt: {{ receipt_id }}
+
+You can view and print a full receipt any time from your portal:
+
+{{ receipt_url }}
+
+Keep this for your records.
+
+— {{ org_name }}

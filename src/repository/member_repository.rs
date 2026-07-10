@@ -139,6 +139,10 @@ pub trait MemberRepository: Send + Sync {
     /// find the Coterie member. The webhook handlers use this to
     /// route Stripe events back onto the right row.
     async fn find_by_stripe_customer_id(&self, customer_id: &str) -> Result<Option<Member>>;
+    /// Every member that has a `stripe_customer_id` set. Drives the
+    /// one-time Stripe payment-history / saved-card backfill, which
+    /// pages each such customer's charges and cards.
+    async fn list_with_stripe_customer_id(&self) -> Result<Vec<Member>>;
     /// Count of members currently in a given billing mode. Drives
     /// the admin "Stripe-sub members remaining" badge.
     async fn count_by_billing_mode(&self, mode: BillingMode) -> Result<i64>;
@@ -629,6 +633,23 @@ impl MemberRepository for SqliteMemberRepository {
             Some(r) => Ok(Some(Self::row_to_member(r)?)),
             None => Ok(None),
         }
+    }
+
+    async fn list_with_stripe_customer_id(&self) -> Result<Vec<Member>> {
+        let rows = sqlx::query_as::<_, MemberRow>(
+            "SELECT id, email, username, full_name, status, membership_type_id, \
+                    joined_at, expires_at, dues_paid_until, \
+                    bypass_dues, is_admin, notes, stripe_customer_id, \
+                    stripe_subscription_id, billing_mode, email_verified_at, \
+                    dues_reminder_sent_at, discord_id, created_at, updated_at \
+             FROM members WHERE stripe_customer_id IS NOT NULL AND stripe_customer_id != '' \
+             ORDER BY created_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+        rows.into_iter().map(Self::row_to_member).collect()
     }
 
     async fn count_by_billing_mode(&self, mode: BillingMode) -> Result<i64> {

@@ -16,8 +16,13 @@ use crate::{
     api::middleware::auth::{CurrentUser, SessionInfo},
     auth::CsrfService,
     payments::StripeClient,
-    repository::{MemberRepository, PaymentRepository, ScheduledPaymentRepository},
-    service::{audit_service::AuditService, billing_service::BillingService},
+    repository::{
+        MemberRepository, PaymentRepository, SavedCardRepository, ScheduledPaymentRepository,
+    },
+    service::{
+        audit_service::AuditService, billing_service::BillingService,
+        stripe_import_service::StripeImportService,
+    },
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -186,6 +191,85 @@ pub async fn bulk_migrate_stripe_subs(
             last_skipped: Some(summary.skipped),
             last_failed,
         },
+    )
+    .await
+}
+
+/// One-shot, idempotent backfill of every Stripe customer's historical
+/// charges and saved cards into Coterie (the fourth payment-recording
+/// entry point). Re-runnable: charges already imported (or already
+/// recorded live) and cards whose fingerprint already exists are
+/// skipped, so pressing the button twice imports nothing new. Records
+/// only settled history — it never charges, extends dues, dispatches
+/// integration events, or emails a receipt; it self-audits via
+/// `import_payment` / `import_payments_batch`.
+///
+/// Synchronous — fine for the typical Coterie deployment. If a customer
+/// ever has a very long history, the gateway pages 100 charges per
+/// customer (see `RealStripeGateway::list_charges`).
+#[allow(clippy::too_many_arguments)]
+pub async fn import_stripe_history(
+    State(csrf_service): State<Arc<CsrfService>>,
+    State(member_repo): State<Arc<dyn MemberRepository>>,
+    State(payment_repo): State<Arc<dyn PaymentRepository>>,
+    State(saved_card_repo): State<Arc<dyn SavedCardRepository>>,
+    State(audit_service): State<Arc<AuditService>>,
+    State(stripe_client): State<Option<Arc<StripeClient>>>,
+    Extension(current_user): Extension<CurrentUser>,
+    Extension(session_info): Extension<SessionInfo>,
+) -> Response {
+    let client = match stripe_client {
+        Some(c) => c,
+        None => {
+            return render_page(
+                &csrf_service,
+                &member_repo,
+                false,
+                &current_user,
+                &session_info,
+                RenderArgs {
+                    flash_error: Some(
+                        "Stripe isn't configured. Add credentials before importing history.".into(),
+                    ),
+                    ..Default::default()
+                },
+            )
+            .await;
+        }
+    };
+
+    let import = StripeImportService::new(
+        client.gateway(),
+        payment_repo.clone(),
+        saved_card_repo,
+        member_repo.clone(),
+        audit_service,
+    );
+
+    let args = match import.backfill_all(current_user.member.id).await {
+        Ok(summary) => RenderArgs {
+            flash_success: Some(format!(
+                "Imported {} payment(s) ({} already present) and {} saved card(s) ({} duplicate(s) skipped) from Stripe.",
+                summary.payments_imported,
+                summary.payments_skipped,
+                summary.cards_imported,
+                summary.cards_skipped,
+            )),
+            ..Default::default()
+        },
+        Err(e) => RenderArgs {
+            flash_error: Some(format!("Stripe history import failed: {}", e)),
+            ..Default::default()
+        },
+    };
+
+    render_page(
+        &csrf_service,
+        &member_repo,
+        true,
+        &current_user,
+        &session_info,
+        args,
     )
     .await
 }

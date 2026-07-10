@@ -26,6 +26,13 @@
             <span class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-800">Refunded</span>
             {% endif %}
         </div>
+        {% if r.status == "Completed" %}
+        <a href="/portal/admin/members/{{ member_id }}/receipt/{{ r.id }}"
+           target="_blank" rel="noopener"
+           class="mt-1 mr-2 text-xs text-blue-600 hover:text-blue-800">
+            Receipt
+        </a>
+        {% endif %}
         {% if r.show_refund %}
         <button hx-post="/portal/admin/payments/{{ r.id }}/refund"
                 hx-target="#refund-result-{{ r.id }}"

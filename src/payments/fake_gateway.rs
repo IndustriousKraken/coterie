@@ -28,10 +28,10 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use super::gateway::{
-    CheckoutOutput, CreateCheckoutInput, CreateCustomerInput, CreatePaymentIntentInput,
-    CreateRefundInput, CreateSetupIntentInput, PaymentIntentResult, PaymentMethodDetails,
-    PaymentMethodSummary, RefundOutput, RetrievedCheckoutSession, RetrievedCustomer,
-    RetrievedInvoice, SetupIntentOutput, StripeGateway,
+    ChargeSummary, CheckoutOutput, CreateCheckoutInput, CreateCustomerInput,
+    CreatePaymentIntentInput, CreateRefundInput, CreateSetupIntentInput, PaymentIntentResult,
+    PaymentMethodDetails, PaymentMethodSummary, RefundOutput, RetrievedCheckoutSession,
+    RetrievedCustomer, RetrievedInvoice, SetupIntentOutput, StripeGateway,
 };
 use crate::error::{AppError, Result};
 
@@ -47,11 +47,29 @@ pub enum FakeCall {
     CreateSetupIntent(CreateSetupIntentInput),
     CreatePaymentIntent(CreatePaymentIntentInput),
     ListPaymentMethods { customer_id: String },
+    ListCharges { customer_id: String },
     RetrievePaymentMethod { payment_method_id: String },
     DetachPaymentMethod { payment_method_id: String },
     CreateRefund(CreateRefundInput),
     DeleteSubscription { subscription_id: String },
     RetrieveInvoice { invoice_id: String },
+}
+
+/// What the fake should simulate on the next `delete_subscription`.
+/// Cancel is special-cased (not just a `Result<()>`) so tests can drive
+/// the response-parse-tolerance path that `RealStripeGateway` owns —
+/// see [`super::gateway::RealStripeGateway`]'s `delete_subscription`.
+enum DeleteSubOutcome {
+    /// A genuine Stripe API / transport failure — surfaces to the caller
+    /// as an error, exactly as the real gateway does for
+    /// `StripeError::Stripe`, `ClientError`, or `Timeout`.
+    Error(AppError),
+    /// A response-parse error: Stripe accepted the cancel but the returned
+    /// object couldn't be deserialized. The real gateway tolerates this as
+    /// success; the fake mirrors that (logs a warning, returns `Ok`) so
+    /// caller tests can assert "no rollback on a parse-tolerated cancel"
+    /// entirely offline.
+    ParseTolerated,
 }
 
 /// What to return for the next call to a given gateway method. Pre-
@@ -67,10 +85,11 @@ struct ResponseQueues {
     setup_intent: VecDeque<Result<SetupIntentOutput>>,
     payment_intent: VecDeque<Result<PaymentIntentResult>>,
     list_pms: VecDeque<Result<Vec<PaymentMethodSummary>>>,
+    list_charges: VecDeque<Result<Vec<ChargeSummary>>>,
     retrieve_pm: VecDeque<Result<PaymentMethodDetails>>,
     detach_pm: VecDeque<Result<()>>,
     refund: VecDeque<Result<RefundOutput>>,
-    delete_sub: VecDeque<Result<()>>,
+    delete_sub: VecDeque<DeleteSubOutcome>,
     retrieve_invoice: VecDeque<Result<RetrievedInvoice>>,
 }
 
@@ -162,6 +181,53 @@ impl FakeStripeGateway {
             .unwrap()
             .retrieve_invoice
             .push_back(Ok(retrieved));
+    }
+
+    /// Queue the charges returned by the next `list_charges` call.
+    pub fn next_charges(&self, charges: Vec<ChargeSummary>) {
+        self.queues
+            .lock()
+            .unwrap()
+            .list_charges
+            .push_back(Ok(charges));
+    }
+
+    /// Queue the cards returned by the next `list_payment_methods` call.
+    pub fn next_payment_methods(&self, cards: Vec<PaymentMethodSummary>) {
+        self.queues.lock().unwrap().list_pms.push_back(Ok(cards));
+    }
+
+    /// Queue the customer returned by the next `retrieve_customer` call.
+    pub fn next_retrieve_customer(&self, customer: RetrievedCustomer) {
+        self.queues
+            .lock()
+            .unwrap()
+            .retrieve_customer
+            .push_back(Ok(customer));
+    }
+
+    /// Queue a genuine API/transport failure for the next
+    /// `delete_subscription` — surfaces to the caller as an error, so a
+    /// cancel flow rolls back local state.
+    pub fn next_delete_subscription_err(&self, e: AppError) {
+        self.queues
+            .lock()
+            .unwrap()
+            .delete_sub
+            .push_back(DeleteSubOutcome::Error(e));
+    }
+
+    /// Make the next `delete_subscription` simulate a tolerated
+    /// response-parse error: Stripe accepted the cancel but the response
+    /// couldn't be deserialized, so the gateway reports success. Mirrors
+    /// `RealStripeGateway`, letting a caller test assert "no rollback on a
+    /// parse-tolerated cancel" without real Stripe credentials.
+    pub fn next_delete_subscription_parse_error(&self) {
+        self.queues
+            .lock()
+            .unwrap()
+            .delete_sub
+            .push_back(DeleteSubOutcome::ParseTolerated);
     }
 }
 
@@ -273,6 +339,16 @@ impl StripeGateway for FakeStripeGateway {
         Ok(Vec::new())
     }
 
+    async fn list_charges(&self, customer_id: &str) -> Result<Vec<ChargeSummary>> {
+        self.record(FakeCall::ListCharges {
+            customer_id: customer_id.to_string(),
+        });
+        if let Some(r) = self.queues.lock().unwrap().list_charges.pop_front() {
+            return r;
+        }
+        Ok(Vec::new())
+    }
+
     async fn retrieve_payment_method(
         &self,
         payment_method_id: &str,
@@ -319,12 +395,18 @@ impl StripeGateway for FakeStripeGateway {
         self.record(FakeCall::DeleteSubscription {
             subscription_id: subscription_id.to_string(),
         });
-        self.queues
-            .lock()
-            .unwrap()
-            .delete_sub
-            .pop_front()
-            .unwrap_or(Ok(()))
+        match self.queues.lock().unwrap().delete_sub.pop_front() {
+            Some(DeleteSubOutcome::Error(e)) => Err(e),
+            Some(DeleteSubOutcome::ParseTolerated) => {
+                tracing::warn!(
+                    "FakeStripeGateway: simulating a tolerated response-parse error on \
+                     cancel of {} — reporting success to mirror RealStripeGateway.",
+                    subscription_id,
+                );
+                Ok(())
+            }
+            None => Ok(()),
+        }
     }
 
     async fn retrieve_invoice(&self, invoice_id: &str) -> Result<RetrievedInvoice> {

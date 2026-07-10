@@ -13,6 +13,11 @@ pub struct SavedCard {
     pub exp_month: i32,
     pub exp_year: i32,
     pub is_default: bool,
+    /// Stripe card fingerprint — stable across re-attachments of the
+    /// same underlying card. The Stripe backfill de-dups on this so a
+    /// card already saved is not stored twice. `None` for cards saved
+    /// before this column existed or added via the SetupIntent flow.
+    pub fingerprint: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -129,6 +134,7 @@ mod tests {
             exp_month,
             exp_year,
             is_default: false,
+            fingerprint: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

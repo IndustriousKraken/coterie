@@ -21,7 +21,6 @@ use crate::{
     payments::StripeClient,
     repository::{
         AnnouncementRepository, DonationCampaignRepository, EventRepository, MemberRepository,
-        PaymentRepository,
     },
     service::{membership_type_service::MembershipTypeService, settings_service::SettingsService},
 };

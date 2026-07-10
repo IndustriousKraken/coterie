@@ -132,3 +132,6 @@ test-utils = []
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
+# Already in the tree via async-stripe; declared here only so the gateway
+# cancel-classification unit test can construct a `StripeError::JSONSerialize`.
+serde_path_to_error = "0.1"

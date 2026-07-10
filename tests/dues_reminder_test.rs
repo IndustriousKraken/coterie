@@ -199,6 +199,7 @@ async fn seed_default_card(repo: &Arc<SqliteSavedCardRepository>, member_id: Uui
             now.year() - 1
         },
         is_default: true,
+        fingerprint: None,
         created_at: now,
         updated_at: now,
     };

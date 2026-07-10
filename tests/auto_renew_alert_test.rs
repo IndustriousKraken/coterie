@@ -18,7 +18,11 @@ use coterie::{
     email::{EmailMessage, EmailSender},
     error::{AppError, Result as CoterieResult},
     integrations::{Integration, IntegrationEvent, IntegrationManager},
-    payments::{fake_gateway::FakeStripeGateway, gateway::StripeGateway, StripeClient},
+    payments::{
+        fake_gateway::{FakeCall, FakeStripeGateway},
+        gateway::StripeGateway,
+        StripeClient,
+    },
     repository::{
         EventRepository, MemberRepository, PaymentRepository, SavedCardRepository,
         ScheduledPaymentRepository, SqliteEventRepository, SqliteMemberRepository,
@@ -219,6 +223,7 @@ async fn seed_default_card(saved_card_repo: &Arc<SqliteSavedCardRepository>, mem
         exp_month: 12,
         exp_year: now.year() + 5,
         is_default: true,
+        fingerprint: None,
         created_at: now,
         updated_at: now,
     };
@@ -276,6 +281,46 @@ async fn member_dues_until(pool: &SqlitePool, member_id: Uuid) -> Option<String>
         .fetch_one(pool)
         .await
         .expect("query member dues_paid_until")
+}
+
+async fn member_billing_mode(pool: &SqlitePool, member_id: Uuid) -> String {
+    sqlx::query_scalar::<_, String>("SELECT billing_mode FROM members WHERE id = ?")
+        .bind(member_id.to_string())
+        .fetch_one(pool)
+        .await
+        .expect("query member billing_mode")
+}
+
+/// Insert a member on `stripe_subscription` with a customer + subscription
+/// id set, so `disable_auto_renew` takes the Stripe-cancel branch.
+async fn seed_stripe_subscription_member(pool: &SqlitePool) -> Uuid {
+    let repo = SqliteMemberRepository::new(pool.clone());
+    let member = repo
+        .create(CreateMemberRequest {
+            email: format!("s-{}@example.com", Uuid::new_v4()),
+            username: format!("s_{}", Uuid::new_v4().simple()),
+            full_name: "Sub Scriber".to_string(),
+            password: "p4ssword_long_enough".to_string(),
+            membership_type_id: None,
+            ..Default::default()
+        })
+        .await
+        .expect("create member");
+
+    sqlx::query(
+        "UPDATE members \
+         SET stripe_customer_id = ?, stripe_subscription_id = ?, \
+             billing_mode = 'stripe_subscription' \
+         WHERE id = ?",
+    )
+    .bind(format!("cus_test_{}", member.id))
+    .bind(format!("sub_test_{}", member.id))
+    .bind(member.id.to_string())
+    .execute(pool)
+    .await
+    .expect("stamp stripe_subscription + customer + subscription id");
+
+    member.id
 }
 
 // ---------------------------------------------------------------------
@@ -443,5 +488,69 @@ async fn process_scheduled_payment_noops_when_claim_lost() {
         alerts.is_empty(),
         "lost claim must not dispatch any AdminAlert; got {:?}",
         alerts,
+    );
+}
+
+// ---------------------------------------------------------------------
+// resilient-stripe-cancel: a cancel Stripe accepts but whose response is
+// unparseable must be treated as success (no false failure, no rollback),
+// while a genuine API error must still surface and roll back.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn disable_auto_renew_tolerates_unparseable_cancel_response() {
+    let h = build_harness().await;
+    let member_id = seed_stripe_subscription_member(&h.pool).await;
+
+    // Stripe accepted the DELETE but the returned object couldn't be
+    // deserialized — the resilient gateway reports success.
+    h.fake.next_delete_subscription_parse_error();
+
+    h.billing
+        .auto_renew
+        .disable_auto_renew(member_id)
+        .await
+        .expect("a parse-tolerated cancel must succeed, not surface an error");
+
+    // No rollback: the member stays on 'manual', agreeing with the state
+    // the customer.subscription.deleted webhook would set.
+    assert_eq!(
+        member_billing_mode(&h.pool, member_id).await,
+        "manual",
+        "billing mode must stay 'manual' — no rollback on a tolerated parse error",
+    );
+
+    // The cancel was actually attempted (not skipped).
+    assert_eq!(
+        h.fake
+            .count_where(|c| matches!(c, FakeCall::DeleteSubscription { .. })),
+        1,
+        "delete_subscription should have been called exactly once",
+    );
+}
+
+#[tokio::test]
+async fn disable_auto_renew_still_fails_on_genuine_cancel_error() {
+    let h = build_harness().await;
+    let member_id = seed_stripe_subscription_member(&h.pool).await;
+
+    // A real Stripe API error (e.g. subscription doesn't exist) must NOT
+    // be tolerated — the tolerance is scoped to response-parse errors.
+    h.fake
+        .next_delete_subscription_err(AppError::External("No such subscription".to_string()));
+
+    let err = h
+        .billing
+        .auto_renew
+        .disable_auto_renew(member_id)
+        .await
+        .expect_err("a genuine Stripe API error must surface as a failure");
+    assert!(matches!(err, AppError::External(_)), "got {:?}", err);
+
+    // Rolled back so Stripe isn't left billing a 'manual' member.
+    assert_eq!(
+        member_billing_mode(&h.pool, member_id).await,
+        "stripe_subscription",
+        "a real cancel failure must roll the member back to 'stripe_subscription'",
     );
 }

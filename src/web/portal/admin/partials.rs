@@ -140,13 +140,16 @@ pub struct AdminPaymentRow {
 #[derive(Template)]
 #[template(path = "admin/_admin_payment_list.html")]
 pub struct AdminPaymentListTemplate {
+    /// The member these payments belong to — used to build the admin
+    /// per-payment receipt links.
+    pub member_id: String,
     pub rows: Vec<AdminPaymentRow>,
 }
 
 /// Render the admin member-detail payments list. Returns the empty-
 /// state message when the member has no payments on file.
-pub fn admin_payment_list(rows: Vec<AdminPaymentRow>) -> Html<String> {
-    let tmpl = AdminPaymentListTemplate { rows };
+pub fn admin_payment_list(member_id: String, rows: Vec<AdminPaymentRow>) -> Html<String> {
+    let tmpl = AdminPaymentListTemplate { member_id, rows };
     Html(tmpl.render().unwrap_or_else(|e| {
         tracing::error!("admin_payment_list template render failed: {}", e);
         format!("<div class=\"p-6 text-center text-red-600\">Render error</div>")

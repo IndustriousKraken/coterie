@@ -4,7 +4,9 @@ pub mod dashboard;
 mod donations;
 mod events;
 mod partials;
-mod payments;
+// Public so the annual-dues-statement total (`receipts::annual_dues_cents`)
+// can be unit-tested from the offline Stripe-import integration test.
+pub mod payments;
 pub mod profile;
 mod restore;
 pub mod security;
@@ -73,6 +75,17 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route(
             "/members/:id/payments",
             get(admin::members::dues::admin_member_payments),
+        )
+        // Per-member receipt + annual statement, for support. Same
+        // printable artifacts the member sees, reachable by an admin for
+        // any member.
+        .route(
+            "/members/:id/receipt/:payment_id",
+            get(payments::receipts::admin_member_receipt_page),
+        )
+        .route(
+            "/members/:id/statement/:year",
+            get(payments::receipts::admin_member_statement_page),
         )
         .route(
             "/members/:id/record-payment",
@@ -259,6 +272,10 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
             "/settings/billing/migrate-stripe-subs",
             post(admin::billing::bulk_migrate_stripe_subs),
         )
+        .route(
+            "/settings/billing/import-stripe-history",
+            post(admin::billing::import_stripe_history),
+        )
         // Read-only billing dashboard: upcoming charges, recent
         // failures, revenue by month. Actions stay on the per-member
         // page.
@@ -405,6 +422,13 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route(
             "/payments/:payment_id/receipt",
             get(payments::receipts::receipt_page),
+        )
+        // Annual dues statement for a given calendar year (printable,
+        // for a tax write-off). Restorable scope: Expired members keep
+        // access for prior-year tax filing.
+        .route(
+            "/payments/statement/:year",
+            get(payments::receipts::statement_page),
         )
         // Payment/card APIs
         .route(

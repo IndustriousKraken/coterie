@@ -9,7 +9,6 @@
 //! Each test gets its own in-memory SQLite pool and full migration set,
 //! so they're hermetic and runnable in parallel without coordination.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use coterie::{

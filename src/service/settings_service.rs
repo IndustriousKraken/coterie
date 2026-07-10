@@ -424,6 +424,21 @@ impl SettingsService {
         })
     }
 
+    /// Whether a real email provider is configured (SMTP mode with a
+    /// host and from-address). Used to gate outgoing receipt emails: the
+    /// `log` mode is a dev/no-op sink, so it does not count as
+    /// configured. Never errors — an unreadable config reads as "not
+    /// configured" so a missing provider silently skips the send rather
+    /// than failing the payment.
+    pub async fn is_email_configured(&self) -> bool {
+        match self.get_email_config().await {
+            Ok(cfg) => {
+                cfg.mode == "smtp" && !cfg.smtp_host.is_empty() && !cfg.from_address.is_empty()
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Returns `true` if the stored SMTP password exists but can't be
     /// decrypted — almost always a sign that `session_secret` was
     /// rotated. The admin UI uses this to show a clear warning banner.

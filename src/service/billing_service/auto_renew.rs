@@ -18,13 +18,17 @@ use crate::{
         configurable_types::BillingPeriod, BillingMode, Payer, Payment, PaymentKind, PaymentMethod,
         PaymentStatus, SavedCard, ScheduledPayment, ScheduledPaymentStatus, StripeRef,
     },
+    email::EmailSender,
     error::{AppError, Result},
     integrations::{IntegrationEvent, IntegrationManager},
     payments::StripeHandle,
     repository::{
         MemberRepository, PaymentRepository, SavedCardRepository, ScheduledPaymentRepository,
     },
-    service::{membership_type_service::MembershipTypeService, settings_service::SettingsService},
+    service::{
+        billing_service::notifications::dispatch_payment_receipt,
+        membership_type_service::MembershipTypeService, settings_service::SettingsService,
+    },
 };
 
 /// Result of `bulk_migrate_stripe_subscriptions` — per-batch summary
@@ -44,6 +48,11 @@ pub struct AutoRenew {
     membership_type_service: Arc<MembershipTypeService>,
     settings_service: Arc<SettingsService>,
     integration_manager: Arc<IntegrationManager>,
+    /// Sends the member a receipt after a successful Coterie-initiated
+    /// charge — gated on a configured email provider. Shared with the
+    /// notification/reminder paths; here it's used only for the
+    /// per-charge receipt.
+    email_sender: Arc<dyn EmailSender>,
     /// Hot-swappable Stripe wiring — read `current().client` at charge
     /// time (not captured once) so a portal key rotation reaches the
     /// scheduled-charge / migrate / disable paths without a restart.
@@ -65,6 +74,7 @@ impl AutoRenew {
         membership_type_service: Arc<MembershipTypeService>,
         settings_service: Arc<SettingsService>,
         integration_manager: Arc<IntegrationManager>,
+        email_sender: Arc<dyn EmailSender>,
         stripe_handle: Arc<StripeHandle>,
         base_url: String,
     ) -> Self {
@@ -76,6 +86,7 @@ impl AutoRenew {
             membership_type_service,
             settings_service,
             integration_manager,
+            email_sender,
             stripe_handle,
             base_url,
         }
@@ -214,6 +225,9 @@ impl AutoRenew {
                 exp_month: card.exp_month,
                 exp_year: card.exp_year,
                 is_default: false,
+                // ponytail: the sub-migration path de-dups on pm id, not
+                // fingerprint; only the Stripe history backfill records one.
+                fingerprint: None,
                 created_at: now,
                 updated_at: now,
             };
@@ -259,10 +273,13 @@ impl AutoRenew {
             .set_billing_mode(member_id, BillingMode::CoterieManaged, None)
             .await?;
 
-        // 3. Cancel the Stripe subscription. If this fails, roll
-        // back the local flip so the operator can retry — leaving
-        // local in coterie_managed while Stripe still bills would
-        // be the worst of both worlds.
+        // 3. Cancel the Stripe subscription. `cancel_subscription` is
+        // resilient: a cancel Stripe accepts but whose response can't be
+        // parsed returns Ok, so it does NOT reach this rollback and no
+        // longer races the customer.subscription.deleted webhook. Only a
+        // genuine API/transport failure lands here — roll back the local
+        // flip so the operator can retry; leaving local in coterie_managed
+        // while Stripe still bills would be the worst of both worlds.
         if let Err(e) = stripe.cancel_subscription(&stashed_sub_id).await {
             self.member_repo
                 .set_billing_mode(
@@ -473,9 +490,13 @@ impl AutoRenew {
             .set_billing_mode(member_id, BillingMode::Manual, None)
             .await?;
 
-        // Cancel the Stripe subscription if the member had one. On
-        // failure, roll back so the operator can retry without us
-        // leaving them in 'manual' while Stripe keeps billing.
+        // Cancel the Stripe subscription if the member had one. The
+        // resilient `cancel_subscription` returns Ok when Stripe accepted
+        // the cancel but the response was unparseable, so a cosmetic
+        // parse failure no longer false-fails here or races the
+        // customer.subscription.deleted webhook. On a genuine failure,
+        // roll back so the operator can retry without us leaving them in
+        // 'manual' while Stripe keeps billing.
         if let Some(sub_id) = stripe_sub_to_cancel {
             let runtime = self.stripe_handle.current();
             let stripe = runtime
@@ -642,6 +663,21 @@ impl AutoRenew {
                 };
 
                 let payment = self.payment_repo.create(payment).await?;
+
+                // Email the member a receipt for this Coterie-initiated
+                // charge. No-ops when email is unconfigured; a send
+                // failure is logged inside and never touches the charge.
+                if let Ok(Some(m)) = self.member_repo.find_by_id(sp.member_id).await {
+                    dispatch_payment_receipt(
+                        &self.email_sender,
+                        &self.settings_service,
+                        &self.base_url,
+                        &m.email,
+                        &m.full_name,
+                        &payment,
+                    )
+                    .await;
+                }
 
                 // Link payment and mark completed
                 self.scheduled_payment_repo

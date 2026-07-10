@@ -15,6 +15,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
+    domain::Payment,
     email::EmailSender,
     error::{AppError, Result},
     integrations::{IntegrationEvent, IntegrationManager},
@@ -675,5 +676,98 @@ impl Notifications {
             );
         }
         Ok(sent)
+    }
+
+    /// Email a receipt for a freshly-recorded live payment (a
+    /// subscription invoice via webhook, or a Coterie-initiated charge).
+    /// Gated on a configured email provider — see
+    /// [`dispatch_payment_receipt`]. Never fails the caller; a send
+    /// error is logged, not propagated, so email trouble can't roll back
+    /// a payment. The one-time history backfill deliberately does NOT
+    /// call this.
+    pub async fn send_payment_receipt(&self, to_email: &str, to_name: &str, payment: &Payment) {
+        dispatch_payment_receipt(
+            &self.email_sender,
+            &self.settings_service,
+            &self.base_url,
+            to_email,
+            to_name,
+            payment,
+        )
+        .await;
+    }
+}
+
+/// Render + send a payment receipt email, gated on a configured email
+/// provider. Standalone (not a method) so the auto-renew charge path —
+/// which holds an `email_sender` + `settings_service` but not the full
+/// `Notifications` — can reuse the exact same rendering and gating.
+///
+/// When no email provider is configured the send is skipped silently:
+/// the receipt stays viewable in the portal and the payment is
+/// unaffected. All failures (render or transport) are logged, never
+/// returned — email must not be able to fail a recorded payment.
+pub async fn dispatch_payment_receipt(
+    email_sender: &Arc<dyn EmailSender>,
+    settings_service: &SettingsService,
+    base_url: &str,
+    to_email: &str,
+    to_name: &str,
+    payment: &crate::domain::Payment,
+) {
+    use crate::email::{
+        self,
+        templates::{ReceiptEmailHtml, ReceiptEmailText},
+    };
+
+    // Gate: a `log`-mode sink is a dev no-op, not a real provider.
+    if !settings_service.is_email_configured().await {
+        return;
+    }
+
+    let org_name = settings_service
+        .get_value("org.name")
+        .await
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Coterie".to_string());
+
+    let amount = format!("${:.2}", payment.amount_cents as f64 / 100.0);
+    let when = payment.paid_at.unwrap_or(payment.created_at);
+    let date = when.format("%B %-d, %Y").to_string();
+    let receipt_id = payment.id.to_string();
+    let receipt_url = format!(
+        "{}/portal/payments/{}/receipt",
+        base_url.trim_end_matches('/'),
+        payment.id,
+    );
+
+    let html = ReceiptEmailHtml {
+        full_name: to_name,
+        org_name: &org_name,
+        amount: &amount,
+        date: &date,
+        description: &payment.description,
+        receipt_id: &receipt_id,
+        receipt_url: &receipt_url,
+    };
+    let text = ReceiptEmailText {
+        full_name: to_name,
+        org_name: &org_name,
+        amount: &amount,
+        date: &date,
+        description: &payment.description,
+        receipt_id: &receipt_id,
+        receipt_url: &receipt_url,
+    };
+    let subject = format!("Your {} payment receipt", org_name);
+
+    match email::message_from_templates(to_email.to_string(), subject, &html, &text) {
+        Ok(message) => {
+            if let Err(e) = email_sender.send(&message).await {
+                tracing::error!("Couldn't email payment receipt to {}: {}", to_email, e);
+            }
+        }
+        Err(e) => tracing::error!("Couldn't render payment-receipt email: {}", e),
     }
 }
