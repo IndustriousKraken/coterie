@@ -33,6 +33,10 @@ pub struct EnvConfig {
     pub stripe: Option<StripeConfig>,
     pub discord: Option<DiscordConfig>,
     pub unifi: Option<UnifiConfig>,
+    /// Browser origins allowed to call `/public/*` and `/api/*` (CORS),
+    /// derived from the marketing domain. `None` leaves the setting
+    /// commented so the runtime keeps its same-origin default.
+    pub cors_origins: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -72,7 +76,22 @@ impl EnvConfig {
             stripe: None,
             discord: None,
             unifi: None,
+            cors_origins: None,
         }
+    }
+}
+
+/// Build the `COTERIE__SERVER__CORS_ORIGINS` value from a marketing
+/// domain: the apex plus its `www.` variant as HTTPS origins, matching
+/// the origins the Caddy marketing vhost serves (`{md}, www.{md}`). When
+/// the domain already begins with `www.`, emit only the one origin so we
+/// don't produce a double-prefixed `www.www.` origin.
+pub fn cors_origins_for(marketing_domain: &str) -> String {
+    let d = marketing_domain.trim();
+    if d.starts_with("www.") {
+        format!("https://{d}")
+    } else {
+        format!("https://{d},https://www.{d}")
     }
 }
 
@@ -93,6 +112,14 @@ pub fn render_env(template: &str, config: &EnvConfig) -> String {
 
         // Lines we always rewrite if they are present.
         if let Some(rewritten) = rewrite_required_line(raw, config) {
+            out.push_str(&rewritten);
+            out.push('\n');
+            continue;
+        }
+
+        // Optional CORS allowlist (commented in the template; uncomment
+        // + fill when the marketing domain supplied origins).
+        if let Some(rewritten) = rewrite_cors_line(raw, config) {
             out.push_str(&rewritten);
             out.push('\n');
             continue;
@@ -139,6 +166,16 @@ fn rewrite_required_line(raw: &str, config: &EnvConfig) -> Option<String> {
         _ => return None,
     };
     Some(format!("{key}={new_value}"))
+}
+
+/// Uncomment + set `COTERIE__SERVER__CORS_ORIGINS` when we derived an
+/// allowlist from the marketing domain. When `cors_origins` is `None`,
+/// returns `None` so the commented template placeholder passes through
+/// untouched (same-origin default preserved).
+fn rewrite_cors_line(raw: &str, config: &EnvConfig) -> Option<String> {
+    let origins = config.cors_origins.as_ref()?;
+    let k = match_commented_key(raw, "COTERIE__SERVER__CORS_ORIGINS")?;
+    Some(format!("{k}={origins}"))
 }
 
 fn rewrite_stripe_line(raw: &str, config: &EnvConfig) -> Option<String> {
@@ -297,6 +334,7 @@ mod tests {
             stripe: None,
             discord: None,
             unifi: None,
+            cors_origins: None,
         }
     }
 
@@ -384,6 +422,41 @@ COTERIE__STRIPE__SECRET_KEY=sk_live_BBBB
 COTERIE__STRIPE__WEBHOOK_SECRET=whsec_CCCC
 ";
         assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn cors_origins_set_from_marketing_domain() {
+        let mut c = base_config();
+        c.cors_origins = Some(cors_origins_for("example.org"));
+        let out = render_env(fixture(), &c);
+        // Uncommented, apex + www variant, matching the Caddy vhost.
+        assert!(out.lines().any(|l| l.trim_start()
+            == "COTERIE__SERVER__CORS_ORIGINS=https://example.org,https://www.example.org"));
+    }
+
+    #[test]
+    fn cors_origins_unset_without_marketing_domain() {
+        let c = base_config(); // cors_origins: None
+        let out = render_env(fixture(), &c);
+        // The commented placeholder is fine; an *uncommented* CORS line
+        // is not (it would relax the same-origin default).
+        for line in out.lines() {
+            if line
+                .trim_start()
+                .starts_with("COTERIE__SERVER__CORS_ORIGINS=")
+            {
+                panic!("CORS origins leaked uncommented with no marketing domain: {line}");
+            }
+        }
+    }
+
+    #[test]
+    fn cors_origins_www_domain_not_double_prefixed() {
+        let mut c = base_config();
+        c.cors_origins = Some(cors_origins_for("www.example.org"));
+        let out = render_env(fixture(), &c);
+        assert!(out.contains("COTERIE__SERVER__CORS_ORIGINS=https://www.example.org"));
+        assert!(!out.contains("https://www.www.example.org"));
     }
 
     #[test]
