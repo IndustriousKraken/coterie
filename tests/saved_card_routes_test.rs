@@ -557,6 +557,7 @@ async fn seed_card(h: &Harness, pm_id: &str, is_default: bool) -> SavedCard {
             exp_month: 12,
             exp_year: 2030,
             is_default,
+            fingerprint: None,
             created_at: now,
             updated_at: now,
         })

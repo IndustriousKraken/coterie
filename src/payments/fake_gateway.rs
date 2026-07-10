@@ -28,10 +28,10 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use super::gateway::{
-    CheckoutOutput, CreateCheckoutInput, CreateCustomerInput, CreatePaymentIntentInput,
-    CreateRefundInput, CreateSetupIntentInput, PaymentIntentResult, PaymentMethodDetails,
-    PaymentMethodSummary, RefundOutput, RetrievedCheckoutSession, RetrievedCustomer,
-    RetrievedInvoice, SetupIntentOutput, StripeGateway,
+    ChargeSummary, CheckoutOutput, CreateCheckoutInput, CreateCustomerInput,
+    CreatePaymentIntentInput, CreateRefundInput, CreateSetupIntentInput, PaymentIntentResult,
+    PaymentMethodDetails, PaymentMethodSummary, RefundOutput, RetrievedCheckoutSession,
+    RetrievedCustomer, RetrievedInvoice, SetupIntentOutput, StripeGateway,
 };
 use crate::error::{AppError, Result};
 
@@ -47,6 +47,7 @@ pub enum FakeCall {
     CreateSetupIntent(CreateSetupIntentInput),
     CreatePaymentIntent(CreatePaymentIntentInput),
     ListPaymentMethods { customer_id: String },
+    ListCharges { customer_id: String },
     RetrievePaymentMethod { payment_method_id: String },
     DetachPaymentMethod { payment_method_id: String },
     CreateRefund(CreateRefundInput),
@@ -67,6 +68,7 @@ struct ResponseQueues {
     setup_intent: VecDeque<Result<SetupIntentOutput>>,
     payment_intent: VecDeque<Result<PaymentIntentResult>>,
     list_pms: VecDeque<Result<Vec<PaymentMethodSummary>>>,
+    list_charges: VecDeque<Result<Vec<ChargeSummary>>>,
     retrieve_pm: VecDeque<Result<PaymentMethodDetails>>,
     detach_pm: VecDeque<Result<()>>,
     refund: VecDeque<Result<RefundOutput>>,
@@ -162,6 +164,29 @@ impl FakeStripeGateway {
             .unwrap()
             .retrieve_invoice
             .push_back(Ok(retrieved));
+    }
+
+    /// Queue the charges returned by the next `list_charges` call.
+    pub fn next_charges(&self, charges: Vec<ChargeSummary>) {
+        self.queues
+            .lock()
+            .unwrap()
+            .list_charges
+            .push_back(Ok(charges));
+    }
+
+    /// Queue the cards returned by the next `list_payment_methods` call.
+    pub fn next_payment_methods(&self, cards: Vec<PaymentMethodSummary>) {
+        self.queues.lock().unwrap().list_pms.push_back(Ok(cards));
+    }
+
+    /// Queue the customer returned by the next `retrieve_customer` call.
+    pub fn next_retrieve_customer(&self, customer: RetrievedCustomer) {
+        self.queues
+            .lock()
+            .unwrap()
+            .retrieve_customer
+            .push_back(Ok(customer));
     }
 }
 
@@ -268,6 +293,16 @@ impl StripeGateway for FakeStripeGateway {
             customer_id: customer_id.to_string(),
         });
         if let Some(r) = self.queues.lock().unwrap().list_pms.pop_front() {
+            return r;
+        }
+        Ok(Vec::new())
+    }
+
+    async fn list_charges(&self, customer_id: &str) -> Result<Vec<ChargeSummary>> {
+        self.record(FakeCall::ListCharges {
+            customer_id: customer_id.to_string(),
+        });
+        if let Some(r) = self.queues.lock().unwrap().list_charges.pop_front() {
             return r;
         }
         Ok(Vec::new())

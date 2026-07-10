@@ -18,13 +18,17 @@ use crate::{
         configurable_types::BillingPeriod, BillingMode, Payer, Payment, PaymentKind, PaymentMethod,
         PaymentStatus, SavedCard, ScheduledPayment, ScheduledPaymentStatus, StripeRef,
     },
+    email::EmailSender,
     error::{AppError, Result},
     integrations::{IntegrationEvent, IntegrationManager},
     payments::StripeHandle,
     repository::{
         MemberRepository, PaymentRepository, SavedCardRepository, ScheduledPaymentRepository,
     },
-    service::{membership_type_service::MembershipTypeService, settings_service::SettingsService},
+    service::{
+        billing_service::notifications::dispatch_payment_receipt,
+        membership_type_service::MembershipTypeService, settings_service::SettingsService,
+    },
 };
 
 /// Result of `bulk_migrate_stripe_subscriptions` — per-batch summary
@@ -44,6 +48,11 @@ pub struct AutoRenew {
     membership_type_service: Arc<MembershipTypeService>,
     settings_service: Arc<SettingsService>,
     integration_manager: Arc<IntegrationManager>,
+    /// Sends the member a receipt after a successful Coterie-initiated
+    /// charge — gated on a configured email provider. Shared with the
+    /// notification/reminder paths; here it's used only for the
+    /// per-charge receipt.
+    email_sender: Arc<dyn EmailSender>,
     /// Hot-swappable Stripe wiring — read `current().client` at charge
     /// time (not captured once) so a portal key rotation reaches the
     /// scheduled-charge / migrate / disable paths without a restart.
@@ -65,6 +74,7 @@ impl AutoRenew {
         membership_type_service: Arc<MembershipTypeService>,
         settings_service: Arc<SettingsService>,
         integration_manager: Arc<IntegrationManager>,
+        email_sender: Arc<dyn EmailSender>,
         stripe_handle: Arc<StripeHandle>,
         base_url: String,
     ) -> Self {
@@ -76,6 +86,7 @@ impl AutoRenew {
             membership_type_service,
             settings_service,
             integration_manager,
+            email_sender,
             stripe_handle,
             base_url,
         }
@@ -214,6 +225,9 @@ impl AutoRenew {
                 exp_month: card.exp_month,
                 exp_year: card.exp_year,
                 is_default: false,
+                // ponytail: the sub-migration path de-dups on pm id, not
+                // fingerprint; only the Stripe history backfill records one.
+                fingerprint: None,
                 created_at: now,
                 updated_at: now,
             };
@@ -642,6 +656,21 @@ impl AutoRenew {
                 };
 
                 let payment = self.payment_repo.create(payment).await?;
+
+                // Email the member a receipt for this Coterie-initiated
+                // charge. No-ops when email is unconfigured; a send
+                // failure is logged inside and never touches the charge.
+                if let Ok(Some(m)) = self.member_repo.find_by_id(sp.member_id).await {
+                    dispatch_payment_receipt(
+                        &self.email_sender,
+                        &self.settings_service,
+                        &self.base_url,
+                        &m.email,
+                        &m.full_name,
+                        &payment,
+                    )
+                    .await;
+                }
 
                 // Link payment and mark completed
                 self.scheduled_payment_repo

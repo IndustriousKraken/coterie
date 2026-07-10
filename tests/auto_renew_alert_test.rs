@@ -219,6 +219,7 @@ async fn seed_default_card(saved_card_repo: &Arc<SqliteSavedCardRepository>, mem
         exp_month: 12,
         exp_year: now.year() + 5,
         is_default: true,
+        fingerprint: None,
         created_at: now,
         updated_at: now,
     };

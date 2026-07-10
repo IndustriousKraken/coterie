@@ -28,6 +28,7 @@ struct SavedCardRow {
     exp_month: i32,
     exp_year: i32,
     is_default: i32,
+    card_fingerprint: Option<String>,
     created_at: NaiveDateTime,
     updated_at: NaiveDateTime,
 }
@@ -52,6 +53,7 @@ impl SqliteSavedCardRepository {
             exp_month: row.exp_month,
             exp_year: row.exp_year,
             is_default: row.is_default != 0,
+            fingerprint: row.card_fingerprint,
             created_at: DateTime::from_naive_utc_and_offset(row.created_at, Utc),
             updated_at: DateTime::from_naive_utc_and_offset(row.updated_at, Utc),
         })
@@ -70,8 +72,9 @@ impl SavedCardRepository for SqliteSavedCardRepository {
             r#"
             INSERT INTO payment_methods (
                 id, member_id, stripe_payment_method_id, card_last_four,
-                card_brand, exp_month, exp_year, is_default, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                card_brand, exp_month, exp_year, is_default, card_fingerprint,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&id_str)
@@ -82,6 +85,7 @@ impl SavedCardRepository for SqliteSavedCardRepository {
         .bind(card.exp_month)
         .bind(card.exp_year)
         .bind(is_default_int)
+        .bind(&card.fingerprint)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -98,7 +102,7 @@ impl SavedCardRepository for SqliteSavedCardRepository {
         let row = sqlx::query_as::<_, SavedCardRow>(
             r#"
             SELECT id, member_id, stripe_payment_method_id, card_last_four,
-                   card_brand, exp_month, exp_year, is_default, created_at, updated_at
+                   card_brand, exp_month, exp_year, is_default, card_fingerprint, created_at, updated_at
             FROM payment_methods
             WHERE id = ?
             "#,
@@ -119,7 +123,7 @@ impl SavedCardRepository for SqliteSavedCardRepository {
         let rows = sqlx::query_as::<_, SavedCardRow>(
             r#"
             SELECT id, member_id, stripe_payment_method_id, card_last_four,
-                   card_brand, exp_month, exp_year, is_default, created_at, updated_at
+                   card_brand, exp_month, exp_year, is_default, card_fingerprint, created_at, updated_at
             FROM payment_methods
             WHERE member_id = ?
             ORDER BY is_default DESC, created_at DESC
@@ -138,7 +142,7 @@ impl SavedCardRepository for SqliteSavedCardRepository {
         let row = sqlx::query_as::<_, SavedCardRow>(
             r#"
             SELECT id, member_id, stripe_payment_method_id, card_last_four,
-                   card_brand, exp_month, exp_year, is_default, created_at, updated_at
+                   card_brand, exp_month, exp_year, is_default, card_fingerprint, created_at, updated_at
             FROM payment_methods
             WHERE member_id = ? AND is_default = 1
             "#,

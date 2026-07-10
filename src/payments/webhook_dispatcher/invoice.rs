@@ -107,7 +107,14 @@ impl WebhookDispatcher {
             updated_at: Utc::now(),
         };
 
-        self.payment_repo.create(payment).await?;
+        let payment = self.payment_repo.create(payment).await?;
+
+        // Email the member a receipt for this live charge. No-ops when
+        // email is unconfigured; never fails the webhook.
+        billing_service
+            .notifications
+            .send_payment_receipt(&member.email, &member.full_name, &payment)
+            .await;
 
         // Extend dues - look up membership type from member's current type
         let membership_type_slug = self

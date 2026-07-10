@@ -56,6 +56,7 @@ impl BillingService {
             membership_type_service.clone(),
             settings_service.clone(),
             integration_manager.clone(),
+            email_sender.clone(),
             stripe_handle,
             base_url.clone(),
         );

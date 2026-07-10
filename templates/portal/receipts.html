@@ -59,6 +59,12 @@
                         </a>
                     {% endfor %}
                 </div>
+                <div class="px-6 py-3 border-t bg-gray-50 text-right">
+                    <a href="/portal/payments/statement/{{ year_block.year }}"
+                       class="text-sm text-blue-600 hover:underline">
+                        Annual dues statement for {{ year_block.year }} &rarr;
+                    </a>
+                </div>
             </div>
         {% endfor %}
     {% endif %}

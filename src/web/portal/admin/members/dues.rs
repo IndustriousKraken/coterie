@@ -105,5 +105,5 @@ pub async fn admin_member_payments(
         .iter()
         .map(partials::admin_payment_row_from)
         .collect();
-    partials::admin_payment_list(rows)
+    partials::admin_payment_list(id.to_string(), rows)
 }

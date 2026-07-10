@@ -188,3 +188,27 @@ pub struct AdminAlertText<'a> {
     pub subject: &'a str,
     pub body: &'a str,
 }
+
+#[derive(Template)]
+#[template(path = "emails/receipt.html")]
+pub struct ReceiptEmailHtml<'a> {
+    pub full_name: &'a str,
+    pub org_name: &'a str,
+    pub amount: &'a str,
+    pub date: &'a str,
+    pub description: &'a str,
+    pub receipt_id: &'a str,
+    pub receipt_url: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "emails/receipt.txt")]
+pub struct ReceiptEmailText<'a> {
+    pub full_name: &'a str,
+    pub org_name: &'a str,
+    pub amount: &'a str,
+    pub date: &'a str,
+    pub description: &'a str,
+    pub receipt_id: &'a str,
+    pub receipt_url: &'a str,
+}

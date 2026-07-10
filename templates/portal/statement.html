@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ year }} Dues Statement - {{ org_name }}</title>
+    <style>
+        /* Standalone styles — the statement is a clean printable artifact
+           independent of the portal's Tailwind, matching the single
+           receipt page. */
+        :root {
+            --ink: #1a1a1a;
+            --muted: #555;
+            --line: #d0d0d0;
+            --accent: #1e40af;
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+                         Roboto, "Helvetica Neue", Arial, sans-serif;
+            color: var(--ink);
+            background: #f5f5f5;
+            margin: 0;
+            padding: 2rem 1rem;
+            line-height: 1.5;
+        }
+        .receipt {
+            max-width: 720px;
+            margin: 0 auto;
+            background: white;
+            padding: 3rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+            border: 1px solid var(--line);
+        }
+        .toolbar {
+            max-width: 720px;
+            margin: 0 auto 1rem;
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.875rem;
+        }
+        .toolbar a, .toolbar button {
+            color: var(--accent);
+            text-decoration: none;
+            background: none;
+            border: none;
+            font: inherit;
+            cursor: pointer;
+            padding: 0;
+        }
+        .toolbar a:hover, .toolbar button:hover { text-decoration: underline; }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            border-bottom: 2px solid var(--ink);
+            padding-bottom: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        .org h1 { margin: 0; font-size: 1.5rem; letter-spacing: -0.01em; }
+        .org .meta {
+            margin-top: 0.4rem;
+            font-size: 0.85rem;
+            color: var(--muted);
+            white-space: pre-line;
+        }
+        .receipt-title { text-align: right; }
+        .receipt-title h2 {
+            margin: 0;
+            font-size: 1.1rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+        }
+        .receipt-title .id {
+            margin-top: 0.4rem;
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--ink);
+        }
+        .recipient { margin-bottom: 2rem; font-size: 0.95rem; }
+        .recipient .label {
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-size: 0.7rem;
+            color: var(--muted);
+            margin-bottom: 0.3rem;
+        }
+        table.lines { width: 100%; border-collapse: collapse; margin-bottom: 2rem; }
+        table.lines th {
+            text-align: left;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+            border-bottom: 1px solid var(--line);
+            padding: 0.5rem 0.5rem 0.5rem 0;
+        }
+        table.lines th.amt { text-align: right; }
+        table.lines td {
+            padding: 0.75rem 0.5rem 0.75rem 0;
+            border-bottom: 1px solid var(--line);
+            vertical-align: top;
+        }
+        table.lines td.amt {
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+        .line-desc { font-weight: 500; }
+        .total-row td {
+            padding-top: 1rem;
+            font-weight: 600;
+            font-size: 1.05rem;
+            border-bottom: none;
+        }
+        .total-row td.amt { font-size: 1.25rem; }
+        .empty { color: var(--muted); font-style: italic; padding: 1rem 0; }
+        .footer {
+            margin-top: 2rem;
+            font-size: 0.8rem;
+            color: var(--muted);
+            border-top: 1px solid var(--line);
+            padding-top: 1rem;
+        }
+        .footer p { margin: 0.4rem 0; }
+        .footer .generated { margin-top: 1rem; font-size: 0.7rem; }
+        @media print {
+            body { background: white; padding: 0; }
+            .receipt { box-shadow: none; border: none; padding: 1.5rem; }
+            .toolbar { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="toolbar">
+        <a href="/portal/payments/receipts">&larr; Back to receipts</a>
+        <button onclick="window.print()">Print this statement</button>
+    </div>
+
+    <div class="receipt">
+        <header>
+            <div class="org">
+                <h1>{{ org_name }}</h1>
+                {% if !org_address.is_empty() %}
+                    <div class="meta">{{ org_address }}</div>
+                {% endif %}
+                <div class="meta">
+                    {% if !org_website_url.is_empty() %}{{ org_website_url }}{% endif %}{% if !org_website_url.is_empty() && !org_contact_email.is_empty() %} &middot; {% endif %}{% if !org_contact_email.is_empty() %}{{ org_contact_email }}{% endif %}
+                </div>
+                {% if !org_tax_id.is_empty() %}
+                    <div class="meta">Tax ID: {{ org_tax_id }}</div>
+                {% endif %}
+            </div>
+            <div class="receipt-title">
+                <h2>Annual Dues Statement</h2>
+                <div class="id">{{ year }}</div>
+            </div>
+        </header>
+
+        <div class="recipient">
+            <div class="label">Statement for</div>
+            <div><strong>{{ recipient_name }}</strong></div>
+            <div class="meta">{{ recipient_email }}</div>
+        </div>
+
+        <table class="lines">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Description</th>
+                    <th class="amt">Amount</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if lines.is_empty() %}
+                    <tr><td colspan="3" class="empty">No dues payments recorded for {{ year }}.</td></tr>
+                {% else %}
+                    {% for line in lines %}
+                        <tr>
+                            <td>{{ line.date }}</td>
+                            <td><div class="line-desc">{{ line.description }}</div></td>
+                            <td class="amt">{{ line.amount_display }}</td>
+                        </tr>
+                    {% endfor %}
+                {% endif %}
+                <tr class="total-row">
+                    <td colspan="2">Total dues paid in {{ year }}</td>
+                    <td class="amt">{{ dues_total_display }}</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="footer">
+            <p>This statement summarizes membership dues paid to {{ org_name }} during {{ year }}.</p>
+            <p>
+                Whether dues are tax-deductible depends on the
+                organization's tax status and your filing situation;
+                please consult your accountant.
+            </p>
+            <p class="generated">Generated {{ generated_on }}</p>
+        </div>
+    </div>
+</body>
+</html>

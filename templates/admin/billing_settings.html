@@ -69,6 +69,42 @@
             </div>
         </div>
 
+        <!-- Stripe payment-history + saved-card backfill -->
+        <div class="bg-white rounded-lg shadow-sm border mb-6">
+            <div class="px-6 py-4 border-b">
+                <h2 class="text-lg font-semibold text-gray-900">Import Stripe history</h2>
+                <p class="text-sm text-gray-500 mt-1">
+                    Backfill historical payments and saved cards from Stripe
+                    into Coterie for every member with a Stripe customer.
+                    Payments become receipts and count toward annual dues
+                    statements; cards appear in each member's saved cards.
+                    Safe to run more than once — charges already imported and
+                    cards already on file are skipped. This imports settled
+                    history only: it never charges anyone, extends dues, or
+                    sends receipt emails.
+                </p>
+            </div>
+            <div class="p-6">
+                {% if !stripe_enabled %}
+                <p class="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded p-3">
+                    Stripe isn't configured for this deployment. Configure Stripe credentials before importing history.
+                </p>
+                {% else %}
+                <form method="POST" action="/portal/admin/settings/billing/import-stripe-history"
+                      onsubmit="return confirm('Import historical Stripe charges and saved cards for all members with a Stripe customer? This is safe to run repeatedly — already-imported records are skipped.');">
+                    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+                    <button type="submit"
+                            class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+                        Import payment history &amp; cards from Stripe
+                    </button>
+                </form>
+                <p class="mt-2 text-xs text-gray-500">
+                    Per-member failures don't stop the run. The result summary appears at the top of this page.
+                </p>
+                {% endif %}
+            </div>
+        </div>
+
         <div class="text-sm">
             <a href="/portal/admin/settings" class="text-gray-600 hover:text-gray-900">← All settings</a>
         </div>

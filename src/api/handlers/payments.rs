@@ -209,6 +209,10 @@ pub async fn save_card(
         exp_month: card_details.exp_month,
         exp_year: card_details.exp_year,
         is_default,
+        // ponytail: interactively-added cards don't record a fingerprint
+        // (the SetupIntent detail lookup doesn't surface one); the Stripe
+        // backfill is the only writer that de-dups on it.
+        fingerprint: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };

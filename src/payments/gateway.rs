@@ -30,12 +30,12 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use stripe::{
-    CheckoutSession, CheckoutSessionId, CheckoutSessionMode, Client, CreateCheckoutSession,
+    Charge, CheckoutSession, CheckoutSessionId, CheckoutSessionMode, Client, CreateCheckoutSession,
     CreateCheckoutSessionLineItems, CreateCustomer, CreatePaymentIntent, CreateRefund,
-    CreateSetupIntent, Currency, Customer, CustomerId, Invoice, InvoiceId, ListPaymentMethods,
-    PaymentIntent, PaymentIntentConfirmationMethod, PaymentIntentId, PaymentIntentOffSession,
-    PaymentIntentStatus, PaymentMethod, PaymentMethodId, PaymentMethodTypeFilter, Refund,
-    RequestStrategy, SetupIntent, Subscription, SubscriptionId,
+    CreateSetupIntent, Currency, Customer, CustomerId, Invoice, InvoiceId, ListCharges,
+    ListPaymentMethods, PaymentIntent, PaymentIntentConfirmationMethod, PaymentIntentId,
+    PaymentIntentOffSession, PaymentIntentStatus, PaymentMethod, PaymentMethodId,
+    PaymentMethodTypeFilter, Refund, RequestStrategy, SetupIntent, Subscription, SubscriptionId,
 };
 
 use crate::error::{AppError, Result};
@@ -179,6 +179,30 @@ pub struct PaymentMethodSummary {
     pub last4: String,
     pub exp_month: i32,
     pub exp_year: i32,
+    /// Stripe's card fingerprint — stable across re-attachments of the
+    /// same underlying card. The backfill de-dups on this so a card
+    /// already saved (possibly under a different `pm_*` id) is not
+    /// stored twice. `None` when Stripe omits it.
+    pub fingerprint: Option<String>,
+}
+
+/// One historical charge from a customer's Stripe history, flattened for
+/// the payment-history backfill. `id` is the raw charge id (`ch_*`);
+/// `payment_intent_id` / `invoice_id` are the `pi_*` / `in_*` references
+/// Coterie keys payment rows on.
+#[derive(Debug, Clone)]
+pub struct ChargeSummary {
+    pub id: String,
+    pub amount_cents: i64,
+    pub currency: String,
+    /// Unix epoch seconds the charge was created in Stripe.
+    pub created: i64,
+    pub description: Option<String>,
+    pub invoice_id: Option<String>,
+    pub payment_intent_id: Option<String>,
+    /// Lowercase Stripe status ("succeeded" | "pending" | "failed").
+    pub status: String,
+    pub metadata: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -240,6 +264,11 @@ pub trait StripeGateway: Send + Sync {
     ) -> Result<PaymentMethodDetails>;
 
     async fn detach_payment_method(&self, payment_method_id: &str) -> Result<()>;
+
+    /// List a customer's historical charges, flattened into
+    /// [`ChargeSummary`]. Used by the one-time payment-history backfill.
+    /// Read-only — never initiates a charge.
+    async fn list_charges(&self, customer_id: &str) -> Result<Vec<ChargeSummary>>;
 
     async fn create_refund(&self, input: CreateRefundInput) -> Result<RefundOutput>;
 
@@ -468,7 +497,36 @@ impl StripeGateway for RealStripeGateway {
                     last4: card.last4,
                     exp_month: card.exp_month as i32,
                     exp_year: card.exp_year as i32,
+                    fingerprint: card.fingerprint,
                 })
+            })
+            .collect())
+    }
+
+    async fn list_charges(&self, customer_id: &str) -> Result<Vec<ChargeSummary>> {
+        let cid: CustomerId = customer_id
+            .parse()
+            .map_err(|_| AppError::BadRequest(format!("Invalid customer ID: {}", customer_id)))?;
+        let mut params = ListCharges::new();
+        params.customer = Some(cid);
+        // ponytail: single page of 100 is plenty for one member's dues
+        // history; switch to `.paginate(params)` auto-pagination if any
+        // member ever exceeds it.
+        params.limit = Some(100);
+        let list = timed(Charge::list(&self.client, &params)).await?;
+        Ok(list
+            .data
+            .into_iter()
+            .map(|c| ChargeSummary {
+                id: c.id.to_string(),
+                amount_cents: c.amount,
+                currency: c.currency.to_string(),
+                created: c.created,
+                description: c.description,
+                invoice_id: c.invoice.map(|exp| exp.id().to_string()),
+                payment_intent_id: c.payment_intent.map(|exp| exp.id().to_string()),
+                status: c.status.as_str().to_string(),
+                metadata: c.metadata,
             })
             .collect())
     }
