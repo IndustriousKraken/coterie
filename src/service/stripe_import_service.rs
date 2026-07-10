@@ -185,6 +185,16 @@ impl StripeImportService {
                 continue;
             }
 
+            // Record the NET amount the member actually paid. A partially
+            // refunded charge should book what was kept; a fully refunded
+            // one nets to zero and isn't a payment at all — skip it so the
+            // annual dues statement doesn't overstate contributions.
+            let net_cents = charge.amount_cents - charge.amount_refunded_cents;
+            if net_cents <= 0 {
+                skipped += 1;
+                continue;
+            }
+
             let description = charge
                 .description
                 .clone()
@@ -199,7 +209,7 @@ impl StripeImportService {
             let payment = Payment {
                 id: Uuid::new_v4(),
                 payer: Payer::Member(member_id),
-                amount_cents: charge.amount_cents,
+                amount_cents: net_cents,
                 currency: charge.currency.clone(),
                 status: PaymentStatus::Completed,
                 payment_method: PaymentMethod::Stripe,
