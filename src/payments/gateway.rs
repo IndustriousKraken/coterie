@@ -63,6 +63,38 @@ where
     }
 }
 
+/// Classify the result of a `Subscription::delete` call into cancel-success
+/// vs genuine failure. Split out from `delete_subscription` so this
+/// safety-critical decision is unit-testable without mocking async-stripe's
+/// HTTP layer.
+///
+/// `Subscription::delete` sends NO request body, so a (de)serialize
+/// `StripeError` on this call is always the *response*: Stripe already
+/// accepted the DELETE and cancelled the sub, then returned an object
+/// async-stripe 0.39 can't deserialize. Tolerate that as success — the
+/// `customer.subscription.deleted` webhook is the authoritative reconciler
+/// of member state. Any other error (a returned error status) is a real
+/// failure the caller must see.
+fn classify_cancel_result<T>(
+    result: std::result::Result<T, stripe::StripeError>,
+    subscription_id: &str,
+) -> Result<()> {
+    match result {
+        Ok(_) => Ok(()),
+        Err(stripe::StripeError::JSONSerialize(_)) => {
+            tracing::warn!(
+                "Stripe cancel of {} was accepted but its response could not be \
+                 parsed; treating the cancel as successful — the \
+                 customer.subscription.deleted webhook will reconcile the \
+                 member's billing state.",
+                subscription_id,
+            );
+            Ok(())
+        }
+        Err(e) => Err(AppError::External(format!("Stripe cancel failed: {}", e))),
+    }
+}
+
 // ---------------------------------------------------------------------
 // Trait inputs/outputs
 // ---------------------------------------------------------------------
@@ -194,6 +226,10 @@ pub struct PaymentMethodSummary {
 pub struct ChargeSummary {
     pub id: String,
     pub amount_cents: i64,
+    /// Amount refunded on this charge (partial or full). The backfill
+    /// records `amount_cents - amount_refunded_cents` so a member's
+    /// annual dues statement reflects what they NET paid, not the gross.
+    pub amount_refunded_cents: i64,
     pub currency: String,
     /// Unix epoch seconds the charge was created in Stripe.
     pub created: i64,
@@ -517,28 +553,39 @@ impl StripeGateway for RealStripeGateway {
         let cid: CustomerId = customer_id
             .parse()
             .map_err(|_| AppError::BadRequest(format!("Invalid customer ID: {}", customer_id)))?;
+
+        // Page through the customer's FULL charge history with Stripe cursor
+        // pagination (100/page, follow `starting_after` while `has_more`), so
+        // a long-tenured member's older charges aren't silently dropped from
+        // the tax statement.
+        let mut out: Vec<ChargeSummary> = Vec::new();
         let mut params = ListCharges::new();
         params.customer = Some(cid);
-        // ponytail: single page of 100 is plenty for one member's dues
-        // history; switch to `.paginate(params)` auto-pagination if any
-        // member ever exceeds it.
         params.limit = Some(100);
-        let list = timed(Charge::list(&self.client, &params)).await?;
-        Ok(list
-            .data
-            .into_iter()
-            .map(|c| ChargeSummary {
-                id: c.id.to_string(),
-                amount_cents: c.amount,
-                currency: c.currency.to_string(),
-                created: c.created,
-                description: c.description,
-                invoice_id: c.invoice.map(|exp| exp.id().to_string()),
-                payment_intent_id: c.payment_intent.map(|exp| exp.id().to_string()),
-                status: c.status.as_str().to_string(),
-                metadata: c.metadata,
-            })
-            .collect())
+        loop {
+            let list = timed(Charge::list(&self.client, &params)).await?;
+            let has_more = list.has_more;
+            let last_id = list.data.last().map(|c| c.id.clone());
+            for c in list.data {
+                out.push(ChargeSummary {
+                    id: c.id.to_string(),
+                    amount_cents: c.amount,
+                    amount_refunded_cents: c.amount_refunded,
+                    currency: c.currency.to_string(),
+                    created: c.created,
+                    description: c.description,
+                    invoice_id: c.invoice.map(|exp| exp.id().to_string()),
+                    payment_intent_id: c.payment_intent.map(|exp| exp.id().to_string()),
+                    status: c.status.as_str().to_string(),
+                    metadata: c.metadata,
+                });
+            }
+            match (has_more, last_id) {
+                (true, Some(id)) => params.starting_after = Some(id),
+                _ => break,
+            }
+        }
+        Ok(out)
     }
 
     async fn retrieve_payment_method(
@@ -613,30 +660,13 @@ impl StripeGateway for RealStripeGateway {
 
         // Don't route the cancel through `timed`: that flattens every
         // `StripeError` variant into one opaque `External` string, which
-        // hides the one case we must treat specially. `Subscription::delete`
-        // sends NO request body, so a (de)serialize error on THIS call is
-        // always the *response* — Stripe already accepted the DELETE and
-        // cancelled the sub, then returned an object async-stripe 0.39
-        // can't deserialize. Tolerate that as success; the
-        // `customer.subscription.deleted` webhook is the authoritative
-        // reconciler of member state. Surface only a genuine API error
-        // (a returned error status) or a transport error (network / timeout).
+        // hides the one case we must treat specially. See
+        // `classify_cancel_result` for the reasoning; the timeout is the
+        // only thing handled here.
         match tokio::time::timeout(STRIPE_TIMEOUT, Subscription::delete(&self.client, &sub_id))
             .await
         {
-            Ok(Ok(_)) => Ok(()),
-            Ok(Err(stripe::StripeError::JSONSerialize(_)))
-            | Ok(Err(stripe::StripeError::QueryStringSerialize(_))) => {
-                tracing::warn!(
-                    "Stripe cancel of {} was accepted but its response could not be \
-                     parsed; treating the cancel as successful — the \
-                     customer.subscription.deleted webhook will reconcile the \
-                     member's billing state.",
-                    subscription_id,
-                );
-                Ok(())
-            }
-            Ok(Err(e)) => Err(AppError::External(format!("Stripe cancel failed: {}", e))),
+            Ok(inner) => classify_cancel_result(inner, subscription_id),
             Err(_) => Err(AppError::External(format!(
                 "Stripe cancel timed out after {}s",
                 STRIPE_TIMEOUT.as_secs(),
@@ -652,5 +682,44 @@ impl StripeGateway for RealStripeGateway {
         Ok(RetrievedInvoice {
             payment_intent_id: invoice.payment_intent.map(|exp| exp.id().to_string()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A `serde_path_to_error::Error<serde_json::Error>` — the exact inner
+    // type of `StripeError::JSONSerialize` — produced by a real failed
+    // deserialize.
+    fn json_deserialize_error() -> stripe::StripeError {
+        let mut de = serde_json::Deserializer::from_str("\"not an int\"");
+        let inner = serde_path_to_error::deserialize::<_, i32>(&mut de).unwrap_err();
+        stripe::StripeError::JSONSerialize(inner)
+    }
+
+    #[test]
+    fn cancel_tolerates_unparseable_success_response() {
+        // Stripe accepted the DELETE but returned a body we can't parse:
+        // treat as a successful cancel (webhook reconciles state).
+        let out = classify_cancel_result::<stripe::Subscription>(Err(json_deserialize_error()), "sub_x");
+        assert!(out.is_ok(), "JSONSerialize must be tolerated as cancel success");
+    }
+
+    #[test]
+    fn cancel_surfaces_genuine_api_error() {
+        // A real API/transport error must NOT be swallowed — the caller
+        // has to know the cancel didn't happen.
+        let out = classify_cancel_result::<stripe::Subscription>(
+            Err(stripe::StripeError::Timeout),
+            "sub_x",
+        );
+        assert!(out.is_err(), "non-parse errors must propagate as failure");
+    }
+
+    #[test]
+    fn cancel_ok_is_success() {
+        let out = classify_cancel_result::<()>(Ok(()), "sub_x");
+        assert!(out.is_ok());
     }
 }
