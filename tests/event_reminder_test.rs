@@ -147,6 +147,7 @@ async fn build_with(email: Arc<FakeEmailSender>, event_start: DateTime<Utc>, sta
         visibility: EventVisibility::MembersOnly,
         start_time: event_start,
         end_time: Some(event_start + Duration::hours(2)),
+        timezone: "UTC".to_string(),
         location: Some("HQ".to_string()),
         max_attendees: None,
         rsvp_required: true,

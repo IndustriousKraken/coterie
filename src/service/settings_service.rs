@@ -10,6 +10,12 @@ use crate::{
     error::{AppError, Result},
 };
 
+/// Keys for organization-wide settings.
+pub mod org_keys {
+    /// IANA timezone name events are scheduled in (default `UTC`).
+    pub const TIMEZONE: &str = "org.timezone";
+}
+
 /// Keys used for email configuration. One source of truth so the
 /// settings table and handlers can't drift.
 pub mod email_keys {
@@ -291,6 +297,15 @@ impl SettingsService {
         request: UpdateSettingRequest,
         updated_by: Uuid,
     ) -> Result<AppSetting> {
+        // Validate zone-typed settings before touching the DB, so a bad
+        // value is rejected and the previous value is retained.
+        if key == org_keys::TIMEZONE && request.value.parse::<chrono_tz::Tz>().is_err() {
+            return Err(AppError::BadRequest(format!(
+                "'{}' is not a recognized IANA timezone name",
+                request.value
+            )));
+        }
+
         // Get the current setting first
         let current = self.get_setting(key).await?;
 
@@ -341,6 +356,17 @@ impl SettingsService {
     pub async fn get_value(&self, key: &str) -> Result<String> {
         let setting = self.get_setting(key).await?;
         Ok(setting.value)
+    }
+
+    /// The organization timezone as a parsed `Tz`, falling back to UTC
+    /// when unset or (defensively) unparseable. UTC reproduces the
+    /// pre-timezone behavior.
+    pub async fn org_timezone(&self) -> chrono_tz::Tz {
+        self.get_value(org_keys::TIMEZONE)
+            .await
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(chrono_tz::Tz::UTC)
     }
 
     pub async fn get_bool(&self, key: &str) -> Result<bool> {

@@ -17,6 +17,7 @@ use crate::{
     config::Settings,
     repository::EventRepository,
     service::event_admin_service::{CreateEventInput, EventAdminService, UpdateEventInput},
+    service::settings_service::SettingsService,
     web::portal::admin::partials,
     web::templates::{BaseContext, HtmlTemplate},
     web::uploads::save_uploaded_file,
@@ -373,6 +374,7 @@ pub async fn admin_new_event_page(
 
 pub async fn admin_create_event(
     State(settings): State<Arc<Settings>>,
+    State(settings_service): State<Arc<SettingsService>>,
     State(event_admin_service): State<Arc<EventAdminService>>,
     Extension(current_user): Extension<CurrentUser>,
     mut multipart: Multipart,
@@ -545,6 +547,11 @@ pub async fn admin_create_event(
         None
     };
 
+    // Freeze the event's zone from the current org setting. The naive
+    // form input is stored as-is (no conversion); the zone is what makes
+    // the public/iCal read path derive the correct instant.
+    let timezone = settings_service.org_timezone().await.name().to_string();
+
     let input = CreateEventInput {
         title,
         description,
@@ -553,6 +560,7 @@ pub async fn admin_create_event(
         visibility,
         start_time,
         end_time,
+        timezone,
         location: if location_str.is_empty() {
             None
         } else {

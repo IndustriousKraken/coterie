@@ -272,7 +272,10 @@ pub async fn list_events(
     // Get members-only events (will be sanitized)
     let private_events = event_repo.list_members_only().await?;
 
-    // Combine and filter to upcoming events only
+    // Combine, then replace each event's stored wall-clock with its
+    // derived UTC instant so the "upcoming" filter, the sort, and the
+    // JSON/iCal output all compare and emit true instants (not the
+    // naive wall-clock, which would be off by the org's offset).
     let now = Utc::now();
     let mut upcoming_events: Vec<Event> = public_events
         .into_iter()
@@ -285,8 +288,9 @@ pub async fn list_events(
             e.image_url = None;
             e
         }))
-        .filter(|e| e.start_time > now)
         .collect();
+    derive_utc_instants(&mut upcoming_events);
+    upcoming_events.retain(|e| e.start_time > now);
 
     // Sort by start time
     upcoming_events.sort_by(|a, b| a.start_time.cmp(&b.start_time));
@@ -373,11 +377,13 @@ pub async fn calendar_feed(State(event_repo): State<Arc<dyn EventRepository>>) -
     // Get members-only events (will be sanitized in feed)
     let private_events = event_repo.list_members_only().await?;
 
-    // Combine all events for the calendar
-    let all_events: Vec<_> = public_events
+    // Combine all events for the calendar, deriving the UTC instant for
+    // each from its (wall-clock, zone) before emitting.
+    let mut all_events: Vec<_> = public_events
         .into_iter()
         .chain(private_events.into_iter())
         .collect();
+    derive_utc_instants(&mut all_events);
 
     // Generate iCal format (private events will be sanitized)
     let ical = generate_ical_feed(&all_events);
@@ -468,6 +474,21 @@ fn escape_ical_text(s: &str) -> String {
         .replace(',', "\\,")
         .replace('\n', "\\n")
         .replace('\r', "")
+}
+
+/// Replace each event's stored wall-clock `start_time`/`end_time` with
+/// its derived UTC instant (from the event's IANA zone), in place. Once
+/// applied, downstream serialization — the `…Z` JSON timestamps and the
+/// iCal `DTSTART`/`DTEND` — emits correct instants without any further
+/// per-call conversion. Idempotent only if called once per read path;
+/// callers run it exactly once before filtering/sorting/serializing.
+fn derive_utc_instants(events: &mut [Event]) {
+    for e in events.iter_mut() {
+        let start = e.start_utc();
+        let end = e.end_utc();
+        e.start_time = start;
+        e.end_time = end;
+    }
 }
 
 // Helper function to generate iCal feed

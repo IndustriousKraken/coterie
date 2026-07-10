@@ -106,6 +106,7 @@ struct EventRow {
     visibility: String,
     start_time: NaiveDateTime,
     end_time: Option<NaiveDateTime>,
+    timezone: String,
     location: Option<String>,
     max_attendees: Option<i32>,
     rsvp_required: i32,
@@ -151,6 +152,7 @@ impl SqliteEventRepository {
             end_time: row
                 .end_time
                 .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
+            timezone: row.timezone,
             location: row.location,
             max_attendees: row.max_attendees,
             rsvp_required: row.rsvp_required != 0,
@@ -225,10 +227,10 @@ impl EventRepository for SqliteEventRepository {
             r#"
             INSERT INTO events (
                 id, title, description, event_type, event_type_id, visibility,
-                start_time, end_time, location, max_attendees, rsvp_required,
+                start_time, end_time, timezone, location, max_attendees, rsvp_required,
                 image_url, created_by, created_at, updated_at,
                 series_id, occurrence_index
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&id_str)
@@ -239,6 +241,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(visibility_str)
         .bind(start_time_naive)
         .bind(end_time_naive)
+        .bind(&event.timezone)
         .bind(&event.location)
         .bind(max_attendees_int)
         .bind(rsvp_required_int)
@@ -262,7 +265,7 @@ impl EventRepository for SqliteEventRepository {
         let row = sqlx::query_as::<_, EventRow>(
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
-                   start_time, end_time, location, max_attendees, rsvp_required,
+                   start_time, end_time, timezone, location, max_attendees, rsvp_required,
                    image_url, created_by, created_at, updated_at,
                    series_id, occurrence_index
             FROM events
@@ -284,7 +287,7 @@ impl EventRepository for SqliteEventRepository {
         let rows = sqlx::query_as::<_, EventRow>(
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
-                   start_time, end_time, location, max_attendees, rsvp_required,
+                   start_time, end_time, timezone, location, max_attendees, rsvp_required,
                    image_url, created_by, created_at, updated_at,
                    series_id, occurrence_index
             FROM events
@@ -307,7 +310,7 @@ impl EventRepository for SqliteEventRepository {
         let rows = sqlx::query_as::<_, EventRow>(
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
-                   start_time, end_time, location, max_attendees, rsvp_required,
+                   start_time, end_time, timezone, location, max_attendees, rsvp_required,
                    image_url, created_by, created_at, updated_at,
                    series_id, occurrence_index
             FROM events
@@ -331,7 +334,7 @@ impl EventRepository for SqliteEventRepository {
         let rows = sqlx::query_as::<_, EventRow>(
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
-                   start_time, end_time, location, max_attendees, rsvp_required,
+                   start_time, end_time, timezone, location, max_attendees, rsvp_required,
                    image_url, created_by, created_at, updated_at,
                    series_id, occurrence_index
             FROM events
@@ -353,7 +356,7 @@ impl EventRepository for SqliteEventRepository {
         let rows = sqlx::query_as::<_, EventRow>(
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
-                   start_time, end_time, location, max_attendees, rsvp_required,
+                   start_time, end_time, timezone, location, max_attendees, rsvp_required,
                    image_url, created_by, created_at, updated_at,
                    series_id, occurrence_index
             FROM events
@@ -559,7 +562,7 @@ impl EventRepository for SqliteEventRepository {
         let row = sqlx::query_as::<_, EventRow>(
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
-                   start_time, end_time, location, max_attendees, rsvp_required,
+                   start_time, end_time, timezone, location, max_attendees, rsvp_required,
                    image_url, created_by, created_at, updated_at,
                    series_id, occurrence_index
             FROM events

@@ -156,6 +156,9 @@ impl RecurringEventService {
                 visibility: template.visibility.clone(),
                 start_time: *start,
                 end_time: original_duration.map(|d| *start + d),
+                // Every occurrence keeps the series' zone, so wall-clock
+                // recurrence stays fixed-local across DST/rule changes.
+                timezone: template.timezone.clone(),
                 location: template.location.clone(),
                 max_attendees: template.max_attendees,
                 rsvp_required: template.rsvp_required,
@@ -555,6 +558,7 @@ mod tests {
             visibility: EventVisibility::MembersOnly,
             start_time: start,
             end_time: Some(start + Duration::hours(2)),
+            timezone: "UTC".to_string(),
             location: Some("HQ".to_string()),
             max_attendees: Some(20),
             rsvp_required: true,

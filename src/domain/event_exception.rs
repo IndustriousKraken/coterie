@@ -140,6 +140,7 @@ mod tests {
             visibility: EventVisibility::MembersOnly,
             start_time: Utc::now(),
             end_time: None,
+            timezone: "UTC".to_string(),
             location: Some("Room A".to_string()),
             max_attendees: Some(10),
             rsvp_required: false,

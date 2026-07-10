@@ -37,6 +37,9 @@ pub struct CreateEventInput {
     pub visibility: EventVisibility,
     pub start_time: DateTime<Utc>,
     pub end_time: Option<DateTime<Utc>>,
+    /// IANA zone the wall-clock `start_time`/`end_time` are in. Defaulted
+    /// from `org.timezone` by the handler and frozen on the row.
+    pub timezone: String,
     pub location: Option<String>,
     pub max_attendees: Option<i32>,
     pub rsvp_required: bool,
@@ -107,6 +110,7 @@ impl EventAdminService {
             visibility: input.visibility,
             start_time: input.start_time,
             end_time: input.end_time,
+            timezone: input.timezone,
             location: input.location,
             max_attendees: input.max_attendees,
             rsvp_required: input.rsvp_required,
@@ -198,6 +202,8 @@ impl EventAdminService {
             visibility: input.visibility,
             start_time: input.start_time,
             end_time: input.end_time,
+            // Zone is frozen at creation; an edit never re-zones the event.
+            timezone: existing.timezone,
             location: input.location,
             max_attendees: input.max_attendees,
             rsvp_required: input.rsvp_required,
@@ -248,6 +254,9 @@ impl EventAdminService {
             visibility: input.visibility,
             start_time: from,
             end_time: input.end_time,
+            // Placeholder: update_series_occurrences_from does not write
+            // the zone (it's frozen per occurrence), so this is unused.
+            timezone: String::new(),
             location: input.location,
             max_attendees: input.max_attendees,
             rsvp_required: input.rsvp_required,
@@ -633,6 +642,7 @@ impl EventAdminService {
             visibility: prototype.visibility.clone(),
             start_time: template_start,
             end_time: duration.map(|d| template_start + d),
+            timezone: existing.timezone.clone(),
             location: prototype.location.clone(),
             max_attendees: prototype.max_attendees,
             rsvp_required: prototype.rsvp_required,
