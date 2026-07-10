@@ -54,6 +54,7 @@ fn charge(
     ChargeSummary {
         id: id.to_string(),
         amount_cents: cents,
+        amount_refunded_cents: 0,
         currency: "usd".to_string(),
         created,
         description: Some("Membership dues".to_string()),
@@ -62,6 +63,12 @@ fn charge(
         status: status.to_string(),
         metadata: HashMap::new(),
     }
+}
+
+/// Mark a charge as partially/fully refunded (net = amount - refunded).
+fn with_refund(mut c: ChargeSummary, refunded_cents: i64) -> ChargeSummary {
+    c.amount_refunded_cents = refunded_cents;
+    c
 }
 
 fn card(pm: &str, fingerprint: Option<&str>) -> PaymentMethodSummary {
@@ -141,7 +148,17 @@ async fn backfill_imports_charges_once() {
             Some("pi_2"),
             "succeeded",
         ),
-        charge("ch_x", 9999, mid_year(2024), None, None, "failed"),
+        // Failed charge WITH keyable ids: the status filter is the only
+        // thing that can exclude it, so this actually exercises the filter
+        // (not the "no id to key on" skip).
+        charge(
+            "ch_x",
+            9999,
+            mid_year(2024),
+            Some("in_x"),
+            Some("pi_x"),
+            "failed",
+        ),
     ]);
     let s1 = svc.backfill_all(actor).await.expect("run 1");
     assert_eq!(s1.payments_imported, 2, "two settled charges imported");
@@ -197,6 +214,15 @@ async fn backfill_imports_charges_once() {
         "one import_payment audit row per created payment"
     );
     assert_eq!(batches, 2, "one import_payments_batch aggregate per run");
+
+    // The backfill records settled history only — it must never extend
+    // dues. The member's dues_paid_until stays exactly as it was.
+    let member_repo = SqliteMemberRepository::new(pool.clone());
+    let m = member_repo.find_by_id(member_id).await.unwrap().unwrap();
+    assert!(
+        m.dues_paid_until.is_none(),
+        "backfill must not extend member dues"
+    );
 }
 
 // --- 6.2 card de-dup + default-from-Stripe ---------------------------
@@ -293,9 +319,11 @@ async fn annual_statement_total_matches_imported_payments() {
     let payments = payment_repo.find_by_member(member_id).await.unwrap();
 
     // The statement total for 2023 is exactly the sum of the 2023 dues.
-    assert_eq!(annual_dues_cents(&payments, 2023), 10_000);
-    assert_eq!(annual_dues_cents(&payments, 2024), 5_500);
-    assert_eq!(annual_dues_cents(&payments, 2022), 0);
+    // Fixtures are noon-UTC mid-year, so the year bucket is tz-insensitive.
+    let tz = chrono_tz::Tz::UTC;
+    assert_eq!(annual_dues_cents(&payments, 2023, tz), 10_000);
+    assert_eq!(annual_dues_cents(&payments, 2024, tz), 5_500);
+    assert_eq!(annual_dues_cents(&payments, 2022, tz), 0);
 }
 
 // --- 6.4 receipt email gating ----------------------------------------
@@ -397,4 +425,119 @@ async fn receipt_email_gated_on_configured_provider() {
         messages[0].text_body.contains("$50.00"),
         "receipt body shows the amount"
     );
+}
+
+// --- refund netting --------------------------------------------------
+
+#[tokio::test]
+async fn backfill_books_net_of_refund_and_skips_fully_refunded() {
+    let pool = fresh_pool().await;
+    let member_id = member_with_customer(&pool, "cus_refund").await;
+    let actor = make_member(&pool).await;
+    let fake = Arc::new(FakeStripeGateway::new());
+    let svc = build_service(&pool, fake.clone());
+
+    fake.next_charges(vec![
+        // Partially refunded: paid 5000, refunded 2000 -> books net 3000.
+        with_refund(
+            charge("ch_p", 5000, mid_year(2023), Some("in_p"), None, "succeeded"),
+            2000,
+        ),
+        // Fully refunded: nets to 0 -> not a payment, skipped.
+        with_refund(
+            charge("ch_f", 4000, mid_year(2023), Some("in_f"), None, "succeeded"),
+            4000,
+        ),
+    ]);
+    let s = svc.backfill_all(actor).await.expect("import");
+    assert_eq!(s.payments_imported, 1, "only the partially-refunded charge books");
+    assert_eq!(s.payments_skipped, 1, "fully-refunded charge skipped");
+
+    let payment_repo: Arc<dyn PaymentRepository> =
+        Arc::new(SqlitePaymentRepository::new(pool.clone()));
+    let payments = payment_repo.find_by_member(member_id).await.unwrap();
+    assert_eq!(payments.len(), 1);
+    assert_eq!(payments[0].amount_cents, 3000, "booked NET of the refund");
+    assert_eq!(
+        annual_dues_cents(&payments, 2023, chrono_tz::Tz::UTC),
+        3000,
+        "statement total reflects net paid, not gross"
+    );
+}
+
+// --- cross-path idempotency (dedup vs live-recorded payments) ---------
+
+#[tokio::test]
+async fn backfill_dedups_against_live_recorded_payment() {
+    let pool = fresh_pool().await;
+    let member_id = member_with_customer(&pool, "cus_live").await;
+    let actor = make_member(&pool).await;
+    let payment_repo: Arc<dyn PaymentRepository> =
+        Arc::new(SqlitePaymentRepository::new(pool.clone()));
+
+    // The live subscription-invoice webhook already recorded this payment,
+    // keyed on invoice id `in_live`.
+    let now = chrono::Utc::now();
+    payment_repo
+        .create(Payment {
+            id: Uuid::new_v4(),
+            payer: Payer::Member(member_id),
+            amount_cents: 5000,
+            currency: "usd".to_string(),
+            status: PaymentStatus::Completed,
+            payment_method: PaymentMethod::Stripe,
+            kind: PaymentKind::Membership,
+            external_id: Some(StripeRef::Invoice("in_live".to_string())),
+            description: "Live subscription payment".to_string(),
+            paid_at: Some(now),
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .unwrap();
+
+    let fake = Arc::new(FakeStripeGateway::new());
+    let svc = build_service(&pool, fake.clone());
+    // The same invoice surfaces in the historical charge list.
+    fake.next_charges(vec![charge(
+        "ch_live",
+        5000,
+        mid_year(2024),
+        Some("in_live"),
+        Some("pi_live"),
+        "succeeded",
+    )]);
+    let s = svc.backfill_all(actor).await.expect("import");
+    assert_eq!(s.payments_imported, 0, "already recorded by the live path");
+    assert_eq!(s.payments_skipped, 1);
+
+    let payments = payment_repo.find_by_member(member_id).await.unwrap();
+    assert_eq!(payments.len(), 1, "no duplicate of the live-recorded payment");
+}
+
+// --- intra-run card fingerprint de-dup -------------------------------
+
+#[tokio::test]
+async fn backfill_dedups_cards_within_a_single_run() {
+    let pool = fresh_pool().await;
+    let member_id = member_with_customer(&pool, "cus_intra").await;
+    let actor = make_member(&pool).await;
+    let fake = Arc::new(FakeStripeGateway::new());
+    let svc = build_service(&pool, fake.clone());
+
+    fake.next_charges(vec![]);
+    // Two distinct pm ids sharing ONE fingerprint (same physical card
+    // re-attached to the customer) — only one card row should land.
+    fake.next_payment_methods(vec![
+        card("pm_a", Some("fp_same")),
+        card("pm_b", Some("fp_same")),
+    ]);
+    let s = svc.backfill_all(actor).await.expect("import");
+    assert_eq!(s.cards_imported, 1, "shared fingerprint imported once");
+    assert_eq!(s.cards_skipped, 1);
+
+    let card_repo: Arc<dyn SavedCardRepository> =
+        Arc::new(SqliteSavedCardRepository::new(pool.clone()));
+    let all = card_repo.find_by_member(member_id).await.unwrap();
+    assert_eq!(all.len(), 1, "one physical card, one row");
 }
