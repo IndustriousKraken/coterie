@@ -18,6 +18,34 @@
     <!-- Alpine.js CSP build (no `Function()` so works without 'unsafe-eval'). -->
     <script nonce="__CSP_NONCE__" defer src="/static/js/alpine.min.js"></script>
 
+    <!-- Alpine components. The CSP build forbids inline expressions
+         (object literals, assignments, comparisons) in x-data/@click/etc.,
+         so every component is registered here and templates reference only
+         property getters and no-arg methods. Runs during parse, before the
+         deferred Alpine boots, so the alpine:init listener is in place. -->
+    <script nonce="__CSP_NONCE__">
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('dropdown', () => ({
+                open: false,
+                toggle() { this.open = !this.open; },
+                close() { this.open = false; },
+                get chevron() { return this.open ? 'rotate-180' : ''; },
+            }));
+            Alpine.data('emailMode', (initial) => ({
+                mode: initial,
+                get isSmtp() { return this.mode === 'smtp'; },
+            }));
+            Alpine.data('recurrence', () => ({
+                kind: 'none',
+                get notNone() { return this.kind !== 'none'; },
+                get isWeekly() { return this.kind === 'weekly'; },
+                get notWeekly() { return this.kind !== 'weekly'; },
+                get isMonthlyDom() { return this.kind === 'monthly_dom'; },
+                get isMonthlyWeekday() { return this.kind === 'monthly_weekday'; },
+            }));
+        });
+    </script>
+
     <!-- Tailwind CSS (locally built) -->
     <link rel="stylesheet" href="/static/style.css">
 

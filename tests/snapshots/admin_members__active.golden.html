@@ -18,6 +18,34 @@
     <!-- Alpine.js CSP build (no `Function()` so works without 'unsafe-eval'). -->
     <script nonce="__CSP_NONCE__" defer src="/static/js/alpine.min.js"></script>
 
+    <!-- Alpine components. The CSP build forbids inline expressions
+         (object literals, assignments, comparisons) in x-data/@click/etc.,
+         so every component is registered here and templates reference only
+         property getters and no-arg methods. Runs during parse, before the
+         deferred Alpine boots, so the alpine:init listener is in place. -->
+    <script nonce="__CSP_NONCE__">
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('dropdown', () => ({
+                open: false,
+                toggle() { this.open = !this.open; },
+                close() { this.open = false; },
+                get chevron() { return this.open ? 'rotate-180' : ''; },
+            }));
+            Alpine.data('emailMode', (initial) => ({
+                mode: initial,
+                get isSmtp() { return this.mode === 'smtp'; },
+            }));
+            Alpine.data('recurrence', () => ({
+                kind: 'none',
+                get notNone() { return this.kind !== 'none'; },
+                get isWeekly() { return this.kind === 'weekly'; },
+                get notWeekly() { return this.kind !== 'weekly'; },
+                get isMonthlyDom() { return this.kind === 'monthly_dom'; },
+                get isMonthlyWeekday() { return this.kind === 'monthly_weekday'; },
+            }));
+        });
+    </script>
+
     <!-- Tailwind CSS (locally built) -->
     <link rel="stylesheet" href="/static/style.css">
 
@@ -232,8 +260,8 @@
                         
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                        <div x-data="{ open: false }" class="relative inline-block text-left">
-                            <button @click="open = !open"
+                        <div x-data="dropdown" class="relative inline-block text-left">
+                            <button @click="toggle()"
                                     type="button"
                                     class="text-gray-400 hover:text-gray-600">
                                 <svg class="h-5 w-5" fill="currentColor" viewBox="0 0 20 20">
@@ -241,7 +269,7 @@
                                 </svg>
                             </button>
                             <div x-show="open"
-                                 @click.away="open = false"
+                                 @click.away="close()"
                                  x-transition
                                  class="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-10">
                                 <div class="py-1">
