@@ -1,5 +1,5 @@
 use chrono::{DateTime, Duration, LocalResult, NaiveDateTime, TimeZone, Utc};
-use chrono_tz::Tz;
+use chrono_tz::{OffsetName, Tz};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -55,6 +55,19 @@ impl Event {
     /// later change to the zone's rules is picked up automatically.
     pub fn start_utc(&self) -> DateTime<Utc> {
         wall_clock_to_utc(self.start_time.naive_utc(), self.tz())
+    }
+
+    /// The event's zone abbreviation at its wall-clock (e.g. `EDT` /
+    /// `EST` / `UTC`), for labeling member-facing times so a remote
+    /// viewer isn't misled about which local time the event is in.
+    /// Mirrors the reminder-email rendering.
+    pub fn zone_abbr(&self) -> String {
+        self.start_utc()
+            .with_timezone(&self.tz())
+            .offset()
+            .abbreviation()
+            .unwrap_or("UTC")
+            .to_string()
     }
 
     /// UTC instant for the end time, if any. See [`Event::start_utc`].
@@ -189,6 +202,22 @@ mod tz_tests {
             series_id: None,
             occurrence_index: None,
         }
+    }
+
+    // zone_abbr labels the wall-clock with the event's real zone (EDT
+    // in July, EST in January), so member-facing renderers don't
+    // mislabel a New York event as "UTC".
+    #[test]
+    fn zone_abbr_reflects_dst_and_zone() {
+        assert_eq!(
+            event_at(wall(2026, 7, 23, 19, 0), "America/New_York").zone_abbr(),
+            "EDT"
+        );
+        assert_eq!(
+            event_at(wall(2026, 1, 23, 19, 0), "America/New_York").zone_abbr(),
+            "EST"
+        );
+        assert_eq!(event_at(wall(2026, 7, 23, 19, 0), "UTC").zone_abbr(), "UTC");
     }
 
     // 7.1 derivation: 7 PM Eastern in July (EDT, UTC-4) → 23:00Z.

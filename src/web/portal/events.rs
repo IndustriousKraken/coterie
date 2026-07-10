@@ -82,6 +82,10 @@ pub async fn events_list_api(
 
     for event in filtered_events {
         let is_past = event.start_time < now;
+        // Label the wall-clock with the event's zone so a remote member
+        // knows which local time it is (server-rendered — no browser
+        // conversion like the public JSON/iCal path gets).
+        let tz_abbr = event.zone_abbr();
         let type_badge_color = match format!("{:?}", event.event_type).as_str() {
             "Meeting" => "bg-blue-100 text-blue-800",
             "Workshop" => "bg-purple-100 text-purple-800",
@@ -142,7 +146,7 @@ pub async fn events_list_api(
             crate::web::escape_html(&event.title),
             crate::web::escape_html(&event.description),
             event.start_time.format("%B %d, %Y"),
-            event.start_time.format("%l:%M %p"),
+            format!("{} {}", event.start_time.format("%l:%M %p"), tz_abbr),
             event
                 .location
                 .map(|l| format!(r#"<p>Location: {}</p>"#, crate::web::escape_html(&l)))
