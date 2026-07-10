@@ -85,16 +85,24 @@ statement and an admin SHALL be able to pull it for any member.
 
 ### Requirement: A receipt is emailed on each new charge when email is configured
 
-The system SHALL email the member a receipt when a payment is recorded — a
+The system SHALL email the member a receipt when a live (non-backfill) payment is recorded — a
 subscription invoice arriving by webhook, or a Coterie-initiated charge —
 provided an email provider is configured. When no email provider is
 configured the send SHALL be skipped silently, the receipt SHALL remain
 viewable in the portal, and the payment SHALL NOT fail on account of email.
+The one-time Stripe payment-history backfill SHALL NOT trigger receipt emails; it imports already-settled
+historical charges and only persists the payment row and its
+`import_payment`/`import_payments_batch` audit rows.
 
 #### Scenario: Receipt email is sent when email is configured
 
-- **WHEN** a payment is recorded and an email provider is configured
+- **WHEN** a live (non-backfill) payment is recorded and an email provider is configured
 - **THEN** a receipt email SHALL be sent to the member
+
+#### Scenario: The payment-history backfill does not send receipts
+
+- **WHEN** the one-time Stripe payment-history backfill imports a settled historical charge and an email provider is configured
+- **THEN** no receipt email SHALL be sent; the payment row and its `import_payment`/`import_payments_batch` audit rows SHALL be persisted without dispatching notifications
 
 #### Scenario: Payment still succeeds when email is unconfigured
 
