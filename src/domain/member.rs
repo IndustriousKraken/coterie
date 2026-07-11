@@ -194,4 +194,8 @@ pub struct UpdateMemberRequest {
     pub expires_at: Option<DateTime<Utc>>,
     pub bypass_dues: Option<bool>,
     pub notes: Option<String>,
+    /// Desired admin flag. Handled by `MemberService::update` (guarded
+    /// set_admin + dedicated audit trail) — the generic repository
+    /// `update` does not write this field.
+    pub is_admin: Option<bool>,
 }

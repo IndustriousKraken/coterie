@@ -95,6 +95,7 @@ fn admin_member_detail_info(status: MemberStatus) -> AdminMemberDetailInfo {
         dues_paid_until: Some(fixture_dues()),
         dues_expired: false,
         bypass_dues: false,
+        is_admin: false,
         email_verified: true,
         notes: String::new(),
         billing_mode: "manual".to_string(),

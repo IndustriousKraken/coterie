@@ -42,6 +42,7 @@ pub struct AdminMemberDetailInfo {
     pub dues_paid_until: Option<chrono::DateTime<chrono::Utc>>,
     pub dues_expired: bool,
     pub bypass_dues: bool,
+    pub is_admin: bool,
     pub email_verified: bool,
     pub notes: String,
     pub billing_mode: String,
@@ -139,6 +140,7 @@ pub async fn admin_member_detail_page(
         dues_paid_until: member.dues_paid_until,
         dues_expired,
         bypass_dues: member.bypass_dues,
+        is_admin: member.is_admin,
         email_verified,
         notes: member.notes.unwrap_or_default(),
         billing_mode: member.billing_mode.as_str().to_string(),
@@ -168,6 +170,7 @@ pub struct AdminUpdateMemberForm {
     pub membership_type_id: String,
     pub notes: Option<String>,
     pub bypass_dues: Option<String>,
+    pub is_admin: Option<String>,
     #[allow(dead_code)]
     pub csrf_token: String,
 }
@@ -195,6 +198,7 @@ pub async fn admin_update_member(
         membership_type_id: Some(membership_type_id),
         notes: Some(form.notes.unwrap_or_default()),
         bypass_dues: Some(form.bypass_dues.is_some()),
+        is_admin: Some(form.is_admin.is_some()),
         ..Default::default()
     };
 

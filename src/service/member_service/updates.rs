@@ -32,6 +32,40 @@ impl MemberService {
     ) -> Result<Member> {
         let old_member = self.member_repo.find_by_id(member_id).await.ok().flatten();
 
+        // Admin flag: handled here (not in the generic repo update) so
+        // the guard and its dedicated audit trail can't be bypassed.
+        // Runs BEFORE the generic update so the MemberUpdated event
+        // payload below carries the new flag.
+        if let (Some(want_admin), Some(old)) = (request.is_admin, old_member.as_ref()) {
+            if old.is_admin != want_admin {
+                if !want_admin && self.member_repo.count_admins().await? <= 1 {
+                    // Zero admins = every operator locked out AND the
+                    // unauthenticated /setup page re-arms on restart.
+                    return Err(AppError::BadRequest(
+                        "Cannot revoke the last administrator. Grant another member \
+                         admin access first."
+                            .to_string(),
+                    ));
+                }
+                self.member_repo.set_admin(member_id, want_admin).await?;
+                self.audit_service
+                    .log(
+                        Some(actor_id),
+                        if want_admin {
+                            "grant_admin"
+                        } else {
+                            "revoke_admin"
+                        },
+                        "member",
+                        &member_id.to_string(),
+                        Some(if want_admin { "false" } else { "true" }),
+                        Some(if want_admin { "true" } else { "false" }),
+                        None,
+                    )
+                    .await;
+            }
+        }
+
         let new_member = self.member_repo.update(member_id, request).await?;
 
         self.audit_service
@@ -226,6 +260,124 @@ mod tests {
         assert_eq!(result.full_name, "Renamed");
         assert_eq!(result.notes.as_deref(), Some("hello"));
         assert_eq!(audit_count(&pool, "update_member", &target.id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn grant_admin_via_update_sets_flag_and_audits() {
+        let pool = fresh_pool().await;
+        let svc = make_service(pool.clone());
+        let actor = make_member(&pool, "admin@example.com", "admin").await;
+        let target = make_member(&pool, "tgt@example.com", "target").await;
+
+        let result = svc
+            .update(
+                actor.id,
+                target.id,
+                UpdateMemberRequest {
+                    full_name: Some(target.full_name.clone()),
+                    is_admin: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_admin, "flag must be set");
+        assert_eq!(audit_count(&pool, "grant_admin", &target.id).await, 1);
+        assert_eq!(audit_count(&pool, "revoke_admin", &target.id).await, 0);
+    }
+
+    #[tokio::test]
+    async fn revoke_admin_guards_the_last_administrator() {
+        let pool = fresh_pool().await;
+        let svc = make_service(pool.clone());
+        let repo = SqliteMemberRepository::new(pool.clone());
+        let actor = make_member(&pool, "admin@example.com", "admin").await;
+        let second = make_member(&pool, "two@example.com", "two").await;
+        repo.set_admin(actor.id, true).await.unwrap();
+
+        // actor is the ONLY admin: revoking them must be rejected.
+        let err = svc
+            .update(
+                actor.id,
+                actor.id,
+                UpdateMemberRequest {
+                    is_admin: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(matches!(err, Err(AppError::BadRequest(_))));
+        let still = repo.find_by_id(actor.id).await.unwrap().unwrap();
+        assert!(still.is_admin, "last admin must keep the flag");
+
+        // With a second admin, revoking succeeds and audits.
+        repo.set_admin(second.id, true).await.unwrap();
+        let revoked = svc
+            .update(
+                actor.id,
+                second.id,
+                UpdateMemberRequest {
+                    is_admin: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!revoked.is_admin);
+        assert_eq!(audit_count(&pool, "revoke_admin", &second.id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn notes_text_never_grants_admin() {
+        let pool = fresh_pool().await;
+        let svc = make_service(pool.clone());
+        let actor = make_member(&pool, "admin@example.com", "admin").await;
+        let target = make_member(&pool, "tgt@example.com", "target").await;
+
+        // The historical hint claimed putting "ADMIN" in notes grants
+        // privileges. It never did, and must never start to.
+        let result = svc
+            .update(
+                actor.id,
+                target.id,
+                UpdateMemberRequest {
+                    notes: Some("ADMIN".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_admin, "notes text must not affect adminness");
+        assert_eq!(audit_count(&pool, "grant_admin", &target.id).await, 0);
+    }
+
+    #[tokio::test]
+    async fn unchanged_admin_flag_writes_no_admin_audit() {
+        let pool = fresh_pool().await;
+        let svc = make_service(pool.clone());
+        let repo = SqliteMemberRepository::new(pool.clone());
+        let actor = make_member(&pool, "admin@example.com", "admin").await;
+        let target = make_member(&pool, "tgt@example.com", "target").await;
+        repo.set_admin(target.id, true).await.unwrap();
+
+        svc.update(
+            actor.id,
+            target.id,
+            UpdateMemberRequest {
+                is_admin: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            audit_count(&pool, "grant_admin", &target.id).await,
+            0,
+            "no-op flag must not audit"
+        );
     }
 
     #[tokio::test]

@@ -76,6 +76,10 @@ pub trait MemberRepository: Send + Sync {
     async fn list_with_discord_id(&self) -> Result<Vec<Member>>;
     async fn update(&self, id: Uuid, update: UpdateMemberRequest) -> Result<Member>;
     async fn set_admin(&self, id: Uuid, is_admin: bool) -> Result<Member>;
+    /// Number of members with the admin flag set. Used by the
+    /// last-admin guard: a zero-admin database locks operators out AND
+    /// re-arms the unauthenticated /setup page on restart.
+    async fn count_admins(&self) -> Result<i64>;
     async fn mark_email_verified(&self, id: Uuid) -> Result<()>;
     async fn update_password_hash(&self, id: Uuid, password_hash: &str) -> Result<()>;
     /// Set or clear the member's Discord snowflake ID. `None` clears it.
@@ -483,6 +487,13 @@ impl MemberRepository for SqliteMemberRepository {
         self.find_by_id(id)
             .await?
             .ok_or_else(|| AppError::NotFound("Member not found".to_string()))
+    }
+
+    async fn count_admins(&self) -> Result<i64> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM members WHERE is_admin = 1")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(AppError::Database)
     }
 
     async fn mark_email_verified(&self, id: Uuid) -> Result<()> {
