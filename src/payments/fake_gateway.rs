@@ -276,6 +276,8 @@ impl StripeGateway for FakeStripeGateway {
         }
         Ok(RetrievedCheckoutSession {
             payment_intent_id: None,
+            is_open: false,
+            url: None,
         })
     }
 

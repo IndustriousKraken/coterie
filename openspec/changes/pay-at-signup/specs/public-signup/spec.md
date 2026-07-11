@@ -98,14 +98,38 @@ A completed membership payment for a member with status `Pending` SHALL transiti
 
 ### Requirement: Abandoned signup checkout is retryable
 
-In payment mode, when a signup request supplies the email of an existing `Pending` member who has no completed membership payment AND the supplied password verifies against that member's password hash, the handler SHALL return a fresh checkout session for that member instead of a duplicate-email error. When the password does not verify, or the member has a completed payment or a non-Pending status, the outcome SHALL be exactly the pre-existing duplicate handling, so the retry path discloses nothing beyond what duplicate detection already does.
+In payment mode, when a signup request supplies the email of an existing `Pending` member who has no completed membership payment AND the supplied password verifies against that member's password hash, the handler SHALL return a checkout session for that member instead of a duplicate-email error. When the member's most recent pending checkout session is still open on Stripe, the handler SHALL return THAT session's URL rather than creating a new one — a retry does not accumulate duplicate pending payment rows or leave multiple payable sessions open. When the previous session is no longer open (expired or unretrievable), its Pending payment row SHALL be marked Failed before a fresh session is created. When the password does not verify, or the member has a completed payment or a non-Pending status, the outcome SHALL be exactly the pre-existing duplicate handling, so the retry path discloses nothing beyond what duplicate detection already does.
 
-#### Scenario: Correct password retries the checkout
+#### Scenario: Correct password resumes the open checkout
 
-- **WHEN** a payment-mode signup repeats an email belonging to a Pending member with no completed payment and the password verifies
-- **THEN** the response SHALL include a fresh checkout URL and no second member SHALL be created
+- **WHEN** a payment-mode signup repeats an email belonging to a Pending member with no completed payment, the password verifies, and the member's previous checkout session is still open
+- **THEN** the response SHALL carry the existing session's URL, no second member SHALL be created, and no additional pending payment row SHALL be written
+
+#### Scenario: Expired previous session is superseded, not orphaned
+
+- **WHEN** the same retry arrives but the previous checkout session is no longer open
+- **THEN** the previous session's Pending payment row SHALL be marked Failed and the response SHALL carry a fresh checkout session's URL
 
 #### Scenario: Wrong password gets the duplicate outcome
 
 - **WHEN** the same repeat arrives with a password that does not verify
 - **THEN** the handler SHALL respond exactly as it does for any duplicate email today, and no checkout session SHALL be created
+
+### Requirement: Paid signups enroll in auto-renew by default
+
+The organization SHALL have a `membership.signup_auto_renew` boolean setting (default `true`), consulted at signup-checkout creation in payment mode. When enabled, the signup checkout session SHALL be created against a Stripe customer for the member with the card saved for off-session use, and — upon the completed payment — the member SHALL be enrolled in auto-renew: the paying card stored as a saved card (de-duplicated by card fingerprint, becoming the default when the member has none), the Stripe customer recorded on the member, billing mode set to Coterie-managed, and the next renewal scheduled from the newly extended dues date. Enrollment failures SHALL NOT fail the payment or the webhook — the member stays Active with dues extended, and the failure is logged. When the setting is disabled, signup payment behaves as a one-off charge: no customer requirement, no card saved, billing mode untouched.
+
+#### Scenario: Signup payment enrolls the member in auto-renew
+
+- **WHEN** `membership.signup_auto_renew` is enabled and a payment-mode signup's checkout completes
+- **THEN** the member SHALL have the paying card saved (default if they had none), billing mode `coterie_managed`, and a pending scheduled payment due at their new `dues_paid_until`
+
+#### Scenario: Setting disabled keeps one-off semantics
+
+- **WHEN** `membership.signup_auto_renew` is disabled and a payment-mode signup's checkout completes
+- **THEN** no card SHALL be saved and the member's billing mode SHALL remain `manual`
+
+#### Scenario: Enrollment failure does not fail the payment
+
+- **WHEN** the post-payment enrollment step errors (e.g. the card listing fails)
+- **THEN** the member SHALL still be Active with dues extended, the webhook SHALL succeed, and the failure SHALL be logged

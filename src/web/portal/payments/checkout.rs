@@ -78,6 +78,10 @@ pub async fn checkout_api(
             amount_cents,
             format!("{}/portal/payments/success", settings.server.base_url),
             format!("{}/portal/payments/cancel", settings.server.base_url),
+            // Portal one-off checkout: no customer binding, no card
+            // saving — members manage cards on the payment-methods page.
+            None,
+            false,
         )
         .await?;
 

@@ -54,3 +54,39 @@
 - [x] 4.6 Retry: duplicate email + correct password + no completed payment
   → fresh checkout URL; duplicate email + wrong password → duplicate error;
   duplicate email + completed payment → duplicate error.
+
+## 5. Retry reuses the open session (no duplicate pending rows)
+
+- [x] 5.1 Extend `RetrievedCheckoutSession` with `is_open` + `url`
+  (real gateway maps Stripe's session status/url; fake gateway defaults
+  updated).
+- [x] 5.2 Retry path: retrieve the member's most recent pending
+  checkout session; if open, return its URL (no new session, no new
+  payment row); otherwise `fail_pending_payment` the stale row and mint
+  a fresh session.
+- [x] 5.3 Tests: open-session reuse returns the same URL with no new
+  payment row; non-open session marks the old row Failed and mints new.
+
+## 6. Auto-renew enrollment by default
+
+- [x] 6.1 Migration: seed `membership.signup_auto_renew` = `true`
+  (boolean, membership category) + `signup_auto_renew()` accessor.
+- [x] 6.2 `CreateCheckoutInput` gains `customer_id` +
+  `save_card_for_offsession` (real gateway sets `customer` and
+  `payment_intent_data.setup_future_usage=off_session`);
+  `create_membership_checkout_session` takes customer/save-card params
+  and stamps `save_card=true` metadata (portal call site unchanged:
+  None/false).
+- [x] 6.3 Signup handler: when the setting is on,
+  `get_or_create_customer` for the new member and create the session
+  with customer + save-card.
+- [x] 6.4 `AutoRenew::enroll_after_signup_payment(member, slug,
+  customer)`: list the customer's payment methods, save unseen cards
+  (fingerprint-deduped, default when none), then `enable_auto_renew`.
+  Called from the checkout-completed webhook when the session metadata
+  carries `save_card=true`; soft-fails (logged, never fails the
+  webhook).
+- [x] 6.5 Tests: session creation carries customer + metadata when the
+  setting is on and not when off; webhook completion enrolls (saved
+  card + coterie_managed + scheduled payment); enrollment failure
+  leaves the member Active and the webhook Ok.

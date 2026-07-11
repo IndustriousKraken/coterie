@@ -241,6 +241,8 @@ async fn refund_payment_with_cs_id_resolves_to_pi_first() {
     // Queue the cs→pi resolution first, then the refund response.
     fake.next_retrieve_checkout_session(RetrievedCheckoutSession {
         payment_intent_id: Some("pi_from_session".to_string()),
+        is_open: false,
+        url: None,
     });
     fake.next_refund(RefundOutput {
         id: "re_known".to_string(),
@@ -319,6 +321,8 @@ async fn refund_payment_when_session_has_no_intent_returns_error() {
     // handler should refuse rather than passing None to the API.
     fake.next_retrieve_checkout_session(RetrievedCheckoutSession {
         payment_intent_id: None,
+        is_open: false,
+        url: None,
     });
 
     let err = client

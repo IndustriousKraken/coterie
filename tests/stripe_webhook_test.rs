@@ -129,6 +129,16 @@ async fn build_harness() -> Harness {
 
     let gw: Arc<dyn StripeGateway> = fake.clone();
     let client = StripeClient::with_gateway(gw.clone(), payment_repo.clone(), member_repo.clone());
+    // Fake-backed handle for the billing service: the signup auto-renew
+    // enrollment path lists the customer's payment methods through it.
+    let billing_stripe_handle = Arc::new(coterie::payments::StripeHandle::preloaded(
+        Some(Arc::new(StripeClient::with_gateway(
+            gw.clone(),
+            payment_repo.clone(),
+            member_repo.clone(),
+        ))),
+        None,
+    ));
     let processed_events_repo: Arc<dyn coterie::repository::ProcessedEventsRepository> = Arc::new(
         coterie::repository::SqliteProcessedEventsRepository::new(pool.clone()),
     );
@@ -152,8 +162,7 @@ async fn build_harness() -> Harness {
         settings,
         email_sender,
         integrations,
-        // none of these tests invoke billing paths that need Stripe
-        Arc::new(coterie::payments::StripeHandle::preloaded(None, None)),
+        billing_stripe_handle,
         "http://localhost:3000".to_string(),
         pool.clone(),
     );
@@ -1651,4 +1660,154 @@ async fn subscription_updated_for_unknown_customer_is_noop() {
         Some("sub_kept"),
         "known member's subscription id must not be mutated for an unrelated customer",
     );
+}
+
+// ---------------------------------------------------------------------
+// pay-at-signup: save_card sessions enroll the member in auto-renew
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn save_card_checkout_completion_enrolls_auto_renew() {
+    let h = build_harness().await;
+    let member_id = insert_member(&h.pool, Some("cus_enroll"), BillingMode::Manual).await;
+    let payment_id = Uuid::new_v4();
+    let session_id = "cs_enroll";
+
+    insert_pending_payment(
+        &h.pool,
+        Payment {
+            id: payment_id,
+            payer: Payer::Member(member_id),
+            amount_cents: 45_00,
+            currency: "USD".to_string(),
+            status: PaymentStatus::Pending,
+            payment_method: PaymentMethod::Stripe,
+            external_id: Some(StripeRef::CheckoutSession(session_id.to_string())),
+            description: "Member Membership Payment".to_string(),
+            kind: PaymentKind::Membership,
+            paid_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        },
+    )
+    .await;
+
+    // The card Stripe attached to the customer via setup_future_usage.
+    h.fake
+        .next_payment_methods(vec![coterie::payments::gateway::PaymentMethodSummary {
+            id: "pm_signup".to_string(),
+            brand: "visa".to_string(),
+            last4: "4242".to_string(),
+            exp_month: 12,
+            exp_year: 2030,
+            fingerprint: Some("fp_signup".to_string()),
+        }]);
+
+    let mut session = build_checkout_session(
+        session_id,
+        Some("pi_enroll"),
+        json!({
+            "payment_type": "membership",
+            "member_id": member_id.to_string(),
+            "membership_type_slug": "member",
+            "save_card": "true",
+        }),
+    );
+    session.customer = Some(stripe::Expandable::Id(
+        "cus_enroll".parse().expect("customer id"),
+    ));
+
+    h.dispatcher
+        .dispatch_checkout_session_completed(session, &h.billing)
+        .await
+        .expect("webhook succeeds");
+
+    let (status, billing_mode): (String, String) =
+        sqlx::query_as("SELECT status, billing_mode FROM members WHERE id = ?")
+            .bind(member_id.to_string())
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    assert_eq!(status, "Active", "payment activates the Pending member");
+    assert_eq!(billing_mode, "coterie_managed", "enrolled in auto-renew");
+
+    let (pm_id, is_default): (String, bool) = sqlx::query_as(
+        "SELECT stripe_payment_method_id, is_default FROM payment_methods WHERE member_id = ?",
+    )
+    .bind(member_id.to_string())
+    .fetch_one(&h.pool)
+    .await
+    .expect("card saved");
+    assert_eq!(pm_id, "pm_signup");
+    assert!(is_default, "first card becomes the default");
+
+    let scheduled: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM scheduled_payments WHERE member_id = ? AND status = 'pending'",
+    )
+    .bind(member_id.to_string())
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+    assert_eq!(scheduled, 1, "next renewal scheduled");
+}
+
+#[tokio::test]
+async fn save_card_without_customer_soft_fails_payment_stands() {
+    let h = build_harness().await;
+    let member_id = insert_member(&h.pool, None, BillingMode::Manual).await;
+    let payment_id = Uuid::new_v4();
+    let session_id = "cs_enroll_nocust";
+
+    insert_pending_payment(
+        &h.pool,
+        Payment {
+            id: payment_id,
+            payer: Payer::Member(member_id),
+            amount_cents: 45_00,
+            currency: "USD".to_string(),
+            status: PaymentStatus::Pending,
+            payment_method: PaymentMethod::Stripe,
+            external_id: Some(StripeRef::CheckoutSession(session_id.to_string())),
+            description: "Member Membership Payment".to_string(),
+            kind: PaymentKind::Membership,
+            paid_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        },
+    )
+    .await;
+
+    // save_card stamped but no customer on the session: enrollment is
+    // impossible — the webhook must still succeed and the member must
+    // still come out Active with dues extended.
+    let session = build_checkout_session(
+        session_id,
+        Some("pi_enroll_nocust"),
+        json!({
+            "payment_type": "membership",
+            "member_id": member_id.to_string(),
+            "membership_type_slug": "member",
+            "save_card": "true",
+        }),
+    );
+
+    h.dispatcher
+        .dispatch_checkout_session_completed(session, &h.billing)
+        .await
+        .expect("webhook succeeds despite failed enrollment");
+
+    let (status, billing_mode): (String, String) =
+        sqlx::query_as("SELECT status, billing_mode FROM members WHERE id = ?")
+            .bind(member_id.to_string())
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    assert_eq!(status, "Active");
+    assert_eq!(billing_mode, "manual", "no enrollment without a customer");
+    let cards: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM payment_methods WHERE member_id = ?")
+        .bind(member_id.to_string())
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(cards, 0);
 }

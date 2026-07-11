@@ -67,6 +67,13 @@ impl StripeClient {
         amount_cents: i64,
         success_url: String,
         cancel_url: String,
+        // Signup auto-renew enrollment: bind the session to the member's
+        // Stripe customer and save the paying card off-session. The
+        // `save_card=true` metadata is what the completed-checkout
+        // webhook keys enrollment on. Portal one-off checkout passes
+        // (None, false) — unchanged behavior.
+        customer_id: Option<String>,
+        save_card: bool,
     ) -> Result<(String, Uuid)> {
         // Metadata: payment_type makes the webhook handler's branching
         // explicit (pairs with the donation flow which sets
@@ -83,6 +90,9 @@ impl StripeClient {
             "membership_type_slug".to_string(),
             membership_type_slug.to_string(),
         );
+        if save_card {
+            metadata.insert("save_card".to_string(), "true".to_string());
+        }
 
         let session = self
             .gateway
@@ -97,6 +107,8 @@ impl StripeClient {
                 metadata,
                 client_reference_id: Some(member_id.to_string()),
                 customer_email: None,
+                customer_id,
+                save_card_for_offsession: save_card,
             })
             .await?;
 
@@ -163,6 +175,8 @@ impl StripeClient {
                 metadata,
                 client_reference_id: Some(member_id.to_string()),
                 customer_email: None,
+                customer_id: None,
+                save_card_for_offsession: false,
             })
             .await?;
 
@@ -237,6 +251,8 @@ impl StripeClient {
                 // Pre-fill the email on the hosted Checkout page. Stripe also
                 // sends the receipt to whatever email the donor confirms.
                 customer_email: Some(donor_email.to_string()),
+                customer_id: None,
+                save_card_for_offsession: false,
             })
             .await?;
 

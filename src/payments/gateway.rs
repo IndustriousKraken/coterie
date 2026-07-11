@@ -123,6 +123,14 @@ pub struct CreateCheckoutInput {
     pub client_reference_id: Option<String>,
     /// Pre-fill the donor email on the hosted page (public donations).
     pub customer_email: Option<String>,
+    /// Attach the session to an existing Stripe customer. Required for
+    /// `save_card_for_offsession` — a saved payment method needs a
+    /// customer to live on.
+    pub customer_id: Option<String>,
+    /// Set `payment_intent_data.setup_future_usage = off_session` so
+    /// the paying card is saved to the customer for later
+    /// Coterie-initiated charges (signup auto-renew enrollment).
+    pub save_card_for_offsession: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -188,6 +196,13 @@ pub struct RefundOutput {
 #[derive(Debug, Clone)]
 pub struct RetrievedCheckoutSession {
     pub payment_intent_id: Option<String>,
+    /// True while the hosted page is still payable (`status == open`).
+    /// The signup retry path reuses an open session instead of minting
+    /// a duplicate.
+    pub is_open: bool,
+    /// The hosted Checkout URL. Stripe returns it only while the
+    /// session is open.
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -357,6 +372,27 @@ impl StripeGateway for RealStripeGateway {
         if let Some(email) = input.customer_email.as_deref() {
             params.customer_email = Some(email);
         }
+        // Signup auto-renew enrollment: bind the session to the
+        // member's customer and save the paying card off-session so
+        // Coterie can charge renewals later.
+        let customer_id_parsed = input
+            .customer_id
+            .as_deref()
+            .map(|c| {
+                c.parse::<CustomerId>().map_err(|_| {
+                    AppError::BadRequest(format!("Invalid Stripe customer ID: {}", c))
+                })
+            })
+            .transpose()?;
+        params.customer = customer_id_parsed;
+        if input.save_card_for_offsession {
+            params.payment_intent_data = Some(stripe::CreateCheckoutSessionPaymentIntentData {
+                setup_future_usage: Some(
+                    stripe::CreateCheckoutSessionPaymentIntentDataSetupFutureUsage::OffSession,
+                ),
+                ..Default::default()
+            });
+        }
 
         let line_items: Vec<CreateCheckoutSessionLineItems> = input
             .line_items
@@ -420,6 +456,8 @@ impl StripeGateway for RealStripeGateway {
         let session = timed(CheckoutSession::retrieve(&self.client, &cs_id, &[])).await?;
         Ok(RetrievedCheckoutSession {
             payment_intent_id: session.payment_intent.map(|exp| exp.id().to_string()),
+            is_open: matches!(session.status, Some(stripe::CheckoutSessionStatus::Open)),
+            url: session.url,
         })
     }
 

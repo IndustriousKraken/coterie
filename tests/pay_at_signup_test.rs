@@ -428,3 +428,155 @@ async fn duplicate_signup_retry_rules() {
     let (status, _) = post_signup(app, &body).await;
     assert_eq!(status, StatusCode::CONFLICT);
 }
+
+// ---------------------------------------------------------------------
+// 5.3 Retry reuses the open session / supersedes the stale one
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn retry_reuses_open_session_without_new_payment_row() {
+    let pool = fresh_pool().await;
+    insert_membership_type(&pool, PAID_SLUG, 4500).await;
+    set_signup_mode(&pool, "payment").await;
+    let (state, fake) = state_with_fake_stripe(&pool, None).await;
+    let app = coterie::api::create_app(state);
+
+    let body = signup_body("g@x.com", "golf", PAID_SLUG);
+    let (status, _) = post_signup(app.clone(), &body).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // The previous session is still open on Stripe.
+    fake.next_retrieve_checkout_session(
+        coterie::payments::gateway::RetrievedCheckoutSession {
+            payment_intent_id: None,
+            is_open: true,
+            url: Some("https://stripe.test/still-open".to_string()),
+        },
+    );
+
+    let (status, retry) = post_signup(app, &body).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        retry["checkout_url"].as_str(),
+        Some("https://stripe.test/still-open"),
+        "the open session's URL is reused"
+    );
+
+    let payments: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM payments")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(payments, 1, "no duplicate pending payment row");
+    let sessions = fake.count_where(|c| {
+        matches!(
+            c,
+            coterie::payments::fake_gateway::FakeCall::CreateCheckoutSession(_)
+        )
+    });
+    assert_eq!(sessions, 1, "no second session minted");
+}
+
+#[tokio::test]
+async fn retry_supersedes_stale_session_with_failed_row() {
+    let pool = fresh_pool().await;
+    insert_membership_type(&pool, PAID_SLUG, 4500).await;
+    set_signup_mode(&pool, "payment").await;
+    let (state, fake) = state_with_fake_stripe(&pool, None).await;
+    let app = coterie::api::create_app(state);
+
+    let body = signup_body("h@x.com", "hotel", PAID_SLUG);
+    let (status, _) = post_signup(app.clone(), &body).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Previous session expired (fake default retrieve: is_open=false).
+    let (status, retry) = post_signup(app, &body).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(retry["checkout_url"].as_str().is_some(), "fresh session");
+
+    let (failed, pending): (i64, i64) = (
+        sqlx::query_scalar("SELECT COUNT(*) FROM payments WHERE status = 'Failed'")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        sqlx::query_scalar("SELECT COUNT(*) FROM payments WHERE status = 'Pending'")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(failed, 1, "stale row superseded to Failed");
+    assert_eq!(pending, 1, "exactly one live pending row");
+}
+
+// ---------------------------------------------------------------------
+// 6.5 Auto-renew enrollment flag on the session
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn signup_session_carries_customer_and_save_card_by_default() {
+    let pool = fresh_pool().await;
+    insert_membership_type(&pool, PAID_SLUG, 4500).await;
+    set_signup_mode(&pool, "payment").await;
+    let (state, fake) = state_with_fake_stripe(&pool, None).await;
+    let app = coterie::api::create_app(state);
+
+    let (status, _) = post_signup(app, &signup_body("i@x.com", "india", PAID_SLUG)).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let calls = fake.calls();
+    assert!(
+        calls
+            .iter()
+            .any(|c| matches!(c, coterie::payments::fake_gateway::FakeCall::CreateCustomer(_))),
+        "a Stripe customer is created for the member"
+    );
+    let session = calls
+        .iter()
+        .find_map(|c| match c {
+            coterie::payments::fake_gateway::FakeCall::CreateCheckoutSession(input) => Some(input),
+            _ => None,
+        })
+        .expect("session created");
+    assert!(session.customer_id.is_some(), "session bound to the customer");
+    assert!(session.save_card_for_offsession, "card saved off-session");
+    assert_eq!(
+        session.metadata.get("save_card").map(String::as_str),
+        Some("true"),
+        "webhook enrollment keys on this stamp"
+    );
+}
+
+#[tokio::test]
+async fn signup_auto_renew_off_keeps_one_off_checkout() {
+    let pool = fresh_pool().await;
+    insert_membership_type(&pool, PAID_SLUG, 4500).await;
+    set_signup_mode(&pool, "payment").await;
+    sqlx::query(
+        "UPDATE app_settings SET value = 'false' WHERE key = 'membership.signup_auto_renew'",
+    )
+    .execute(&pool)
+    .await
+    .expect("signup_auto_renew row seeded by migration 038");
+    let (state, fake) = state_with_fake_stripe(&pool, None).await;
+    let app = coterie::api::create_app(state);
+
+    let (status, _) = post_signup(app, &signup_body("j@x.com", "juliet", PAID_SLUG)).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let calls = fake.calls();
+    assert!(
+        !calls
+            .iter()
+            .any(|c| matches!(c, coterie::payments::fake_gateway::FakeCall::CreateCustomer(_))),
+        "no customer creation when the setting is off"
+    );
+    let session = calls
+        .iter()
+        .find_map(|c| match c {
+            coterie::payments::fake_gateway::FakeCall::CreateCheckoutSession(input) => Some(input),
+            _ => None,
+        })
+        .expect("session created");
+    assert!(session.customer_id.is_none());
+    assert!(!session.save_card_for_offsession);
+    assert!(session.metadata.get("save_card").is_none());
+}

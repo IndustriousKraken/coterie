@@ -277,7 +277,7 @@ pub async fn signup(
                             client,
                             &settings_service,
                             &settings,
-                            member.id,
+                            &member,
                             &mt,
                         )
                         .await
@@ -339,22 +339,53 @@ async fn signup_checkout_urls(
 /// (`member_id`, `payment_type=membership`, `membership_type_slug`) is
 /// exactly what the webhook path already honors to record the payment,
 /// extend dues, and activate the member.
+///
+/// When `membership.signup_auto_renew` is on (the default), the session
+/// is bound to a Stripe customer for the member with the card saved
+/// off-session and `save_card=true` metadata — the completed-checkout
+/// webhook keys auto-renew enrollment on that stamp.
 async fn create_signup_checkout(
     stripe_client: &StripeClient,
     settings_service: &SettingsService,
     settings: &Settings,
-    member_id: Uuid,
+    member: &crate::domain::Member,
     membership_type: &MembershipTypeConfig,
 ) -> Result<String> {
+    let save_card = settings_service.signup_auto_renew().await;
+    let customer_id = if save_card {
+        // Soft-fail to a one-off session: a customer-creation hiccup
+        // must not block the signup payment itself.
+        match stripe_client
+            .get_or_create_customer(member.id, &member.email, &member.full_name)
+            .await
+        {
+            Ok(id) => Some(id),
+            Err(e) => {
+                tracing::error!(
+                    "Signup auto-renew: customer creation failed for member {} \
+                     (falling back to one-off checkout): {}",
+                    member.id,
+                    e,
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let save_card = save_card && customer_id.is_some();
+
     let (success_url, cancel_url) = signup_checkout_urls(settings_service, settings).await;
     let (url, _payment_id) = stripe_client
         .create_membership_checkout_session(
-            member_id,
+            member.id,
             &membership_type.name,
             &membership_type.slug,
             membership_type.fee_cents as i64,
             success_url,
             cancel_url,
+            customer_id,
+            save_card,
         )
         .await?;
     Ok(url)
@@ -395,14 +426,11 @@ async fn retry_pending_checkout(
     {
         return Ok(None);
     }
-    let has_completed_membership_payment = payment_repo
-        .find_by_member(member.id)
-        .await?
-        .iter()
-        .any(|p| {
-            matches!(p.kind, crate::domain::PaymentKind::Membership)
-                && p.status == PaymentStatus::Completed
-        });
+    let payments = payment_repo.find_by_member(member.id).await?;
+    let has_completed_membership_payment = payments.iter().any(|p| {
+        matches!(p.kind, crate::domain::PaymentKind::Membership)
+            && p.status == PaymentStatus::Completed
+    });
     if has_completed_membership_payment {
         return Ok(None);
     }
@@ -419,11 +447,66 @@ async fn retry_pending_checkout(
         return Ok(None);
     }
 
+    let retry_message =
+        "Welcome back — complete your membership payment at the checkout link.".to_string();
+
+    // Prefer resuming the existing OPEN session over minting another:
+    // a retry must not accumulate duplicate pending payment rows or
+    // leave several payable sessions open at once. `find_by_member` is
+    // newest-first, so the first pending checkout row is the latest.
+    // Any session found no-longer-open is superseded: its Pending row
+    // flips to Failed so the ledger reads truthfully.
+    let pending_sessions: Vec<(Uuid, String)> = payments
+        .iter()
+        .filter(|p| {
+            p.status == PaymentStatus::Pending
+                && matches!(p.kind, crate::domain::PaymentKind::Membership)
+        })
+        .filter_map(|p| match &p.external_id {
+            Some(crate::domain::StripeRef::CheckoutSession(sid)) => Some((p.id, sid.clone())),
+            _ => None,
+        })
+        .collect();
+    for (payment_id, session_id) in &pending_sessions {
+        match stripe_client
+            .gateway()
+            .retrieve_checkout_session(session_id)
+            .await
+        {
+            Ok(session) if session.is_open => {
+                if let Some(url) = session.url {
+                    return Ok(Some((
+                        StatusCode::OK,
+                        Json(SignupResponse {
+                            member_id: member.id,
+                            status: member.status,
+                            message: retry_message,
+                            checkout_url: Some(url),
+                        }),
+                    )));
+                }
+            }
+            Ok(_) => {
+                // Expired or completed-without-our-webhook-yet: mark the
+                // stale pending row Failed before minting a replacement.
+                let _ = payment_repo.fail_pending_payment(*payment_id).await;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Signup retry: could not retrieve checkout session {} for member {}: {}",
+                    session_id,
+                    member.id,
+                    e,
+                );
+            }
+        }
+    }
+
     let url = create_signup_checkout(
         stripe_client,
         settings_service,
         settings,
-        member.id,
+        &member,
         &membership_type,
     )
     .await?;
@@ -433,8 +516,7 @@ async fn retry_pending_checkout(
         Json(SignupResponse {
             member_id: member.id,
             status: member.status,
-            message: "Welcome back — complete your membership payment at the checkout link."
-                .to_string(),
+            message: retry_message,
             checkout_url: Some(url),
         }),
     )))

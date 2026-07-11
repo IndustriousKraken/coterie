@@ -181,6 +181,43 @@ impl WebhookDispatcher {
                         e,
                     );
                 }
+
+                // Pay-at-signup auto-renew enrollment: the session was
+                // created with save_card=true metadata (setting on at
+                // creation time), so save the paying card and enable
+                // Coterie-managed renewal. Soft-failed: the member is
+                // already Active with dues extended — enrollment
+                // problems are logged, never fail the webhook.
+                let save_card = session
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get("save_card"))
+                    .map(|v| v == "true")
+                    .unwrap_or(false);
+                if save_card {
+                    match session.customer.as_ref().map(|c| c.id().to_string()) {
+                        Some(customer_id) => {
+                            if let Err(e) = billing_service
+                                .auto_renew
+                                .enroll_after_signup_payment(member_id, slug, &customer_id)
+                                .await
+                            {
+                                tracing::error!(
+                                    "Signup auto-renew enrollment failed for member {} \
+                                     (payment stands, member is Active): {}",
+                                    member_id,
+                                    e,
+                                );
+                            }
+                        }
+                        None => tracing::error!(
+                            "save_card session {} carries no customer; cannot enroll \
+                             member {} in auto-renew",
+                            session_id,
+                            member_id,
+                        ),
+                    }
+                }
             }
         } else {
             // Slug unresolvable: this path deliberately gives up on

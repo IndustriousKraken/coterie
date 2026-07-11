@@ -428,6 +428,76 @@ impl AutoRenew {
         Ok(())
     }
 
+    /// Post-payment auto-renew enrollment for pay-at-signup (see the
+    /// pay-at-signup spec). The signup checkout was created against the
+    /// member's Stripe customer with the card saved off-session; after
+    /// the completed payment this saves the customer's payment
+    /// method(s) locally (fingerprint-deduped, first card becomes the
+    /// default when the member has none) and enables Coterie-managed
+    /// auto-renew, which schedules the next renewal from the freshly
+    /// extended `dues_paid_until`. The caller (checkout webhook)
+    /// soft-fails on error — enrollment problems must never fail a
+    /// successful payment.
+    pub async fn enroll_after_signup_payment(
+        &self,
+        member_id: Uuid,
+        membership_type_slug: &str,
+        customer_id: &str,
+    ) -> Result<()> {
+        let client = self
+            .stripe_handle
+            .current()
+            .client
+            .clone()
+            .ok_or_else(|| AppError::Internal("Stripe is not configured".to_string()))?;
+        let methods = client.gateway().list_payment_methods(customer_id).await?;
+
+        let existing = self.saved_card_repo.find_by_member(member_id).await?;
+        let known_fingerprints: std::collections::HashSet<&str> = existing
+            .iter()
+            .filter_map(|c| c.fingerprint.as_deref())
+            .collect();
+        let mut has_default = existing.iter().any(|c| c.is_default);
+
+        for pm in methods {
+            if pm
+                .fingerprint
+                .as_deref()
+                .map(|f| known_fingerprints.contains(f))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let card = SavedCard {
+                id: Uuid::new_v4(),
+                member_id,
+                stripe_payment_method_id: pm.id,
+                card_last_four: pm.last4,
+                card_brand: pm.brand,
+                exp_month: pm.exp_month,
+                exp_year: pm.exp_year,
+                is_default: !has_default,
+                fingerprint: pm.fingerprint,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            };
+            match self.saved_card_repo.create(card).await {
+                Ok(_) => has_default = true,
+                // The (member, fingerprint) unique index turns races/
+                // re-deliveries into a constraint error — already saved
+                // is a fine outcome, not a failure.
+                Err(e) => tracing::warn!(
+                    "Signup enrollment: could not save card for member {}: {}",
+                    member_id,
+                    e,
+                ),
+            }
+        }
+
+        self.enable_auto_renew(member_id, membership_type_slug)
+            .await
+    }
+
     /// Replace an enrolled member's pending scheduled payment with a
     /// fresh one based on their current `dues_paid_until`. Used when
     /// the member pays *early* (e.g., via one-time Checkout) — the

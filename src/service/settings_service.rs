@@ -107,6 +107,7 @@ pub struct UpdateDiscordConfig {
 /// Keys for membership/signup behavior settings.
 pub mod membership_keys {
     pub const SIGNUP_MODE: &str = "membership.signup_mode";
+    pub const SIGNUP_AUTO_RENEW: &str = "membership.signup_auto_renew";
 }
 
 /// The public-signup funnel mode (see the pay-at-signup spec).
@@ -393,6 +394,16 @@ impl SettingsService {
             Ok(v) if v == "payment" => SignupMode::Payment,
             _ => SignupMode::Approval,
         }
+    }
+
+    /// Whether paying signups are enrolled in auto-renew (card saved
+    /// off-session, next renewal scheduled). Defaults to true on a
+    /// missing/unparseable row — enrollment is the point of payment
+    /// mode; orgs opt out explicitly.
+    pub async fn signup_auto_renew(&self) -> bool {
+        self.get_bool(membership_keys::SIGNUP_AUTO_RENEW)
+            .await
+            .unwrap_or(true)
     }
 
     pub async fn get_bool(&self, key: &str) -> Result<bool> {
