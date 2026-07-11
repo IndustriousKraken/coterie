@@ -162,6 +162,10 @@ fn public_routes(_state: AppState) -> Router<AppState> {
         )
         .route("/announcements", get(handlers::public::list_announcements))
         .route(
+            "/membership-types",
+            get(handlers::public::list_membership_types),
+        )
+        .route(
             "/announcements/private-count",
             get(handlers::announcements::private_count),
         )

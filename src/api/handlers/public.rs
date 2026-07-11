@@ -49,6 +49,20 @@ pub struct SignupResponse {
     pub message: String,
 }
 
+/// Public projection of a membership type for the join form. Deliberately
+/// excludes internal fields (`id`, `is_active`, timestamps) — the slug is
+/// the public identifier and is what `POST /public/signup` accepts.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PublicMembershipType {
+    pub slug: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub fee_cents: i32,
+    pub currency: String,
+    /// One of `monthly`, `yearly`, `lifetime`.
+    pub billing_period: String,
+}
+
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct PublicEventsQuery {
     /// Maximum number of upcoming events to return (default 50).
@@ -332,6 +346,37 @@ pub async fn list_announcements(
         .collect();
 
     Ok(Json(published))
+}
+
+#[utoipa::path(
+    get,
+    path = "/public/membership-types",
+    tag = "public",
+    responses(
+        (status = 200, description = "Active membership types, ordered by sort_order, \
+            for the public join form", body = [PublicMembershipType]),
+    ),
+)]
+pub async fn list_membership_types(
+    State(membership_type_service): State<Arc<MembershipTypeService>>,
+) -> Result<Json<Vec<PublicMembershipType>>> {
+    // Active types only; the repo already orders by sort_order, name.
+    let types = membership_type_service.list(false).await?;
+    Ok(Json(
+        types
+            .into_iter()
+            .map(|t| PublicMembershipType {
+                slug: t.slug,
+                name: t.name,
+                description: t.description,
+                fee_cents: t.fee_cents,
+                // Payments are USD throughout (see stripe_client); emit it
+                // explicitly so the form can render without assuming.
+                currency: "USD".to_string(),
+                billing_period: t.billing_period,
+            })
+            .collect(),
+    ))
 }
 
 #[utoipa::path(
