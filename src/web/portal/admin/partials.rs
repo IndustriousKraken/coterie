@@ -197,7 +197,14 @@ pub fn admin_payment_row_from(payment: &crate::domain::Payment) -> AdminPaymentR
     AdminPaymentRow {
         id: payment.id.to_string(),
         description,
-        date: payment.created_at.format("%B %d, %Y").to_string(),
+        // paid_at is when the money moved (correct for imported/backdated
+        // rows); created_at is just row insertion. Same convention as
+        // receipts + finance reports.
+        date: payment
+            .paid_at
+            .unwrap_or(payment.created_at)
+            .format("%B %d, %Y")
+            .to_string(),
         amount: format!("{:.2}", amount_dollars),
         status,
         show_refund,

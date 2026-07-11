@@ -319,7 +319,7 @@ impl PaymentRepository for SqlitePaymentRepository {
                    paid_at, created_at, updated_at
             FROM payments
             WHERE member_id = ?
-            ORDER BY created_at DESC
+            ORDER BY COALESCE(paid_at, created_at) DESC
             "#,
         )
         .bind(member_id_str)

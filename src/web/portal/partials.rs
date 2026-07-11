@@ -49,7 +49,14 @@ pub fn member_payment_row_from(payment: &crate::domain::Payment) -> MemberPaymen
 
     MemberPaymentRow {
         description,
-        date: payment.created_at.format("%B %d, %Y").to_string(),
+        // paid_at is when the money moved (correct for imported/backdated
+        // rows); created_at is just row insertion. Same convention as
+        // receipts + finance reports.
+        date: payment
+            .paid_at
+            .unwrap_or(payment.created_at)
+            .format("%B %d, %Y")
+            .to_string(),
         amount: format!("{:.2}", payment.amount_cents as f64 / 100.0),
         status,
     }
