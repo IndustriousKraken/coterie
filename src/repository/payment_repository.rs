@@ -5,8 +5,8 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        configurable_types::BillingPeriod, Payer, Payment, PaymentKind, PaymentMethod,
-        PaymentStatus, StripeRef,
+        configurable_types::BillingPeriod, MemberStatus, Payer, Payment, PaymentKind,
+        PaymentMethod, PaymentStatus, StripeRef,
     },
     error::{AppError, Result},
 };
@@ -66,9 +66,12 @@ pub trait PaymentRepository: Send + Sync {
     /// `dues_extended_at` is set to NOW under a per-payment uniqueness
     /// guard, and `dues_paid_until` is recomputed from the latest
     /// member state (read inside the same transaction so concurrent
-    /// payments can't lose each other's increments). Returns `true`
-    /// if THIS call did the extension; `false` if a previous call
-    /// already extended dues for this payment.
+    /// payments can't lose each other's increments). Returns
+    /// `Some(prior_status)` — the member's status BEFORE the update —
+    /// if THIS call did the extension (callers use it to detect the
+    /// Pending→Active activation, see the pay-at-signup spec); `None`
+    /// if a previous call already extended dues for this payment (or
+    /// the member row is gone).
     ///
     /// This single method addresses two correctness issues:
     /// (1) Stripe webhook retries that re-run a handler after a
@@ -82,7 +85,7 @@ pub trait PaymentRepository: Send + Sync {
         payment_id: Uuid,
         member_id: Uuid,
         billing_period: crate::domain::configurable_types::BillingPeriod,
-    ) -> Result<bool>;
+    ) -> Result<Option<MemberStatus>>;
 
     // ---- Admin billing dashboard support ------------------------------
 
@@ -474,7 +477,7 @@ impl PaymentRepository for SqlitePaymentRepository {
         payment_id: Uuid,
         member_id: Uuid,
         billing_period: BillingPeriod,
-    ) -> Result<bool> {
+    ) -> Result<Option<MemberStatus>> {
         use chrono::Months;
 
         let mut tx = self.pool.begin().await.map_err(AppError::Database)?;
@@ -496,21 +499,29 @@ impl PaymentRepository for SqlitePaymentRepository {
 
         if claim.rows_affected() == 0 {
             tx.commit().await.map_err(AppError::Database)?;
-            return Ok(false);
+            return Ok(None);
         }
 
-        // Read current dues INSIDE the transaction so SQLite's write
-        // lock serializes us against any concurrent payment for the
-        // same member. Without the txn, two payments could both read
-        // D and both write D+1y, losing one period.
-        let current_dues: Option<DateTime<Utc>> = sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
-            "SELECT dues_paid_until FROM members WHERE id = ?",
-        )
-        .bind(member_id.to_string())
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(AppError::Database)?
-        .flatten();
+        // Read current dues + status INSIDE the transaction so SQLite's
+        // write lock serializes us against any concurrent payment for
+        // the same member. Without the txn, two payments could both
+        // read D and both write D+1y, losing one period. The status
+        // read is what lets the caller observe the Pending→Active
+        // activation this payment performs.
+        let row: Option<(Option<DateTime<Utc>>, String)> =
+            sqlx::query_as("SELECT dues_paid_until, status FROM members WHERE id = ?")
+                .bind(member_id.to_string())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(AppError::Database)?;
+
+        let Some((current_dues, prior_status_str)) = row else {
+            // Member row gone (payment for a deleted member): the claim
+            // stands so retries stay no-ops, but there is nothing to
+            // extend or activate.
+            tx.commit().await.map_err(AppError::Database)?;
+            return Ok(None);
+        };
 
         let now_utc = Utc::now();
         let base_date = current_dues.filter(|d| *d > now_utc).unwrap_or(now_utc);
@@ -527,10 +538,13 @@ impl PaymentRepository for SqlitePaymentRepository {
             BillingPeriod::Lifetime => DateTime::<Utc>::MAX_UTC,
         };
 
+        // Revival: a completed dues payment makes Expired members
+        // Active (restoration) and Pending members Active (pay-at-
+        // signup activation — payment IS the approval).
         sqlx::query(
             "UPDATE members \
              SET dues_paid_until = ?, \
-                 status = CASE WHEN status = 'Expired' THEN 'Active' ELSE status END, \
+                 status = CASE WHEN status IN ('Expired', 'Pending') THEN 'Active' ELSE status END, \
                  dues_reminder_sent_at = NULL, \
                  updated_at = CURRENT_TIMESTAMP \
              WHERE id = ?",
@@ -542,7 +556,11 @@ impl PaymentRepository for SqlitePaymentRepository {
         .map_err(AppError::Database)?;
 
         tx.commit().await.map_err(AppError::Database)?;
-        Ok(true)
+        // Unknown status strings (corrupt row) map to None-ish behavior:
+        // report Active so callers don't fire a spurious activation.
+        Ok(Some(
+            MemberStatus::from_str(&prior_status_str).unwrap_or(MemberStatus::Active),
+        ))
     }
 
     async fn revenue_by_month(&self, months_back: u32) -> Result<Vec<MonthlyRevenue>> {

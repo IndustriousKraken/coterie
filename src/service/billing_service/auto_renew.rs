@@ -15,8 +15,9 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        configurable_types::BillingPeriod, BillingMode, Payer, Payment, PaymentKind, PaymentMethod,
-        PaymentStatus, SavedCard, ScheduledPayment, ScheduledPaymentStatus, StripeRef,
+        configurable_types::BillingPeriod, BillingMode, MemberStatus, Payer, Payment, PaymentKind,
+        PaymentMethod, PaymentStatus, SavedCard, ScheduledPayment, ScheduledPaymentStatus,
+        StripeRef,
     },
     email::EmailSender,
     error::{AppError, Result},
@@ -906,13 +907,48 @@ impl AutoRenew {
             .extend_dues_for_payment_atomic(payment_id, member_id, billing_period)
             .await?;
 
-        if extended {
+        if let Some(prior_status) = extended {
             tracing::info!(
                 "Extended dues for member {} (payment: {}, billing period: {:?})",
                 member_id,
                 payment_id,
                 billing_period,
             );
+
+            // Pay-at-signup activation: a completed membership payment
+            // flips a Pending member to Active (the extension above did
+            // the flip atomically). Dispatch the SAME event admin
+            // activation dispatches so integrations (Discord invite/
+            // role, later UniFi) observe payment-activated and
+            // admin-activated members identically. All dues-extension
+            // paths (checkout webhook, admin manual record, auto-renew,
+            // subscription invoice) funnel through here.
+            if prior_status == MemberStatus::Pending {
+                match self.member_repo.find_by_id(member_id).await {
+                    Ok(Some(member)) => {
+                        tracing::info!(
+                            "Member {} activated by completed signup payment {}",
+                            member_id,
+                            payment_id,
+                        );
+                        self.integration_manager
+                            .handle_event(IntegrationEvent::MemberActivated(member))
+                            .await;
+                    }
+                    other => {
+                        // Activation already happened in the DB; a
+                        // missed event is log-worthy but must not fail
+                        // the payment flow.
+                        tracing::error!(
+                            "Member {} activated by payment {} but re-fetch for the \
+                             integration event failed: {:?}",
+                            member_id,
+                            payment_id,
+                            other.err(),
+                        );
+                    }
+                }
+            }
         } else {
             tracing::debug!("Dues already extended for payment {}; skipping", payment_id,);
         }

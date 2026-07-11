@@ -104,6 +104,21 @@ pub struct UpdateDiscordConfig {
     pub bot_token: Option<String>,
 }
 
+/// Keys for membership/signup behavior settings.
+pub mod membership_keys {
+    pub const SIGNUP_MODE: &str = "membership.signup_mode";
+}
+
+/// The public-signup funnel mode (see the pay-at-signup spec).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignupMode {
+    /// Signup creates a Pending member; an admin activates. Default.
+    Approval,
+    /// Signup returns a Stripe Checkout URL; a completed membership
+    /// payment activates the member.
+    Payment,
+}
+
 /// Keys for Stripe integration settings. DB-backed so an admin can add
 /// or rotate Stripe credentials from the portal without a restart (the
 /// old `integrations.stripe.*` toggle was dead — read nowhere).
@@ -367,6 +382,17 @@ impl SettingsService {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(chrono_tz::Tz::UTC)
+    }
+
+    /// The signup funnel mode. Missing row or unrecognized value falls
+    /// back to `Approval` (the pre-existing funnel), per the
+    /// pay-at-signup spec — a broken setting must not silently open the
+    /// payment path.
+    pub async fn signup_mode(&self) -> SignupMode {
+        match self.get_value(membership_keys::SIGNUP_MODE).await {
+            Ok(v) if v == "payment" => SignupMode::Payment,
+            _ => SignupMode::Approval,
+        }
     }
 
     pub async fn get_bool(&self, key: &str) -> Result<bool> {

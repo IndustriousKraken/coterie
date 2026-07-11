@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use coterie::{
     api::{
-        middleware::bot_challenge::DisabledVerifier,
+        middleware::bot_challenge::{BotChallengeVerifier, DisabledVerifier},
         state::{AppState, MoneyLimiter, RateLimiter},
     },
     auth::{AuthService, CsrfService, PendingLoginService, SecretCrypto, TotpService},
@@ -93,7 +93,29 @@ pub async fn build_app_state(pool: SqlitePool) -> AppState {
         pool.clone(),
         "test-session-secret-please-ignore".to_string(),
     ));
-    build_app_state_with_services(pool, totp_service, auth_service).await
+    build_app_state_with_services(pool, totp_service, auth_service, None, None).await
+}
+
+/// Variant of [`build_app_state`] for tests that need a configured
+/// Stripe surface (a `StripeHandle` preloaded with a fake-gateway
+/// client) and/or a custom bot-challenge verifier. `None` for either
+/// keeps the default (unconfigured Stripe / `DisabledVerifier`).
+pub async fn build_app_state_custom(
+    pool: SqlitePool,
+    stripe_handle: Option<Arc<coterie::payments::StripeHandle>>,
+    verifier: Option<Arc<dyn BotChallengeVerifier>>,
+) -> AppState {
+    let crypto = Arc::new(SecretCrypto::new("test-secret-please-ignore"));
+    let totp_service = Arc::new(TotpService::new(
+        pool.clone(),
+        crypto,
+        "Coterie".to_string(),
+    ));
+    let auth_service = Arc::new(AuthService::new(
+        pool.clone(),
+        "test-session-secret-please-ignore".to_string(),
+    ));
+    build_app_state_with_services(pool, totp_service, auth_service, stripe_handle, verifier).await
 }
 
 /// Variant of [`build_app_state`] that lets the caller inject a custom
@@ -109,7 +131,7 @@ pub async fn build_app_state_with_totp(
         pool.clone(),
         "test-session-secret-please-ignore".to_string(),
     ));
-    build_app_state_with_services(pool, totp_service, auth_service).await
+    build_app_state_with_services(pool, totp_service, auth_service, None, None).await
 }
 
 /// Variant of [`build_app_state`] that lets the caller inject a custom
@@ -127,13 +149,15 @@ pub async fn build_app_state_with_auth(
         crypto,
         "Coterie".to_string(),
     ));
-    build_app_state_with_services(pool, totp_service, auth_service).await
+    build_app_state_with_services(pool, totp_service, auth_service, None, None).await
 }
 
 async fn build_app_state_with_services(
     pool: SqlitePool,
     totp_service: Arc<TotpService>,
     auth_service: Arc<AuthService>,
+    stripe_handle_override: Option<Arc<coterie::payments::StripeHandle>>,
+    verifier: Option<Arc<dyn BotChallengeVerifier>>,
 ) -> AppState {
     let settings = Settings {
         server: coterie::config::ServerConfig {
@@ -203,16 +227,19 @@ async fn build_app_state_with_services(
     let billing_service =
         Arc::new(service_context.billing_service(settings.server.base_url.clone()));
 
-    // No router-test path needs the real Stripe surface, and the DB has no
-    // Stripe config, so the ServiceContext-owned handle stays unconfigured.
-    let stripe_handle = service_context.stripe_handle.clone();
+    // Default: the ServiceContext-owned handle stays unconfigured (no
+    // Stripe surface). Tests that exercise checkout paths pass a
+    // preloaded handle wired to a FakeStripeGateway.
+    let stripe_handle =
+        stripe_handle_override.unwrap_or_else(|| service_context.stripe_handle.clone());
+    let verifier = verifier.unwrap_or_else(|| Arc::new(DisabledVerifier));
 
     AppState::new(
         service_context,
         stripe_handle,
         billing_service,
         settings,
-        Arc::new(DisabledVerifier),
+        verifier,
         money_limiter,
     )
 }

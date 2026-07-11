@@ -14,15 +14,23 @@ use uuid::Uuid;
 
 use crate::{
     api::{middleware::bot_challenge::BotChallengeVerifier, state::MoneyLimiter},
+    auth::AuthService,
     config::Settings,
-    domain::{Announcement, CreateMemberRequest, Event, EventVisibility, MemberStatus},
+    domain::{
+        configurable_types::MembershipTypeConfig, Announcement, CreateMemberRequest, Event,
+        EventVisibility, MemberStatus, PaymentStatus,
+    },
     email::EmailSender,
     error::{AppError, Result},
     payments::StripeClient,
     repository::{
         AnnouncementRepository, DonationCampaignRepository, EventRepository, MemberRepository,
+        PaymentRepository,
     },
-    service::{membership_type_service::MembershipTypeService, settings_service::SettingsService},
+    service::{
+        membership_type_service::MembershipTypeService,
+        settings_service::{stripe_keys, SettingsService, SignupMode},
+    },
 };
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -47,6 +55,11 @@ pub struct SignupResponse {
     pub member_id: Uuid,
     pub status: MemberStatus,
     pub message: String,
+    /// Present only when the org's signup mode is `payment` and the
+    /// chosen membership type has a fee: redirect the browser here to
+    /// complete the Stripe Checkout that activates the membership.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkout_url: Option<String>,
 }
 
 /// Public projection of a membership type for the join form. Deliberately
@@ -78,9 +91,15 @@ pub struct PublicEventsQuery {
     tag = "public",
     request_body = SignupRequest,
     responses(
-        (status = 201, description = "Member created; verification email sent", body = SignupResponse),
+        (status = 201, description = "Member created; verification email sent. In payment \
+            mode, `checkout_url` carries the Stripe Checkout link that completes (and \
+            activates) the membership", body = SignupResponse),
+        (status = 200, description = "Payment-mode retry: the email belongs to a Pending \
+            signup with no completed payment and the password verified — a fresh \
+            `checkout_url` is returned instead of a duplicate error", body = SignupResponse),
         (status = 400, description = "Invalid email or weak password"),
         (status = 409, description = "Email or username already in use"),
+        (status = 429, description = "Rate limited (payment mode only)"),
     ),
 )]
 pub async fn signup(
@@ -91,14 +110,28 @@ pub async fn signup(
     State(settings): State<Arc<Settings>>,
     State(settings_service): State<Arc<SettingsService>>,
     State(db_pool): State<SqlitePool>,
+    State(money_limiter): State<MoneyLimiter>,
+    State(stripe_client): State<Option<Arc<StripeClient>>>,
+    State(payment_repo): State<Arc<dyn PaymentRepository>>,
     headers: HeaderMap,
     Json(request): Json<SignupRequest>,
 ) -> Result<(StatusCode, Json<SignupResponse>)> {
+    let signup_mode = settings_service.signup_mode().await;
+    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
+
+    // In payment mode signup initiates a Stripe Checkout, making this a
+    // money-moving public endpoint: rate limit FIRST (before the bot
+    // challenge, so a bursting IP can't burn the provider's quota),
+    // mirroring /public/donate. Approval mode initiates no payment and
+    // keeps the pre-existing gate set (bot challenge only).
+    if signup_mode == SignupMode::Payment && !money_limiter.0.check_and_record(ip) {
+        return Err(AppError::TooManyRequests);
+    }
+
     // Bot-challenge verification BEFORE any work. Fail closed: if the
     // org has configured a provider, every request must carry a token
     // the provider verifies. The DisabledVerifier is a no-op so dev
     // setups don't break.
-    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
     if bot_challenge_verifier
         .verify("public/signup", request.captcha_token.as_deref(), Some(ip))
         .await
@@ -158,24 +191,54 @@ pub async fn signup(
         email: email.to_string(),
         username: username.to_string(),
         full_name: full_name.to_string(),
-        password: request.password,
+        password: request.password.clone(),
         membership_type_id,
         ..Default::default()
     };
 
     // Create the member. Use a generic error for UNIQUE violations to
     // prevent attackers from enumerating valid emails/usernames.
-    let member = member_repo.create(create_request).await.map_err(|e| {
-        if let AppError::Database(sqlx::Error::Database(ref db_err)) = e {
-            if db_err.is_unique_violation() {
-                return AppError::Conflict(
-                    "Registration failed: an account with this information already exists"
-                        .to_string(),
-                );
+    let member = match member_repo.create(create_request).await {
+        Ok(m) => m,
+        Err(e) => {
+            let is_unique_violation = matches!(
+                &e,
+                AppError::Database(sqlx::Error::Database(db_err)) if db_err.is_unique_violation()
+            );
+            if !is_unique_violation {
+                return Err(e);
             }
+            // Payment-mode abandoned-checkout retry: an existing
+            // Pending member with no completed membership payment who
+            // proves the password gets a fresh checkout session instead
+            // of being stranded (Pending can't log in to pay, duplicate
+            // email can't re-signup). Every other duplicate — wrong
+            // password, already paid, non-Pending — falls through to
+            // the exact pre-existing generic outcome so this path
+            // discloses nothing duplicate detection doesn't already.
+            if signup_mode == SignupMode::Payment {
+                if let Some(response) = retry_pending_checkout(
+                    member_repo.as_ref(),
+                    payment_repo.as_ref(),
+                    &membership_type_service,
+                    stripe_client.as_deref(),
+                    &settings_service,
+                    &settings,
+                    &db_pool,
+                    email,
+                    &request.password,
+                )
+                .await?
+                {
+                    return Ok(response);
+                }
+            }
+            return Err(AppError::Conflict(
+                "Registration failed: an account with this information already exists"
+                    .to_string(),
+            ));
         }
-        e
-    })?;
+    };
 
     // Send email verification. Soft-fail on send error: the account is
     // already created and an admin can manually verify / resend later.
@@ -195,14 +258,186 @@ pub async fn signup(
         );
     }
 
+    // Payment mode with a paid type: hand back a Stripe Checkout URL.
+    // The completed payment (via webhook) extends dues AND activates
+    // the Pending member. Fee-0 types stay in the approval funnel. A
+    // checkout-creation failure is soft: the member + verification
+    // email already exist, the retry path can mint a fresh session,
+    // and an admin can always activate manually.
+    let mut checkout_url = None;
+    if signup_mode == SignupMode::Payment {
+        if let Some(mt) = membership_type_service
+            .get(member.membership_type_id)
+            .await?
+        {
+            if mt.fee_cents > 0 {
+                match stripe_client.as_deref() {
+                    Some(client) => {
+                        match create_signup_checkout(
+                            client,
+                            &settings_service,
+                            &settings,
+                            member.id,
+                            &mt,
+                        )
+                        .await
+                        {
+                            Ok(url) => checkout_url = Some(url),
+                            Err(e) => tracing::error!(
+                                "Signup checkout creation failed for member {}: {}",
+                                member.id,
+                                e,
+                            ),
+                        }
+                    }
+                    None => tracing::error!(
+                        "signup_mode=payment but Stripe is not configured; member {} \
+                         created Pending without a checkout session",
+                        member.id,
+                    ),
+                }
+            }
+        }
+    }
+
+    let message = if checkout_url.is_some() {
+        "Registration successful. Complete your membership payment at the checkout link; \
+         a verification email is also on its way."
+            .to_string()
+    } else {
+        "Registration successful. Please check your email to verify your account.".to_string()
+    };
+
     let response = SignupResponse {
         member_id: member.id,
         status: member.status,
-        message: "Registration successful. Please check your email to verify your account."
-            .to_string(),
+        message,
+        checkout_url,
     };
 
     Ok((StatusCode::CREATED, Json(response)))
+}
+
+/// Success/cancel URLs for a signup checkout: the operator-set
+/// `stripe.success_url` / `stripe.cancel_url` settings when non-blank
+/// (point these at the marketing site's welcome/cancel pages), else the
+/// portal payment pages.
+async fn signup_checkout_urls(
+    settings_service: &SettingsService,
+    settings: &Settings,
+) -> (String, String) {
+    let nonblank = |v: crate::error::Result<String>| v.ok().filter(|s| !s.trim().is_empty());
+    let success = nonblank(settings_service.get_value(stripe_keys::SUCCESS_URL).await)
+        .unwrap_or_else(|| format!("{}/portal/payments/success", settings.server.base_url));
+    let cancel = nonblank(settings_service.get_value(stripe_keys::CANCEL_URL).await)
+        .unwrap_or_else(|| format!("{}/portal/payments/cancel", settings.server.base_url));
+    (success, cancel)
+}
+
+/// Create the Stripe Checkout session for a signup (fresh or retried).
+/// Reuses the portal dues-checkout contract — the session metadata
+/// (`member_id`, `payment_type=membership`, `membership_type_slug`) is
+/// exactly what the webhook path already honors to record the payment,
+/// extend dues, and activate the member.
+async fn create_signup_checkout(
+    stripe_client: &StripeClient,
+    settings_service: &SettingsService,
+    settings: &Settings,
+    member_id: Uuid,
+    membership_type: &MembershipTypeConfig,
+) -> Result<String> {
+    let (success_url, cancel_url) = signup_checkout_urls(settings_service, settings).await;
+    let (url, _payment_id) = stripe_client
+        .create_membership_checkout_session(
+            member_id,
+            &membership_type.name,
+            &membership_type.slug,
+            membership_type.fee_cents as i64,
+            success_url,
+            cancel_url,
+        )
+        .await?;
+    Ok(url)
+}
+
+/// The payment-mode duplicate-signup retry (see the pay-at-signup
+/// spec): returns `Some(response)` with a fresh checkout URL only when
+/// ALL of these hold — the email belongs to a Pending member with no
+/// completed membership payment, the supplied password verifies against
+/// that member's hash, Stripe is configured, and their membership type
+/// has a fee. Any other case returns `None` and the caller emits the
+/// exact pre-existing generic duplicate outcome.
+#[allow(clippy::too_many_arguments)]
+async fn retry_pending_checkout(
+    member_repo: &dyn MemberRepository,
+    payment_repo: &dyn PaymentRepository,
+    membership_type_service: &MembershipTypeService,
+    stripe_client: Option<&StripeClient>,
+    settings_service: &SettingsService,
+    settings: &Settings,
+    db_pool: &SqlitePool,
+    email: &str,
+    password: &str,
+) -> Result<Option<(StatusCode, Json<SignupResponse>)>> {
+    let Some(member) = member_repo.find_by_email(email).await? else {
+        // Unique violation on username, not email — not a retry.
+        return Ok(None);
+    };
+    if member.status != MemberStatus::Pending {
+        return Ok(None);
+    }
+    let Some(hash) = crate::auth::get_password_hash(db_pool, email).await? else {
+        return Ok(None);
+    };
+    if !AuthService::verify_password(password, &hash)
+        .await
+        .unwrap_or(false)
+    {
+        return Ok(None);
+    }
+    let has_completed_membership_payment = payment_repo
+        .find_by_member(member.id)
+        .await?
+        .iter()
+        .any(|p| {
+            matches!(p.kind, crate::domain::PaymentKind::Membership)
+                && p.status == PaymentStatus::Completed
+        });
+    if has_completed_membership_payment {
+        return Ok(None);
+    }
+    let Some(stripe_client) = stripe_client else {
+        return Ok(None);
+    };
+    let Some(membership_type) = membership_type_service
+        .get(member.membership_type_id)
+        .await?
+    else {
+        return Ok(None);
+    };
+    if membership_type.fee_cents <= 0 {
+        return Ok(None);
+    }
+
+    let url = create_signup_checkout(
+        stripe_client,
+        settings_service,
+        settings,
+        member.id,
+        &membership_type,
+    )
+    .await?;
+
+    Ok(Some((
+        StatusCode::OK,
+        Json(SignupResponse {
+            member_id: member.id,
+            status: member.status,
+            message: "Welcome back — complete your membership payment at the checkout link."
+                .to_string(),
+            checkout_url: Some(url),
+        }),
+    )))
 }
 
 /// Generate a verification token and email the link to the member.
