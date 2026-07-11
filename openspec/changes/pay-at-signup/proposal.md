@@ -26,7 +26,12 @@ pay-at-signup is an org setting.
 ## What Changes
 
 - New org setting `membership.signup_mode`: `approval` (default — current
-  behavior, unchanged) or `payment`.
+  behavior, unchanged) or `payment`. This supersedes the never-wired
+  001-era seeds `membership.auto_approve` and
+  `membership.require_payment_for_activation` (both had zero runtime
+  readers; removed by migration 036) — `signup_mode=payment` IS
+  auto-approval-on-payment, expressed as one knob instead of two dead
+  booleans.
 - In `payment` mode, `POST /public/signup` with a membership type whose fee
   is > 0: create the member (Pending) and a Stripe Checkout session for that
   type's dues (reusing `create_membership_checkout_session`, so the existing

@@ -5,7 +5,9 @@
 - [ ] 1.1 Migration: seed `membership.signup_mode` = `approval` in
   `app_settings` (category `membership`, so the generic admin settings page
   renders it). Add a `signup_mode()` accessor on `SettingsService` that
-  defaults to approval on missing/unknown values.
+  defaults to approval on missing/unknown values. (The dead 001-era
+  `membership.auto_approve` / `membership.require_payment_for_activation`
+  rows this supersedes were already dropped by migration 036.)
 
 ## 2. Signup handler (payment mode)
 
