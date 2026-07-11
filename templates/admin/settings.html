@@ -83,13 +83,16 @@
                             {% if setting.value_type == "boolean" %}
                             <div class="flex items-center gap-3">
                                 <label class="relative inline-flex items-center cursor-pointer">
+                                    {# The checkbox is deliberately UNNAMED: the hidden input is
+                                       the single submitted setting_value. A named checkbox would
+                                       submit a second setting_value when checked, and the Form
+                                       extractor rejects duplicate fields — which made every
+                                       boolean on this page unsavable. #}
                                     <input type="checkbox"
                                            id="{{ setting.key }}"
-                                           name="setting_value"
-                                           value="true"
                                            class="sr-only peer"
                                            {% if setting.value == "true" %}checked{% endif %}
-                                           onchange="this.form.querySelector('[name=setting_value]').value = this.checked ? 'true' : 'false'">
+                                           onchange="this.form.querySelector('input[type=hidden][name=setting_value]').value = this.checked ? 'true' : 'false'; this.parentElement.querySelector('span').textContent = this.checked ? 'Enabled' : 'Disabled';">
                                     <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
                                     <span class="ml-3 text-sm text-gray-700">
                                         {% if setting.value == "true" %}Enabled{% else %}Disabled{% endif %}
