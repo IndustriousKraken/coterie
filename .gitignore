@@ -51,3 +51,5 @@ uploads/
 
 # AI
 .claude/
+.mcp.json
+opencode.json
