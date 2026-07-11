@@ -40,6 +40,7 @@ use crate::{
     },
 };
 
+mod admin_actions;
 mod bulk_import;
 mod create;
 mod dues;

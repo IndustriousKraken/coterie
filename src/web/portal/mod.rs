@@ -46,7 +46,12 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         )
         .route(
             "/members/:id",
-            get(admin::members::detail::admin_member_detail_page),
+            get(admin::members::detail::admin_member_detail_page)
+                .delete(admin::members::quick_actions::admin_delete_member),
+        )
+        .route(
+            "/members/:id/reset-password",
+            post(admin::members::quick_actions::admin_send_password_reset),
         )
         .route(
             "/members/:id/update",

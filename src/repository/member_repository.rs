@@ -80,6 +80,13 @@ pub trait MemberRepository: Send + Sync {
     /// last-admin guard: a zero-admin database locks operators out AND
     /// re-arms the unauthenticated /setup page on restart.
     async fn count_admins(&self) -> Result<i64>;
+    /// Hard-delete a member row. Dependent rows with `ON DELETE
+    /// CASCADE` (profile, sessions, saved cards, scheduled payments,
+    /// tokens, attendance) go with it; rows WITHOUT a cascade
+    /// (payments, authored events/announcements, audit entries) make
+    /// the DELETE fail with an FK violation — callers guard first
+    /// (see `MemberService::delete`). NotFound on zero rows.
+    async fn delete(&self, id: Uuid) -> Result<()>;
     async fn mark_email_verified(&self, id: Uuid) -> Result<()>;
     async fn update_password_hash(&self, id: Uuid, password_hash: &str) -> Result<()>;
     /// Set or clear the member's Discord snowflake ID. `None` clears it.
@@ -494,6 +501,18 @@ impl MemberRepository for SqliteMemberRepository {
             .fetch_one(&self.pool)
             .await
             .map_err(AppError::Database)
+    }
+
+    async fn delete(&self, id: Uuid) -> Result<()> {
+        let res = sqlx::query("DELETE FROM members WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(AppError::Database)?;
+        if res.rows_affected() == 0 {
+            return Err(AppError::NotFound("Member not found".to_string()));
+        }
+        Ok(())
     }
 
     async fn mark_email_verified(&self, id: Uuid) -> Result<()> {

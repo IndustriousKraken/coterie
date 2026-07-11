@@ -7,6 +7,7 @@ pub mod discord;
 pub mod dues;
 pub mod list;
 pub mod payments;
+pub mod quick_actions;
 pub mod status;
 pub mod verification;
 
