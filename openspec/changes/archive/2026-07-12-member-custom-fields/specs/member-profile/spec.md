@@ -1,8 +1,7 @@
 # member-profile Specification
 
-## Purpose
-TBD - created by archiving change document-existing-architecture. Update Purpose after archive.
-## Requirements
+## MODIFIED Requirements
+
 ### Requirement: Members manage profile, password, and 2FA
 
 The member portal SHALL provide:
@@ -32,4 +31,3 @@ All routes SHALL require Active/Honorary status via `require_auth_redirect`.
 
 - **WHEN** a member submits a profile update with extra fields in the body (e.g., `is_admin`, `status`)
 - **THEN** the handler SHALL ignore them because the construction of `UpdateMemberRequest` populates only `full_name`
-

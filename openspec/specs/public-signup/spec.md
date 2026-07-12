@@ -10,7 +10,7 @@ TBD - created by archiving change document-existing-architecture. Update Purpose
 1. CORS allowlist (only configured origins may call it from a browser).
 2. Bot challenge (Turnstile-compatible verification).
 
-Signup is NOT covered by `money_limiter` because no payment side-effect is initiated. The bot challenge is the abuse gate.
+When the organization's signup mode is `approval` (the default), signup initiates no payment side-effect and is NOT covered by `money_limiter`; the bot challenge is the abuse gate. When the signup mode is `payment`, signup initiates a payment side-effect and SHALL additionally be covered by `money_limiter`, applied per the money-moving public-endpoint gate order (rate limit first).
 
 The endpoint SHALL be documented in `src/api/docs.rs` so the OpenAPI spec stays accurate.
 
@@ -36,12 +36,12 @@ The endpoint SHALL be documented in `src/api/docs.rs` so the OpenAPI spec stays 
 
 ### Requirement: Pending members cannot log in until verified
 
-A signup-created member with status `Pending` SHALL NOT pass `require_auth_redirect` or `require_auth`. The verification flow SHALL transition the member to a usable status when the email-token redeems.
+A member with status `Pending` SHALL NOT pass login, `require_auth_redirect`, or `require_auth`. A Pending member becomes Active via the signup mode's activation path — admin activation in `approval` mode, or a completed membership payment in `payment` mode. Email verification SHALL record `email_verified_at` and SHALL be independent of status: it does not by itself activate the member, and activation does not depend on it.
 
 #### Scenario: Pending member is rejected at login
 
-- **WHEN** a Pending member completes the verification flow
-- **THEN** their status SHALL transition to the configured initial active/expired state and login SHALL succeed
+- **WHEN** a Pending member attempts to log in — including after completing email verification but before activation
+- **THEN** login SHALL be rejected; once the member becomes Active via the mode's activation path, login SHALL succeed
 
 #### Scenario: Unverified Pending member cannot pass auth gates
 
@@ -72,4 +72,89 @@ These bounds match the existing public-donate handler so the two unauthenticated
 
 - **WHEN** a signup request supplies a valid `@`-bearing email within 254 characters and non-empty `username`/`full_name` within their bounds, with a verified bot-challenge token
 - **THEN** a `Pending` member SHALL be created (the bounds do not reject normal-length input)
+
+### Requirement: Signup mode is an organization setting
+
+The organization SHALL have a `membership.signup_mode` setting with values `approval` (default) and `payment`, stored in `app_settings` under the `membership` category so it is editable on the admin settings page. A missing or unrecognized value SHALL behave as `approval`.
+
+#### Scenario: Default is approval mode
+
+- **WHEN** a deployment has no explicit `membership.signup_mode` value
+- **THEN** signup SHALL behave exactly as the pre-existing approval funnel (Pending member, verification email, no payment side-effect, admin activation)
+
+#### Scenario: Admin can switch modes at runtime
+
+- **WHEN** an admin sets `membership.signup_mode` to `payment` via the settings page
+- **THEN** subsequent signups SHALL follow the payment-mode funnel without a restart
+
+### Requirement: Payment-mode signup initiates Stripe checkout
+
+When the signup mode is `payment` and the resolved membership type has a fee greater than zero, `POST /public/signup` SHALL — after creating the Pending member and queueing the verification email — create a Stripe Checkout session for that member and membership type using the same session contract as portal dues checkout (metadata: `member_id`, `payment_type=membership`, `membership_type_slug`), and SHALL return the checkout URL in the success response for the caller to redirect to. A membership type with a fee of zero SHALL behave as in approval mode: the member stays Pending and no checkout session is created.
+
+#### Scenario: Paid type returns a checkout URL
+
+- **WHEN** a payment-mode signup resolves a membership type with `fee_cents > 0`
+- **THEN** the response SHALL include a Stripe Checkout URL whose session metadata carries `member_id`, `payment_type=membership`, and the type's `membership_type_slug`
+
+#### Scenario: Free type stays in the approval funnel
+
+- **WHEN** a payment-mode signup resolves a membership type with `fee_cents == 0`
+- **THEN** no checkout session SHALL be created and the member SHALL remain Pending
+
+#### Scenario: Rate limit precedes bot challenge in payment mode
+
+- **WHEN** an IP at the money-limiter budget submits another payment-mode signup
+- **THEN** the handler SHALL return 429 WITHOUT calling the bot-challenge provider
+
+### Requirement: Completed membership payment activates a Pending member
+
+A completed membership payment for a member with status `Pending` SHALL transition the member to `Active` as part of the same atomic dues-extension claim that already revives `Expired` members, regardless of signup mode. The transition SHALL dispatch the same member-activated integration event as admin activation, so integrations observe payment-activated and admin-activated members identically.
+
+#### Scenario: Checkout completion activates the signup
+
+- **WHEN** the `checkout.session.completed` webhook records a completed membership payment for a Pending member
+- **THEN** the member SHALL become Active with `dues_paid_until` extended, and the member-activated integration event SHALL be dispatched
+
+#### Scenario: Admin-recorded dues activate a Pending member
+
+- **WHEN** an admin records a completed manual membership payment for a Pending member
+- **THEN** the member SHALL become Active, identically to the webhook path
+
+### Requirement: Abandoned signup checkout is retryable
+
+In payment mode, when a signup request supplies the email of an existing `Pending` member who has no completed membership payment AND the supplied password verifies against that member's password hash, the handler SHALL return a checkout session for that member instead of a duplicate-email error. When the member's most recent pending checkout session is still open on Stripe, the handler SHALL return THAT session's URL rather than creating a new one — a retry does not accumulate duplicate pending payment rows or leave multiple payable sessions open. When the previous session is no longer open (expired or unretrievable), its Pending payment row SHALL be marked Failed before a fresh session is created. When the password does not verify, or the member has a completed payment or a non-Pending status, the outcome SHALL be exactly the pre-existing duplicate handling, so the retry path discloses nothing beyond what duplicate detection already does.
+
+#### Scenario: Correct password resumes the open checkout
+
+- **WHEN** a payment-mode signup repeats an email belonging to a Pending member with no completed payment, the password verifies, and the member's previous checkout session is still open
+- **THEN** the response SHALL carry the existing session's URL, no second member SHALL be created, and no additional pending payment row SHALL be written
+
+#### Scenario: Expired previous session is superseded, not orphaned
+
+- **WHEN** the same retry arrives but the previous checkout session is no longer open
+- **THEN** the previous session's Pending payment row SHALL be marked Failed and the response SHALL carry a fresh checkout session's URL
+
+#### Scenario: Wrong password gets the duplicate outcome
+
+- **WHEN** the same repeat arrives with a password that does not verify
+- **THEN** the handler SHALL respond exactly as it does for any duplicate email today, and no checkout session SHALL be created
+
+### Requirement: Paid signups enroll in auto-renew by default
+
+The organization SHALL have a `membership.signup_auto_renew` boolean setting (default `true`), consulted at signup-checkout creation in payment mode. When enabled, the signup checkout session SHALL be created against a Stripe customer for the member with the card saved for off-session use, and — upon the completed payment — the member SHALL be enrolled in auto-renew: the paying card stored as a saved card (de-duplicated by card fingerprint, becoming the default when the member has none), the Stripe customer recorded on the member, billing mode set to Coterie-managed, and the next renewal scheduled from the newly extended dues date. Enrollment failures SHALL NOT fail the payment or the webhook — the member stays Active with dues extended, and the failure is logged. When the setting is disabled, signup payment behaves as a one-off charge: no customer requirement, no card saved, billing mode untouched.
+
+#### Scenario: Signup payment enrolls the member in auto-renew
+
+- **WHEN** `membership.signup_auto_renew` is enabled and a payment-mode signup's checkout completes
+- **THEN** the member SHALL have the paying card saved (default if they had none), billing mode `coterie_managed`, and a pending scheduled payment due at their new `dues_paid_until`
+
+#### Scenario: Setting disabled keeps one-off semantics
+
+- **WHEN** `membership.signup_auto_renew` is disabled and a payment-mode signup's checkout completes
+- **THEN** no card SHALL be saved and the member's billing mode SHALL remain `manual`
+
+#### Scenario: Enrollment failure does not fail the payment
+
+- **WHEN** the post-payment enrollment step errors (e.g. the card listing fails)
+- **THEN** the member SHALL still be Active with dues extended, the webhook SHALL succeed, and the failure SHALL be logged
 

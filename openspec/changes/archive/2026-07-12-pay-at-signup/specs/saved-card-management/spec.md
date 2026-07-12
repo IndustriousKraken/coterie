@@ -1,8 +1,7 @@
 # saved-card-management Specification
 
-## Purpose
-TBD - created by archiving change document-existing-architecture. Update Purpose after archive.
-## Requirements
+## MODIFIED Requirements
+
 ### Requirement: Card lifecycle uses Stripe SetupIntent
 
 Interactively adding a NEW saved card from the portal SHALL use Stripe's SetupIntent flow:
@@ -41,48 +40,3 @@ Card ATTACHMENT — getting a payment method onto the member's Stripe customer �
 
 - **WHEN** a pay-at-signup Checkout session created with `setup_future_usage=off_session` completes and enrollment runs
 - **THEN** Coterie SHALL persist a local record referencing the payment method Stripe attached during Checkout (`pm_*` id + display metadata only), skipping any whose fingerprint already exists, and SHALL mark it default only when the member has no default card
-
-### Requirement: Default-card invariant maintained
-
-A member SHALL have at most one default card at any time. Setting a card as default SHALL clear the previous default in the same transaction.
-
-#### Scenario: Setting a new default unsets the previous
-
-- **WHEN** a member with a default card sets another card as default
-- **THEN** at the end of the transaction exactly one card SHALL be marked default
-
-### Requirement: Card data persists only the necessary metadata
-
-The saved-card row SHALL persist only:
-- Stripe payment-method id (`pm_*`).
-- Brand and last-four (for UI display).
-- Expiry month/year (for "expiring soon" UI hints).
-- Member id (owner).
-- Default flag.
-- Created-at timestamp.
-
-The full card number, CVV, and full expiry SHALL never be persisted.
-
-#### Scenario: Database row contains no PAN/CVV
-
-- **WHEN** a saved-card row is inspected
-- **THEN** it SHALL contain no PAN, no CVV, and only the metadata listed above
-
-### Requirement: Test fixtures representing valid saved cards use runtime-relative expiry dates
-
-Test fixtures (in particular `FakeStripeGateway`'s default `retrieve_payment_method` response) that represent "a valid, non-expired saved card" SHALL use a `exp_year` computed from `Utc::now().year()` at runtime, NOT a hardcoded future year literal.
-
-The reason: a hardcoded future year is a time-bomb — it represents a valid card today but becomes an expired card once wall-clock time reaches that year. Tests that implicitly depend on the default-fixture-card being valid will silently break. The same anti-pattern is addressed in the `admin-events` spec for materializer test anchors.
-
-Tests that deliberately exercise expired-card behavior MAY use hardcoded past or near-future expiry dates as inputs — the rule applies to fixtures representing "valid" cards, not to fixtures representing specific calendar boundary cases.
-
-#### Scenario: FakeStripeGateway default fixture is valid for years to come
-
-- **WHEN** a test calls `retrieve_payment_method` without queuing a specific response
-- **THEN** the returned `PaymentMethodDetails.exp_year` SHALL be at least `Utc::now().year() + 1` (i.e., never representing an expired card from the perspective of the running test)
-
-#### Scenario: Hardcoded future year in a "valid card" fixture is a defect
-
-- **WHEN** a contributor inspects a test fixture that represents "a valid saved card"
-- **THEN** a literal future year (e.g., `exp_year: 2030`) SHALL be treated as a defect to be replaced with a runtime-relative computation; the rule is "fixtures representing validity SHALL be valid regardless of when the test runs"
-
