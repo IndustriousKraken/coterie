@@ -6,6 +6,7 @@ pub mod discord;
 pub mod email;
 pub mod events;
 pub mod finance;
+pub mod member_fields;
 pub mod members;
 pub mod partials;
 pub mod payments;

@@ -7,6 +7,7 @@ pub mod event_admin_service;
 pub mod expense_account_service;
 pub mod expense_category_service;
 pub mod expense_service;
+pub mod member_field_service;
 pub mod member_service;
 pub mod membership_type_service;
 pub mod payment_admin_service;
@@ -28,6 +29,7 @@ use audit_service::AuditService;
 use basic_type_service::BasicTypeService;
 use event_admin_service::EventAdminService;
 use expense_account_service::ExpenseAccountService;
+use member_field_service::MemberFieldService;
 use expense_category_service::ExpenseCategoryService;
 use expense_service::ExpenseService;
 use member_service::MemberService;
@@ -78,6 +80,8 @@ pub struct ServiceContext {
     /// every path without a restart. Built empty; `rebuild()` at startup
     /// loads DB config.
     pub stripe_handle: Arc<StripeHandle>,
+    pub member_field_repo: Arc<dyn MemberFieldRepository>,
+    pub member_field_service: Arc<MemberFieldService>,
     pub expense_service: Arc<ExpenseService>,
     pub expense_category_service: Arc<ExpenseCategoryService>,
     pub expense_account_service: Arc<ExpenseAccountService>,
@@ -205,6 +209,14 @@ impl ServiceContext {
             money_limiter,
         ));
 
+        // Org-defined member fields — see member-custom-fields capability.
+        let member_field_repo: Arc<dyn MemberFieldRepository> =
+            Arc::new(SqliteMemberFieldRepository::new(db_pool.clone()));
+        let member_field_service = Arc::new(MemberFieldService::new(
+            member_field_repo.clone(),
+            audit_service.clone(),
+        ));
+
         let expense_service = Arc::new(ExpenseService::new(
             expense_repo.clone(),
             expense_category_repo.clone(),
@@ -253,6 +265,8 @@ impl ServiceContext {
             expense_repo,
             expense_category_repo,
             expense_account_repo,
+            member_field_repo,
+            member_field_service,
             expense_service,
             expense_category_service,
             expense_account_service,

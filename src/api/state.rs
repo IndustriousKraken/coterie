@@ -366,6 +366,12 @@ impl FromRef<AppState> for Arc<MembershipTypeService> {
     }
 }
 
+impl FromRef<AppState> for Arc<crate::service::member_field_service::MemberFieldService> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.member_field_service.clone()
+    }
+}
+
 // Two BasicTypeService instances share the same type — disambiguate via
 // newtypes so handlers can extract whichever they need without ambiguity.
 

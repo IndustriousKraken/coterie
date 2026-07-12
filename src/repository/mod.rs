@@ -6,6 +6,7 @@ pub mod event_series_repository;
 pub mod expense_account_repository;
 pub mod expense_category_repository;
 pub mod expense_repository;
+pub mod member_field_repository;
 pub mod member_repository;
 pub mod membership_type_repository;
 pub mod payment_repository;
@@ -18,6 +19,7 @@ pub use basic_type_repository::{BasicTypeRepository, SqliteBasicTypeRepository};
 pub use donation_repository::{DonationCampaignRepository, SqliteDonationCampaignRepository};
 pub use event_repository::{EventRepository, SqliteEventRepository};
 pub use event_series_repository::{EventSeriesRepository, SqliteEventSeriesRepository};
+pub use member_field_repository::{MemberFieldRepository, SqliteMemberFieldRepository};
 pub use expense_account_repository::{ExpenseAccountRepository, SqliteExpenseAccountRepository};
 pub use expense_category_repository::{ExpenseCategoryRepository, SqliteExpenseCategoryRepository};
 pub use expense_repository::{

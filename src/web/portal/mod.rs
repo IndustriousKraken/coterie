@@ -54,6 +54,23 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
             post(admin::members::quick_actions::admin_send_password_reset),
         )
         .route(
+            "/members/:id/custom-fields",
+            post(admin::member_fields::admin_save_member_custom_fields),
+        )
+        .route(
+            "/settings/member-fields",
+            get(admin::member_fields::admin_member_fields_page)
+                .post(admin::member_fields::admin_create_member_field),
+        )
+        .route(
+            "/settings/member-fields/:id/update",
+            post(admin::member_fields::admin_update_member_field),
+        )
+        .route(
+            "/settings/member-fields/:id/delete",
+            post(admin::member_fields::admin_delete_member_field),
+        )
+        .route(
             "/members/:id/update",
             post(admin::members::detail::admin_update_member),
         )
@@ -490,6 +507,10 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/donate", get(donations::donate_page))
         .route("/profile", get(profile::profile_page))
         .route("/profile", post(profile::update_profile))
+        .route(
+            "/profile/custom-fields",
+            post(profile::update_custom_fields),
+        )
         .route("/profile/password", post(profile::update_password))
         .route("/profile/security", get(security::security_page))
         .route(

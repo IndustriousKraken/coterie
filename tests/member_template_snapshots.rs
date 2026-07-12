@@ -149,6 +149,7 @@ fn render_dashboard(status: MemberStatus) -> String {
 fn render_profile(status: MemberStatus) -> String {
     let tmpl = ProfileTemplate {
         base: fixture_base(),
+        custom_fields: vec![],
         member: member_info(status),
     };
     tmpl.render().expect("render profile")
@@ -202,6 +203,7 @@ fn render_admin_members_table(status: MemberStatus) -> String {
 fn render_admin_member_detail(status: MemberStatus) -> String {
     let tmpl = AdminMemberDetailTemplate {
         base: fixture_base(),
+        custom_fields: vec![],
         member: admin_member_detail_info(status),
         type_options: type_options(),
     };

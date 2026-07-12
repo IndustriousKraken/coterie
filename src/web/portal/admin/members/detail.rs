@@ -27,6 +27,9 @@ pub struct AdminMemberDetailTemplate {
     pub base: BaseContext,
     pub member: AdminMemberDetailInfo,
     pub type_options: Vec<MembershipTypeOption>,
+    /// Org-defined fields with this member's values; the card is
+    /// hidden when no active definitions exist.
+    pub custom_fields: Vec<crate::web::portal::admin::member_fields::FieldRow>,
 }
 
 pub struct AdminMemberDetailInfo {
@@ -64,6 +67,7 @@ pub async fn admin_member_detail_page(
     State(member_repo): State<Arc<dyn MemberRepository>>,
     State(saved_card_repo): State<Arc<dyn SavedCardRepository>>,
     State(membership_type_service): State<Arc<MembershipTypeService>>,
+    State(member_field_service): State<Arc<crate::service::member_field_service::MemberFieldService>>,
     State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
@@ -155,10 +159,17 @@ pub async fn admin_member_detail_page(
             .to_string(),
     };
 
+    let custom_fields = member_field_service
+        .fields_for(id, crate::service::member_field_service::FieldScope::Admin)
+        .await
+        .map(|f| crate::web::portal::admin::member_fields::field_rows_with_values(&f))
+        .unwrap_or_default();
+
     let template = AdminMemberDetailTemplate {
         base,
         member: member_info,
         type_options,
+        custom_fields,
     };
 
     HtmlTemplate(template).into_response()

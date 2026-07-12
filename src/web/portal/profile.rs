@@ -25,10 +25,16 @@ use crate::{
 pub struct ProfileTemplate {
     pub base: BaseContext,
     pub member: MemberInfo,
+    /// Member-editable org-defined fields with this member's values;
+    /// the card is hidden when none exist.
+    pub custom_fields: Vec<crate::web::portal::admin::member_fields::FieldRow>,
 }
 
 pub async fn profile_page(
     State(membership_type_service): State<Arc<MembershipTypeService>>,
+    State(member_field_service): State<
+        Arc<crate::service::member_field_service::MemberFieldService>,
+    >,
     State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
@@ -52,9 +58,19 @@ pub async fn profile_page(
         dues_paid_until: current_user.member.dues_paid_until,
     };
 
+    let custom_fields = member_field_service
+        .fields_for(
+            current_user.member.id,
+            crate::service::member_field_service::FieldScope::Member,
+        )
+        .await
+        .map(|f| crate::web::portal::admin::member_fields::field_rows_with_values(&f))
+        .unwrap_or_default();
+
     let template = ProfileTemplate {
         base: BaseContext::for_member(&csrf_service, &current_user, &session_info).await,
         member: member_info,
+        custom_fields,
     };
 
     HtmlTemplate(template)
@@ -262,4 +278,46 @@ pub async fn update_password(
         ),
     )
         .into_response()
+}
+
+/// Member save of their own member-editable custom fields. Locked
+/// (non-member-editable) fields are rejected in the service even under
+/// a crafted POST.
+pub async fn update_custom_fields(
+    State(member_field_service): State<
+        Arc<crate::service::member_field_service::MemberFieldService>,
+    >,
+    Extension(current_user): Extension<CurrentUser>,
+    axum::Form(form): axum::Form<Vec<(String, String)>>,
+) -> axum::response::Response {
+    use crate::service::member_field_service::FieldScope;
+    use crate::web::portal::admin::member_fields::field_pairs;
+
+    let pairs = field_pairs(&form);
+    match member_field_service
+        .save_values(
+            current_user.member.id,
+            current_user.member.id,
+            &pairs,
+            FieldScope::Member,
+        )
+        .await
+    {
+        Ok(()) => axum::response::Response::builder()
+            .status(200)
+            .header("HX-Redirect", "/portal/profile")
+            .header(
+                "X-Toast",
+                r#"{"message":"Details saved!","type":"success"}"#,
+            )
+            .body(axum::body::Body::empty())
+            .unwrap(),
+        Err(e) => {
+            let html = format!(
+                "<div class=\"p-4 bg-red-50 text-red-800 rounded-md\">Save failed: {}</div>",
+                crate::web::escape_html(&e.to_string())
+            );
+            axum::response::Html(html).into_response()
+        }
+    }
 }
