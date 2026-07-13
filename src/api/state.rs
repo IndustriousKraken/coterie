@@ -42,10 +42,16 @@ use crate::{
 /// proxy — see `ServerConfig::trust_forwarded_for`.
 pub fn client_ip(headers: &HeaderMap, trust_forwarded: bool) -> IpAddr {
     if trust_forwarded {
-        // Try X-Forwarded-For (first IP in the chain is the client)
+        // Take the RIGHT-most X-Forwarded-For entry: the hop appended by the
+        // single trusted proxy (Caddy). A standard proxy APPENDS the peer it
+        // received the connection from, so any left-of-that entries are
+        // client-supplied and spoofable — reading `.next()` (left-most) would
+        // let an attacker rotate the rate-limit key per request.
+        // ponytail: single trusted proxy => right-most; add a hop-count knob
+        // only if a multi-proxy deployment ever needs it.
         if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-            if let Some(first) = xff.split(',').next() {
-                if let Ok(ip) = first.trim().parse::<IpAddr>() {
+            if let Some(last) = xff.split(',').next_back() {
+                if let Ok(ip) = last.trim().parse::<IpAddr>() {
                     return ip;
                 }
             }
@@ -527,5 +533,38 @@ impl FromRef<AppState> for Arc<AsyncMutex<()>> {
 impl FromRef<AppState> for Arc<AtomicBool> {
     fn from_ref(state: &AppState) -> Self {
         state.admin_exists_observed.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderMap;
+
+    fn headers(xff: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", xff.parse().unwrap());
+        h
+    }
+
+    #[test]
+    fn xff_uses_rightmost_entry_not_client_prepended() {
+        // Caddy appends the real peer (9.9.9.9); 1.2.3.4 is a client-supplied
+        // prefix an attacker can rotate. We MUST key on the trusted-proxy hop.
+        let ip = client_ip(&headers("1.2.3.4, 9.9.9.9"), true);
+        assert_eq!(ip, "9.9.9.9".parse::<IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn xff_single_entry_still_used() {
+        let ip = client_ip(&headers("9.9.9.9"), true);
+        assert_eq!(ip, "9.9.9.9".parse::<IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn xff_ignored_when_not_trusted() {
+        // Safe-by-default: header ignored, collapses to loopback bucket.
+        let ip = client_ip(&headers("1.2.3.4, 9.9.9.9"), false);
+        assert_eq!(ip, IpAddr::from([127, 0, 0, 1]));
     }
 }

@@ -79,15 +79,15 @@ Concretely:
 
 ## Tasks
 
-- [ ] 1.1 In `src/api/state.rs::client_ip`, change the `X-Forwarded-For` parse
+- [x] 1.1 In `src/api/state.rs::client_ip`, change the `X-Forwarded-For` parse
   to take the last (right-most) comma-separated entry instead of the first;
   keep the `trim().parse::<IpAddr>()` guard and the `X-Real-Ip` / loopback
   fallbacks intact.
-- [ ] 2.1 Add a unit test in `src/api/state.rs` (or `tests/`) asserting that,
+- [x] 2.1 Add a unit test in `src/api/state.rs` (or `tests/`) asserting that,
   with `trust_forwarded_for = true`, `client_ip` for
   `X-Forwarded-For: 1.2.3.4, 9.9.9.9` returns `9.9.9.9` (the trusted-proxy hop),
   NOT `1.2.3.4`; and that a lone `X-Forwarded-For: 9.9.9.9` still returns
   `9.9.9.9`.
-- [ ] 2.2 Add a test asserting that with `trust_forwarded_for = false` the
+- [x] 2.2 Add a test asserting that with `trust_forwarded_for = false` the
   header is ignored (loopback fallback), guarding the safe-by-default path.
-- [ ] 3.1 Run `cargo test` and confirm the rate-limiting-adjacent suites pass.
+- [x] 3.1 Run `cargo test` and confirm the rate-limiting-adjacent suites pass.
