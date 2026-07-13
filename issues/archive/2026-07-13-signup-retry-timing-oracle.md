@@ -76,16 +76,16 @@ Concretely:
 
 ## Tasks
 
-- [ ] 1.1 In `src/api/handlers/public.rs::retry_pending_checkout`, on the
+- [x] 1.1 In `src/api/handlers/public.rs::retry_pending_checkout`, on the
   email-not-found and non-`Pending`-status early returns, run
   `AuthService::verify_dummy(password).await` before `return Ok(None)` so those
   branches incur the same Argon2 cost as the wrong-password branch. Confirm
   `verify_dummy` exists (`src/auth/mod.rs:57`) and is the same primitive the
   login handler uses for enumeration-resistance.
-- [ ] 2.1 Add a test asserting the response for a duplicate signup with a wrong
+- [x] 2.1 Add a test asserting the response for a duplicate signup with a wrong
   password, a non-existent email, and a non-Pending member is byte-identical
   (`409`, same body) — the existing behavioral guarantee — and note in a comment
   that the dummy-verify equalizes timing (timing itself is not asserted, but the
   dummy-verify call site is covered).
-- [ ] 3.1 Run `cargo test --features test-utils --test pay_at_signup_test` and
+- [x] 3.1 Run `cargo test --features test-utils --test pay_at_signup_test` and
   confirm the retry-rule tests still pass.

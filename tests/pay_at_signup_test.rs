@@ -103,6 +103,23 @@ async fn post_signup(app: Router, body: &serde_json::Value) -> (StatusCode, serd
     (status, json)
 }
 
+/// Like `post_signup` but returns the raw response body so callers can
+/// assert two 409s are byte-identical.
+async fn post_signup_raw(app: Router, body: &serde_json::Value) -> (StatusCode, String) {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/public/signup")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
 async fn member_status(pool: &SqlitePool, email: &str) -> String {
     sqlx::query_scalar("SELECT status FROM members WHERE email = ?")
         .bind(email)
@@ -427,6 +444,64 @@ async fn duplicate_signup_retry_rules() {
         .unwrap();
     let (status, _) = post_signup(app, &body).await;
     assert_eq!(status, StatusCode::CONFLICT);
+}
+
+// ---------------------------------------------------------------------
+// 4.6b Retry anti-enumeration: every non-resuming duplicate yields the
+// SAME 409 body, across all three early-return branches — wrong
+// password, unknown email (username-only collision), and non-Pending
+// status. The handler also runs `AuthService::verify_dummy` on the
+// email-not-found and non-Pending branches so their Argon2 latency
+// matches the wrong-password branch, closing the timing side-channel.
+// Timing itself is inherently flaky to assert; this test locks the
+// observable-body invariant and exercises those dummy-verify call sites.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn duplicate_signup_409_is_identical_across_branches() {
+    let pool = fresh_pool().await;
+    insert_membership_type(&pool, PAID_SLUG, 4500).await;
+    set_signup_mode(&pool, "payment").await;
+    let (state, _fake) = state_with_fake_stripe(&pool, None).await;
+    let app = coterie::api::create_app(state);
+
+    // Seed a Pending member (alpha) and a to-be-Active member (bravo).
+    let (status, _) = post_signup(app.clone(), &signup_body("a@x.com", "alpha", PAID_SLUG)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = post_signup(app.clone(), &signup_body("b@x.com", "bravo", PAID_SLUG)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    sqlx::query("UPDATE members SET status = 'Active' WHERE email = 'b@x.com'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // (c) Wrong password on the Pending member — the only branch that
+    // ran Argon2 before the fix.
+    let mut wrong_pw = signup_body("a@x.com", "alpha", PAID_SLUG);
+    wrong_pw["password"] = serde_json::json!("WrongPassw0rd!");
+    let (s_wrong, b_wrong) = post_signup_raw(app.clone(), &wrong_pw).await;
+
+    // (a) Unknown email but colliding username → username unique
+    // violation, find_by_email misses → verify_dummy, then Ok(None).
+    let (s_unknown, b_unknown) =
+        post_signup_raw(app.clone(), &signup_body("nobody@x.com", "alpha", PAID_SLUG)).await;
+
+    // (b) Email matches a non-Pending (Active) member → verify_dummy,
+    // then Ok(None).
+    let (s_active, b_active) =
+        post_signup_raw(app.clone(), &signup_body("b@x.com", "bravo", PAID_SLUG)).await;
+
+    assert_eq!(s_wrong, StatusCode::CONFLICT);
+    assert_eq!(s_unknown, StatusCode::CONFLICT);
+    assert_eq!(s_active, StatusCode::CONFLICT);
+    assert_eq!(
+        b_wrong, b_unknown,
+        "unknown-email 409 body must be byte-identical to the wrong-password 409 body"
+    );
+    assert_eq!(
+        b_wrong, b_active,
+        "non-Pending 409 body must be byte-identical to the wrong-password 409 body"
+    );
 }
 
 // ---------------------------------------------------------------------
