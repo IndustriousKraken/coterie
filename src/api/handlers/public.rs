@@ -225,6 +225,16 @@ pub async fn signup(
                 .ok_or_else(|| {
                     AppError::BadRequest(format!("Unknown membership type slug: {}", slug,))
                 })?;
+            // A deactivated type is not signup-able. Reject it with the
+            // same 400 as an unknown slug, before any member is created —
+            // inactive types are excluded from the public listing, so an
+            // inactive slug here is a stale/guessed link, not a valid choice.
+            if !mt.is_active {
+                return Err(AppError::BadRequest(format!(
+                    "Membership type is not available: {}",
+                    slug,
+                )));
+            }
             Some(mt.id)
         }
         None => None,
