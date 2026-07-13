@@ -411,13 +411,18 @@ async fn retry_pending_checkout(
     password: &str,
 ) -> Result<Option<(StatusCode, Json<SignupResponse>)>> {
     let Some(member) = member_repo.find_by_email(email).await? else {
-        // Unique violation on username, not email — not a retry.
+        // Unique violation on username, not email — not a retry. Burn the
+        // same Argon2 time the verify branch does so the 409's latency
+        // can't distinguish a Pending-unpaid email from other outcomes.
+        AuthService::verify_dummy(password).await;
         return Ok(None);
     };
     if member.status != MemberStatus::Pending {
+        AuthService::verify_dummy(password).await;
         return Ok(None);
     }
     let Some(hash) = crate::auth::get_password_hash(db_pool, email).await? else {
+        AuthService::verify_dummy(password).await;
         return Ok(None);
     };
     if !AuthService::verify_password(password, &hash)
