@@ -387,6 +387,37 @@ async fn payment_mode_rate_limit_precedes_bot_challenge() {
     );
 }
 
+// Approval mode (the default) moves no money, but the money limiter now
+// applies there too — the same gate order (limiter before bot challenge)
+// must hold. Mirrors the payment-mode probe above.
+#[tokio::test]
+async fn approval_mode_rate_limit_precedes_bot_challenge() {
+    let pool = fresh_pool().await;
+    insert_membership_type(&pool, FREE_SLUG, 0).await;
+    set_signup_mode(&pool, "approval").await;
+
+    let verifier = Arc::new(CountingDenyVerifier {
+        calls: AtomicUsize::new(0),
+    });
+    let (state, _fake) = state_with_fake_stripe(&pool, Some(verifier.clone())).await;
+    let app = coterie::api::create_app(state);
+
+    let body = signup_body("g@x.com", "golf", FREE_SLUG);
+    for i in 0..10 {
+        let (status, _) = post_signup(app.clone(), &body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "request {i} fails the challenge");
+    }
+    assert_eq!(verifier.calls.load(Ordering::SeqCst), 10);
+
+    let (status, _) = post_signup(app, &body).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "11th request is rate-limited");
+    assert_eq!(
+        verifier.calls.load(Ordering::SeqCst),
+        10,
+        "the rate-limited request must not consult the bot-challenge provider"
+    );
+}
+
 // ---------------------------------------------------------------------
 // 4.6 Abandoned-checkout retry
 // ---------------------------------------------------------------------
