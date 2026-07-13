@@ -141,7 +141,7 @@ pub struct PublicEventsQuery {
             `checkout_url` is returned instead of a duplicate error", body = SignupResponse),
         (status = 400, description = "Invalid email or weak password"),
         (status = 409, description = "Email or username already in use"),
-        (status = 429, description = "Rate limited (payment mode only)"),
+        (status = 429, description = "Rate limited (per-IP money limiter, both signup modes)"),
     ),
 )]
 pub async fn signup(
@@ -161,12 +161,14 @@ pub async fn signup(
     let signup_mode = settings_service.signup_mode().await;
     let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
 
-    // In payment mode signup initiates a Stripe Checkout, making this a
-    // money-moving public endpoint: rate limit FIRST (before the bot
-    // challenge, so a bursting IP can't burn the provider's quota),
-    // mirroring /public/donate. Approval mode initiates no payment and
-    // keeps the pre-existing gate set (bot challenge only).
-    if signup_mode == SignupMode::Payment && !money_limiter.0.check_and_record(ip) {
+    // Rate limit FIRST (before the bot challenge, so a bursting IP can't
+    // burn the provider's quota), mirroring /public/donate. Applied in
+    // BOTH modes: payment mode caps card-testing on the Stripe Checkout
+    // side-effect; approval mode caps mass account creation and the
+    // verification-email amplification each signup triggers — the bot
+    // challenge defaults to disabled, so this is the only remaining
+    // control out of the box.
+    if !money_limiter.0.check_and_record(ip) {
         return Err(AppError::TooManyRequests);
     }
 
@@ -223,6 +225,17 @@ pub async fn signup(
                 .ok_or_else(|| {
                     AppError::BadRequest(format!("Unknown membership type slug: {}", slug,))
                 })?;
+            // A deactivated type is not signup-able. Reject it with the
+            // same 400 AND the same message as an unknown slug, before any
+            // member is created — inactive types are excluded from the public
+            // listing, and using an identical message keeps a prober from
+            // distinguishing "never existed" from "exists but deactivated".
+            if !mt.is_active {
+                return Err(AppError::BadRequest(format!(
+                    "Unknown membership type slug: {}",
+                    slug,
+                )));
+            }
             Some(mt.id)
         }
         None => None,

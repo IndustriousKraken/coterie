@@ -2,7 +2,7 @@
 
 ## 1. Reject inactive types at signup
 
-- [ ] 1.1 In `src/api/handlers/public.rs::signup` slug resolution, after
+- [x] 1.1 In `src/api/handlers/public.rs::signup` slug resolution, after
   resolving the type via `get_by_slug`, reject with
   `AppError::BadRequest` (mirroring the unknown-slug 400) when the resolved
   type's `is_active` is false, BEFORE creating the member. Keep the
@@ -12,8 +12,8 @@
 
 ## 2. Tests
 
-- [ ] 2.1 Signup with a slug that exists but is inactive → `400`; assert no
+- [x] 2.1 Signup with a slug that exists but is inactive → `400`; assert no
   member row is created.
-- [ ] 2.2 Signup with an active slug still succeeds (Pending member created);
+- [x] 2.2 Signup with an active slug still succeeds (Pending member created);
   signup with an omitted slug still takes the org default. Unknown slug still
   `400`.

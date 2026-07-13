@@ -8,9 +8,10 @@ TBD - created by archiving change document-existing-architecture. Update Purpose
 `POST /public/signup` SHALL accept new-member signup data, create a member with status `Pending`, and trigger a verification email. The endpoint SHALL be CSRF-exempt and gated by:
 
 1. CORS allowlist (only configured origins may call it from a browser).
-2. Bot challenge (Turnstile-compatible verification).
+2. `money_limiter` (per-IP rate limit, applied in BOTH signup modes).
+3. Bot challenge (Turnstile-compatible verification).
 
-When the organization's signup mode is `approval` (the default), signup initiates no payment side-effect and is NOT covered by `money_limiter`; the bot challenge is the abuse gate. When the signup mode is `payment`, signup initiates a payment side-effect and SHALL additionally be covered by `money_limiter`, applied per the money-moving public-endpoint gate order (rate limit first).
+`money_limiter` SHALL run BEFORE the bot-challenge provider in both modes so a bursting IP cannot burn the provider's quota. When the organization's signup mode is `approval` (the default), signup initiates no payment side-effect but SHALL still be covered by `money_limiter` to cap mass account creation and verification-email amplification. When the signup mode is `payment`, signup initiates a payment side-effect and the same `money_limiter` applies per the money-moving public-endpoint gate order.
 
 The endpoint SHALL be documented in `src/api/docs.rs` so the OpenAPI spec stays accurate.
 
@@ -33,6 +34,11 @@ The endpoint SHALL be documented in `src/api/docs.rs` so the OpenAPI spec stays 
 
 - **WHEN** a signup request reaches the handler with a missing or invalid token
 - **THEN** the handler SHALL return 403 BEFORE any membership-type lookup or member creation, so an attacker cannot use signup to probe internal state
+
+#### Scenario: Approval-mode signup is rate-limited
+
+- **WHEN** the org's signup mode is `approval` and an IP at the money-limiter budget submits another signup
+- **THEN** the request SHALL be rejected with `429` WITHOUT consulting the bot-challenge provider
 
 ### Requirement: Pending members cannot log in until verified
 
@@ -157,4 +163,23 @@ The organization SHALL have a `membership.signup_auto_renew` boolean setting (de
 
 - **WHEN** the post-payment enrollment step errors (e.g. the card listing fails)
 - **THEN** the member SHALL still be Active with dues extended, the webhook SHALL succeed, and the failure SHALL be logged
+
+### Requirement: Signup rejects unknown or inactive membership types
+
+`POST /public/signup` SHALL reject a supplied `membership_type_slug` that does not resolve to an ACTIVE membership type. An unknown slug SHALL be rejected with `400`; a slug that resolves to a membership type whose `is_active` flag is false SHALL ALSO be rejected with `400`, before any member is created — a deactivated type is not signup-able even though it still exists in the database. An omitted slug SHALL take the organization's default (the first active membership type by sort order), and a known, active slug SHALL be accepted unchanged.
+
+#### Scenario: Inactive membership-type slug is rejected
+
+- **WHEN** a signup supplies a `membership_type_slug` that exists but whose type is inactive
+- **THEN** the handler SHALL return `400` and SHALL NOT create a member
+
+#### Scenario: Unknown membership-type slug is rejected
+
+- **WHEN** a signup supplies a `membership_type_slug` that matches no membership type
+- **THEN** the handler SHALL return `400` and SHALL NOT create a member
+
+#### Scenario: Omitted slug takes the org default
+
+- **WHEN** a signup omits `membership_type_slug`
+- **THEN** the member SHALL be created on the organization's default (first active) membership type
 
