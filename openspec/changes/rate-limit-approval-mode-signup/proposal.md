@@ -30,6 +30,9 @@ Because canon states the approval-mode carve-out, closing it is a spec change.
 
 - Spec: `rate-limiting` — 1 MODIFIED requirement (the money-moving requirement:
   `/public/signup` becomes unconditional in the caller list and the note).
+- Spec: `public-signup` — 1 MODIFIED requirement (the public-signup gate
+  description: `money_limiter` now applies in BOTH modes, not payment-only;
+  gate list updated to include rate limit before bot challenge).
 - Code: `src/api/handlers/public.rs::signup` — remove the
   `signup_mode == SignupMode::Payment &&` guard on the `money_limiter` check.
 - Tests: assert an IP over budget gets `429` on approval-mode signup too, before
