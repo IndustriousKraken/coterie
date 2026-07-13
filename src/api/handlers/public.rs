@@ -6,7 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use utoipa::{IntoParams, ToSchema};
@@ -18,7 +18,7 @@ use crate::{
     config::Settings,
     domain::{
         configurable_types::MembershipTypeConfig, Announcement, CreateMemberRequest, Event,
-        EventVisibility, MemberStatus, PaymentStatus,
+        EventType, EventVisibility, MemberStatus, PaymentStatus,
     },
     email::EmailSender,
     error::{AppError, Result},
@@ -74,6 +74,48 @@ pub struct PublicMembershipType {
     pub currency: String,
     /// One of `monthly`, `yearly`, `lifetime`.
     pub billing_period: String,
+}
+
+/// Public projection of an `Event` for `GET /public/events`. Exposes
+/// only the fields the marketing site consumes and deliberately omits
+/// internal identifiers that must never reach anonymous callers —
+/// `created_by` (the organizer's member id), `created_at`, `updated_at`,
+/// `event_type_id`, `series_id`, and `occurrence_index`. Members-only
+/// sanitization (nulling title/description/location/image_url) is applied
+/// to the source `Event` before projection, so it carries through.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PublicEvent {
+    pub id: Uuid,
+    pub title: String,
+    pub description: String,
+    pub event_type: EventType,
+    pub visibility: EventVisibility,
+    pub start_time: DateTime<Utc>,
+    pub end_time: Option<DateTime<Utc>>,
+    pub timezone: String,
+    pub location: Option<String>,
+    pub image_url: Option<String>,
+    pub max_attendees: Option<i32>,
+    pub rsvp_required: bool,
+}
+
+impl From<Event> for PublicEvent {
+    fn from(e: Event) -> Self {
+        PublicEvent {
+            id: e.id,
+            title: e.title,
+            description: e.description,
+            event_type: e.event_type,
+            visibility: e.visibility,
+            start_time: e.start_time,
+            end_time: e.end_time,
+            timezone: e.timezone,
+            location: e.location,
+            image_url: e.image_url,
+            max_attendees: e.max_attendees,
+            rsvp_required: e.rsvp_required,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -592,7 +634,7 @@ async fn org_name(settings_service: &SettingsService) -> String {
     tag = "public",
     params(PublicEventsQuery),
     responses(
-        (status = 200, description = "Upcoming public + sanitized members-only events", body = [Event],
+        (status = 200, description = "Upcoming public + sanitized members-only events", body = [PublicEvent],
             content_type = "application/json"),
         (status = 200, description = "iCal feed (when format=ical)", content_type = "text/calendar"),
     ),
@@ -643,7 +685,11 @@ pub async fn list_events(
         )
             .into_response())
     } else {
-        Ok(Json(upcoming_events).into_response())
+        // Project to PublicEvent so internal-only fields (created_by,
+        // timestamps, event_type_id, series_id, occurrence_index) never
+        // reach anonymous callers. Sanitization already ran above.
+        let public: Vec<PublicEvent> = upcoming_events.into_iter().map(PublicEvent::from).collect();
+        Ok(Json(public).into_response())
     }
 }
 
