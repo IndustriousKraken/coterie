@@ -46,6 +46,12 @@ to. Self-hosters testing their **own** instance do not need to be on the roster.
   capture or submit real card data; use **Stripe test mode** only.
 - The legacy WordPress site (retired).
 - Any deployment or asset you were not explicitly authorized to test.
+- **Not-yet-enabled integrations** — integrations not enabled on the live
+  deployment, currently **Discord** and **UniFi** (UniFi is an unfinished stub).
+  Their feature behavior isn't live, and incomplete behavior in a self-hosted
+  build is not a vulnerability. *Exception:* a way to invoke, enable, or reach
+  one of these **without authorization** is in scope — if the off switch doesn't
+  hold, we want to know.
 
 ## Rewards
 
