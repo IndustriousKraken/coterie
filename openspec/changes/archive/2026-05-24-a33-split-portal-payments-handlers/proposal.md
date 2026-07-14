@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `src/web/portal/payments.rs` is 964 lines holding 17 handlers covering member payment views, the checkout flow (Stripe.js + saved-card charge), saved-card management (list, set-default, delete, auto-renew toggle), and receipts. Reviewing changes to the saved-card removal flow currently means scrolling through 800 lines of unrelated handlers.

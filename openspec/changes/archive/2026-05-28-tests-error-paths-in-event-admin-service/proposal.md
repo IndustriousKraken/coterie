@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `src/service/event_admin_service.rs` has an extensive happy-path test

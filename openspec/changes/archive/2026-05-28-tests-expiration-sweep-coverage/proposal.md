@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `src/service/billing_service/expiration.rs::check_expired_members` is

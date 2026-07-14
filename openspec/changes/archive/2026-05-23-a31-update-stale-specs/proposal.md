@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 The architecture pass's drift audit surfaced three specs that have fallen out of sync with the code. None of these are "code is wrong" findings — they're "spec is wrong." The code is correct per current architecture; the specs were written before the relevant refactors and never updated.

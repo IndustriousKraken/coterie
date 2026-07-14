@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `Notifications::send_dues_reminders`

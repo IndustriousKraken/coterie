@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `src/service/member_service.rs` is 1262 lines — the largest file in the repo. The single `impl MemberService` block holds 16 distinct methods covering status transitions, dues management, profile updates, bulk import, helpers, and audit-export. Plus ~285 lines of tests at the bottom. The file is harder to navigate than it needs to be, and reviewing changes to `bulk_import` (a ~315-line function on its own) means scrolling through 1000 lines of unrelated context.

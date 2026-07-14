@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 The architecture pass surfaced several small functions duplicated across files with identical (or near-identical) bodies. After filtering noise (trait impls, distinct types sharing method names, etc.), four real extractions remain:

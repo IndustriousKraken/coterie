@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `src/service/audit_service.rs` has two boundary-clamping invariants
