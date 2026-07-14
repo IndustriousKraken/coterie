@@ -276,6 +276,26 @@ mod tz_tests {
         assert_eq!(utc.to_rfc3339(), "2026-03-08T07:30:00+00:00");
     }
 
+    // Past/upcoming status must compare the DERIVED instant to `now`, not
+    // the raw wall-clock. A 7 PM EST event (19:00 wall-clock, 00:00Z next
+    // day) at a `now` after 19:00Z but before the true start is still
+    // upcoming; comparing the raw wall-clock would wrongly call it past.
+    #[test]
+    fn past_status_uses_derived_instant_not_wallclock() {
+        let e = event_at(wall(2026, 1, 23, 19, 0), "America/New_York");
+        // 19:30Z on the event day: after the raw wall-clock (19:00Z) but
+        // ~4.5h before the true start (00:00Z the 24th, EST is UTC-5).
+        let now = Utc.with_ymd_and_hms(2026, 1, 23, 19, 30, 0).unwrap();
+        assert_eq!(e.start_utc().to_rfc3339(), "2026-01-24T00:00:00+00:00");
+        // Correct: derived instant is still in the future → upcoming.
+        assert!(e.start_utc() > now, "derived instant should be upcoming");
+        // The bug: raw wall-clock would flip it to past ~4.5h early.
+        assert!(
+            e.start_time <= now,
+            "raw wall-clock (19:00Z) mis-reads as past against 19:30Z now"
+        );
+    }
+
     // DST overlap (fall-back): 01:30 on 2026-11-01 happens twice in
     // America/New_York. The defined rule picks the earliest (EDT) instant.
     #[test]

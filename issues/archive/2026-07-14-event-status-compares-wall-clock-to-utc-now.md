@@ -144,24 +144,24 @@ time as a regression.
 
 ### 1. Derive the instant before comparing to `now`
 
-- [ ] 1.1 `src/web/portal/admin/events/single.rs:141-142` — change
+- [x] 1.1 `src/web/portal/admin/events/single.rs:141-142` — change
   `e.start_time > now` → `e.start_utc() > now` and `e.start_time <= now` →
   `e.start_utc() <= now` in the `time_filter` match.
-- [ ] 1.2 `src/web/portal/admin/events/single.rs:186` — `is_past: e.start_time <= now`
+- [x] 1.2 `src/web/portal/admin/events/single.rs:186` — `is_past: e.start_time <= now`
   → `is_past: e.start_utc() <= now`.
-- [ ] 1.3 `src/web/portal/admin/events/single.rs:311` —
+- [x] 1.3 `src/web/portal/admin/events/single.rs:311` —
   `is_past: event.start_time <= now` → `is_past: event.start_utc() <= now`.
-- [ ] 1.4 `src/web/portal/admin/events/occurrences.rs:60` —
+- [x] 1.4 `src/web/portal/admin/events/occurrences.rs:60` —
   `is_past: event.start_time <= now` → `is_past: event.start_utc() <= now`.
-- [ ] 1.5 `src/web/portal/events.rs:84` — `let is_past = event.start_time < now`
+- [x] 1.5 `src/web/portal/events.rs:84` — `let is_past = event.start_time < now`
   → `let is_past = event.start_utc() < now`.
-- [ ] 1.6 Do NOT alter any `.format(...)` render line or `single.rs:153` sort.
+- [x] 1.6 Do NOT alter any `.format(...)` render line or `single.rs:153` sort.
   Confirm `Event::start_utc()` is in scope for each `Event` value edited (it is
   an inherent method on `Event`).
 
 ### 2. Regression test
 
-- [ ] 2.1 Add a unit test near the `event-timezone` tests
+- [x] 2.1 Add a unit test near the `event-timezone` tests
   (`src/domain/event.rs`) or a portal test that builds an `Event` with a 7 PM
   `America/New_York` wall-clock and asserts: at a `now` that is after `19:00Z`
   but before the derived `start_utc()` (i.e. `00:00Z` next day),
@@ -170,6 +170,6 @@ time as a regression.
 
 ### 3. Verify
 
-- [ ] 3.1 `cargo test` — full suite green, including the new test and the
+- [x] 3.1 `cargo test` — full suite green, including the new test and the
   existing `event-timezone` / reminder suites.
-- [ ] 3.2 `cargo clippy` on the touched files — no new warnings.
+- [x] 3.2 `cargo clippy` on the touched files — no new warnings.
