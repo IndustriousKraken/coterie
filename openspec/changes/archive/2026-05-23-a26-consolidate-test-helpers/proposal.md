@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 The architecture pass surfaced 18 copies of `fresh_pool()`, 6 of `build_harness()`, 3 of `build_app_state(pool)`, 3 of `make_member(pool)`, plus a handful of other duplicated setup functions across `tests/*.rs`. Each test file has been growing its own scaffolding because Rust's integration-test layout (one binary per `.rs` file in `tests/`) makes sharing awkward by default. The duplicates drift — three different copies of `fresh_pool` will eventually disagree on migrations, pragmas, or pool options, and the next test failure becomes a half-hour mystery about why one test sees a different schema.

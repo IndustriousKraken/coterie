@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `src/service/recurring_event_service.rs` has six explicit error returns that

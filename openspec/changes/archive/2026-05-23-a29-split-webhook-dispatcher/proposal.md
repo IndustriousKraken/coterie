@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `src/payments/webhook_dispatcher.rs` is 1007 lines holding the Stripe webhook router (`handle_webhook`) plus nine per-event handlers covering payment_intent, charge, invoice, subscription, and checkout-session events. This is critical-path payment code — webhook handlers are how Coterie learns about every dues renewal, refund, failed payment, and subscription cancellation. Reviewing changes to one event handler currently means scrolling through 1000 lines of unrelated event handlers.

@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 `src/web/portal/admin/members/mod.rs` is 1090 lines holding ~17 admin-member handler functions covering member browse, detail/edit, create, status transitions, dues admin, payment recording, Discord linking, and email-verification resend. Because it's already a module directory (`admin/members/`), splitting is trivial — `mod.rs` just declares submodules and the handlers move to them.

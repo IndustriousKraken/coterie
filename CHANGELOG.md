@@ -34,6 +34,51 @@ Added / Changed / Deprecated / Removed / Fixed / Security.
 
 ### Fixed
 
+## [v1.0.7] — 2026-07-13
+
+### Added
+
+- Adds a first-run admin bootstrap CLI (`create_admin`), so the initial administrator can be created from the server instead of racing to claim the unauthenticated `/setup` page after a fresh deploy.
+- Adds the `coterie-provision` wizard that takes a clean Debian host to a running, TLS-terminated Coterie install in one guided pass.
+- Adds a Stripe test mode with a guided switch to live keys, so operators can verify payment wiring before taking real charges.
+- Hardens the update path (`coterie-provision update`) with a pre-swap database snapshot and a post-restart health check that rolls back a release which fails to come up.
+- Adds version awareness — the instance reports its own version and shows admins an "update available" banner when a newer stable release exists.
+- Adds pay-at-signup — visitors can pick a membership type, pay, and be activated immediately instead of waiting for manual approval.
+- Adds a public membership-types endpoint (`GET /public/membership-types`), so join forms can list the org's real types instead of a hardcoded slug.
+- Adds configurable custom member fields for org-specific attributes, without hardcoding columns.
+- Adds granting and revoking admin rights from the member edit form.
+- Adds working "Send Password Reset" and "Delete Member" admin quick actions.
+- Adds import of Stripe payment history and saved cards when migrating from an existing billing system.
+- Adds portal configuration for Stripe and UniFi, so operators can add or rotate them from the admin UI instead of editing `.env` and restarting.
+- Adds per-occurrence exceptions for recurring events — cancel or override a single occurrence without changing the rest of the series.
+- Adds expense tracking, so orgs can record outgoing costs alongside income in Coterie.
+- Adds audit-log entries for basic-type and membership-type admin changes.
+
+### Fixed
+
+- Fixes event times displaying off by the org's UTC offset on the public site and calendar feeds (the admin portal was already correct).
+- Fixes scheduled announcements publishing at the wrong time (the same timezone bug).
+- Fixes Stripe subscription cancellation reporting a false "upstream error" when the cancellation actually succeeded.
+- Fixes the CSRF layer rejecting every browser-facing login, 2FA, password-reset, and first-run-setup POST.
+- Fixes a panic during web login when creating the session.
+- Fixes panics when truncating multi-byte UTF-8 text in admin announcement and member views.
+- Fixes recurring-event occurrence indexes drifting after an occurrence is cancelled, which could misalign later occurrences.
+- Fixes three error-handling bugs in the `coterie-provision` wizard.
+- Sets CORS for the configured marketing domain during provisioning, so the marketing site's calls to the public API are no longer discarded by the browser.
+- Rejects public signups that target a deactivated membership type.
+
+### Security
+
+- Enforces 2FA on the JSON login endpoint — a TOTP-enrolled member is no longer issued a session without completing the second factor.
+- Makes TOTP verification fail closed and rate-limits the second-factor step on both the web and JSON login flows.
+- Invalidates a member's other sessions when they change their password.
+- Rate-limits public signup in approval mode (previously rate-limited only in payment mode), curbing mass account creation and verification-email abuse.
+- Bounds the length of the public signup email, username, and full-name fields.
+- Caps the maximum accepted password length.
+- Neutralizes spreadsheet formula injection in admin CSV exports.
+- Claims scheduled payments atomically, closing a double-charge race.
+- Stops `GET /public/events` from exposing internal fields — the organizer's member ID and internal timestamps — to anonymous callers.
+
 ## [v1.0.0] — 2026-05-21
 
 ### Added

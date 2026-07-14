@@ -1,3 +1,7 @@
+---
+changelog: skip
+---
+
 ## Why
 
 Three production Stripe webhook handlers have **zero test coverage**. They
