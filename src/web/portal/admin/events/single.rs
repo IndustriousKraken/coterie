@@ -138,8 +138,8 @@ pub async fn admin_events_page(
                 return false;
             }
             match time_filter.as_str() {
-                "upcoming" => e.start_time > now,
-                "past" => e.start_time <= now,
+                "upcoming" => e.start_utc() > now,
+                "past" => e.start_utc() <= now,
                 _ => true,
             }
         })
@@ -169,6 +169,7 @@ pub async fn admin_events_page(
         .take(per_page as usize)
     {
         let attendee_count = event_repo.get_attendee_count(e.id).await.unwrap_or(0);
+        let is_past = e.start_utc() <= now;
 
         paginated_events.push(AdminEventInfo {
             id: e.id.to_string(),
@@ -183,7 +184,7 @@ pub async fn admin_events_page(
             attendee_count,
             max_attendees: e.max_attendees,
             rsvp_required: e.rsvp_required,
-            is_past: e.start_time <= now,
+            is_past,
         });
     }
 
@@ -288,6 +289,7 @@ pub async fn admin_event_detail_page(
     let attendee_count = event_repo.get_attendee_count(event.id).await.unwrap_or(0);
 
     let now = chrono::Utc::now();
+    let is_past = event.start_utc() <= now;
 
     let detail = AdminEventDetail {
         id: event.id.to_string(),
@@ -308,7 +310,7 @@ pub async fn admin_event_detail_page(
         rsvp_required: event.rsvp_required,
         image_url: event.image_url,
         attendee_count,
-        is_past: event.start_time <= now,
+        is_past,
         created_at: event.created_at.format("%b %d, %Y %H:%M").to_string(),
         updated_at: event.updated_at.format("%b %d, %Y %H:%M").to_string(),
         is_series: event.series_id.is_some(),

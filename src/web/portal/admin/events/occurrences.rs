@@ -57,7 +57,7 @@ impl OccurrenceRowInfo {
             title: event.title.clone(),
             start_time: event.start_time.format("%b %d, %Y %H:%M").to_string(),
             location: event.location.clone(),
-            is_past: event.start_time <= now,
+            is_past: event.start_utc() <= now,
             state: "active",
             reason: None,
         }
