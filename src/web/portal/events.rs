@@ -81,7 +81,7 @@ pub async fn events_list_api(
     html.push_str(r#"<div class="space-y-4">"#);
 
     for event in filtered_events {
-        let is_past = event.start_utc() < now;
+        let is_past = event.start_utc() <= now;
         // Label the wall-clock with the event's zone so a remote member
         // knows which local time it is (server-rendered — no browser
         // conversion like the public JSON/iCal path gets).
