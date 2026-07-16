@@ -129,9 +129,7 @@ pub async fn events_list_api(
                         </div>
 
                     </div>
-                    <div class="text-right">
-                        {}
-                    </div>
+                    {}
                 </div>
             </div>"#,
             if is_past { "opacity-60" } else { "" },
@@ -159,45 +157,57 @@ pub async fn events_list_api(
     axum::response::Html(html)
 }
 
-/// Render the appropriate RSVP button based on current status
+/// Render the appropriate RSVP button based on current status.
+///
+/// The fragment is self-wrapped in a `<div class="text-right">` root so it
+/// matches the `hx-target="closest div.text-right"` selector: each outerHTML
+/// swap replaces and re-emits the same targeted element, so repeated
+/// RSVP <-> cancel toggles keep resolving the target instead of failing
+/// silently after the first swap.
 fn render_rsvp_button(event_id: &str, status: Option<&AttendanceStatus>) -> String {
     match status {
         Some(AttendanceStatus::Registered) => {
             format!(
-                r#"<div class="flex flex-col items-end gap-2">
-                    <span class="text-sm text-green-600 font-medium">You're attending</span>
-                    <button hx-post="/portal/api/events/{}/cancel"
-                            hx-swap="outerHTML"
-                            hx-target="closest div.text-right"
-                            class="px-3 py-1 text-sm text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50">
-                        Cancel RSVP
-                    </button>
+                r#"<div class="text-right">
+                    <div class="flex flex-col items-end gap-2">
+                        <span class="text-sm text-green-600 font-medium">You're attending</span>
+                        <button hx-post="/portal/api/events/{}/cancel"
+                                hx-swap="outerHTML"
+                                hx-target="closest div.text-right"
+                                class="px-3 py-1 text-sm text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50">
+                            Cancel RSVP
+                        </button>
+                    </div>
                 </div>"#,
                 event_id
             )
         }
         Some(AttendanceStatus::Waitlisted) => {
             format!(
-                r#"<div class="flex flex-col items-end gap-2">
-                    <span class="text-sm text-yellow-600 font-medium">On waitlist</span>
-                    <button hx-post="/portal/api/events/{}/cancel"
-                            hx-swap="outerHTML"
-                            hx-target="closest div.text-right"
-                            class="px-3 py-1 text-sm text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50">
-                        Leave waitlist
-                    </button>
+                r#"<div class="text-right">
+                    <div class="flex flex-col items-end gap-2">
+                        <span class="text-sm text-yellow-600 font-medium">On waitlist</span>
+                        <button hx-post="/portal/api/events/{}/cancel"
+                                hx-swap="outerHTML"
+                                hx-target="closest div.text-right"
+                                class="px-3 py-1 text-sm text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50">
+                            Leave waitlist
+                        </button>
+                    </div>
                 </div>"#,
                 event_id
             )
         }
         Some(AttendanceStatus::Cancelled) | None => {
             format!(
-                r#"<button hx-post="/portal/api/events/{}/rsvp"
-                           hx-swap="outerHTML"
-                           hx-target="closest div.text-right"
-                           class="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
-                    RSVP
-                </button>"#,
+                r#"<div class="text-right">
+                    <button hx-post="/portal/api/events/{}/rsvp"
+                            hx-swap="outerHTML"
+                            hx-target="closest div.text-right"
+                            class="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
+                        RSVP
+                    </button>
+                </div>"#,
                 event_id
             )
         }
@@ -245,4 +255,35 @@ pub async fn cancel_rsvp_event(
 
     // Return updated button (shows RSVP button again)
     axum::response::Html(render_rsvp_button(&event_id.to_string(), None))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression for #101: every RSVP fragment must be rooted in the same
+    // `div.text-right` element the buttons target with
+    // `hx-target="closest div.text-right"`. If any status returns a different
+    // root, the first outerHTML swap replaces the target wrapper and the next
+    // click can no longer resolve it — so the UI freezes until a page refresh.
+    #[test]
+    fn every_rsvp_fragment_root_matches_hx_target() {
+        let statuses = [
+            None,
+            Some(AttendanceStatus::Cancelled),
+            Some(AttendanceStatus::Registered),
+            Some(AttendanceStatus::Waitlisted),
+        ];
+        for status in statuses {
+            let fragment = render_rsvp_button("evt-1", status.as_ref());
+            let root = fragment.trim_start();
+            assert!(
+                root.starts_with(r#"<div class="text-right">"#),
+                "fragment for {status:?} must be rooted in div.text-right, got: {root}"
+            );
+            // The swap target the buttons name must exist in the fragment they
+            // re-emit, so a subsequent toggle can still resolve it.
+            assert!(fragment.contains(r#"hx-target="closest div.text-right""#));
+        }
+    }
 }
