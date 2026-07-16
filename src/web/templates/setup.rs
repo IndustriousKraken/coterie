@@ -11,6 +11,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tokio::sync::Mutex as AsyncMutex;
+use uuid::Uuid;
 
 use crate::{
     domain::{CreateMemberRequest, MemberStatus, UpdateMemberRequest},
@@ -185,13 +186,28 @@ pub async fn setup_handler(
         ..Default::default()
     };
 
+    // Critical step, same failure semantics as set_admin below: a
+    // Pending first admin is admitted by no middleware tier, so a
+    // swallowed failure here silently locks the org out. Clean up the
+    // partial row and abort with 500 instead of arming the cache.
     if let Err(e) = member_repo.update(member.id, update_request).await {
         tracing::error!("Failed to activate admin user: {}", e);
+        cleanup_partial_admin(member_repo.as_ref(), member.id).await;
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(SetupResponse {
+                success: false,
+                redirect: None,
+                error: Some("Failed to activate admin user".to_string()),
+            }),
+        )
+            .into_response();
     }
 
     // Set is_admin = 1 (the authoritative admin flag, used by middleware)
     if let Err(e) = member_repo.set_admin(member.id, true).await {
         tracing::error!("Failed to set is_admin on admin user: {}", e);
+        cleanup_partial_admin(member_repo.as_ref(), member.id).await;
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(SetupResponse {
@@ -244,6 +260,18 @@ pub async fn setup_handler(
         }),
     )
         .into_response()
+}
+
+/// Best-effort removal of the just-created member row when a later setup
+/// step fails. Leaves a retryable state: without this, the orphaned
+/// `Pending` row trips the UNIQUE email/username constraint on the
+/// operator's next `POST /setup`. Reuses the repo's `delete` (which
+/// only touches this id); logs and ignores errors since the request is
+/// already failing.
+async fn cleanup_partial_admin(member_repo: &dyn MemberRepository, id: Uuid) {
+    if let Err(e) = member_repo.delete(id).await {
+        tracing::warn!("Couldn't remove partial admin row after setup failure: {}", e);
+    }
 }
 
 /// Check if at least one admin user exists in the database.
