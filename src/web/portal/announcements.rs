@@ -36,7 +36,9 @@ pub async fn announcements_page(
 #[derive(Debug, Deserialize)]
 pub struct AnnouncementsListQuery {
     pub announcement_type: Option<String>,
-    pub show_all: Option<bool>,
+    // HTML checkbox serializes as `show_all=on` when checked, absent when not — a
+    // bare String parses both; presence (not value) means "show all".
+    pub show_all: Option<String>,
 }
 
 pub async fn announcements_list_api(
@@ -45,11 +47,7 @@ pub async fn announcements_list_api(
     Query(query): Query<AnnouncementsListQuery>,
 ) -> impl IntoResponse {
     // Get all published announcements (both public and private - members can see all)
-    let limit = if query.show_all.unwrap_or(false) {
-        100
-    } else {
-        20
-    };
+    let limit = if query.show_all.is_some() { 100 } else { 20 };
     let announcements = announcement_repo
         .list_recent(limit)
         .await
@@ -138,4 +136,113 @@ pub async fn announcements_list_api(
 
     html.push_str("</div>");
     axum::response::Html(html)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        routing::get,
+        Router,
+    };
+    use chrono::Utc;
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    use crate::{
+        domain::{Announcement, AnnouncementType, CreateMemberRequest, Member},
+        repository::{MemberRepository, SqliteAnnouncementRepository, SqliteMemberRepository},
+    };
+
+    async fn migrated_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    // Regression: the "Show all" checkbox serializes as `show_all=on`.
+    // When `AnnouncementsListQuery.show_all` was `Option<bool>`,
+    // serde_urlencoded could not parse "on", so the `Query` extractor 400'd
+    // and the member-content announcements fragment broke whenever the box
+    // was checked. It must now return 200 and render the list fragment.
+    #[tokio::test]
+    async fn show_all_on_returns_list_fragment() {
+        let pool = migrated_pool().await;
+
+        let member_repo: Arc<dyn MemberRepository> =
+            Arc::new(SqliteMemberRepository::new(pool.clone()));
+        let member: Member = member_repo
+            .create(CreateMemberRequest {
+                email: "member@example.com".to_string(),
+                username: "member".to_string(),
+                full_name: "Member".to_string(),
+                password: "p4ssword_long_enough".to_string(),
+                membership_type_id: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let announcement_repo: Arc<dyn AnnouncementRepository> =
+            Arc::new(SqliteAnnouncementRepository::new(pool.clone()));
+        let now = Utc::now();
+        announcement_repo
+            .create(Announcement {
+                id: Uuid::new_v4(),
+                title: "Hello Members".to_string(),
+                content: "Body".to_string(),
+                announcement_type: AnnouncementType::General,
+                announcement_type_id: None,
+                is_public: false,
+                featured: false,
+                image_url: None,
+                published_at: Some(now),
+                scheduled_publish_at: None,
+                scheduled_publish_timezone: "UTC".to_string(),
+                created_by: member.id,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+
+        let app = Router::new()
+            .route(
+                "/portal/api/announcements/list",
+                get(announcements_list_api),
+            )
+            .layer(Extension(CurrentUser { member }))
+            .with_state(announcement_repo);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/portal/api/announcements/list?show_all=on")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "checkbox `show_all=on` must parse, not 400"
+        );
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            body.contains("Hello Members"),
+            "list fragment should render the published announcement, got: {body}"
+        );
+    }
 }
