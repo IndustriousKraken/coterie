@@ -1,0 +1,2 @@
+- [x] 1.1 In src/web/portal/announcements.rs, change AnnouncementsListQuery.show_all from Option<bool> to Option<String> and derive the limit from presence (e.g. let limit = if query.show_all.is_some() { 100 } else { 20 };) so the standard checkbox "on"/absent serialization parses without a 400.
+- [x] 1.2 Add a regression test that GETs /portal/api/announcements/list?show_all=on and asserts a 200 with the list fragment (no test currently covers this endpoint).
