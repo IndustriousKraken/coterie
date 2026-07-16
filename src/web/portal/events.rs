@@ -214,6 +214,29 @@ fn render_rsvp_button(event_id: &str, status: Option<&AttendanceStatus>) -> Stri
     }
 }
 
+/// Render an RSVP error fragment.
+///
+/// On a failed register/cancel the state is unchanged, so we re-render the
+/// button for that unchanged `status` (giving the member a working retry) and
+/// inject the error message just inside the same `div.text-right` root. This
+/// keeps the `hx-target="closest div.text-right"` target alive after the swap
+/// instead of leaving a buttonless error message that freezes the UI until a
+/// full page refresh.
+fn render_rsvp_error(event_id: &str, status: Option<&AttendanceStatus>, error: &str) -> String {
+    let button = render_rsvp_button(event_id, status);
+    // render_rsvp_button always emits a `<div class="text-right">` root
+    // (asserted by every_rsvp_fragment_root_matches_hx_target), so inject the
+    // error span right after that opening tag to share the target wrapper.
+    button.replacen(
+        r#"<div class="text-right">"#,
+        &format!(
+            r#"<div class="text-right"><p class="text-red-600 text-sm mb-2">Error: {}</p>"#,
+            crate::web::escape_html(error)
+        ),
+        1,
+    )
+}
+
 /// Handle RSVP to an event
 pub async fn rsvp_event(
     State(event_repo): State<Arc<dyn EventRepository>>,
@@ -224,9 +247,12 @@ pub async fn rsvp_event(
 
     // Register attendance
     if let Err(e) = event_repo.register_attendance(event_id, member_id).await {
-        return axum::response::Html(format!(
-            r#"<div class="text-red-600 text-sm">Error: {}</div>"#,
-            crate::web::escape_html(&e.to_string())
+        // Registration failed: member is still unregistered, so re-render the
+        // RSVP button (unchanged state) alongside the error.
+        return axum::response::Html(render_rsvp_error(
+            &event_id.to_string(),
+            None,
+            &e.to_string(),
         ));
     }
 
@@ -247,9 +273,15 @@ pub async fn cancel_rsvp_event(
 
     // Cancel attendance
     if let Err(e) = event_repo.cancel_attendance(event_id, member_id).await {
-        return axum::response::Html(format!(
-            r#"<div class="text-red-600 text-sm">Error: {}</div>"#,
-            crate::web::escape_html(&e.to_string())
+        // Cancel failed: member is still attending, so re-render the Cancel
+        // button (unchanged state) alongside the error. ponytail: shows the
+        // "Registered" label even if the member was waitlisted — the retry
+        // action (cancel) is identical for both; re-fetch the exact status if
+        // that cosmetic label ever matters.
+        return axum::response::Html(render_rsvp_error(
+            &event_id.to_string(),
+            Some(&AttendanceStatus::Registered),
+            &e.to_string(),
         ));
     }
 
@@ -285,5 +317,31 @@ mod tests {
             // re-emit, so a subsequent toggle can still resolve it.
             assert!(fragment.contains(r#"hx-target="closest div.text-right""#));
         }
+    }
+
+    // Error responses must keep the same `div.text-right` root AND re-emit a
+    // working button, so a failed register/cancel doesn't strand the member
+    // with a buttonless error that only a page refresh can clear.
+    #[test]
+    fn rsvp_error_fragment_keeps_target_and_retry_button() {
+        // Register failure: unchanged state is "not attending" -> RSVP button.
+        let register_err = render_rsvp_error("evt-1", None, "boom");
+        // Cancel failure: unchanged state is "attending" -> Cancel button.
+        let cancel_err = render_rsvp_error("evt-1", Some(&AttendanceStatus::Registered), "boom");
+
+        for (fragment, endpoint) in [(&register_err, "rsvp"), (&cancel_err, "cancel")] {
+            assert!(fragment.trim_start().starts_with(r#"<div class="text-right">"#));
+            assert!(fragment.contains(r#"hx-target="closest div.text-right""#));
+            assert!(fragment.contains(&format!("/portal/api/events/evt-1/{endpoint}")));
+            assert!(fragment.contains("Error: boom"));
+        }
+    }
+
+    // Error strings are HTML-escaped so a failure message can't inject markup.
+    #[test]
+    fn rsvp_error_fragment_escapes_message() {
+        let fragment = render_rsvp_error("evt-1", None, "<script>x</script>");
+        assert!(!fragment.contains("<script>"));
+        assert!(fragment.contains("&lt;script&gt;"));
     }
 }
