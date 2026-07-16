@@ -34,6 +34,15 @@ Added / Changed / Deprecated / Removed / Fixed / Security.
 
 ### Fixed
 
+## [v1.0.9] — 2026-07-16
+
+### Fixed
+
+- Fixes a first-run setup failure that could permanently lock an organization out of a fresh install: if the step activating the first admin failed silently, setup still reported success while leaving an admin who could never log in and a setup page that could not be retried; the handler now aborts with an error and removes the partial member so setup can be retried cleanly.
+- Fixes login failing whenever "Remember me" was checked (the checkbox value could not be deserialized from the request).
+- Fixes the Announcements "Show all" checkbox returning an error instead of listing every announcement when checked.
+- Fixes the event RSVP/cancel toggle only updating once and then requiring a page refresh before it would work again.
+
 ## [v1.0.8] — 2026-07-14
 
 ### Added
