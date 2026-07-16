@@ -36,7 +36,9 @@ pub struct LoginQuery {
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
-    pub remember_me: Option<bool>,
+    /// HTML checkbox: present ("on") when checked, absent otherwise.
+    #[serde(default)]
+    pub remember_me: Option<String>,
     pub redirect_url: Option<String>,
 }
 
@@ -211,7 +213,7 @@ pub async fn login_handler(
 
             if totp_enabled {
                 let pending_token = match pending_login_service
-                    .create(member.id, credentials.remember_me.unwrap_or(false))
+                    .create(member.id, credentials.remember_me.is_some())
                     .await
                 {
                     Ok(t) => t,
@@ -285,7 +287,7 @@ pub async fn login_handler(
             let (_session, token) = match auth_service
                 .create_session(
                     member.id,
-                    if credentials.remember_me.unwrap_or(false) {
+                    if credentials.remember_me.is_some() {
                         24 * 30
                     } else {
                         24
@@ -309,7 +311,7 @@ pub async fn login_handler(
             };
             // Create session cookie. Secure flag is driven by server config
             // so local http dev still works while TLS deployments get it set.
-            let max_age_secs = if credentials.remember_me.unwrap_or(false) {
+            let max_age_secs = if credentials.remember_me.is_some() {
                 60 * 60 * 24 * 30 // 30 days
             } else {
                 60 * 60 * 24 // 24 hours
@@ -765,4 +767,26 @@ pub async fn login_totp_handler(
         }),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression: the login form posts the "Remember me" checkbox via
+    // json-enc as the string "on". When `remember_me` was `Option<bool>`,
+    // Axum's `Json` extractor rejected the whole body, so login failed
+    // whenever the box was checked. It must now deserialize, with
+    // `is_some()` distinguishing checked from unchecked.
+    #[test]
+    fn login_request_accepts_checkbox_on_string() {
+        let checked: LoginRequest =
+            serde_json::from_str(r#"{"username":"u","password":"p","remember_me":"on"}"#)
+                .expect("checkbox 'on' must deserialize");
+        assert!(checked.remember_me.is_some());
+
+        let unchecked: LoginRequest = serde_json::from_str(r#"{"username":"u","password":"p"}"#)
+            .expect("absent checkbox must deserialize via serde(default)");
+        assert!(unchecked.remember_me.is_none());
+    }
 }
