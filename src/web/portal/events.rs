@@ -171,7 +171,7 @@ pub async fn events_list_api(
 /// swap replaces and re-emits the same targeted element, so repeated
 /// RSVP <-> cancel toggles keep resolving the target instead of failing
 /// silently after the first swap.
-fn render_rsvp_button(event_id: &str, status: Option<&AttendanceStatus>) -> String {
+pub(crate) fn render_rsvp_button(event_id: &str, status: Option<&AttendanceStatus>) -> String {
     match status {
         Some(AttendanceStatus::Registered) => {
             format!(
