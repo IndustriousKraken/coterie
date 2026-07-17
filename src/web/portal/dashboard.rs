@@ -4,7 +4,7 @@ use askama::Template;
 use axum::{extract::State, response::IntoResponse, Extension};
 use serde::Serialize;
 
-use super::MemberInfo;
+use super::{events::render_rsvp_button, MemberInfo};
 use crate::{
     api::middleware::auth::{CurrentUser, SessionInfo},
     auth::CsrfService,
@@ -114,7 +114,10 @@ struct EventSummary {
     time: String,
     location: Option<String>,
     image_url: Option<String>,
-    attending: bool,
+    // Full RSVP status (not just a bool) so we can render the shared
+    // register/cancel control — a member registered elsewhere must be able to
+    // cancel from here after a reload, matching the Events page.
+    rsvp: Option<AttendanceStatus>,
 }
 
 pub async fn upcoming_events(
@@ -131,13 +134,11 @@ pub async fn upcoming_events(
     let mut event_summaries: Vec<EventSummary> = Vec::new();
 
     for event in events {
-        let attending = event_repo
+        let rsvp = event_repo
             .get_member_attendance_status(event.id, member_id)
             .await
             .ok()
-            .flatten()
-            .map(|s| matches!(s, AttendanceStatus::Registered))
-            .unwrap_or(false);
+            .flatten();
 
         // Wall-clock + zone abbr, so a remote member reads the right
         // local time (server-rendered; no browser conversion).
@@ -154,7 +155,7 @@ pub async fn upcoming_events(
             time,
             location: event.location,
             image_url: event.image_url,
-            attending,
+            rsvp,
         });
     }
 
@@ -187,11 +188,11 @@ pub async fn upcoming_events(
                 event.date,
                 event.time,
                 event.location.map(|l| format!(r#"<p class="text-sm text-gray-600">📍 {}</p>"#, crate::web::escape_html(&l))).unwrap_or_default(),
-                if event.attending {
-                    r#"<span class="text-xs text-green-600 font-medium">Attending</span>"#.to_string()
-                } else {
-                    format!(r#"<button hx-post="/portal/api/events/{}/rsvp" hx-swap="outerHTML" class="text-xs text-blue-600 hover:text-blue-800">RSVP</button>"#, event.id)
-                }
+                // Shared control from the Events page: self-wrapped in
+                // div.text-right with hx-target="closest div.text-right", so the
+                // RSVP <-> cancel toggle works in both directions, including for a
+                // member who registered elsewhere and then reloaded the dashboard.
+                render_rsvp_button(&event.id, event.rsvp.as_ref())
             ));
         }
         html.push_str("</div>");
@@ -199,6 +200,127 @@ pub async fn upcoming_events(
     };
 
     axum::response::Html(html)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        routing::get,
+        Router,
+    };
+    use chrono::Utc;
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    use crate::{
+        domain::{CreateMemberRequest, Event, EventType, EventVisibility, Member},
+        repository::{MemberRepository, SqliteEventRepository, SqliteMemberRepository},
+    };
+
+    async fn migrated_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    // Regression for #110: a member already registered for an event (e.g. from
+    // the Events page) must be able to cancel it from the dashboard's Upcoming
+    // Events widget after a reload. The attending state must render the shared
+    // cancel control rooted in div.text-right — not a dead <span>Attending</span>.
+    #[tokio::test]
+    async fn dashboard_attending_fragment_has_cancel_control() {
+        let pool = migrated_pool().await;
+
+        let member_repo: Arc<dyn MemberRepository> =
+            Arc::new(SqliteMemberRepository::new(pool.clone()));
+        let member: Member = member_repo
+            .create(CreateMemberRequest {
+                email: "member@example.com".to_string(),
+                username: "member".to_string(),
+                full_name: "Member".to_string(),
+                password: "p4ssword_long_enough".to_string(),
+                membership_type_id: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let event_repo: Arc<dyn EventRepository> =
+            Arc::new(SqliteEventRepository::new(pool.clone()));
+        let now = Utc::now();
+        let event_id = Uuid::new_v4();
+        event_repo
+            .create(Event {
+                id: event_id,
+                title: "Upcoming Meetup".to_string(),
+                description: "Body".to_string(),
+                event_type: EventType::Social,
+                event_type_id: None,
+                visibility: EventVisibility::Public,
+                start_time: now + chrono::Duration::days(7),
+                end_time: None,
+                timezone: "UTC".to_string(),
+                location: None,
+                max_attendees: None,
+                rsvp_required: false,
+                image_url: None,
+                created_by: member.id,
+                created_at: now,
+                updated_at: now,
+                series_id: None,
+                occurrence_index: None,
+            })
+            .await
+            .unwrap();
+
+        // Member registered elsewhere; now they load the dashboard.
+        event_repo
+            .register_attendance(event_id, member.id)
+            .await
+            .unwrap();
+
+        let app = Router::new()
+            .route("/portal/api/events/upcoming", get(upcoming_events))
+            .layer(Extension(CurrentUser { member }))
+            .with_state(event_repo);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/portal/api/events/upcoming")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(
+            body.contains("Cancel RSVP"),
+            "attending fragment must offer a working Cancel RSVP control, got: {body}"
+        );
+        assert!(
+            body.contains(r#"hx-target="closest div.text-right""#),
+            "cancel control must target div.text-right so the toggle survives swaps, got: {body}"
+        );
+        assert!(
+            !body.contains("Attending</span>"),
+            "attending state must not be a dead <span>Attending</span>, got: {body}"
+        );
+    }
 }
 
 // API endpoint for recent payments
