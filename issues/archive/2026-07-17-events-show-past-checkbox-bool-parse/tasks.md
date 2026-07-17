@@ -1,0 +1,2 @@
+- [x] 1.1 In src/web/portal/events.rs, change EventsListQuery.show_past from Option<bool> to Option<String> so the checkbox's "on"/absent serialization parses without a 400 (mirrors the archived announcements fix); derive the flag with .is_some() so the field is still read (no "never read" warning). Do NOT add past-event listing — the repository has no list_past and that would be a separate behavior change.
+- [x] 1.2 Add a regression test that GETs /portal/api/events/list?show_past=on and asserts a 200 with the list fragment (no test currently covers this endpoint).

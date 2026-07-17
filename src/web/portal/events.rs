@@ -39,7 +39,9 @@ pub async fn events_page(
 #[derive(Debug, Deserialize)]
 pub struct EventsListQuery {
     pub event_type: Option<String>,
-    pub show_past: Option<bool>,
+    // HTML checkbox serializes as `show_past=on` when checked, absent when not — a
+    // bare String parses both; `Option<bool>` 400s on "on" (serde_urlencoded).
+    pub show_past: Option<String>,
 }
 
 pub async fn events_list_api(
@@ -48,6 +50,11 @@ pub async fn events_list_api(
     Query(query): Query<EventsListQuery>,
 ) -> impl IntoResponse {
     let member_id = current_user.member.id;
+
+    // The "Show past events" checkbox is accepted but not yet actioned: the
+    // repository has no past-event listing, so we only read presence to keep the
+    // field live. Adding past listing is a separate behavior change.
+    let _show_past = query.show_past.is_some();
 
     // Get upcoming events (past events not currently supported)
     let events = event_repo.list_upcoming(50).await.unwrap_or_default();
@@ -292,6 +299,110 @@ pub async fn cancel_rsvp_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        routing::get,
+        Router,
+    };
+    use chrono::Utc;
+    use tower::ServiceExt;
+
+    use crate::{
+        domain::{CreateMemberRequest, Event, EventType, EventVisibility, Member},
+        repository::{MemberRepository, SqliteEventRepository, SqliteMemberRepository},
+    };
+
+    async fn migrated_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    // Regression: the "Show past events" checkbox serializes as `show_past=on`.
+    // When `EventsListQuery.show_past` was `Option<bool>`, serde_urlencoded
+    // could not parse "on", so the `Query` extractor 400'd and the
+    // member-content events fragment (`GET /portal/api/events/list`) broke
+    // whenever the box was checked. It must now return 200 and render the list.
+    #[tokio::test]
+    async fn show_past_on_returns_list_fragment() {
+        let pool = migrated_pool().await;
+
+        let member_repo: Arc<dyn MemberRepository> =
+            Arc::new(SqliteMemberRepository::new(pool.clone()));
+        let member: Member = member_repo
+            .create(CreateMemberRequest {
+                email: "member@example.com".to_string(),
+                username: "member".to_string(),
+                full_name: "Member".to_string(),
+                password: "p4ssword_long_enough".to_string(),
+                membership_type_id: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let event_repo: Arc<dyn EventRepository> =
+            Arc::new(SqliteEventRepository::new(pool.clone()));
+        let now = Utc::now();
+        event_repo
+            .create(Event {
+                id: Uuid::new_v4(),
+                title: "Upcoming Meetup".to_string(),
+                description: "Body".to_string(),
+                event_type: EventType::Social,
+                event_type_id: None,
+                visibility: EventVisibility::Public,
+                start_time: now + chrono::Duration::days(7),
+                end_time: None,
+                timezone: "UTC".to_string(),
+                location: None,
+                max_attendees: None,
+                rsvp_required: false,
+                image_url: None,
+                created_by: member.id,
+                created_at: now,
+                updated_at: now,
+                series_id: None,
+                occurrence_index: None,
+            })
+            .await
+            .unwrap();
+
+        let app = Router::new()
+            .route("/portal/api/events/list", get(events_list_api))
+            .layer(Extension(CurrentUser { member }))
+            .with_state(event_repo);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/portal/api/events/list?show_past=on")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "checkbox `show_past=on` must parse, not 400"
+        );
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            body.contains("Upcoming Meetup"),
+            "list fragment should render the upcoming event, got: {body}"
+        );
+    }
 
     // Regression for #101: every RSVP fragment must be rooted in the same
     // `div.text-right` element the buttons target with
