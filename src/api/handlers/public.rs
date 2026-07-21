@@ -706,24 +706,49 @@ pub async fn list_events(
     }
 }
 
+/// `/public/announcements` item: the stored announcement plus a
+/// server-rendered sanitized `content_html` (Markdown → safe-subset HTML)
+/// so a consumer can render formatted content without running its own
+/// Markdown parser or making a sanitization decision. The raw `content`
+/// (Markdown source) is kept too.
+///
+/// This deliberately still carries the full `Announcement` — it only ADDS
+/// `content_html`. Dropping the internal fields this endpoint currently
+/// leaks (`created_by`, timestamps, `announcement_type_id`,
+/// `scheduled_publish_*`) is a separate projection issue, not bundled here.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AnnouncementResponse {
+    #[serde(flatten)]
+    pub announcement: Announcement,
+    /// Server-rendered sanitized safe-subset HTML of `content`.
+    pub content_html: String,
+}
+
 #[utoipa::path(
     get,
     path = "/public/announcements",
     tag = "public",
     responses(
-        (status = 200, description = "Published public announcements", body = [Announcement]),
+        (status = 200, description = "Published public announcements, each with a \
+            server-rendered sanitized `content_html` alongside the raw Markdown `content`",
+            body = [AnnouncementResponse]),
     ),
 )]
 pub async fn list_announcements(
     State(announcement_repo): State<Arc<dyn AnnouncementRepository>>,
-) -> Result<Json<Vec<Announcement>>> {
+) -> Result<Json<Vec<AnnouncementResponse>>> {
     // Get public announcements only
     let announcements = announcement_repo.list_public().await?;
 
-    // Filter to published announcements only
-    let published: Vec<Announcement> = announcements
+    // Filter to published announcements only, and attach the sanitized
+    // server-rendered HTML from the shared Markdown pipeline.
+    let published: Vec<AnnouncementResponse> = announcements
         .into_iter()
         .filter(|a| a.published_at.is_some())
+        .map(|a| AnnouncementResponse {
+            content_html: crate::util::markdown::render_announcement_markdown(&a.content),
+            announcement: a,
+        })
         .collect();
 
     Ok(Json(published))
@@ -871,9 +896,14 @@ fn generate_rss_feed(announcements: &[Announcement]) -> String {
                 "        <title><![CDATA[{}]]></title>\n",
                 escape_cdata(&announcement.title)
             ));
+            // Description carries the sanitized rendered HTML (Markdown →
+            // safe subset), CDATA-wrapped — valid RSS 2.0. escape_cdata
+            // still guards any `]]>` the rendered HTML might contain.
+            let content_html =
+                crate::util::markdown::render_announcement_markdown(&announcement.content);
             rss.push_str(&format!(
                 "        <description><![CDATA[{}]]></description>\n",
-                escape_cdata(&announcement.content)
+                escape_cdata(&content_html)
             ));
             rss.push_str(&format!(
                 "        <guid isPermaLink=\"false\">{}</guid>\n",
@@ -1151,4 +1181,171 @@ pub async fn donate(
             checkout_url,
         }),
     ))
+}
+
+#[cfg(test)]
+mod announcement_markdown_tests {
+    //! Public-feed rendering: `/public/announcements` carries a sanitized
+    //! `content_html`, and the RSS item description carries the same
+    //! sanitized rendered HTML. Both flow through the shared pipeline
+    //! (`crate::util::markdown::render_announcement_markdown`).
+
+    use super::*;
+    use axum::{body::Body, http::Request, routing::get, Router};
+    use chrono::Utc;
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    use crate::{
+        domain::{Announcement, AnnouncementType, CreateMemberRequest, Member},
+        repository::{MemberRepository, SqliteAnnouncementRepository, SqliteMemberRepository},
+    };
+
+    // A Markdown body exercising every relevant case: formatting that must
+    // render, plus disallowed constructs that must be stripped.
+    const RICH_BODY: &str = "**bold** *italic* ~~struck~~\n\n\
+        A [safe link](https://example.com) and a [bad link](javascript:alert(1)).\n\n\
+        <script>alert(2)</script>\n\n\
+        ![img](https://example.com/x.png)";
+
+    fn assert_sanitized(html: &str) {
+        assert!(
+            html.contains("<strong>bold</strong>"),
+            "bold rendered: {html}"
+        );
+        assert!(html.contains("<em>italic</em>"), "italic rendered: {html}");
+        assert!(
+            html.contains("<del>struck</del>"),
+            "strike rendered: {html}"
+        );
+        assert!(
+            html.contains("href=\"https://example.com\""),
+            "safe https link preserved: {html}"
+        );
+        assert!(!html.contains("<script"), "no live script element: {html}");
+        assert!(
+            !html.contains("javascript:"),
+            "no javascript: scheme: {html}"
+        );
+        assert!(!html.contains("<img"), "no img element: {html}");
+    }
+
+    async fn migrated_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn public_announcements_entry_carries_sanitized_content_html() {
+        let pool = migrated_pool().await;
+
+        let member_repo: Arc<dyn MemberRepository> =
+            Arc::new(SqliteMemberRepository::new(pool.clone()));
+        let member: Member = member_repo
+            .create(CreateMemberRequest {
+                email: "admin@example.com".to_string(),
+                username: "admin".to_string(),
+                full_name: "Admin".to_string(),
+                password: "p4ssword_long_enough".to_string(),
+                membership_type_id: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let announcement_repo: Arc<dyn AnnouncementRepository> =
+            Arc::new(SqliteAnnouncementRepository::new(pool.clone()));
+        let now = Utc::now();
+        announcement_repo
+            .create(Announcement {
+                id: Uuid::new_v4(),
+                title: "Rich".to_string(),
+                content: RICH_BODY.to_string(),
+                announcement_type: AnnouncementType::General,
+                announcement_type_id: None,
+                is_public: true,
+                featured: false,
+                image_url: None,
+                published_at: Some(now),
+                scheduled_publish_at: None,
+                scheduled_publish_timezone: "UTC".to_string(),
+                created_by: member.id,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+
+        let app = Router::new()
+            .route("/public/announcements", get(list_announcements))
+            .with_state(announcement_repo);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/public/announcements")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let entry = &json.as_array().expect("array")[0];
+
+        let content_html = entry
+            .get("content_html")
+            .and_then(|v| v.as_str())
+            .expect("content_html field present");
+        assert_sanitized(content_html);
+
+        // Raw Markdown source is kept alongside the rendered HTML.
+        let raw = entry.get("content").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(raw, RICH_BODY, "raw content preserved");
+    }
+
+    #[test]
+    fn rss_description_carries_sanitized_rendered_html() {
+        let now = Utc::now();
+        let announcement = Announcement {
+            id: Uuid::new_v4(),
+            title: "Rich".to_string(),
+            content: RICH_BODY.to_string(),
+            announcement_type: AnnouncementType::General,
+            announcement_type_id: None,
+            is_public: true,
+            featured: false,
+            image_url: None,
+            published_at: Some(now),
+            scheduled_publish_at: None,
+            scheduled_publish_timezone: "UTC".to_string(),
+            created_by: Uuid::new_v4(),
+            created_at: now,
+            updated_at: now,
+        };
+
+        let rss = generate_rss_feed(&[announcement]);
+        // The description block carries the sanitized rendered HTML.
+        assert!(
+            rss.contains("<description><![CDATA[") && rss.contains("<strong>bold</strong>"),
+            "rss description carries rendered HTML: {rss}"
+        );
+        assert!(
+            !rss.contains("<script"),
+            "no live script element in rss: {rss}"
+        );
+        assert!(
+            !rss.contains("javascript:"),
+            "no javascript: scheme in rss: {rss}"
+        );
+    }
 }

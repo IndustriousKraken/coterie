@@ -83,6 +83,7 @@ fn openapi_spec_registers_all_dto_schemas() {
         "EventType",
         "EventVisibility",
         "Announcement",
+        "AnnouncementResponse",
         "AnnouncementType",
         "MemberStatus",
     ];

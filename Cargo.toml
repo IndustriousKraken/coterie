@@ -124,6 +124,15 @@ serde_urlencoded = "0.7.1"
 # capability's exact column emission rules.
 csv = "1.3"
 
+# Announcement Markdown rendering (see src/util/markdown.rs). comrak
+# renders Markdown → HTML with raw-HTML passthrough OFF; ammonia is the
+# authoritative sanitizer (safe-subset tag/attr whitelist + URL-scheme
+# restriction). Safe Markdown + HTML sanitization is security-critical
+# parsing — use the maintained libraries, not a hand-rolled subset.
+# comrak default-features off drops the CLI/syntect/clap stack we don't use.
+comrak = { version = "0.54", default-features = false }
+ammonia = "4"
+
 [features]
 # Exposes test-only helpers (FakeStripeGateway, etc.) so integration
 # tests in tests/ can construct fixtures. Enabled automatically for

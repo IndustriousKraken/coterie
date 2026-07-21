@@ -120,7 +120,7 @@ pub async fn announcements_list_api(
                     {}
                 </div>
                 <h3 class="text-lg font-semibold text-gray-900 mb-2">{}</h3>
-                <p class="text-sm text-gray-600 whitespace-pre-wrap">{}</p>
+                <div class="text-sm text-gray-600 space-y-2">{}</div>
                 <p class="text-xs text-gray-400 mt-4">{}</p>
             </div>"#,
             image_html,
@@ -129,7 +129,10 @@ pub async fn announcements_list_api(
             visibility_badge,
             featured_badge,
             crate::web::escape_html(&announcement.title),
-            crate::web::escape_html(&announcement.content),
+            // Body is authored in Markdown; render to sanitized safe-subset
+            // HTML (already-safe, injected raw). Block markup replaces the
+            // old whitespace-pre-wrap on the removed <p>.
+            crate::util::markdown::render_announcement_markdown(&announcement.content),
             published_date,
         ));
     }

@@ -42,6 +42,7 @@ use crate::domain;
         handlers::public::SignupResponse,
         handlers::public::PrivateEventCount,
         handlers::public::PublicEvent,
+        handlers::public::AnnouncementResponse,
         handlers::public::PublicMembershipType,
         handlers::public::PublicDonateRequest,
         handlers::public::PublicDonateResponse,
