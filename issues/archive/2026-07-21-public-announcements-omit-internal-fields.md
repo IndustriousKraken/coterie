@@ -82,14 +82,14 @@ struct. Whichever order they run, the end state is one projection: `id`, `title`
 
 ## Tasks
 
-- [ ] 1. Add a `PublicAnnouncement` projection (mirroring `PublicEvent`) with the
+- [x] 1. Add a `PublicAnnouncement` projection (mirroring `PublicEvent`) with the
   safe field set above; implement `From<Announcement>`.
-- [ ] 2. `list_announcements` maps the filtered announcements through the
+- [x] 2. `list_announcements` maps the filtered announcements through the
   projection before `Json(...)`.
-- [ ] 3. Update the `#[utoipa::path]` response body and `src/api/docs.rs` schema
+- [x] 3. Update the `#[utoipa::path]` response body and `src/api/docs.rs` schema
   to the projection.
-- [ ] 4. Test: an anonymous `/public/announcements` response carries none of
+- [x] 4. Test: an anonymous `/public/announcements` response carries none of
   `created_by`, `created_at`, `updated_at`, `announcement_type_id`, `is_public`,
   `scheduled_publish_at`, `scheduled_publish_timezone`; the published/public
   filtering and the projected fields are unchanged.
-- [ ] 5. Verify: `cargo test` (public-feed suites) green; `cargo clippy` clean.
+- [x] 5. Verify: `cargo test` (public-feed suites) green; `cargo clippy` clean.
