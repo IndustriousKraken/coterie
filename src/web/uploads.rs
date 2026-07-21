@@ -259,6 +259,32 @@ async fn is_private_image(db_pool: &SqlitePool, image_path: &str) -> bool {
     announcement_private.is_some()
 }
 
+/// Whether `filename` is a submission attachment. Submission attachments are
+/// served ONLY through their authorization-gated route
+/// (`/portal/.../submissions/:id/attachment`), which enforces owner/admin/
+/// accepted-public access and safe download headers (`Content-Disposition:
+/// attachment`, `nosniff`). This public route must therefore refuse them —
+/// otherwise the stored PDF would be reachable by its filename alone, bypassing
+/// that authorization gate (relying on the UUID being unguessable is not access
+/// control).
+async fn is_submission_attachment(db_pool: &SqlitePool, filename: &str) -> bool {
+    let full_path = format!("uploads/{}", filename);
+    let hit: Option<(i32,)> = sqlx::query_as(
+        r#"
+        SELECT 1 FROM submissions
+        WHERE attachment_path = ?
+        LIMIT 1
+        "#,
+    )
+    .bind(&full_path)
+    .fetch_optional(db_pool)
+    .await
+    .ok()
+    .flatten();
+
+    hit.is_some()
+}
+
 /// Serve uploaded files with authentication check for private content
 pub async fn serve_upload(
     State(settings): State<Arc<Settings>>,
@@ -270,6 +296,14 @@ pub async fn serve_upload(
     // Validate filename (prevent path traversal)
     if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
         return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    // Submission attachments are served ONLY via their authorization-gated route
+    // (/portal/.../submissions/:id/attachment), which enforces owner/admin/
+    // accepted-public access and safe download headers. Refuse them here so this
+    // public route cannot be used to bypass that gate. Deny without disclosure.
+    if is_submission_attachment(&db_pool, &filename).await {
+        return StatusCode::NOT_FOUND.into_response();
     }
 
     // Check if this is a private image
