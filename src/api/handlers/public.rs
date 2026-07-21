@@ -17,8 +17,8 @@ use crate::{
     auth::AuthService,
     config::Settings,
     domain::{
-        configurable_types::MembershipTypeConfig, Announcement, CreateMemberRequest, Event,
-        EventType, EventVisibility, MemberStatus, PaymentStatus,
+        configurable_types::MembershipTypeConfig, Announcement, AnnouncementType,
+        CreateMemberRequest, Event, EventType, EventVisibility, MemberStatus, PaymentStatus,
     },
     email::EmailSender,
     error::{AppError, Result},
@@ -706,22 +706,45 @@ pub async fn list_events(
     }
 }
 
-/// `/public/announcements` item: the stored announcement plus a
-/// server-rendered sanitized `content_html` (Markdown → safe-subset HTML)
-/// so a consumer can render formatted content without running its own
-/// Markdown parser or making a sanitization decision. The raw `content`
-/// (Markdown source) is kept too.
+/// Public projection of an `Announcement` for `GET /public/announcements`.
+/// Exposes only the fields the marketing site consumes and deliberately
+/// omits internal identifiers/implementation detail that must never reach
+/// anonymous callers — `created_by` (the author's member id), `created_at`,
+/// `updated_at`, `announcement_type_id`, `is_public`, and the scheduling
+/// fields (`scheduled_publish_at`, `scheduled_publish_timezone`). Mirrors
+/// `PublicEvent`.
 ///
-/// This deliberately still carries the full `Announcement` — it only ADDS
-/// `content_html`. Dropping the internal fields this endpoint currently
-/// leaks (`created_by`, timestamps, `announcement_type_id`,
-/// `scheduled_publish_*`) is a separate projection issue, not bundled here.
+/// Alongside the raw Markdown `content` it carries a server-rendered
+/// sanitized `content_html` (Markdown → safe-subset HTML) so a consumer can
+/// render formatted content without running its own Markdown parser or
+/// making a sanitization decision.
 #[derive(Debug, Serialize, ToSchema)]
-pub struct AnnouncementResponse {
-    #[serde(flatten)]
-    pub announcement: Announcement,
+pub struct PublicAnnouncement {
+    pub id: Uuid,
+    pub title: String,
+    /// Raw Markdown source.
+    pub content: String,
     /// Server-rendered sanitized safe-subset HTML of `content`.
     pub content_html: String,
+    pub announcement_type: AnnouncementType,
+    pub featured: bool,
+    pub image_url: Option<String>,
+    pub published_at: Option<DateTime<Utc>>,
+}
+
+impl From<Announcement> for PublicAnnouncement {
+    fn from(a: Announcement) -> Self {
+        PublicAnnouncement {
+            content_html: crate::util::markdown::render_announcement_markdown(&a.content),
+            id: a.id,
+            title: a.title,
+            content: a.content,
+            announcement_type: a.announcement_type,
+            featured: a.featured,
+            image_url: a.image_url,
+            published_at: a.published_at,
+        }
+    }
 }
 
 #[utoipa::path(
@@ -731,24 +754,24 @@ pub struct AnnouncementResponse {
     responses(
         (status = 200, description = "Published public announcements, each with a \
             server-rendered sanitized `content_html` alongside the raw Markdown `content`",
-            body = [AnnouncementResponse]),
+            body = [PublicAnnouncement]),
     ),
 )]
 pub async fn list_announcements(
     State(announcement_repo): State<Arc<dyn AnnouncementRepository>>,
-) -> Result<Json<Vec<AnnouncementResponse>>> {
+) -> Result<Json<Vec<PublicAnnouncement>>> {
     // Get public announcements only
     let announcements = announcement_repo.list_public().await?;
 
-    // Filter to published announcements only, and attach the sanitized
+    // Filter to published announcements only, then project to
+    // PublicAnnouncement so internal-only fields (created_by, timestamps,
+    // announcement_type_id, is_public, scheduled_publish_*) never reach
+    // anonymous callers. The projection also attaches the sanitized
     // server-rendered HTML from the shared Markdown pipeline.
-    let published: Vec<AnnouncementResponse> = announcements
+    let published: Vec<PublicAnnouncement> = announcements
         .into_iter()
         .filter(|a| a.published_at.is_some())
-        .map(|a| AnnouncementResponse {
-            content_html: crate::util::markdown::render_announcement_markdown(&a.content),
-            announcement: a,
-        })
+        .map(PublicAnnouncement::from)
         .collect();
 
     Ok(Json(published))
@@ -1311,6 +1334,104 @@ mod announcement_markdown_tests {
         // Raw Markdown source is kept alongside the rendered HTML.
         let raw = entry.get("content").and_then(|v| v.as_str()).unwrap();
         assert_eq!(raw, RICH_BODY, "raw content preserved");
+    }
+
+    #[tokio::test]
+    async fn public_announcements_omit_internal_fields() {
+        let pool = migrated_pool().await;
+
+        let member_repo: Arc<dyn MemberRepository> =
+            Arc::new(SqliteMemberRepository::new(pool.clone()));
+        let member: Member = member_repo
+            .create(CreateMemberRequest {
+                email: "admin@example.com".to_string(),
+                username: "admin".to_string(),
+                full_name: "Admin".to_string(),
+                password: "p4ssword_long_enough".to_string(),
+                membership_type_id: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let announcement_repo: Arc<dyn AnnouncementRepository> =
+            Arc::new(SqliteAnnouncementRepository::new(pool.clone()));
+        let now = Utc::now();
+        announcement_repo
+            .create(Announcement {
+                id: Uuid::new_v4(),
+                title: "Public".to_string(),
+                content: "Body".to_string(),
+                announcement_type: AnnouncementType::General,
+                announcement_type_id: None,
+                is_public: true,
+                featured: true,
+                image_url: Some("https://example.com/x.png".to_string()),
+                published_at: Some(now),
+                scheduled_publish_at: Some(now),
+                scheduled_publish_timezone: "America/New_York".to_string(),
+                created_by: member.id,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+
+        let app = Router::new()
+            .route("/public/announcements", get(list_announcements))
+            .with_state(announcement_repo);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/public/announcements")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let arr = json.as_array().expect("array");
+        assert_eq!(arr.len(), 1, "one published public announcement");
+        let entry = arr[0].as_object().expect("object");
+
+        // Internal fields must NOT reach the anonymous marketing surface.
+        for internal in [
+            "created_by",
+            "created_at",
+            "updated_at",
+            "announcement_type_id",
+            "is_public",
+            "scheduled_publish_at",
+            "scheduled_publish_timezone",
+        ] {
+            assert!(
+                !entry.contains_key(internal),
+                "internal field `{internal}` leaked: {entry:?}",
+            );
+        }
+
+        // The projected public field set is present and unchanged.
+        for public in [
+            "id",
+            "title",
+            "content",
+            "content_html",
+            "announcement_type",
+            "featured",
+            "image_url",
+            "published_at",
+        ] {
+            assert!(
+                entry.contains_key(public),
+                "public field `{public}` missing: {entry:?}",
+            );
+        }
     }
 
     #[test]
