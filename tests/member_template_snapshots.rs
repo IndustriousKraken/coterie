@@ -142,6 +142,7 @@ fn render_dashboard(status: MemberStatus) -> String {
     let tmpl = MemberDashboardTemplate {
         base: fixture_base(),
         member: member_info(status),
+        submissions_enabled: false,
     };
     tmpl.render().expect("render dashboard")
 }

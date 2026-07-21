@@ -304,7 +304,11 @@ pub struct AdminAnnouncementDetailTemplate {
 pub struct AdminAnnouncementDetail {
     pub id: String,
     pub title: String,
+    /// Raw Markdown source of truth — shown in the edit textarea.
     pub content: String,
+    /// Server-rendered sanitized HTML preview of `content` (read-only). The
+    /// textarea edits the raw Markdown; this shows how it will display.
+    pub content_html: String,
     pub announcement_type: String,
     pub is_public: bool,
     pub featured: bool,
@@ -362,10 +366,12 @@ pub async fn admin_announcement_detail_page(
         format!("{} {}", dt.format("%b %d, %Y %H:%M"), abbr)
     });
 
+    let content_html = crate::util::markdown::render_announcement_markdown(&announcement.content);
     let detail = AdminAnnouncementDetail {
         id: announcement.id.to_string(),
         title: announcement.title,
         content: announcement.content,
+        content_html,
         announcement_type: format!("{:?}", announcement.announcement_type),
         is_public: announcement.is_public,
         featured: announcement.featured,

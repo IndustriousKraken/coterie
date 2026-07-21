@@ -1,0 +1,65 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}New Submission - Coterie{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6 max-w-2xl mx-auto">
+    <div class="mb-6">
+        <a href="/portal/submissions" class="text-sm text-blue-600 hover:text-blue-900">&larr; Back to my submissions</a>
+        <h1 class="text-2xl font-bold text-gray-900 mt-2">New submission</h1>
+        <p class="text-gray-500 mt-1">Propose a talk, session, or project for review.</p>
+    </div>
+
+    <form method="post" action="/portal/submissions" enctype="multipart/form-data"
+          class="bg-white rounded-lg shadow-sm p-6 space-y-5">
+        <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+
+        <div>
+            <label for="title" class="block text-sm font-medium text-gray-900">Title</label>
+            <input type="text" id="title" name="title" required maxlength="200"
+                   class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+        </div>
+
+        <div>
+            <label for="abstract" class="block text-sm font-medium text-gray-900">Abstract</label>
+            <textarea id="abstract" name="abstract" rows="6" maxlength="5000"
+                      class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"></textarea>
+        </div>
+
+        <div>
+            <label for="visibility" class="block text-sm font-medium text-gray-900">Requested visibility</label>
+            <select id="visibility" name="visibility"
+                    class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                <option value="members">Members only</option>
+                <option value="public">Open to the public</option>
+            </select>
+            <p class="text-xs text-gray-500 mt-1">This is a request — nothing is published until a reviewer accepts it.</p>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+                <label for="preferred_start" class="block text-sm font-medium text-gray-900">Preferred date/time (optional)</label>
+                <input type="datetime-local" id="preferred_start" name="preferred_start"
+                       class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+            </div>
+            <div>
+                <label for="duration_minutes" class="block text-sm font-medium text-gray-900">Duration (minutes, optional)</label>
+                <input type="number" id="duration_minutes" name="duration_minutes" min="1"
+                       class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+            </div>
+        </div>
+
+        <div>
+            <label for="attachment" class="block text-sm font-medium text-gray-900">Attachment (PDF only, optional)</label>
+            <input type="file" id="attachment" name="attachment" accept="application/pdf,.pdf"
+                   class="mt-1 block w-full text-sm text-gray-700">
+            <p class="text-xs text-gray-500 mt-1">Only PDF files are accepted (max 10 MB).</p>
+        </div>
+
+        <div class="flex justify-end gap-3">
+            <a href="/portal/submissions" class="px-4 py-2 bg-gray-100 text-gray-700 text-sm rounded-md hover:bg-gray-200">Cancel</a>
+            <button type="submit" class="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">Submit</button>
+        </div>
+    </form>
+</div>
+{% endblock %}

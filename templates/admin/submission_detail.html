@@ -1,0 +1,98 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Review Submission - Coterie Admin{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6 max-w-2xl mx-auto">
+    <div class="mb-6">
+        <a href="/portal/admin/submissions" class="text-sm text-blue-600 hover:text-blue-900">&larr; Back to the review queue</a>
+        <div class="flex items-center gap-3 mt-2">
+            <h1 class="text-2xl font-bold text-gray-900">{{ submission.title }}</h1>
+            <span class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-800">{{ submission.status_label }}</span>
+        </div>
+        <p class="text-sm text-gray-500 mt-1">
+            Submitted by {{ submission.submitter_name }}{% if submission.submitter_email != "" %} &lt;{{ submission.submitter_email }}&gt;{% endif %}
+        </p>
+    </div>
+
+    <div class="bg-white rounded-lg shadow-sm p-6 space-y-4 mb-6">
+        <div>
+            <p class="text-sm font-medium text-gray-500">Abstract</p>
+            <p class="text-sm text-gray-800 mt-1 whitespace-pre-wrap">{{ submission.abstract_text }}</p>
+        </div>
+        <div>
+            <p class="text-sm font-medium text-gray-500">Requested visibility</p>
+            <p class="text-sm text-gray-800 mt-1">{{ submission.visibility }}</p>
+        </div>
+        {% if submission.attachment_path.is_some() %}
+        <div>
+            <p class="text-sm font-medium text-gray-500">Attachment</p>
+            <a href="/portal/submissions/{{ submission.id }}/attachment" class="text-sm text-blue-600 hover:text-blue-900">Download PDF</a>
+        </div>
+        {% endif %}
+        {% if let Some(note) = submission.reviewer_note %}
+        <div>
+            <p class="text-sm font-medium text-gray-500">Reviewer note</p>
+            <p class="text-sm text-gray-800 mt-1 whitespace-pre-wrap">{{ note }}</p>
+        </div>
+        {% endif %}
+        {% if let Some(event_id) = submission.event_id %}
+        <div>
+            <p class="text-sm font-medium text-gray-500">Scheduled event</p>
+            <a href="/portal/admin/events/{{ event_id }}" class="text-sm text-blue-600 hover:text-blue-900">View event</a>
+        </div>
+        {% endif %}
+    </div>
+
+    {% if submission.is_submitted %}
+    <form method="post" action="/portal/admin/submissions/{{ submission.id }}/review" class="mb-4">
+        <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+        <button type="submit" class="px-4 py-2 bg-gray-100 text-gray-700 text-sm rounded-md hover:bg-gray-200">Mark under review</button>
+    </form>
+    {% endif %}
+
+    {% if submission.is_decidable %}
+    <div class="bg-white rounded-lg shadow-sm p-6 space-y-6">
+        <form method="post" action="/portal/admin/submissions/{{ submission.id }}/accept" class="space-y-4">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <h2 class="text-lg font-semibold text-gray-900">Accept</h2>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                    <label for="schedule_start" class="block text-sm font-medium text-gray-900">Schedule start (optional)</label>
+                    <input type="datetime-local" id="schedule_start" name="schedule_start" value="{{ submission.schedule_default }}"
+                           class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm sm:text-sm">
+                    <p class="text-xs text-gray-500 mt-1">Set a time to create a public/members event on acceptance.</p>
+                </div>
+                <div>
+                    <label for="duration_minutes" class="block text-sm font-medium text-gray-900">Duration (minutes)</label>
+                    <input type="number" id="duration_minutes" name="duration_minutes" min="1"
+                           {% if let Some(d) = submission.duration_minutes %}value="{{ d }}"{% endif %}
+                           class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm sm:text-sm">
+                </div>
+            </div>
+            <div>
+                <label for="accept_note" class="block text-sm font-medium text-gray-900">Reviewer note (optional)</label>
+                <textarea id="accept_note" name="reviewer_note" rows="2" maxlength="2000"
+                          class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm sm:text-sm"></textarea>
+            </div>
+            <button type="submit" class="px-4 py-2 bg-green-600 text-white text-sm rounded-md hover:bg-green-700">Accept</button>
+        </form>
+
+        <hr class="border-gray-200">
+
+        <form method="post" action="/portal/admin/submissions/{{ submission.id }}/decline" class="space-y-4">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <h2 class="text-lg font-semibold text-gray-900">Decline</h2>
+            <div>
+                <label for="decline_note" class="block text-sm font-medium text-gray-900">Reviewer note (optional)</label>
+                <textarea id="decline_note" name="reviewer_note" rows="2" maxlength="2000"
+                          class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm sm:text-sm"></textarea>
+            </div>
+            <button type="submit" class="px-4 py-2 bg-red-600 text-white text-sm rounded-md hover:bg-red-700">Decline</button>
+        </form>
+    </div>
+    {% endif %}
+
+    <p class="text-xs text-gray-400 mt-6">Submitted {{ submission.created_at }} · Updated {{ submission.updated_at }}</p>
+</div>
+{% endblock %}

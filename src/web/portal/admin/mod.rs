@@ -12,6 +12,7 @@ pub mod partials;
 pub mod payments;
 pub mod settings;
 pub mod stripe;
+pub mod submissions;
 pub mod test_result;
 pub mod types;
 pub mod unifi;

@@ -11,6 +11,7 @@ use crate::{
     domain::AttendanceStatus,
     repository::{EventRepository, PaymentRepository},
     service::membership_type_service::MembershipTypeService,
+    service::settings_service::SettingsService,
     web::templates::{filters, BaseContext, HtmlTemplate},
 };
 
@@ -19,6 +20,11 @@ use crate::{
 pub struct MemberDashboardTemplate {
     pub base: BaseContext,
     pub member: MemberInfo,
+    /// Whether the member-proposal-submissions capability is enabled.
+    /// The dashboard is the entry point to submissions; when off, no
+    /// link is shown (and the routes 404), so an org that hasn't opted
+    /// in has no submission surface at all.
+    pub submissions_enabled: bool,
 }
 
 /// Async-loaded banner on every portal page. Shows a warning when dues
@@ -74,6 +80,7 @@ pub async fn dues_warning(Extension(current_user): Extension<CurrentUser>) -> im
 
 pub async fn member_dashboard(
     State(membership_type_service): State<Arc<MembershipTypeService>>,
+    State(settings_service): State<Arc<SettingsService>>,
     State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session): Extension<SessionInfo>,
@@ -97,9 +104,15 @@ pub async fn member_dashboard(
         dues_paid_until: current_user.member.dues_paid_until,
     };
 
+    let submissions_enabled = settings_service
+        .get_bool("submissions.enabled")
+        .await
+        .unwrap_or(false);
+
     let template = MemberDashboardTemplate {
         base: BaseContext::for_member(&csrf_service, &current_user, &session).await,
         member: member_info,
+        submissions_enabled,
     };
 
     HtmlTemplate(template)
