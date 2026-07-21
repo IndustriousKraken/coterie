@@ -213,16 +213,10 @@ impl SubmissionService {
         }
         submission.status = SubmissionStatus::Withdrawn;
         let saved = self.submission_repo.update(submission).await?;
-        self.audit_service
-            .log(
-                Some(actor_id),
-                "withdraw_submission",
-                "submission",
-                &saved.id.to_string(),
-                None,
-                None,
-                None,
-            )
+        // Route through audit_transition (like accept/decline/start_review)
+        // so the audit entry records the resulting `withdrawn` status in
+        // new_value, not None.
+        self.audit_transition(actor_id, &saved, "withdraw_submission")
             .await;
         Ok(saved)
     }
@@ -283,13 +277,37 @@ impl SubmissionService {
         submission.decided_by = Some(admin_id);
         submission.reviewer_note = reviewer_note;
 
-        if let Some(schedule) = schedule {
+        let promoted_event_id = if let Some(schedule) = schedule {
             let event = self.promote(admin_id, &submission, schedule).await?;
             submission.event_id = Some(event.id);
             submission.status = SubmissionStatus::Scheduled;
-        }
+            Some(event.id)
+        } else {
+            None
+        };
 
-        let saved = self.submission_repo.update(submission).await?;
+        // ponytail: promote() (above) and this update are separate writes.
+        // A shared transaction would mean threading one through the whole
+        // event-admin + integration-dispatch path — not worth it for a rare
+        // window. If the update fails after a promotion the Event is already
+        // persisted, so log its id: an admin reconciles by deleting the
+        // stray event (it has no linking submission). Reconcile-by-cleanup,
+        // not rollback — upgrade to a shared txn if orphans ever recur.
+        let saved = match self.submission_repo.update(submission).await {
+            Ok(saved) => saved,
+            Err(e) => {
+                if let Some(event_id) = promoted_event_id {
+                    tracing::error!(
+                        "Submission {} promoted to event {} but the status update failed: {}. \
+                         The orphan event may need manual cleanup.",
+                        id,
+                        event_id,
+                        e
+                    );
+                }
+                return Err(e);
+            }
+        };
         self.audit_transition(admin_id, &saved, "accept_submission")
             .await;
         Ok(saved)

@@ -199,12 +199,14 @@ pub async fn submissions_page(
     State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session): Extension<SessionInfo>,
-) -> impl IntoResponse {
-    let base = BaseContext::for_member(&csrf_service, &current_user, &session).await;
-    let submissions = submission_repo
-        .list_for_member(current_user.member.id)
-        .await
-        .unwrap_or_default()
+) -> Response {
+    // Surface a DB failure as a 500 rather than an empty list — silently
+    // showing "no submissions" would hide a real outage from the member.
+    let rows = match submission_repo.list_for_member(current_user.member.id).await {
+        Ok(rows) => rows,
+        Err(e) => return e.into_response(),
+    };
+    let submissions = rows
         .into_iter()
         .map(|s| SubmissionRow {
             id: s.id.to_string(),
@@ -215,7 +217,8 @@ pub async fn submissions_page(
             has_attachment: s.attachment_path.is_some(),
         })
         .collect();
-    HtmlTemplate(SubmissionsTemplate { base, submissions })
+    let base = BaseContext::for_member(&csrf_service, &current_user, &session).await;
+    HtmlTemplate(SubmissionsTemplate { base, submissions }).into_response()
 }
 
 pub async fn new_submission_page(

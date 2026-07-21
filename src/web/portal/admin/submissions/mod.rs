@@ -100,9 +100,14 @@ pub async fn admin_submissions_page(
     State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session): Extension<SessionInfo>,
-) -> impl IntoResponse {
+) -> Response {
+    // Surface a DB failure as a 500 rather than an empty queue — a broken
+    // query silently rendering "no submissions" hides an outage from ops.
+    let rows = match submission_repo.list_for_review().await {
+        Ok(rows) => rows,
+        Err(e) => return e.into_response(),
+    };
     let base = BaseContext::for_member(&csrf_service, &current_user, &session).await;
-    let rows = submission_repo.list_for_review().await.unwrap_or_default();
     let mut submissions = Vec::with_capacity(rows.len());
     for s in rows {
         let (name, _) = submitter_name(&member_repo, &s).await;
@@ -116,7 +121,7 @@ pub async fn admin_submissions_page(
             has_attachment: s.attachment_path.is_some(),
         });
     }
-    HtmlTemplate(AdminSubmissionsTemplate { base, submissions })
+    HtmlTemplate(AdminSubmissionsTemplate { base, submissions }).into_response()
 }
 
 pub async fn admin_submission_detail_page(
