@@ -49,6 +49,11 @@ pub struct BaseContext {
     /// update banner's "How to update" link. Empty unless a banner is
     /// shown, and only referenced from inside the banner markup.
     pub update_readme_url: String,
+    /// Whether the `submissions.enabled` capability is on (from the process
+    /// cache `settings_service::submissions_enabled_cached`). Gates the admin
+    /// "Submissions" nav link in the shared layout so it appears only when the
+    /// feature is enabled.
+    pub submissions_enabled: bool,
 }
 
 impl BaseContext {
@@ -96,6 +101,7 @@ impl BaseContext {
             release_url: crate::version::release_tag().map(crate::version::release_url),
             update_banner,
             update_readme_url,
+            submissions_enabled: crate::service::settings_service::submissions_enabled_cached(),
         }
     }
 

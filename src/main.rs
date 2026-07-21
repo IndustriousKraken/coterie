@@ -122,6 +122,16 @@ async fn main() -> anyhow::Result<()> {
         crypto.clone(),
     ));
 
+    // Prime the cached `submissions.enabled` feature flag from the DB so the
+    // admin "Submissions" nav link reflects the stored setting from boot; it is
+    // refreshed on write thereafter. Absent/unparseable → disabled.
+    service::settings_service::set_submissions_enabled_cached(
+        settings_service
+            .get_bool("submissions.enabled")
+            .await
+            .unwrap_or(false),
+    );
+
     // Email sender reads config from the DB at send time so admins can
     // change SMTP settings from the UI without a restart.
     let email_sender: Arc<dyn email::EmailSender> =

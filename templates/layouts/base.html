@@ -114,6 +114,11 @@
                                 <a href="/portal/admin/announcements" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
                                     Announcements
                                 </a>
+                                {% if base.submissions_enabled %}
+                                <a href="/portal/admin/submissions" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                    Submissions
+                                </a>
+                                {% endif %}
                                 <hr class="border-gray-200 my-1">
                                 <a href="/portal/admin/types" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
                                     Types

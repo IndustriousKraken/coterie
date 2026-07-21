@@ -4,11 +4,35 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::{
     auth::SecretCrypto,
     domain::{AppSetting, SettingType, SettingsCategory, UpdateSettingRequest},
     error::{AppError, Result},
 };
+
+/// Process-wide cache of the `submissions.enabled` toggle.
+///
+/// The shared portal layout (`templates/layouts/base.html`) gates the admin
+/// "Submissions" nav link on this, so the link appears only when the feature is
+/// on. The layout only sees `BaseContext`, and threading the settings service
+/// through all `BaseContext::for_member` call sites to read one bool is not
+/// worth it — instead this flag is primed from the DB at startup and refreshed
+/// whenever `submissions.enabled` is written, mirroring the cached-flag pattern
+/// used for `admin_exists_observed`.
+static SUBMISSIONS_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Current cached value of `submissions.enabled` (default `false`).
+pub fn submissions_enabled_cached() -> bool {
+    SUBMISSIONS_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Set the cached `submissions.enabled` flag. Called at startup (primed from the
+/// DB) and on every write to the setting.
+pub fn set_submissions_enabled_cached(enabled: bool) {
+    SUBMISSIONS_ENABLED.store(enabled, Ordering::Relaxed);
+}
 
 /// Keys for organization-wide settings.
 pub mod org_keys {
@@ -364,6 +388,12 @@ impl SettingsService {
         .bind(&request.reason)
         .execute(&self.pool)
         .await?;
+
+        // Keep the process-cached `submissions.enabled` flag (read by the shared
+        // portal layout to gate the admin nav link) in sync on write.
+        if key == "submissions.enabled" {
+            set_submissions_enabled_cached(request.value.parse().unwrap_or(false));
+        }
 
         // Return updated setting
         self.get_setting(key).await
