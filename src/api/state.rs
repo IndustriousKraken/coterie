@@ -21,6 +21,7 @@ use crate::{
         EventSeriesRepository, ExpenseAccountRepository, ExpenseCategoryRepository,
         ExpenseRepository, MemberRepository, MembershipTypeRepository, PaymentRepository,
         ProcessedEventsRepository, SavedCardRepository, ScheduledPaymentRepository,
+        SubmissionRepository,
     },
     service::{
         announcement_admin_service::AnnouncementAdminService, audit_service::AuditService,
@@ -30,7 +31,7 @@ use crate::{
         member_service::MemberService, membership_type_service::MembershipTypeService,
         payment_admin_service::PaymentAdminService, payment_service::PaymentService,
         recurring_event_service::RecurringEventService, settings_service::SettingsService,
-        ServiceContext,
+        submission_service::SubmissionService, ServiceContext,
     },
 };
 
@@ -316,6 +317,12 @@ impl FromRef<AppState> for Arc<dyn ExpenseAccountRepository> {
     }
 }
 
+impl FromRef<AppState> for Arc<dyn SubmissionRepository> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.submission_repo.clone()
+    }
+}
+
 // --- Services ---
 
 impl FromRef<AppState> for Arc<AuthService> {
@@ -438,6 +445,12 @@ impl FromRef<AppState> for Arc<ExpenseCategoryService> {
 impl FromRef<AppState> for Arc<ExpenseAccountService> {
     fn from_ref(state: &AppState) -> Self {
         state.service_context.expense_account_service.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<SubmissionService> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.submission_service.clone()
     }
 }
 

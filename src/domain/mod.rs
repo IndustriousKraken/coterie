@@ -11,6 +11,7 @@ pub mod payment_method;
 pub mod recurrence;
 pub mod scheduled_payment;
 pub mod settings;
+pub mod submission;
 
 pub use announcement::*;
 pub use configurable_types::*;
@@ -25,3 +26,4 @@ pub use payment_method::*;
 pub use recurrence::{generate_occurrences, Recurrence, WeekdayCode};
 pub use scheduled_payment::*;
 pub use settings::*;
+pub use submission::*;

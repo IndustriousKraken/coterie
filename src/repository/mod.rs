@@ -13,6 +13,7 @@ pub mod payment_repository;
 pub mod processed_events_repository;
 pub mod saved_card_repository;
 pub mod scheduled_payment_repository;
+pub mod submission_repository;
 
 pub use announcement_repository::{AnnouncementRepository, SqliteAnnouncementRepository};
 pub use basic_type_repository::{BasicTypeRepository, SqliteBasicTypeRepository};
@@ -36,3 +37,4 @@ pub use saved_card_repository::{SavedCardRepository, SqliteSavedCardRepository};
 pub use scheduled_payment_repository::{
     ScheduledPaymentRepository, SqliteScheduledPaymentRepository,
 };
+pub use submission_repository::{SqliteSubmissionRepository, SubmissionRepository};

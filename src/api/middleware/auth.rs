@@ -1,6 +1,6 @@
 use axum::{
     extract::{Request, State},
-    http::Uri,
+    http::{StatusCode, Uri},
     middleware::Next,
     response::{IntoResponse, Redirect, Response},
 };
@@ -280,6 +280,31 @@ pub async fn require_admin_redirect(
 // `middleware::security::csrf_protect_unless_exempt` so adding a new
 // state-changing route can't accidentally skip protection — see
 // CLAUDE.md and docs/ARCHITECTURE.md for the rationale.
+
+/// Route gate for the member-proposal-submissions capability. When the
+/// `submissions.enabled` org setting is off (the default), submission
+/// routes behave as if they do not exist — the request 404s and no
+/// submission surface is reachable. Layered on the submission
+/// sub-routers; the toggle is read per request so an admin flipping it
+/// takes effect on the next request with no restart. Fails closed: a
+/// setting-lookup error reads as "disabled".
+pub async fn require_submissions_enabled(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let enabled = state
+        .service_context
+        .settings_service
+        .get_bool("submissions.enabled")
+        .await
+        .unwrap_or(false);
+    if enabled {
+        next.run(request).await
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    }
+}
 
 /// Middleware that optionally adds session info to requests.
 /// Useful for pages that work differently for logged-in vs logged-out users.

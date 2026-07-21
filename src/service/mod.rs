@@ -15,6 +15,7 @@ pub mod payment_service;
 pub mod recurring_event_service;
 pub mod settings_service;
 pub mod stripe_import_service;
+pub mod submission_service;
 pub mod update_check;
 
 use crate::api::state::MoneyLimiter;
@@ -38,6 +39,7 @@ use payment_admin_service::PaymentAdminService;
 use payment_service::PaymentService;
 use recurring_event_service::RecurringEventService;
 use settings_service::SettingsService;
+use submission_service::SubmissionService;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 
@@ -85,6 +87,8 @@ pub struct ServiceContext {
     pub expense_service: Arc<ExpenseService>,
     pub expense_category_service: Arc<ExpenseCategoryService>,
     pub expense_account_service: Arc<ExpenseAccountService>,
+    pub submission_repo: Arc<dyn SubmissionRepository>,
+    pub submission_service: Arc<SubmissionService>,
     pub db_pool: SqlitePool,
 }
 
@@ -232,6 +236,17 @@ impl ServiceContext {
             audit_service.clone(),
         ));
 
+        // Member proposal submissions. Promotion reuses `event_admin_service`
+        // (built above) so an accepted+scheduled proposal becomes a standard
+        // Event through the existing audited path, not a second event surface.
+        let submission_repo: Arc<dyn SubmissionRepository> =
+            Arc::new(SqliteSubmissionRepository::new(db_pool.clone()));
+        let submission_service = Arc::new(SubmissionService::new(
+            submission_repo.clone(),
+            event_admin_service.clone(),
+            audit_service.clone(),
+        ));
+
         Self {
             member_repo,
             event_repo,
@@ -270,6 +285,8 @@ impl ServiceContext {
             expense_service,
             expense_category_service,
             expense_account_service,
+            submission_repo,
+            submission_service,
             db_pool,
         }
     }

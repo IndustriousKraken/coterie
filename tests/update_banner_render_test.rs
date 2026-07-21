@@ -42,6 +42,7 @@ fn render_with(base: BaseContext) -> String {
     MemberDashboardTemplate {
         base,
         member: member_info(),
+        submissions_enabled: false,
     }
     .render()
     .expect("render dashboard")

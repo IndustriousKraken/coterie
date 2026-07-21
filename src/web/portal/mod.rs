@@ -10,6 +10,7 @@ pub mod payments;
 pub mod profile;
 mod restore;
 pub mod security;
+pub mod submissions;
 
 use crate::api::state::AppState;
 use axum::{
@@ -19,6 +20,64 @@ use axum::{
 };
 
 pub fn create_portal_routes(state: AppState) -> Router<AppState> {
+    // Member-proposal-submissions routes. Both the member-facing and the
+    // admin-facing groups are gated by `require_submissions_enabled` so
+    // that when the org toggle is off (default) the routes 404 — no
+    // submission surface exists. The auth gate (member vs admin) is
+    // layered by the router each group is merged into.
+    let admin_submission_routes = Router::new()
+        .route(
+            "/submissions",
+            get(admin::submissions::admin_submissions_page),
+        )
+        .route(
+            "/submissions/:id",
+            get(admin::submissions::admin_submission_detail_page),
+        )
+        .route(
+            "/submissions/:id/review",
+            post(admin::submissions::admin_start_review),
+        )
+        .route(
+            "/submissions/:id/accept",
+            post(admin::submissions::admin_accept_submission),
+        )
+        .route(
+            "/submissions/:id/decline",
+            post(admin::submissions::admin_decline_submission),
+        )
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::api::middleware::auth::require_submissions_enabled,
+        ));
+
+    let member_submission_routes = Router::new()
+        .route(
+            "/submissions",
+            get(submissions::submissions_page).post(submissions::create_submission),
+        )
+        .route("/submissions/new", get(submissions::new_submission_page))
+        .route(
+            "/submissions/:id",
+            get(submissions::submission_detail_page),
+        )
+        .route(
+            "/submissions/:id/update",
+            post(submissions::update_submission),
+        )
+        .route(
+            "/submissions/:id/withdraw",
+            post(submissions::withdraw_submission),
+        )
+        .route(
+            "/submissions/:id/attachment",
+            get(submissions::download_attachment),
+        )
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::api::middleware::auth::require_submissions_enabled,
+        ));
+
     // Admin routes — gated at the middleware layer by require_admin_redirect.
     // Non-admins hitting these routes are redirected to /portal/dashboard.
     // Note: there's no bare /portal/admin landing page. The admin nav
@@ -411,6 +470,9 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         // Audit log viewer + CSV export
         .route("/audit", get(admin::audit::audit_log_page))
         .route("/audit/export", get(admin::audit::audit_log_export))
+        // Member proposal submissions review queue. Merged in with its
+        // own submissions-enabled gate; the admin gate below covers it too.
+        .merge(admin_submission_routes)
         // CSRF is enforced at the top of the application router (see
         // `middleware::security::csrf_protect_unless_exempt`); only the
         // admin gate is layered here.
@@ -537,6 +599,10 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         )
         .route("/api/payments/recent", get(dashboard::recent_payments))
         .route("/api/donate", post(donations::donate_api))
+        // Member proposal submissions (own list/create/edit/withdraw +
+        // gated attachment download). Merged in with its own
+        // submissions-enabled gate; the active-member gate below covers it.
+        .merge(member_submission_routes)
         // CSRF is enforced at the application root; only the auth gate
         // is layered per-router.
         .route_layer(middleware::from_fn_with_state(

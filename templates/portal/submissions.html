@@ -1,0 +1,51 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}My Submissions - Coterie{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900">My Submissions</h1>
+            <p class="text-gray-500 mt-1">Proposals you've submitted for review</p>
+        </div>
+        <a href="/portal/submissions/new"
+           class="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
+            New submission
+        </a>
+    </div>
+
+    {% if submissions.is_empty() %}
+    <div class="bg-white rounded-lg shadow-sm p-8 text-center text-gray-500">
+        You haven't submitted any proposals yet.
+    </div>
+    {% else %}
+    <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Title</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Requested</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Attachment</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Submitted</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-200">
+                {% for s in submissions %}
+                <tr class="hover:bg-gray-50">
+                    <td class="px-6 py-4 text-sm font-medium text-gray-900">
+                        <a href="/portal/submissions/{{ s.id }}" class="text-blue-600 hover:text-blue-900">{{ s.title }}</a>
+                    </td>
+                    <td class="px-6 py-4 text-sm text-gray-700">{{ s.status_label }}</td>
+                    <td class="px-6 py-4 text-sm text-gray-700">{{ s.visibility }}</td>
+                    <td class="px-6 py-4 text-sm text-gray-700">{% if s.has_attachment %}Yes{% else %}—{% endif %}</td>
+                    <td class="px-6 py-4 text-sm text-gray-500">{{ s.created_at }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

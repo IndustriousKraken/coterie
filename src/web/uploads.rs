@@ -48,6 +48,61 @@ fn detect_image_format(data: &[u8]) -> Option<&'static str> {
     None
 }
 
+/// Inspect the first bytes of an uploaded document and return its
+/// detected format as a canonical extension string. Currently PDF-only:
+/// PPTX/DOCX/other Office formats are ZIP containers sharing `PK\x03\x04`
+/// magic with arbitrary/zip-bomb archives and cannot be safely told apart
+/// by sniffing, so they are deliberately out of scope. The client
+/// extension / content-type are hints — this magic-byte check is the
+/// authoritative decision, exactly like `detect_image_format`.
+fn detect_document_format(data: &[u8]) -> Option<&'static str> {
+    // PDF: the "%PDF-" signature. The spec allows leading bytes before
+    // it, but real-world PDFs start with it; a stricter prefix check is
+    // the safer default here (a file that only carries %PDF- deeper in is
+    // more likely a polyglot than a legitimate document).
+    if data.starts_with(b"%PDF-") {
+        return Some("pdf");
+    }
+    None
+}
+
+/// Save an uploaded document (PDF only) to the uploads directory,
+/// reusing the generated-name + size-cap behavior of
+/// [`save_uploaded_file`]. The content is confirmed by magic-byte sniff;
+/// the client-supplied filename/extension never influences acceptance or
+/// the storage path. Returns the relative path (e.g. `uploads/abc123.pdf`).
+pub async fn save_uploaded_document(uploads_dir: &str, data: &[u8]) -> Result<String> {
+    if data.len() > MAX_FILE_SIZE {
+        return Err(AppError::Validation("File too large (max 10 MB)".to_string()));
+    }
+
+    // Authoritative sniff — SVG and every non-PDF type stay rejected.
+    let detected = detect_document_format(data).ok_or_else(|| {
+        AppError::Validation("File content is not a recognized PDF document.".to_string())
+    })?;
+
+    let uploads_path = PathBuf::from(uploads_dir);
+    fs::create_dir_all(&uploads_path)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to create uploads directory: {}", e)))?;
+
+    // Server-generated, high-entropy name — the uploader's filename can
+    // never influence the storage path (no traversal) and a leaked path
+    // isn't itself an authorization bypass (the gated route is the
+    // control).
+    let new_filename = format!("{}.{}", Uuid::new_v4(), detected);
+    let file_path = uploads_path.join(&new_filename);
+
+    let mut file = fs::File::create(&file_path)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to create file: {}", e)))?;
+    file.write_all(data)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to write file: {}", e)))?;
+
+    Ok(format!("uploads/{}", new_filename))
+}
+
 /// Save an uploaded file to the uploads directory.
 /// Returns the relative path to the file (e.g., "uploads/abc123.jpg")
 pub async fn save_uploaded_file(uploads_dir: &str, filename: &str, data: &[u8]) -> Result<String> {
@@ -312,5 +367,40 @@ mod tests {
         riff_wav.extend_from_slice(&[0x24, 0x00, 0x00, 0x00]);
         riff_wav.extend_from_slice(b"WAVE");
         assert_eq!(detect_image_format(&riff_wav), None);
+    }
+
+    #[test]
+    fn detects_pdf_by_magic() {
+        assert_eq!(detect_document_format(b"%PDF-1.7\n..."), Some("pdf"));
+        assert_eq!(detect_document_format(b"%PDF-1.4 rest"), Some("pdf"));
+    }
+
+    #[test]
+    fn rejects_non_pdf_documents() {
+        // A PNG is a valid image but not a document.
+        assert_eq!(
+            detect_document_format(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
+            None
+        );
+        // A ZIP (PK\x03\x04) renamed .pdf — the whole reason PPTX/DOCX
+        // are deferred. Must NOT sniff as PDF.
+        assert_eq!(detect_document_format(b"PK\x03\x04 zip payload"), None);
+        // SVG is active content and stays rejected.
+        assert_eq!(detect_document_format(b"<svg xmlns=..."), None);
+        assert_eq!(detect_document_format(b""), None);
+        // %PDF- appearing later (polyglot) is not accepted — prefix only.
+        assert_eq!(detect_document_format(b"GIF89a%PDF-"), None);
+    }
+
+    #[tokio::test]
+    async fn oversized_pdf_is_rejected_before_write() {
+        // A valid-signature PDF over the 10 MB cap is refused (the size
+        // check runs before any filesystem write, so the dir is irrelevant).
+        let mut data = Vec::from(*b"%PDF-1.7");
+        data.resize(MAX_FILE_SIZE + 1, b'0');
+        let err = save_uploaded_document("/tmp/coterie-nonexistent-uploads", &data)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
     }
 }
