@@ -364,7 +364,10 @@ pub async fn recent_payments(
             id: p.id.to_string(),
             amount: format!("${:.2}", p.amount_cents as f64 / 100.0),
             status: format!("{:?}", p.status),
-            date: p.created_at.format("%B %d, %Y").to_string(),
+            // paid_at is when the money moved (correct for imported/backdated
+            // rows); created_at is just row insertion. Same convention as the
+            // payments-page list and receipts.
+            date: p.paid_at.unwrap_or(p.created_at).format("%B %d, %Y").to_string(),
             description: if p.description.is_empty() {
                 "Membership dues".to_string()
             } else {
