@@ -6,7 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use utoipa::{IntoParams, ToSchema};
@@ -120,11 +120,43 @@ impl From<Event> for PublicEvent {
 
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct PublicEventsQuery {
-    /// Maximum number of upcoming events to return (default 50).
+    /// Maximum number of events to return (default 50).
     pub limit: Option<i64>,
     /// Response format: omit or `"json"` for JSON; `"ical"` for an
     /// iCal/.ics calendar feed.
     pub format: Option<String>,
+    /// Optional inclusive start of a date range (RFC 3339 instant). When
+    /// both `from` and `to` are supplied, valid, `to > from`, and the span
+    /// is within the maximum window, the JSON feed returns events whose
+    /// derived UTC instant is in `[from, to)` — **including past events** —
+    /// instead of the default upcoming-only list. Ignored for `format=ical`
+    /// and silently ignored (falls back to upcoming-only) if malformed.
+    pub from: Option<String>,
+    /// Optional exclusive end of the date range (RFC 3339 instant). See `from`.
+    pub to: Option<String>,
+}
+
+/// Maximum span of a `from`/`to` range on `GET /public/events`. Bounds the
+/// scan an anonymous caller can request; a wider (or malformed) range falls
+/// back to the default upcoming-only list. ~400 days covers a full calendar
+/// month view (with adjacent-month spill) plus slack.
+const MAX_RANGE_SPAN_DAYS: i64 = 400;
+
+/// Parse the opt-in `from`/`to` range. Returns `Some((from, to))` only when
+/// BOTH parse as RFC 3339 instants, `to > from`, and the window is no wider
+/// than `MAX_RANGE_SPAN_DAYS`; otherwise `None`, so the caller falls back to
+/// the default upcoming-only filter (a bad range must never error).
+fn parse_range(
+    from: &Option<String>,
+    to: &Option<String>,
+) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    let from = DateTime::parse_from_rfc3339(from.as_deref()?)
+        .ok()?
+        .with_timezone(&Utc);
+    let to = DateTime::parse_from_rfc3339(to.as_deref()?)
+        .ok()?
+        .with_timezone(&Utc);
+    (to > from && to - from <= Duration::days(MAX_RANGE_SPAN_DAYS)).then_some((from, to))
 }
 
 #[utoipa::path(
@@ -667,7 +699,7 @@ pub async fn list_events(
     // JSON/iCal output all compare and emit true instants (not the
     // naive wall-clock, which would be off by the org's offset).
     let now = Utc::now();
-    let mut upcoming_events: Vec<Event> = public_events
+    let mut events: Vec<Event> = public_events
         .into_iter()
         .chain(private_events.into_iter().map(|mut e| {
             // Sanitize private events
@@ -679,18 +711,33 @@ pub async fn list_events(
             e
         }))
         .collect();
-    derive_utc_instants(&mut upcoming_events);
-    upcoming_events.retain(|e| e.start_time > now);
+    // `start_time`/`end_time` now hold the derived UTC instant, so the
+    // filters below compare true instants (not the naive wall-clock).
+    derive_utc_instants(&mut events);
+
+    // iCal is ALWAYS upcoming-only (the home page + calendar subscriptions
+    // depend on it); the range opt-in applies to the JSON feed only. A range
+    // is honored only when both `from`/`to` parse, `to > from`, and the span
+    // is bounded — otherwise we fall back to the upcoming filter unchanged.
+    let is_ical = params.format.as_deref() == Some("ical");
+    let range = if is_ical {
+        None
+    } else {
+        parse_range(&params.from, &params.to)
+    };
+    match range {
+        Some((from, to)) => events.retain(|e| e.start_time >= from && e.start_time < to),
+        None => events.retain(|e| e.start_time > now),
+    }
 
     // Sort by start time
-    upcoming_events.sort_by(|a, b| a.start_time.cmp(&b.start_time));
+    events.sort_by(|a, b| a.start_time.cmp(&b.start_time));
 
     // Apply limit
-    upcoming_events.truncate(params.limit.unwrap_or(50) as usize);
+    events.truncate(params.limit.unwrap_or(50) as usize);
 
-    // Check if iCal format is requested
-    if params.format.as_deref() == Some("ical") {
-        let ical = generate_ical_feed(&upcoming_events);
+    if is_ical {
+        let ical = generate_ical_feed(&events);
         Ok((
             StatusCode::OK,
             [(header::CONTENT_TYPE, "text/calendar; charset=utf-8")],
@@ -701,7 +748,7 @@ pub async fn list_events(
         // Project to PublicEvent so internal-only fields (created_by,
         // timestamps, event_type_id, series_id, occurrence_index) never
         // reach anonymous callers. Sanitization already ran above.
-        let public: Vec<PublicEvent> = upcoming_events.into_iter().map(PublicEvent::from).collect();
+        let public: Vec<PublicEvent> = events.into_iter().map(PublicEvent::from).collect();
         Ok(Json(public).into_response())
     }
 }
