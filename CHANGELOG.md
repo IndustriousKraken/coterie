@@ -34,6 +34,57 @@ Added / Changed / Deprecated / Removed / Fixed / Security.
 
 ### Fixed
 
+## [v1.0.15] — 2026-07-22
+
+### Added
+
+- Adds an opt-in date range (`from`/`to`) to `GET /public/events`, so the public marketing calendar can show a month's past events; the default response and iCal subscriptions stay upcoming-only.
+
+## [v1.0.14] — 2026-07-22
+
+### Fixed
+
+- Fixes the wrong date showing on the dashboard payment view.
+
+## [v1.0.13] — 2026-07-21
+
+### Security
+
+- Stops the public `/uploads/:filename` route serving submission attachments, so a private submission PDF can no longer be fetched by guessing its filename — it is reachable only through its authorization-gated download route.
+
+## [v1.0.12] — 2026-07-21
+
+### Added
+
+- Adds a "Submissions" link to the admin navigation (shown only when member proposal submissions are enabled), so admins can reach the submission review and promotion page.
+
+## [v1.0.11] — 2026-07-21
+
+### Added
+
+- Adds Markdown rendering for admin announcements — bodies authored in Markdown now render as sanitized HTML in the member portal, the public marketing site, and the RSS feed, making the form's "Markdown formatting is supported" hint true.
+- Adds member proposal submissions (off by default) — when enabled, members can submit talk or session proposals with an optional PDF attachment for admin review, and an accepted submission can be promoted to an event; reviewer decisions are audited.
+
+### Security
+
+- Stops `GET /public/announcements` exposing internal announcement fields — the author's member ID, internal timestamps, and scheduling fields — to anonymous callers; the endpoint now returns a purpose-built public projection.
+
+## [v1.0.10] — 2026-07-17
+
+### Fixed
+
+- Fixes the Events page returning an error when "Show past events" is checked; the checkbox value could not be parsed, so ticking the box broke the events list.
+- Fixes the dashboard's Upcoming Events widget showing a registered event as a non-interactive "Attending" label, so members can now cancel an RSVP directly from the dashboard.
+
+## [v1.0.9] — 2026-07-16
+
+### Fixed
+
+- Fixes first-run setup reporting success even when activating the initial admin failed — the new admin was left unable to log in and setup could not be retried, locking the organization out; the failure now surfaces instead of being swallowed.
+- Fixes "Remember me" breaking login — checking the box made the login request fail to deserialize, so valid credentials were rejected whenever it was ticked.
+- Fixes the Announcements page returning an error when "Show all" is checked; the checkbox value could not be parsed into the list filter.
+- Fixes the event RSVP/cancel toggle only updating after a manual page refresh, because the first swap detached its HTMX target.
+
 ## [v1.0.8] — 2026-07-14
 
 ### Added
