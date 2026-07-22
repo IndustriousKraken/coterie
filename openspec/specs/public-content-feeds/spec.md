@@ -32,17 +32,27 @@ Members-only events SHALL additionally be sanitized so that no private data leak
 - `location` SHALL be set to `None`.
 - `image_url` SHALL be set to `None`.
 
-The real `start_time`/`end_time` pass through for both public and members-only events. The result SHALL be filtered to upcoming events (`start_time > now()`), sorted ascending by start time, and truncated to the configured `limit` (default 50).
+The real `start_time`/`end_time` pass through for both public and members-only events. **By default** — and always for the iCal format — the result SHALL be filtered to upcoming events (derived UTC instant after `now()`), sorted ascending by start time, and truncated to the configured `limit` (default 50). **When both `from` and `to` query parameters are supplied as valid RFC 3339 instants**, spanning no more than a bounded maximum window, the JSON result SHALL instead include every event whose derived UTC instant falls within `[from, to)` — **including past events** — sorted ascending by start time, still projected, members-only sanitized, AdminOnly excluded, and `limit`-bounded. A missing, malformed, or over-wide range SHALL fall back to the default upcoming-only behavior rather than erroring.
 
 #### Scenario: Members-only event title is sanitized
 
 - **WHEN** a members-only event "Annual Members Dinner" is in the database
 - **THEN** `/public/events` SHALL include an entry whose `title = "Members-Only Event"` and whose location/image_url are null; the start/end times SHALL be the real values
 
-#### Scenario: Past events are excluded
+#### Scenario: Past events are excluded by default
 
-- **WHEN** an event's `start_time` is in the past
+- **WHEN** an event's derived instant is in the past AND no `from`/`to` range is supplied
 - **THEN** the event SHALL NOT appear in `/public/events` regardless of public/members-only
+
+#### Scenario: A date range returns past events
+
+- **WHEN** an anonymous caller fetches `/public/events?from=<start>&to=<end>` (valid RFC 3339, within the maximum span) and a past event's derived instant falls within `[from, to)`
+- **THEN** that past event SHALL appear in the JSON response, projected and — if members-only — sanitized like any other
+
+#### Scenario: A malformed or over-wide range falls back to upcoming-only
+
+- **WHEN** `from`/`to` are missing one side, unparseable, or span more than the maximum window
+- **THEN** the response SHALL be the default upcoming-only list (the range is ignored), never an error that breaks the marketing calendar
 
 #### Scenario: Internal identifiers are not exposed to anonymous callers
 
