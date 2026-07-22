@@ -51,17 +51,34 @@ pub async fn events_list_api(
 ) -> impl IntoResponse {
     let member_id = current_user.member.id;
 
-    // The "Show past events" checkbox is accepted but not yet actioned: the
-    // repository has no past-event listing, so we only read presence to keep the
-    // field live. Adding past listing is a separate behavior change.
-    let _show_past = query.show_past.is_some();
-
-    // Get upcoming events (past events not currently supported)
-    let events = event_repo.list_upcoming(50).await.unwrap_or_default();
+    // "Show past events": when checked, list every event (`list` returns all
+    // events — public AND members-only — newest-first); otherwise only upcoming.
+    // The checkbox serializes as `show_past=on`.
+    let show_past = query.show_past.is_some();
 
     let now = chrono::Utc::now();
 
-    // Filter events by type (past events not currently supported by repository)
+    let mut events = if show_past {
+        event_repo.list(200, 0).await.unwrap_or_default()
+    } else {
+        event_repo.list_upcoming(50).await.unwrap_or_default()
+    };
+
+    // Display order: upcoming soonest-first, then past most-recent-first, so a
+    // combined view reads "what's coming" then "what just happened". Compare on
+    // the derived UTC instant (`start_utc`), never the naive wall-clock, to stay
+    // correct for non-UTC orgs.
+    events.sort_by(|a, b| {
+        let (au, bu) = (a.start_utc(), b.start_utc());
+        match (au > now, bu > now) {
+            (true, true) => au.cmp(&bu),
+            (false, false) => bu.cmp(&au),
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+        }
+    });
+
+    // Filter events by type.
     let filtered_events: Vec<_> = events
         .into_iter()
         .filter(|e| {
