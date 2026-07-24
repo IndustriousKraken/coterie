@@ -27,6 +27,8 @@ fn render_with_boolean_setting() -> String {
                 is_sensitive: false,
                 is_timezone: false,
                 timezone_options: vec![],
+                is_signup_mode: false,
+                signup_mode_options: vec![],
             }],
         }],
         success_message: None,

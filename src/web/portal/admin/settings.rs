@@ -34,6 +34,11 @@ pub struct SettingInfo {
     /// choices (current value first, marked selected).
     pub is_timezone: bool,
     pub timezone_options: Vec<TzOption>,
+    /// True for `membership.signup_mode` — renders an approval/payment
+    /// dropdown instead of a free-text field. Reuses `TzOption` (value +
+    /// selected); the values are `SignupMode`'s wire strings.
+    pub is_signup_mode: bool,
+    pub signup_mode_options: Vec<TzOption>,
 }
 
 /// One option in the timezone dropdown.
@@ -356,6 +361,19 @@ fn setting_to_info(setting: &AppSetting) -> SettingInfo {
         Vec::new()
     };
 
+    let is_signup_mode = setting.key == "membership.signup_mode";
+    let signup_mode_options = if is_signup_mode {
+        ["approval", "payment"]
+            .iter()
+            .map(|m| TzOption {
+                value: (*m).to_string(),
+                selected: *m == setting.value,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     SettingInfo {
         key: setting.key.clone(),
         display_name,
@@ -365,5 +383,7 @@ fn setting_to_info(setting: &AppSetting) -> SettingInfo {
         is_sensitive: setting.is_sensitive,
         is_timezone,
         timezone_options,
+        is_signup_mode,
+        signup_mode_options,
     }
 }
