@@ -21,9 +21,12 @@ pub trait SubmissionRepository: Send + Sync {
     /// per-member create cap.
     async fn count_open_for_member(&self, member_id: Uuid) -> Result<i64>;
     async fn update(&self, submission: Submission) -> Result<Submission>;
-    /// Hard-delete a submission row. Owner + terminal-state checks live in
-    /// the service; this is the raw delete.
-    async fn delete(&self, id: Uuid) -> Result<()>;
+    /// Hard-delete a submission row, but ONLY while it is still terminal
+    /// (`withdrawn`/`declined`) — the guard is in SQL so a concurrent
+    /// re-open can't slip an active row through the service's
+    /// load-then-delete gap. Returns `true` if a row was deleted, `false`
+    /// if the guard matched none (already re-opened, or never terminal).
+    async fn delete(&self, id: Uuid) -> Result<bool>;
 }
 
 #[derive(FromRow)]
@@ -202,12 +205,15 @@ impl SubmissionRepository for SqliteSubmissionRepository {
             .ok_or_else(|| AppError::Internal("Failed to retrieve updated submission".to_string()))
     }
 
-    async fn delete(&self, id: Uuid) -> Result<()> {
-        sqlx::query("DELETE FROM submissions WHERE id = ?")
-            .bind(id.to_string())
-            .execute(&self.pool)
-            .await
-            .map_err(AppError::Database)?;
-        Ok(())
+    async fn delete(&self, id: Uuid) -> Result<bool> {
+        // Guard mirrors SubmissionStatus::is_deletable — keep in sync.
+        let res = sqlx::query(
+            "DELETE FROM submissions WHERE id = ? AND status IN ('withdrawn', 'declined')",
+        )
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+        Ok(res.rows_affected() > 0)
     }
 }

@@ -228,19 +228,25 @@ impl SubmissionService {
     /// untouched. `uploads_dir` is the configured filesystem upload root.
     pub async fn delete(&self, actor_id: Uuid, id: Uuid, uploads_dir: &str) -> Result<()> {
         let submission = self.load_owned(actor_id, id).await?;
-        if !matches!(
-            submission.status,
-            SubmissionStatus::Withdrawn | SubmissionStatus::Declined
-        ) {
+        if !submission.status.is_deletable() {
             return Err(AppError::Validation(
                 "Only a withdrawn or declined submission can be deleted.".to_string(),
             ));
         }
-        // Best-effort: an unremovable file must not block deleting the row.
+        // Delete the row FIRST, guarded on status in SQL: if a concurrent
+        // re-open landed between load and here, the guard matches nothing
+        // and we refuse — without having touched the attachment of a now
+        // -active submission.
+        if !self.submission_repo.delete(id).await? {
+            return Err(AppError::Validation(
+                "Only a withdrawn or declined submission can be deleted.".to_string(),
+            ));
+        }
+        // Best-effort: an unremovable file must not block the (already done)
+        // row delete.
         if let Some(path) = submission.attachment_path.as_deref() {
             let _ = crate::web::uploads::delete_uploaded_file(uploads_dir, path).await;
         }
-        self.submission_repo.delete(id).await?;
         self.audit_service
             .log(
                 Some(actor_id),
@@ -260,7 +266,7 @@ impl SubmissionService {
     /// `declined` decision is preserved (make a fresh submission instead).
     pub async fn reopen(&self, actor_id: Uuid, id: Uuid) -> Result<Submission> {
         let mut submission = self.load_owned(actor_id, id).await?;
-        if submission.status != SubmissionStatus::Withdrawn {
+        if !submission.status.is_reopenable() {
             return Err(AppError::Validation(
                 "Only a withdrawn submission can be re-opened.".to_string(),
             ));

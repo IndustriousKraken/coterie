@@ -112,11 +112,8 @@ fn parse_local_datetime(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
 fn to_detail(s: Submission) -> SubmissionDetail {
     let is_editable = s.status == SubmissionStatus::Submitted;
     let is_open = s.is_open();
-    let can_delete = matches!(
-        s.status,
-        SubmissionStatus::Withdrawn | SubmissionStatus::Declined
-    );
-    let can_reopen = s.status == SubmissionStatus::Withdrawn;
+    let can_delete = s.status.is_deletable();
+    let can_reopen = s.status.is_reopenable();
     SubmissionDetail {
         id: s.id.to_string(),
         title: s.title,
@@ -228,11 +225,8 @@ pub async fn submissions_page(
             visibility: s.visibility_requested.as_wire().to_string(),
             created_at: s.created_at.format("%b %d, %Y").to_string(),
             has_attachment: s.attachment_path.is_some(),
-            can_delete: matches!(
-                s.status,
-                SubmissionStatus::Withdrawn | SubmissionStatus::Declined
-            ),
-            can_reopen: s.status == SubmissionStatus::Withdrawn,
+            can_delete: s.status.is_deletable(),
+            can_reopen: s.status.is_reopenable(),
         })
         .collect();
     let base = BaseContext::for_member(&csrf_service, &current_user, &session).await;

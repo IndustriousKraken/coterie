@@ -122,4 +122,20 @@ impl SubmissionStatus {
             SubmissionStatus::Scheduled => "Scheduled",
         }
     }
+
+    /// Terminal states the owner may hard-delete from. One source of truth
+    /// for the service guard, the DB-level DELETE guard, and the view
+    /// `can_delete` flag (keep the SQL in the repo in sync with this).
+    pub fn is_deletable(&self) -> bool {
+        matches!(
+            self,
+            SubmissionStatus::Withdrawn | SubmissionStatus::Declined
+        )
+    }
+
+    /// Only a `withdrawn` submission may be re-opened for revision — a
+    /// `declined` decision is preserved, not resurrected.
+    pub fn is_reopenable(&self) -> bool {
+        matches!(self, SubmissionStatus::Withdrawn)
+    }
 }

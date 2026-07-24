@@ -328,6 +328,9 @@ async fn owner_deletes_withdrawn_removes_row_and_attachment() {
     // Row gone AND the attachment file removed.
     assert!(repo.find_by_id(created.id).await.unwrap().is_none());
     assert!(!on_disk.exists());
+
+    // Don't leave the (now empty) temp dir behind in /tmp.
+    std::fs::remove_dir_all(&uploads_dir).ok();
 }
 
 #[tokio::test]
@@ -390,6 +393,29 @@ async fn delete_of_active_state_is_refused_and_unchanged() {
         // Untouched.
         assert!(repo.find_by_id(id).await.unwrap().is_some());
     }
+}
+
+/// The repo `delete` is guarded on terminal status in SQL, so a row that
+/// stopped being terminal between the service's load and delete (a
+/// concurrent re-open) is NOT removed — the guard, not just the app-level
+/// check, refuses. Exercised directly since the race is hard to stage
+/// through the service.
+#[tokio::test]
+async fn repo_delete_guard_refuses_non_terminal_row() {
+    let pool = fresh_pool().await;
+    let svc = make_service(pool.clone());
+    let owner = make_member(&pool).await;
+    let repo = SqliteSubmissionRepository::new(pool.clone());
+
+    // `submitted` (active) → guard matches nothing, returns false, row stays.
+    let submitted = svc.create(owner, create_input()).await.unwrap();
+    assert!(!repo.delete(submitted.id).await.unwrap());
+    assert!(repo.find_by_id(submitted.id).await.unwrap().is_some());
+
+    // `withdrawn` (terminal) → guard matches, returns true, row gone.
+    svc.withdraw_owned(owner, submitted.id).await.unwrap();
+    assert!(repo.delete(submitted.id).await.unwrap());
+    assert!(repo.find_by_id(submitted.id).await.unwrap().is_none());
 }
 
 #[tokio::test]
