@@ -29,6 +29,8 @@ fn render_with_boolean_setting() -> String {
                 timezone_options: vec![],
                 is_signup_mode: false,
                 signup_mode_options: vec![],
+                is_bot_challenge_provider: false,
+                bot_challenge_provider_options: vec![],
             }],
         }],
         success_message: None,

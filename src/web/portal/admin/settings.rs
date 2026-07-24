@@ -39,6 +39,10 @@ pub struct SettingInfo {
     /// selected); the values are `SignupMode`'s wire strings.
     pub is_signup_mode: bool,
     pub signup_mode_options: Vec<TzOption>,
+    /// True for `bot_challenge.provider` — renders a disabled/turnstile
+    /// dropdown (same mechanism as `is_signup_mode`).
+    pub is_bot_challenge_provider: bool,
+    pub bot_challenge_provider_options: Vec<TzOption>,
 }
 
 /// One option in the timezone dropdown.
@@ -290,6 +294,11 @@ async fn fetch_settings_by_category(
             "Updates",
             "Update notifications. Enabling the check contacts the public GitHub releases API.",
         ),
+        (
+            "bot_challenge",
+            "Bot Challenge",
+            "Captcha on public signup/donate. Set provider to turnstile and add the secret key to enable.",
+        ),
     ];
 
     let mut result = Vec::new();
@@ -374,6 +383,19 @@ fn setting_to_info(setting: &AppSetting) -> SettingInfo {
         Vec::new()
     };
 
+    let is_bot_challenge_provider = setting.key == "bot_challenge.provider";
+    let bot_challenge_provider_options = if is_bot_challenge_provider {
+        ["disabled", "turnstile"]
+            .iter()
+            .map(|m| TzOption {
+                value: (*m).to_string(),
+                selected: *m == setting.value,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     SettingInfo {
         key: setting.key.clone(),
         display_name,
@@ -385,5 +407,7 @@ fn setting_to_info(setting: &AppSetting) -> SettingInfo {
         timezone_options,
         is_signup_mode,
         signup_mode_options,
+        is_bot_challenge_provider,
+        bot_challenge_provider_options,
     }
 }

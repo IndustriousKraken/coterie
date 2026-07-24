@@ -70,7 +70,6 @@ async fn build_app() -> Router {
         stripe: Default::default(),
         integrations: Default::default(),
         seed: Default::default(),
-        bot_challenge: Default::default(),
     };
     let settings = Arc::new(settings);
 

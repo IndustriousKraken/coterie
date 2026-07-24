@@ -225,6 +225,31 @@ pub struct UpdateUnifiConfig {
     pub password: Option<String>,
 }
 
+/// Keys for bot-challenge (Turnstile) settings. DB-backed (mirrors
+/// Stripe/Discord) so an admin can enable the captcha and set/rotate the
+/// secret from the portal without a restart — the verifier reads these
+/// live on every request.
+pub mod bot_challenge_keys {
+    pub const PROVIDER: &str = "bot_challenge.provider";
+    pub const SECRET_KEY: &str = "bot_challenge.secret_key";
+    pub const SITE_KEY: &str = "bot_challenge.site_key";
+    pub const TIMEOUT_MS: &str = "bot_challenge.timeout_ms";
+}
+
+/// Bot-challenge configuration loaded from settings. The secret key is
+/// decrypted into plaintext for the siteverify call — it only lives in
+/// memory, never leaves the process, and is never logged.
+#[derive(Debug, Clone, Default)]
+pub struct DbBotChallengeConfig {
+    /// `"disabled"` (no captcha) or `"turnstile"`.
+    pub provider: String,
+    /// Decrypted secret key.
+    pub secret_key: String,
+    /// Public site key (admin reference).
+    pub site_key: String,
+    pub timeout_ms: u64,
+}
+
 #[derive(FromRow)]
 struct SettingRow {
     key: String,
@@ -349,11 +374,23 @@ impl SettingsService {
         // Get the current setting first
         let current = self.get_setting(key).await?;
 
-        // Don't return sensitive values in audit logs
+        // Sensitive settings are encrypted at rest (e.g.
+        // `bot_challenge.secret_key` saved from the generic settings page)
+        // and never appear in cleartext in the audit trail.
+        let stored_value = if current.is_sensitive {
+            self.crypto.encrypt(&request.value)?
+        } else {
+            request.value.clone()
+        };
         let old_value = if current.is_sensitive {
             "[REDACTED]".to_string()
         } else {
             current.value.clone()
+        };
+        let new_value_for_audit = if current.is_sensitive {
+            "[REDACTED]".to_string()
+        } else {
+            request.value.clone()
         };
 
         // Update the setting
@@ -365,7 +402,7 @@ impl SettingsService {
             WHERE key = ?
             "#,
         )
-        .bind(&request.value)
+        .bind(&stored_value)
         .bind(updated_by.to_string())
         .bind(now)
         .bind(key)
@@ -383,7 +420,7 @@ impl SettingsService {
         .bind(audit_id)
         .bind(key)
         .bind(old_value)
-        .bind(&request.value)
+        .bind(new_value_for_audit)
         .bind(updated_by.to_string())
         .bind(&request.reason)
         .execute(&self.pool)
@@ -1038,6 +1075,39 @@ impl SettingsService {
         self.set_value_raw(email_keys::LAST_TEST_ERROR, error, updated_by)
             .await?;
         Ok(())
+    }
+
+    /// Load the bot-challenge configuration. The secret key is decrypted
+    /// into plaintext for the siteverify call. A decrypt failure (e.g.
+    /// `session_secret` was rotated) surfaces as `Err`; the verifier
+    /// treats that as fail-closed when a provider is active, mirroring
+    /// Stripe/Discord/UniFi.
+    pub async fn get_bot_challenge_config(&self) -> Result<DbBotChallengeConfig> {
+        let provider = self
+            .get_value(bot_challenge_keys::PROVIDER)
+            .await
+            .unwrap_or_else(|_| "disabled".to_string());
+        let site_key = self
+            .get_value(bot_challenge_keys::SITE_KEY)
+            .await
+            .unwrap_or_default();
+        let timeout_ms = self
+            .get_number(bot_challenge_keys::TIMEOUT_MS)
+            .await
+            .unwrap_or(5000)
+            .max(0) as u64;
+        let encrypted_secret = self
+            .get_value(bot_challenge_keys::SECRET_KEY)
+            .await
+            .unwrap_or_default();
+        let secret_key = self.crypto.decrypt(&encrypted_secret)?;
+
+        Ok(DbBotChallengeConfig {
+            provider,
+            secret_key,
+            site_key,
+            timeout_ms,
+        })
     }
 
     /// Write a setting value directly without going through the audit

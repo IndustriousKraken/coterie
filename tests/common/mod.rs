@@ -182,7 +182,6 @@ async fn build_app_state_with_services(
         stripe: Default::default(),
         integrations: Default::default(),
         seed: Default::default(),
-        bot_challenge: Default::default(),
     };
     let settings = Arc::new(settings);
 

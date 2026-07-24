@@ -462,19 +462,22 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Billing runner spawned");
     }
 
-    // Bot-challenge verifier for /public/signup + /public/donate. Reuses
-    // a fresh reqwest client; reqwest::Client is internally Arc'd so a
-    // dedicated instance keeps its connection pool warm without
-    // entangling with the Stripe / Discord clients' pools.
-    let bot_challenge_verifier = api::middleware::bot_challenge::from_config(
-        &settings.bot_challenge,
-        reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(
-                settings.bot_challenge.timeout_ms,
-            ))
-            .build()
-            .expect("reqwest client (bot_challenge) construction"),
-    );
+    // Bot-challenge verifier for /public/signup + /public/donate. Reads
+    // provider/secret/timeout from DB settings on every request, so an
+    // admin enabling Turnstile or rotating the secret in the portal takes
+    // effect with no restart. The per-call timeout is applied inside the
+    // verifier from the `bot_challenge.timeout_ms` setting; reqwest::Client
+    // is internally Arc'd so this dedicated instance keeps its connection
+    // pool warm without entangling with the Stripe / Discord pools.
+    let bot_challenge_verifier: Arc<dyn api::middleware::bot_challenge::BotChallengeVerifier> =
+        Arc::new(
+            api::middleware::bot_challenge::DynamicBotChallengeVerifier::new(
+                service_context.settings_service.clone(),
+                reqwest::Client::builder()
+                    .build()
+                    .expect("reqwest client (bot_challenge) construction"),
+            ),
+        );
 
     // Build a single AppState shared by both the API router and the web
     // router. Per-IP rate limiters and the first-boot setup_lock are

@@ -45,7 +45,8 @@ pub struct SignupRequest {
     pub membership_type_slug: Option<String>,
     /// Bot-challenge token from the marketing site's CAPTCHA widget.
     /// Required when the org has configured a provider; ignored when
-    /// `bot_challenge.provider = "disabled"`. See `BotChallengeConfig`.
+    /// `bot_challenge.provider = "disabled"`. See the `bot_challenge`
+    /// settings (migration 041) and `DynamicBotChallengeVerifier`.
     #[serde(default)]
     pub captcha_token: Option<String>,
 }
@@ -1087,7 +1088,8 @@ pub struct PublicDonateRequest {
     pub campaign_slug: Option<String>,
     /// Bot-challenge token from the marketing site's CAPTCHA widget.
     /// Required when the org has configured a provider; ignored when
-    /// `bot_challenge.provider = "disabled"`. See `BotChallengeConfig`.
+    /// `bot_challenge.provider = "disabled"`. See the `bot_challenge`
+    /// settings (migration 041) and `DynamicBotChallengeVerifier`.
     #[serde(default)]
     pub captcha_token: Option<String>,
 }

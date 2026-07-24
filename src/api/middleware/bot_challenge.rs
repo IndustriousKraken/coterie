@@ -14,10 +14,11 @@
 //! The verifier is a trait so tests can substitute a fake without
 //! standing up an HTTP mock.
 //!
-//! See `src/config/mod.rs` `BotChallengeConfig` for the config shape
-//! and the design notes in
-//! `openspec/changes/bot-protection-public-apis/` for the full
-//! rationale.
+//! Configuration lives in DB-backed `app_settings` (category
+//! `bot_challenge`), read live per request by [`DynamicBotChallengeVerifier`]
+//! — see `service::settings_service::get_bot_challenge_config` and
+//! migration 041. Design notes in
+//! `openspec/changes/bot-protection-public-apis/`.
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,7 +26,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::config::BotChallengeConfig;
+use crate::service::settings_service::{bot_challenge_keys, SettingsService};
 
 /// Why a verification call didn't pass. Each variant maps to a
 /// distinct `outcome` in the structured log so an admin watching
@@ -85,13 +86,23 @@ pub struct TurnstileVerifier {
     timeout: Duration,
 }
 
+/// Cloudflare's Turnstile `siteverify` endpoint. hCaptcha speaks the
+/// same request shape; today the admin dropdown is disabled/turnstile
+/// only, so the URL is a constant rather than a setting.
+pub const DEFAULT_TURNSTILE_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+
 impl TurnstileVerifier {
-    pub fn new(client: reqwest::Client, cfg: &BotChallengeConfig) -> Self {
+    pub fn new(
+        client: reqwest::Client,
+        secret_key: String,
+        verification_url: String,
+        timeout: Duration,
+    ) -> Self {
         Self {
             client,
-            secret_key: cfg.secret_key.clone(),
-            verification_url: cfg.verification_url.clone(),
-            timeout: Duration::from_millis(cfg.timeout_ms),
+            secret_key,
+            verification_url,
+            timeout,
         }
     }
 }
@@ -210,37 +221,70 @@ impl BotChallengeVerifier for TurnstileVerifier {
     }
 }
 
-/// Pick the verifier implementation that matches the loaded config.
-/// Unknown provider strings fall back to `Disabled` with a startup
-/// warning rather than refusing to boot — wrong-provider-name on a
-/// production deployment is an operator error worth surfacing, but
-/// the verifier itself isn't the right place to refuse to start the
-/// whole app.
-pub fn from_config(
-    cfg: &BotChallengeConfig,
+/// Verifier that reads its provider/secret/timeout from `app_settings`
+/// on every request, so an admin toggling the provider or rotating the
+/// secret in the portal takes effect with no restart (mirrors the email
+/// `DynamicSender` / Stripe hot-swap pattern).
+///
+/// `provider = "disabled"` passes the request through. Any other value
+/// runs the Turnstile siteverify check with the stored secret and fails
+/// closed on any error — an unreadable/rotated secret or a missing token
+/// is a rejection, never a silent bypass. The secret is decrypted only
+/// for the outbound call and never logged.
+pub struct DynamicBotChallengeVerifier {
+    settings: Arc<SettingsService>,
     client: reqwest::Client,
-) -> Arc<dyn BotChallengeVerifier> {
-    match cfg.provider.as_str() {
-        "turnstile" | "hcaptcha" => {
-            if cfg.secret_key.is_empty() {
+}
+
+impl DynamicBotChallengeVerifier {
+    pub fn new(settings: Arc<SettingsService>, client: reqwest::Client) -> Self {
+        Self { settings, client }
+    }
+}
+
+#[async_trait]
+impl BotChallengeVerifier for DynamicBotChallengeVerifier {
+    async fn verify(
+        &self,
+        route: &'static str,
+        token: Option<&str>,
+        client_ip: Option<IpAddr>,
+    ) -> Result<(), VerifyError> {
+        // Read the provider first (cheap, non-sensitive). A disabled
+        // provider must never fail closed on a stale/undecryptable secret,
+        // so we branch before touching the secret.
+        let provider = self
+            .settings
+            .get_value(bot_challenge_keys::PROVIDER)
+            .await
+            .unwrap_or_else(|_| "disabled".to_string());
+
+        if provider == "disabled" {
+            return DisabledVerifier.verify(route, token, client_ip).await;
+        }
+
+        // Active provider: read + decrypt the secret and timeout. A DB
+        // error or decrypt failure (rotated session_secret) fails closed.
+        let cfg = match self.settings.get_bot_challenge_config().await {
+            Ok(c) => c,
+            Err(e) => {
                 tracing::warn!(
-                    provider = %cfg.provider,
-                    "bot_challenge: provider configured but secret_key is empty — \
-                     falling back to disabled. Set COTERIE__BOT_CHALLENGE__SECRET_KEY.",
+                    route = route,
+                    outcome = "provider_unreachable",
+                    error = %e,
+                    "bot_challenge",
                 );
-                Arc::new(DisabledVerifier)
-            } else {
-                Arc::new(TurnstileVerifier::new(client, cfg))
+                return Err(VerifyError::ProviderUnreachable);
             }
-        }
-        "disabled" => Arc::new(DisabledVerifier),
-        other => {
-            tracing::warn!(
-                provider = %other,
-                "bot_challenge: unknown provider — falling back to disabled.",
-            );
-            Arc::new(DisabledVerifier)
-        }
+        };
+
+        let verifier = TurnstileVerifier::new(
+            self.client.clone(),
+            cfg.secret_key,
+            DEFAULT_TURNSTILE_URL.to_string(),
+            Duration::from_millis(cfg.timeout_ms),
+        );
+        verifier.verify(route, token, client_ip).await
     }
 }
 
