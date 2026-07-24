@@ -56,9 +56,12 @@ pub struct SignupResponse {
     pub member_id: Uuid,
     pub status: MemberStatus,
     pub message: String,
-    /// Present only when the org's signup mode is `payment` and the
-    /// chosen membership type has a fee: redirect the browser here to
-    /// complete the Stripe Checkout that activates the membership.
+    /// Present only on the payment-mode abandoned-checkout retry (an
+    /// existing, email-verified Pending member proving their password):
+    /// redirect the browser here to resume/complete the Stripe Checkout.
+    /// Fresh signups never carry it — the Stripe surface is deferred until
+    /// the member verifies their email (then the verify handler initiates
+    /// checkout and redirects to it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checkout_url: Option<String>,
 }
@@ -166,12 +169,13 @@ fn parse_range(
     tag = "public",
     request_body = SignupRequest,
     responses(
-        (status = 201, description = "Member created; verification email sent. In payment \
-            mode, `checkout_url` carries the Stripe Checkout link that completes (and \
-            activates) the membership", body = SignupResponse),
+        (status = 201, description = "Member created; verification email sent. No \
+            `checkout_url` — in payment mode the Stripe Checkout is initiated only after \
+            the member verifies their email", body = SignupResponse),
         (status = 200, description = "Payment-mode retry: the email belongs to a Pending \
-            signup with no completed payment and the password verified — a fresh \
-            `checkout_url` is returned instead of a duplicate error", body = SignupResponse),
+            signup with no completed payment and the password verified. For a verified \
+            member a `checkout_url` resumes/creates the session; for an unverified member \
+            the verification email is re-queued and no `checkout_url` is returned", body = SignupResponse),
         (status = 400, description = "Invalid email or weak password"),
         (status = 409, description = "Email or username already in use"),
         (status = 429, description = "Rate limited (per-IP money limiter, both signup modes)"),
@@ -312,6 +316,7 @@ pub async fn signup(
                     stripe_client.as_deref(),
                     &settings_service,
                     &settings,
+                    email_sender.as_ref(),
                     &db_pool,
                     email,
                     &request.password,
@@ -346,51 +351,17 @@ pub async fn signup(
         );
     }
 
-    // Payment mode with a paid type: hand back a Stripe Checkout URL.
-    // The completed payment (via webhook) extends dues AND activates
-    // the Pending member. Fee-0 types stay in the approval funnel. A
-    // checkout-creation failure is soft: the member + verification
-    // email already exist, the retry path can mint a fresh session,
-    // and an admin can always activate manually.
-    let mut checkout_url = None;
-    if signup_mode == SignupMode::Payment {
-        if let Some(mt) = membership_type_service
-            .get(member.membership_type_id)
-            .await?
-        {
-            if mt.fee_cents > 0 {
-                match stripe_client.as_deref() {
-                    Some(client) => {
-                        match create_signup_checkout(
-                            client,
-                            &settings_service,
-                            &settings,
-                            &member,
-                            &mt,
-                        )
-                        .await
-                        {
-                            Ok(url) => checkout_url = Some(url),
-                            Err(e) => tracing::error!(
-                                "Signup checkout creation failed for member {}: {}",
-                                member.id,
-                                e,
-                            ),
-                        }
-                    }
-                    None => tracing::error!(
-                        "signup_mode=payment but Stripe is not configured; member {} \
-                         created Pending without a checkout session",
-                        member.id,
-                    ),
-                }
-            }
-        }
-    }
-
-    let message = if checkout_url.is_some() {
-        "Registration successful. Complete your membership payment at the checkout link; \
-         a verification email is also on its way."
+    // Signup no longer reaches Stripe: a payment-mode signup creates the
+    // Pending member and queues the verification email, but the Stripe
+    // customer + Checkout session are deferred until the member verifies
+    // their email (see `initiate_checkout_on_verify`, called from the
+    // verify handler). Gating the Stripe surface behind a verifiable
+    // inbox is what stops automated card-testing signups from ever
+    // reaching checkout. Fresh signup therefore never carries a
+    // checkout URL; only the abandoned-checkout retry does.
+    let message = if signup_mode == SignupMode::Payment {
+        "Registration successful. Please check your email to verify your address and \
+         continue to payment."
             .to_string()
     } else {
         "Registration successful. Please check your email to verify your account.".to_string()
@@ -400,7 +371,7 @@ pub async fn signup(
         member_id: member.id,
         status: member.status,
         message,
-        checkout_url,
+        checkout_url: None,
     };
 
     Ok((StatusCode::CREATED, Json(response)))
@@ -479,6 +450,69 @@ async fn create_signup_checkout(
     Ok(url)
 }
 
+/// Initiate a signup checkout at email-verification time, when the funnel
+/// requires it. The verify handler calls this AFTER marking the email
+/// verified, so the "a Stripe Checkout session is only ever created for a
+/// verified member" invariant holds at this single call site.
+///
+/// Returns `Ok(Some(url))` when a Stripe Checkout session was created —
+/// payment mode, member still `Pending`, no completed membership payment,
+/// a paid membership type, and Stripe configured. Returns `Ok(None)` when
+/// the member stays in the approval funnel (approval mode, a fee-0 type,
+/// an already-paid member, or Stripe not configured); the caller then keeps
+/// the "verified; awaiting review" result. Uses the same
+/// `create_signup_checkout` contract (metadata + `signup_auto_renew`) as
+/// every other signup checkout.
+pub(crate) async fn initiate_checkout_on_verify(
+    payment_repo: &dyn PaymentRepository,
+    membership_type_service: &MembershipTypeService,
+    stripe_client: Option<&StripeClient>,
+    settings_service: &SettingsService,
+    settings: &Settings,
+    member: &crate::domain::Member,
+) -> Result<Option<String>> {
+    if settings_service.signup_mode().await != SignupMode::Payment {
+        return Ok(None);
+    }
+    if member.status != MemberStatus::Pending {
+        return Ok(None);
+    }
+    let payments = payment_repo.find_by_member(member.id).await?;
+    let has_completed_membership_payment = payments.iter().any(|p| {
+        matches!(p.kind, crate::domain::PaymentKind::Membership)
+            && p.status == PaymentStatus::Completed
+    });
+    if has_completed_membership_payment {
+        return Ok(None);
+    }
+    let Some(membership_type) = membership_type_service
+        .get(member.membership_type_id)
+        .await?
+    else {
+        return Ok(None);
+    };
+    if membership_type.fee_cents <= 0 {
+        return Ok(None);
+    }
+    let Some(stripe_client) = stripe_client else {
+        tracing::error!(
+            "signup_mode=payment but Stripe is not configured; member {} verified \
+             without a checkout session",
+            member.id,
+        );
+        return Ok(None);
+    };
+    let url = create_signup_checkout(
+        stripe_client,
+        settings_service,
+        settings,
+        member,
+        &membership_type,
+    )
+    .await?;
+    Ok(Some(url))
+}
+
 /// The payment-mode duplicate-signup retry (see the pay-at-signup
 /// spec): returns `Some(response)` with a fresh checkout URL only when
 /// ALL of these hold — the email belongs to a Pending member with no
@@ -494,6 +528,7 @@ async fn retry_pending_checkout(
     stripe_client: Option<&StripeClient>,
     settings_service: &SettingsService,
     settings: &Settings,
+    email_sender: &dyn EmailSender,
     db_pool: &SqlitePool,
     email: &str,
     password: &str,
@@ -527,6 +562,38 @@ async fn retry_pending_checkout(
     if has_completed_membership_payment {
         return Ok(None);
     }
+
+    // Email-verified gate — the retry path must not become an unverified
+    // back door to Stripe. A bot sets (and therefore knows) its own
+    // password, so proving the password alone can't be enough: only an
+    // email-verified member may reach checkout. An unverified Pending
+    // member with the correct password gets the verification email
+    // re-queued and NO checkout URL, mirroring what fresh signup now does.
+    // (Wrong password / paid / non-Pending already returned above, so
+    // this 200 only ever answers the member's own account.)
+    if !member.email_verified() {
+        if let Err(e) =
+            send_verification_email(db_pool, settings, settings_service, email_sender, &member).await
+        {
+            tracing::error!(
+                "Signup retry: re-queue verification email failed for member {}: {}",
+                member.id,
+                e,
+            );
+        }
+        return Ok(Some((
+            StatusCode::OK,
+            Json(SignupResponse {
+                member_id: member.id,
+                status: member.status,
+                message: "Please check your email to verify your address before continuing \
+                          to payment."
+                    .to_string(),
+                checkout_url: None,
+            }),
+        )));
+    }
+
     let Some(stripe_client) = stripe_client else {
         return Ok(None);
     };
