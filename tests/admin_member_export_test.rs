@@ -80,7 +80,6 @@ async fn build_harness() -> Harness {
         stripe: Default::default(),
         integrations: Default::default(),
         seed: Default::default(),
-        bot_challenge: Default::default(),
     };
     let settings = Arc::new(settings);
 

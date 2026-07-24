@@ -1,7 +1,10 @@
-//! Integration tests for the pay-at-signup funnel (see the
-//! `pay-at-signup` OpenSpec change): `membership.signup_mode=payment`
-//! turns `/public/signup` into a checkout-initiating endpoint, and a
-//! completed membership payment activates the Pending member.
+//! Integration tests for the pay-at-signup funnel (see the `pay-at-signup`
+//! and `signup-verify-email-before-checkout` OpenSpec changes). In
+//! `membership.signup_mode=payment`, `/public/signup` creates the Pending
+//! member and queues the verification email but does NOT reach Stripe; the
+//! Checkout session is initiated only when the member verifies their email
+//! (or, for an already-verified member, via the abandoned-checkout retry).
+//! A completed membership payment then activates the Pending member.
 
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,8 +14,10 @@ use async_trait::async_trait;
 use axum::{
     body::Body,
     http::{Request, StatusCode},
+    response::Response,
     Router,
 };
+use chrono::Duration;
 use coterie::{
     api::middleware::bot_challenge::{BotChallengeVerifier, VerifyError},
     integrations::{Integration, IntegrationEvent},
@@ -21,6 +26,7 @@ use coterie::{
 };
 use sqlx::SqlitePool;
 use tower::ServiceExt;
+use uuid::Uuid;
 
 mod common;
 use common::{build_app_state_custom, fresh_pool};
@@ -128,6 +134,65 @@ async fn member_status(pool: &SqlitePool, email: &str) -> String {
         .expect("member status")
 }
 
+async fn member_id_of(pool: &SqlitePool, email: &str) -> Uuid {
+    let id: String = sqlx::query_scalar("SELECT id FROM members WHERE email = ?")
+        .bind(email)
+        .fetch_one(pool)
+        .await
+        .expect("member id");
+    Uuid::parse_str(&id).unwrap()
+}
+
+/// Flip a member's email to verified without going through the /verify
+/// endpoint — retry-path tests need a verified member but don't exercise
+/// the verify handler itself.
+async fn mark_verified(pool: &SqlitePool, email: &str) {
+    let updated = sqlx::query("UPDATE members SET email_verified_at = datetime('now') WHERE email = ?")
+        .bind(email)
+        .execute(pool)
+        .await
+        .expect("mark verified")
+        .rows_affected();
+    assert_eq!(updated, 1, "exactly one member row marked verified");
+}
+
+/// Mint a real verification token for a member and return the plaintext —
+/// the /verify endpoint only accepts the plaintext the email would carry,
+/// which the DB (hashes only) can't reconstruct.
+async fn verification_token(pool: &SqlitePool, member_id: Uuid) -> String {
+    coterie::auth::email_tokens::create_verification_token(pool, member_id, Duration::hours(24))
+        .await
+        .expect("create verification token")
+        .token
+}
+
+async fn verification_token_count(pool: &SqlitePool, member_id: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM email_verification_tokens WHERE member_id = ?")
+        .bind(member_id.to_string())
+        .fetch_one(pool)
+        .await
+        .expect("token count")
+}
+
+/// GET /verify?token=… against the web routes (which share `state`'s pool).
+async fn get_verify(web: Router, token: &str) -> Response {
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/verify?token={token}"))
+        .body(Body::empty())
+        .unwrap();
+    web.oneshot(req).await.unwrap()
+}
+
+fn create_checkout_sessions(fake: &FakeStripeGateway) -> usize {
+    fake.count_where(|c| {
+        matches!(
+            c,
+            coterie::payments::fake_gateway::FakeCall::CreateCheckoutSession(_)
+        )
+    })
+}
+
 // ---------------------------------------------------------------------
 // 4.1 Approval mode (default) — regression: unchanged, no checkout
 // ---------------------------------------------------------------------
@@ -154,11 +219,12 @@ async fn approval_mode_default_creates_pending_without_checkout() {
 }
 
 // ---------------------------------------------------------------------
-// 4.2 Payment mode — checkout URL with the portal metadata contract
+// 4.1 Payment mode — signup DEFERS checkout: no URL, no Stripe, no
+//     pending payment row. The Stripe surface waits for email verification.
 // ---------------------------------------------------------------------
 
 #[tokio::test]
-async fn payment_mode_returns_checkout_url_with_contract_metadata() {
+async fn payment_mode_signup_defers_checkout_no_stripe() {
     let pool = fresh_pool().await;
     insert_membership_type(&pool, PAID_SLUG, 4500).await;
     set_signup_mode(&pool, "payment").await;
@@ -168,10 +234,79 @@ async fn payment_mode_returns_checkout_url_with_contract_metadata() {
     let (status, json) = post_signup(app, &signup_body("b@x.com", "bravo", PAID_SLUG)).await;
 
     assert_eq!(status, StatusCode::CREATED, "body: {json}");
-    let url = json["checkout_url"].as_str().expect("checkout_url present");
-    assert!(!url.is_empty());
+    assert!(
+        json.get("checkout_url").is_none(),
+        "payment-mode signup must NOT return a checkout URL (got {json})"
+    );
+    assert!(
+        json["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("verify"),
+        "the success message tells the caller to verify their email: {json}"
+    );
     assert_eq!(member_status(&pool, "b@x.com").await, "Pending");
 
+    // The whole point: no Stripe customer and no Checkout session are
+    // created at signup time, and there is no pending payment row yet.
+    assert!(
+        fake.calls().is_empty(),
+        "signup must not touch Stripe before the email is verified"
+    );
+    let payments: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM payments")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(payments, 0, "no pending payment row is written at signup");
+}
+
+// ---------------------------------------------------------------------
+// 4.2 Verifying a Pending, unpaid, payment-mode, fee>0 member initiates
+//     the Checkout session (portal metadata contract) and redirects to it.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn verifying_paid_signup_opens_checkout_with_contract_metadata() {
+    let pool = fresh_pool().await;
+    insert_membership_type(&pool, PAID_SLUG, 4500).await;
+    set_signup_mode(&pool, "payment").await;
+    let (state, fake) = state_with_fake_stripe(&pool, None).await;
+    let app = coterie::api::create_app(state.clone());
+    let web = coterie::web::create_web_routes(state);
+
+    let (status, _json) = post_signup(app, &signup_body("v@x.com", "victor", PAID_SLUG)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(fake.calls().is_empty(), "signup created no Stripe session");
+
+    let member_id = member_id_of(&pool, "v@x.com").await;
+    let token = verification_token(&pool, member_id).await;
+    let resp = get_verify(web, &token).await;
+
+    // Verification redirects the member into the Stripe Checkout session.
+    assert_eq!(
+        resp.status(),
+        StatusCode::SEE_OTHER,
+        "verifying a paid signup redirects to checkout"
+    );
+    let location = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .expect("redirect Location header");
+    assert!(!location.is_empty(), "redirect target is the checkout URL");
+
+    // Email is marked verified; the member is still Pending (payment pending).
+    let verified: Option<String> =
+        sqlx::query_scalar("SELECT email_verified_at FROM members WHERE email = 'v@x.com'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(verified.is_some(), "email is marked verified");
+    assert_eq!(member_status(&pool, "v@x.com").await, "Pending");
+
+    // The Checkout session carries the portal metadata contract, and a
+    // pending payment row now exists for the webhook to complete.
     let calls = fake.calls();
     let session = calls
         .iter()
@@ -179,7 +314,7 @@ async fn payment_mode_returns_checkout_url_with_contract_metadata() {
             coterie::payments::fake_gateway::FakeCall::CreateCheckoutSession(input) => Some(input),
             _ => None,
         })
-        .expect("a checkout session was created");
+        .expect("a checkout session was created at verification");
     assert_eq!(
         session.metadata.get("payment_type").map(String::as_str),
         Some("membership"),
@@ -188,23 +323,93 @@ async fn payment_mode_returns_checkout_url_with_contract_metadata() {
         session.metadata.get("membership_type_slug").map(String::as_str),
         Some(PAID_SLUG),
     );
-    let member_id: String = sqlx::query_scalar("SELECT id FROM members WHERE email = 'b@x.com'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
     assert_eq!(
         session.metadata.get("member_id").map(String::as_str),
-        Some(member_id.as_str()),
+        Some(member_id.to_string().as_str()),
     );
-    // The pending payment row exists for the webhook to complete later.
     let pending: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM payments WHERE member_id = ? AND status = 'Pending'",
     )
-    .bind(&member_id)
+    .bind(member_id.to_string())
     .fetch_one(&pool)
     .await
     .unwrap();
     assert_eq!(pending, 1);
+}
+
+// ---------------------------------------------------------------------
+// 4.3 Approval-mode / fee-0 verification stays in the approval funnel:
+//     verified + awaiting-review, no checkout.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn approval_mode_verification_awaits_review_no_checkout() {
+    let pool = fresh_pool().await;
+    insert_membership_type(&pool, PAID_SLUG, 4500).await;
+    // Default signup mode is approval.
+    let (state, fake) = state_with_fake_stripe(&pool, None).await;
+    let app = coterie::api::create_app(state.clone());
+    let web = coterie::web::create_web_routes(state);
+
+    let (status, _json) = post_signup(app, &signup_body("ar@x.com", "arthur", PAID_SLUG)).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let member_id = member_id_of(&pool, "ar@x.com").await;
+    let token = verification_token(&pool, member_id).await;
+    let resp = get_verify(web, &token).await;
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "approval-mode verification renders the awaiting-review page, not a redirect"
+    );
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = String::from_utf8_lossy(&body);
+    assert!(
+        html.contains("review your account"),
+        "awaiting-review copy is shown: {html}"
+    );
+
+    let verified: Option<String> =
+        sqlx::query_scalar("SELECT email_verified_at FROM members WHERE email = 'ar@x.com'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(verified.is_some(), "email is marked verified");
+    assert!(
+        fake.calls().is_empty(),
+        "approval-mode verification must not create a checkout session"
+    );
+}
+
+#[tokio::test]
+async fn payment_mode_fee0_verification_awaits_review_no_checkout() {
+    let pool = fresh_pool().await;
+    insert_membership_type(&pool, FREE_SLUG, 0).await;
+    set_signup_mode(&pool, "payment").await;
+    let (state, fake) = state_with_fake_stripe(&pool, None).await;
+    let app = coterie::api::create_app(state.clone());
+    let web = coterie::web::create_web_routes(state);
+
+    let (status, _json) = post_signup(app, &signup_body("fz@x.com", "franz", FREE_SLUG)).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let member_id = member_id_of(&pool, "fz@x.com").await;
+    let token = verification_token(&pool, member_id).await;
+    let resp = get_verify(web, &token).await;
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "a fee-0 type in payment mode stays in the approval funnel"
+    );
+    assert!(
+        fake.calls().is_empty(),
+        "fee-0 verification must not create a checkout session"
+    );
+    assert_eq!(member_status(&pool, "fz@x.com").await, "Pending");
 }
 
 // ---------------------------------------------------------------------
@@ -254,19 +459,25 @@ async fn completed_payment_activates_pending_member_and_dispatches_event() {
         .await;
 
     let app = coterie::api::create_app(state.clone());
+    let web = coterie::web::create_web_routes(state.clone());
     let (status, _json) = post_signup(app, &signup_body("c@x.com", "charlie", PAID_SLUG)).await;
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(member_status(&pool, "c@x.com").await, "Pending");
 
+    // The Pending payment row is now created when the member verifies
+    // their email (the initial checkout moved there). Drive verification
+    // to reach the same pre-webhook state as before.
+    let member_id = member_id_of(&pool, "c@x.com").await;
+    let token = verification_token(&pool, member_id).await;
+    let resp = get_verify(web, &token).await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "verify opens checkout");
+
     // Drive the dues extension exactly as the checkout webhook does
     // (extend_member_dues_by_slug is the shared choke point for the
-    // webhook, admin manual-record, and auto-renew paths).
-    let member_id: String = sqlx::query_scalar("SELECT id FROM members WHERE email = 'c@x.com'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    // webhook, admin manual-record, and auto-renew paths). This activation
+    // is unchanged by this change.
     let payment_id: String = sqlx::query_scalar("SELECT id FROM payments WHERE member_id = ?")
-        .bind(&member_id)
+        .bind(member_id.to_string())
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -275,7 +486,7 @@ async fn completed_payment_activates_pending_member_and_dispatches_event() {
         .auto_renew
         .extend_member_dues_by_slug(
             uuid::Uuid::parse_str(&payment_id).unwrap(),
-            uuid::Uuid::parse_str(&member_id).unwrap(),
+            member_id,
             PAID_SLUG,
         )
         .await
@@ -305,7 +516,7 @@ async fn completed_payment_activates_pending_member_and_dispatches_event() {
         .auto_renew
         .extend_member_dues_by_slug(
             uuid::Uuid::parse_str(&payment_id).unwrap(),
-            uuid::Uuid::parse_str(&member_id).unwrap(),
+            member_id,
             PAID_SLUG,
         )
         .await
@@ -433,10 +644,17 @@ async fn duplicate_signup_retry_rules() {
     let body = signup_body("f@x.com", "foxtrot", PAID_SLUG);
     let (status, first) = post_signup(app.clone(), &body).await;
     assert_eq!(status, StatusCode::CREATED);
-    assert!(first["checkout_url"].as_str().is_some());
+    assert!(
+        first.get("checkout_url").is_none(),
+        "fresh signup no longer returns a checkout URL"
+    );
 
-    // Correct password + still Pending + no completed payment → fresh
-    // checkout, no second member.
+    // The retry path now requires a verified email (see the unverified-retry
+    // test); mark it verified so this exercises the verified-retry checkout.
+    mark_verified(&pool, "f@x.com").await;
+
+    // Correct password + verified + still Pending + no completed payment →
+    // fresh checkout, no second member.
     let (status, retry) = post_signup(app.clone(), &body).await;
     assert_eq!(status, StatusCode::OK, "body: {retry}");
     assert!(retry["checkout_url"].as_str().is_some());
@@ -445,13 +663,11 @@ async fn duplicate_signup_retry_rules() {
         .await
         .unwrap();
     assert_eq!(members, 1, "retry must not create a second member");
-    let sessions = fake.count_where(|c| {
-        matches!(
-            c,
-            coterie::payments::fake_gateway::FakeCall::CreateCheckoutSession(_)
-        )
-    });
-    assert_eq!(sessions, 2, "retry mints a fresh checkout session");
+    assert_eq!(
+        create_checkout_sessions(&fake),
+        1,
+        "the verified retry mints the (first) checkout session"
+    );
 
     // Wrong password → the generic duplicate outcome, no new session.
     let mut wrong = body.clone();
@@ -459,22 +675,61 @@ async fn duplicate_signup_retry_rules() {
     let (status, _) = post_signup(app.clone(), &wrong).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(
-        fake.count_where(|c| matches!(
-            c,
-            coterie::payments::fake_gateway::FakeCall::CreateCheckoutSession(_)
-        )),
-        2,
+        create_checkout_sessions(&fake),
+        1,
         "wrong password must not mint a session"
     );
 
     // Completed payment on record → duplicate outcome even with the
     // right password.
-    sqlx::query("UPDATE payments SET status = 'Completed' WHERE member_id = (SELECT id FROM members WHERE email = 'f@x.com') AND id IN (SELECT id FROM payments WHERE member_id = (SELECT id FROM members WHERE email = 'f@x.com') LIMIT 1)")
+    sqlx::query("UPDATE payments SET status = 'Completed' WHERE member_id = (SELECT id FROM members WHERE email = 'f@x.com')")
         .execute(&pool)
         .await
         .unwrap();
     let (status, _) = post_signup(app, &body).await;
     assert_eq!(status, StatusCode::CONFLICT);
+}
+
+// ---------------------------------------------------------------------
+// 4.4 Unverified retry (correct password) re-queues verification and
+//     mints no session — the retry path is not an unverified back door.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn unverified_retry_requeues_verification_no_checkout() {
+    let pool = fresh_pool().await;
+    insert_membership_type(&pool, PAID_SLUG, 4500).await;
+    set_signup_mode(&pool, "payment").await;
+    let (state, fake) = state_with_fake_stripe(&pool, None).await;
+    let app = coterie::api::create_app(state);
+
+    let body = signup_body("un@x.com", "unis", PAID_SLUG);
+    let (status, _) = post_signup(app.clone(), &body).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let member_id = member_id_of(&pool, "un@x.com").await;
+    assert_eq!(
+        verification_token_count(&pool, member_id).await,
+        1,
+        "signup queued one verification email"
+    );
+
+    // Retry with the correct password while STILL unverified → the
+    // verification email is re-queued and NO checkout session is created.
+    let (status, retry) = post_signup(app, &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {retry}");
+    assert!(
+        retry.get("checkout_url").is_none(),
+        "an unverified retry must not return a checkout URL: {retry}"
+    );
+    assert!(
+        fake.calls().is_empty(),
+        "an unverified retry must not reach Stripe"
+    );
+    assert_eq!(
+        verification_token_count(&pool, member_id).await,
+        2,
+        "the verification email is re-queued (a second token is minted)"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -550,8 +805,15 @@ async fn retry_reuses_open_session_without_new_payment_row() {
     let body = signup_body("g@x.com", "golf", PAID_SLUG);
     let (status, _) = post_signup(app.clone(), &body).await;
     assert_eq!(status, StatusCode::CREATED);
+    mark_verified(&pool, "g@x.com").await;
 
-    // The previous session is still open on Stripe.
+    // The first verified retry mints the initial checkout session + the
+    // pending payment row (signup no longer creates one).
+    let (status, _) = post_signup(app.clone(), &body).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(create_checkout_sessions(&fake), 1);
+
+    // The previous session is still open on Stripe → the next retry resumes it.
     fake.next_retrieve_checkout_session(
         coterie::payments::gateway::RetrievedCheckoutSession {
             payment_intent_id: None,
@@ -573,13 +835,11 @@ async fn retry_reuses_open_session_without_new_payment_row() {
         .await
         .unwrap();
     assert_eq!(payments, 1, "no duplicate pending payment row");
-    let sessions = fake.count_where(|c| {
-        matches!(
-            c,
-            coterie::payments::fake_gateway::FakeCall::CreateCheckoutSession(_)
-        )
-    });
-    assert_eq!(sessions, 1, "no second session minted");
+    assert_eq!(
+        create_checkout_sessions(&fake),
+        1,
+        "no second session minted"
+    );
 }
 
 #[tokio::test]
@@ -587,14 +847,20 @@ async fn retry_supersedes_stale_session_with_failed_row() {
     let pool = fresh_pool().await;
     insert_membership_type(&pool, PAID_SLUG, 4500).await;
     set_signup_mode(&pool, "payment").await;
-    let (state, fake) = state_with_fake_stripe(&pool, None).await;
+    let (state, _fake) = state_with_fake_stripe(&pool, None).await;
     let app = coterie::api::create_app(state);
 
     let body = signup_body("h@x.com", "hotel", PAID_SLUG);
     let (status, _) = post_signup(app.clone(), &body).await;
     assert_eq!(status, StatusCode::CREATED);
+    mark_verified(&pool, "h@x.com").await;
 
-    // Previous session expired (fake default retrieve: is_open=false).
+    // First verified retry mints session #1 + its pending payment row.
+    let (status, _) = post_signup(app.clone(), &body).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Previous session expired (fake default retrieve: is_open=false) → the
+    // next retry supersedes the stale row and mints a fresh session.
     let (status, retry) = post_signup(app, &body).await;
     assert_eq!(status, StatusCode::OK);
     assert!(retry["checkout_url"].as_str().is_some(), "fresh session");
@@ -618,15 +884,20 @@ async fn retry_supersedes_stale_session_with_failed_row() {
 // ---------------------------------------------------------------------
 
 #[tokio::test]
-async fn signup_session_carries_customer_and_save_card_by_default() {
+async fn verify_checkout_carries_customer_and_save_card_by_default() {
     let pool = fresh_pool().await;
     insert_membership_type(&pool, PAID_SLUG, 4500).await;
     set_signup_mode(&pool, "payment").await;
     let (state, fake) = state_with_fake_stripe(&pool, None).await;
-    let app = coterie::api::create_app(state);
+    let app = coterie::api::create_app(state.clone());
+    let web = coterie::web::create_web_routes(state);
 
     let (status, _) = post_signup(app, &signup_body("i@x.com", "india", PAID_SLUG)).await;
     assert_eq!(status, StatusCode::CREATED);
+    let member_id = member_id_of(&pool, "i@x.com").await;
+    let token = verification_token(&pool, member_id).await;
+    let resp = get_verify(web, &token).await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
 
     let calls = fake.calls();
     assert!(
@@ -652,7 +923,7 @@ async fn signup_session_carries_customer_and_save_card_by_default() {
 }
 
 #[tokio::test]
-async fn signup_auto_renew_off_keeps_one_off_checkout() {
+async fn verify_checkout_auto_renew_off_keeps_one_off_checkout() {
     let pool = fresh_pool().await;
     insert_membership_type(&pool, PAID_SLUG, 4500).await;
     set_signup_mode(&pool, "payment").await;
@@ -663,10 +934,15 @@ async fn signup_auto_renew_off_keeps_one_off_checkout() {
     .await
     .expect("signup_auto_renew row seeded by migration 038");
     let (state, fake) = state_with_fake_stripe(&pool, None).await;
-    let app = coterie::api::create_app(state);
+    let app = coterie::api::create_app(state.clone());
+    let web = coterie::web::create_web_routes(state);
 
     let (status, _) = post_signup(app, &signup_body("j@x.com", "juliet", PAID_SLUG)).await;
     assert_eq!(status, StatusCode::CREATED);
+    let member_id = member_id_of(&pool, "j@x.com").await;
+    let token = verification_token(&pool, member_id).await;
+    let resp = get_verify(web, &token).await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
 
     let calls = fake.calls();
     assert!(
@@ -684,5 +960,5 @@ async fn signup_auto_renew_off_keeps_one_off_checkout() {
         .expect("session created");
     assert!(session.customer_id.is_none());
     assert!(!session.save_card_for_offsession);
-    assert!(session.metadata.get("save_card").is_none());
+    assert!(!session.metadata.contains_key("save_card"));
 }
