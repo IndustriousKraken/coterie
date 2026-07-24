@@ -21,6 +21,9 @@ pub trait SubmissionRepository: Send + Sync {
     /// per-member create cap.
     async fn count_open_for_member(&self, member_id: Uuid) -> Result<i64>;
     async fn update(&self, submission: Submission) -> Result<Submission>;
+    /// Hard-delete a submission row. Owner + terminal-state checks live in
+    /// the service; this is the raw delete.
+    async fn delete(&self, id: Uuid) -> Result<()>;
 }
 
 #[derive(FromRow)]
@@ -197,5 +200,14 @@ impl SubmissionRepository for SqliteSubmissionRepository {
         self.find_by_id(submission.id)
             .await?
             .ok_or_else(|| AppError::Internal("Failed to retrieve updated submission".to_string()))
+    }
+
+    async fn delete(&self, id: Uuid) -> Result<()> {
+        sqlx::query("DELETE FROM submissions WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(AppError::Database)?;
+        Ok(())
     }
 }

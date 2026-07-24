@@ -29,6 +29,7 @@
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Requested</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Attachment</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Submitted</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-gray-200">
@@ -41,6 +42,22 @@
                     <td class="px-6 py-4 text-sm text-gray-700">{{ s.visibility }}</td>
                     <td class="px-6 py-4 text-sm text-gray-700">{% if s.has_attachment %}Yes{% else %}—{% endif %}</td>
                     <td class="px-6 py-4 text-sm text-gray-500">{{ s.created_at }}</td>
+                    <td class="px-6 py-4 text-sm whitespace-nowrap">
+                        {% if s.can_reopen %}
+                        <form method="post" action="/portal/submissions/{{ s.id }}/reopen" class="inline">
+                            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+                            <button type="submit" class="text-blue-600 hover:text-blue-900">Re-open</button>
+                        </form>
+                        {% endif %}
+                        {% if s.can_delete %}
+                        <form method="post" action="/portal/submissions/{{ s.id }}/delete" class="inline ml-2"
+                              onsubmit="return confirm('Delete this submission permanently? This cannot be undone.');">
+                            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+                            <button type="submit" class="text-red-600 hover:text-red-900">Delete</button>
+                        </form>
+                        {% endif %}
+                        {% if !s.can_reopen && !s.can_delete %}<span class="text-gray-400">—</span>{% endif %}
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>

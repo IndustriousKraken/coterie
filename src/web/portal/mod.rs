@@ -70,6 +70,14 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
             post(submissions::withdraw_submission),
         )
         .route(
+            "/submissions/:id/delete",
+            post(submissions::delete_submission),
+        )
+        .route(
+            "/submissions/:id/reopen",
+            post(submissions::reopen_submission),
+        )
+        .route(
             "/submissions/:id/attachment",
             get(submissions::download_attachment),
         )

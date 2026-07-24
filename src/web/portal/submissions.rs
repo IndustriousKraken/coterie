@@ -44,6 +44,10 @@ pub struct SubmissionRow {
     pub visibility: String,
     pub created_at: String,
     pub has_attachment: bool,
+    /// Owner may delete (terminal `withdrawn`/`declined`).
+    pub can_delete: bool,
+    /// Owner may re-open (`withdrawn` only).
+    pub can_reopen: bool,
 }
 
 #[derive(Template)]
@@ -63,6 +67,8 @@ pub struct SubmissionDetail {
     pub status_label: String,
     pub is_editable: bool,
     pub is_open: bool,
+    pub can_delete: bool,
+    pub can_reopen: bool,
     pub reviewer_note: Option<String>,
     pub attachment_path: Option<String>,
     pub preferred_start_input: String,
@@ -106,6 +112,11 @@ fn parse_local_datetime(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
 fn to_detail(s: Submission) -> SubmissionDetail {
     let is_editable = s.status == SubmissionStatus::Submitted;
     let is_open = s.is_open();
+    let can_delete = matches!(
+        s.status,
+        SubmissionStatus::Withdrawn | SubmissionStatus::Declined
+    );
+    let can_reopen = s.status == SubmissionStatus::Withdrawn;
     SubmissionDetail {
         id: s.id.to_string(),
         title: s.title,
@@ -114,6 +125,8 @@ fn to_detail(s: Submission) -> SubmissionDetail {
         status_label: s.status.label().to_string(),
         is_editable,
         is_open,
+        can_delete,
+        can_reopen,
         reviewer_note: s.reviewer_note,
         attachment_path: s.attachment_path,
         preferred_start_input: s
@@ -215,6 +228,11 @@ pub async fn submissions_page(
             visibility: s.visibility_requested.as_wire().to_string(),
             created_at: s.created_at.format("%b %d, %Y").to_string(),
             has_attachment: s.attachment_path.is_some(),
+            can_delete: matches!(
+                s.status,
+                SubmissionStatus::Withdrawn | SubmissionStatus::Declined
+            ),
+            can_reopen: s.status == SubmissionStatus::Withdrawn,
         })
         .collect();
     let base = BaseContext::for_member(&csrf_service, &current_user, &session).await;
@@ -347,6 +365,47 @@ pub async fn withdraw_submission(
     };
     match submission_service
         .withdraw_owned(current_user.member.id, id)
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/portal/submissions/{}", id)).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// Owner deletes their own terminal (`withdrawn`/`declined`) submission.
+/// Ownership + state guard live in the service; a refusal returns its
+/// error unchanged. On success the row is gone, so redirect to the list.
+pub async fn delete_submission(
+    State(settings): State<Arc<Settings>>,
+    State(submission_service): State<Arc<SubmissionService>>,
+    Extension(current_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Response {
+    let id = match uuid::Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    match submission_service
+        .delete(current_user.member.id, id, &settings.server.uploads_path())
+        .await
+    {
+        Ok(_) => Redirect::to("/portal/submissions").into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// Owner re-opens their own `withdrawn` submission back to `submitted`.
+pub async fn reopen_submission(
+    State(submission_service): State<Arc<SubmissionService>>,
+    Extension(current_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Response {
+    let id = match uuid::Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    match submission_service
+        .reopen(current_user.member.id, id)
         .await
     {
         Ok(_) => Redirect::to(&format!("/portal/submissions/{}", id)).into_response(),

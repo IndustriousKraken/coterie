@@ -104,6 +104,25 @@
     </form>
     {% endif %}
 
+    {% if submission.can_reopen %}
+    <form method="post" action="/portal/submissions/{{ submission.id }}/reopen" class="mt-4">
+        <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+        <button type="submit" class="px-4 py-2 bg-blue-50 text-blue-700 text-sm rounded-md hover:bg-blue-100">
+            Re-open for editing
+        </button>
+    </form>
+    {% endif %}
+
+    {% if submission.can_delete %}
+    <form method="post" action="/portal/submissions/{{ submission.id }}/delete" class="mt-4">
+        <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+        <button type="submit" class="px-4 py-2 bg-red-50 text-red-700 text-sm rounded-md hover:bg-red-100"
+                onclick="return confirm('Delete this submission permanently? This cannot be undone.');">
+            Delete submission
+        </button>
+    </form>
+    {% endif %}
+
     <p class="text-xs text-gray-400 mt-6">Submitted {{ submission.created_at }} · Updated {{ submission.updated_at }}</p>
 </div>
 {% endblock %}
