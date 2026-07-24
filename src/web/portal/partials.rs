@@ -32,6 +32,15 @@ pub fn member_payment_list(rows: Vec<MemberPaymentRow>) -> Html<String> {
     }))
 }
 
+/// True for payments the member's own history should show — the ones
+/// where money actually moved. `Pending`/`Failed` rows are abandoned
+/// checkouts and transient failures (issue #120): noise in the member
+/// view, so they're hidden here and remain visible only to admins.
+pub fn is_member_visible(status: &crate::domain::PaymentStatus) -> bool {
+    use crate::domain::PaymentStatus;
+    matches!(status, PaymentStatus::Completed | PaymentStatus::Refunded)
+}
+
 pub fn member_payment_row_from(payment: &crate::domain::Payment) -> MemberPaymentRow {
     use crate::domain::PaymentStatus;
     let status = match payment.status {
@@ -115,4 +124,71 @@ pub fn dues_status_pill(status: &'static str) -> Html<String> {
         tracing::error!("dues_status_pill template render failed: {}", e);
         format!("<span class=\"text-yellow-600\">Unpaid</span>")
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus};
+
+    fn payment_with(status: PaymentStatus) -> Payment {
+        let now = chrono::Utc::now();
+        Payment {
+            id: uuid::Uuid::new_v4(),
+            payer: Payer::Member(uuid::Uuid::new_v4()),
+            amount_cents: 5000,
+            currency: "USD".to_string(),
+            status,
+            payment_method: PaymentMethod::Stripe,
+            kind: PaymentKind::Membership,
+            external_id: None,
+            description: String::new(),
+            paid_at: Some(now),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    // The member payment list filters through `is_member_visible`
+    // (see `payments/views.rs::payments_list_api`); the admin list does
+    // not. These two tests pin both halves of issue #120.
+
+    #[test]
+    fn member_view_shows_only_settled_payments() {
+        let payments = [
+            payment_with(PaymentStatus::Completed),
+            payment_with(PaymentStatus::Refunded),
+            payment_with(PaymentStatus::Pending),
+            payment_with(PaymentStatus::Failed),
+        ];
+
+        let shown: Vec<&str> = payments
+            .iter()
+            .filter(|p| is_member_visible(&p.status))
+            .map(member_payment_row_from)
+            .map(|row| row.status)
+            .collect();
+
+        assert_eq!(shown, ["Completed", "Refunded"]);
+    }
+
+    #[test]
+    fn admin_view_unfiltered_shows_all_statuses() {
+        // Admin path maps every payment without the visibility filter,
+        // so Pending/Failed remain visible for support/reconciliation.
+        let payments = [
+            payment_with(PaymentStatus::Completed),
+            payment_with(PaymentStatus::Refunded),
+            payment_with(PaymentStatus::Pending),
+            payment_with(PaymentStatus::Failed),
+        ];
+
+        let shown: Vec<&str> = payments
+            .iter()
+            .map(member_payment_row_from)
+            .map(|row| row.status)
+            .collect();
+
+        assert_eq!(shown, ["Completed", "Refunded", "Pending", "Failed"]);
+    }
 }

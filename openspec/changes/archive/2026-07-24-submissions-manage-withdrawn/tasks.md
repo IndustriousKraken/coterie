@@ -6,33 +6,33 @@ the button's presence.
 
 ## 1. Service — state machine + cleanup
 
-- [ ] 1.1 `src/service/submission_service/`: add `delete(member_id, id)` — verify
+- [x] 1.1 `src/service/submission_service/`: add `delete(member_id, id)` — verify
   the caller is the submitter, verify status is `withdrawn` or `declined`, delete
   the attachment via `delete_uploaded_file` (best-effort), then delete the row.
   Refuse (no-op error) for any other state or a non-owner.
-- [ ] 1.2 Add `reopen(member_id, id)` — verify submitter + status `withdrawn`,
+- [x] 1.2 Add `reopen(member_id, id)` — verify submitter + status `withdrawn`,
   transition to `submitted`. Refuse otherwise.
 
 ## 2. Web — routes + UI
 
-- [ ] 2.1 `src/web/portal/submissions.rs`: owner-scoped `POST
+- [x] 2.1 `src/web/portal/submissions.rs`: owner-scoped `POST
   /portal/submissions/:id/delete` and `POST /portal/submissions/:id/reopen`
   (CSRF-protected), calling the service actions.
-- [ ] 2.2 `templates/portal/submissions.html` / `submission_detail.html`: show a
+- [x] 2.2 `templates/portal/submissions.html` / `submission_detail.html`: show a
   **Delete** button on `withdrawn`/`declined` rows and a **Re-open** button on
   `withdrawn` rows. Do not show them on active states.
 
 ## 3. Tests
 
-- [ ] 3.1 Owner deletes a `withdrawn` (and a `declined`) submission → row gone,
+- [x] 3.1 Owner deletes a `withdrawn` (and a `declined`) submission → row gone,
   attachment deleted.
-- [ ] 3.2 Delete of a `submitted`/`under_review`/`accepted`/`scheduled` submission
+- [x] 3.2 Delete of a `submitted`/`under_review`/`accepted`/`scheduled` submission
   → refused, unchanged.
-- [ ] 3.3 Owner re-opens a `withdrawn` → status `submitted` and editable; re-open
+- [x] 3.3 Owner re-opens a `withdrawn` → status `submitted` and editable; re-open
   of a non-`withdrawn` → refused.
-- [ ] 3.4 A non-owner's delete/re-open → denied without disclosure.
+- [x] 3.4 A non-owner's delete/re-open → denied without disclosure.
 
 ## 4. Verify
 
-- [ ] 4.1 `openspec validate submissions-manage-withdrawn --strict` passes.
-- [ ] 4.2 `cargo test` (submissions suite) green; `cargo clippy` clean.
+- [x] 4.1 `openspec validate submissions-manage-withdrawn --strict` passes.
+- [x] 4.2 `cargo test` (submissions suite) green; `cargo clippy` clean.

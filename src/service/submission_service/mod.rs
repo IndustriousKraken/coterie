@@ -221,6 +221,66 @@ impl SubmissionService {
         Ok(saved)
     }
 
+    /// Owner deletes their own submission — permitted ONLY from a terminal
+    /// `withdrawn` or `declined` state. The attachment (if any) is deleted
+    /// best-effort, then the row is removed. A non-owner gets an undisclosed
+    /// 404; a delete of any other state is refused and leaves the row
+    /// untouched. `uploads_dir` is the configured filesystem upload root.
+    pub async fn delete(&self, actor_id: Uuid, id: Uuid, uploads_dir: &str) -> Result<()> {
+        let submission = self.load_owned(actor_id, id).await?;
+        if !submission.status.is_deletable() {
+            return Err(AppError::Validation(
+                "Only a withdrawn or declined submission can be deleted.".to_string(),
+            ));
+        }
+        // Delete the row FIRST, guarded on status in SQL: if a concurrent
+        // re-open landed between load and here, the guard matches nothing
+        // and we refuse — without having touched the attachment of a now
+        // -active submission.
+        if !self.submission_repo.delete(id).await? {
+            return Err(AppError::Validation(
+                "Only a withdrawn or declined submission can be deleted.".to_string(),
+            ));
+        }
+        // Best-effort: an unremovable file must not block the (already done)
+        // row delete.
+        if let Some(path) = submission.attachment_path.as_deref() {
+            let _ = crate::web::uploads::delete_uploaded_file(uploads_dir, path).await;
+        }
+        self.audit_service
+            .log(
+                Some(actor_id),
+                "delete_submission",
+                "submission",
+                &id.to_string(),
+                Some(submission.status.as_wire()),
+                None,
+                None,
+            )
+            .await;
+        Ok(())
+    }
+
+    /// Owner re-opens their own `withdrawn` submission back to `submitted`
+    /// for revision/resubmission. Allowed ONLY from `withdrawn` — a
+    /// `declined` decision is preserved (make a fresh submission instead).
+    pub async fn reopen(&self, actor_id: Uuid, id: Uuid) -> Result<Submission> {
+        let mut submission = self.load_owned(actor_id, id).await?;
+        if !submission.status.is_reopenable() {
+            return Err(AppError::Validation(
+                "Only a withdrawn submission can be re-opened.".to_string(),
+            ));
+        }
+        // ponytail: the per-member open cap is NOT re-checked here — the spec
+        // permits re-opening a withdrawn submission unconditionally. Add a cap
+        // guard if resurrection ever becomes a spam vector.
+        submission.status = SubmissionStatus::Submitted;
+        let saved = self.submission_repo.update(submission).await?;
+        self.audit_transition(actor_id, &saved, "reopen_submission")
+            .await;
+        Ok(saved)
+    }
+
     // --- Admin-facing ---------------------------------------------------
 
     /// `submitted → under_review`. Admin only.

@@ -38,8 +38,12 @@ pub async fn payments_list_api(
         .await
         .unwrap_or_default();
 
+    // Member view shows only settled payments (Completed/Refunded);
+    // abandoned-checkout Pending/Failed rows are hidden here and stay
+    // visible only in the admin view (issue #120).
     let rows = payments
         .iter()
+        .filter(|p| crate::web::portal::partials::is_member_visible(&p.status))
         .map(crate::web::portal::partials::member_payment_row_from)
         .collect();
     crate::web::portal::partials::member_payment_list(rows)
