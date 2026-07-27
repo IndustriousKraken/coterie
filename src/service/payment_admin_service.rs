@@ -25,7 +25,7 @@ use crate::{
     error::AppError,
     integrations::{IntegrationEvent, IntegrationManager},
     payments::StripeHandle,
-    repository::{EventRepository, PaymentRepository},
+    repository::{EventRepository, PaymentRepository, SeriesEnrollmentRepository},
     service::audit_service::AuditService,
 };
 
@@ -91,6 +91,9 @@ pub struct PaymentAdminService {
     /// Refunding an event fee also releases its seat — a member doesn't
     /// keep a seat for an event whose fee went back to them.
     event_repo: Arc<dyn EventRepository>,
+    /// Refunding a class pass cancels the enrollment and its remaining
+    /// sessions, for the same reason.
+    enrollment_repo: Arc<dyn SeriesEnrollmentRepository>,
     /// Hot-swappable Stripe wiring — read `current().client` at refund
     /// time (not captured once) so a portal key rotation reaches this
     /// path without a restart, same as the webhook + per-request charges.
@@ -101,9 +104,11 @@ pub struct PaymentAdminService {
 }
 
 impl PaymentAdminService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         payment_repo: Arc<dyn PaymentRepository>,
         event_repo: Arc<dyn EventRepository>,
+        enrollment_repo: Arc<dyn SeriesEnrollmentRepository>,
         stripe_handle: Arc<StripeHandle>,
         audit_service: Arc<AuditService>,
         integration_manager: Arc<IntegrationManager>,
@@ -112,6 +117,7 @@ impl PaymentAdminService {
         Self {
             payment_repo,
             event_repo,
+            enrollment_repo,
             stripe_handle,
             audit_service,
             integration_manager,
@@ -197,6 +203,53 @@ impl PaymentAdminService {
                 &event_id.to_string(),
                 None,
                 Some(&format!("{} event-fee payments refunded", refunded)),
+                None,
+            )
+            .await;
+
+        Ok(refunded)
+    }
+
+    /// Refund every `Completed` series-pass payment on a class, in one
+    /// operator action. The series-scope sibling of
+    /// [`Self::refund_all_event_fees`], used by the delete-a-series path,
+    /// which MUST refund before deleting: occurrences and their attendance
+    /// cascade on series delete, so delete-then-refund would destroy the
+    /// roster while the charges stood. Aborts on the FIRST failure and
+    /// returns it, so the caller leaves the class in place and fixable.
+    pub async fn refund_all_series_passes(
+        &self,
+        actor_id: Uuid,
+        series_id: Uuid,
+        ip: IpAddr,
+    ) -> Result<usize, RefundError> {
+        if !self.money_limiter.0.check_and_record(ip) {
+            return Err(RefundError::RateLimited);
+        }
+
+        let payments = self
+            .payment_repo
+            .list_completed_series_passes(series_id)
+            .await
+            .map_err(RefundError::InternalDatabaseError)?;
+        if payments.is_empty() {
+            return Ok(0);
+        }
+
+        let mut refunded = 0usize;
+        for payment in &payments {
+            self.refund_claimed(actor_id, payment.id).await?;
+            refunded += 1;
+        }
+
+        self.audit_service
+            .log(
+                Some(actor_id),
+                "refund_series_passes_bulk",
+                "event_series",
+                &series_id.to_string(),
+                None,
+                Some(&format!("{} series-pass payments refunded", refunded)),
                 None,
             )
             .await;
@@ -323,6 +376,38 @@ impl PaymentAdminService {
                 .await;
         }
 
+        // A refunded class pass cancels the enrollment and its attendance
+        // for sessions that haven't started; past sessions keep theirs.
+        if let Some(series_id) = payment.kind.series_id() {
+            if let Err(e) =
+                crate::service::series_enrollment_service::cancel_enrollment_for_payment(
+                    &*self.enrollment_repo,
+                    &*self.event_repo,
+                    payment.id,
+                )
+                .await
+            {
+                // The money is already back; a stuck enrollment is the
+                // lesser problem and an admin can release it.
+                tracing::error!(
+                    "Refunded series-pass payment {} but could not cancel its enrollment: {}",
+                    payment.id,
+                    e,
+                );
+            }
+            self.audit_service
+                .log(
+                    Some(actor_id),
+                    "series_enrollment_refunded",
+                    "event_series",
+                    &series_id.to_string(),
+                    None,
+                    Some(&detail),
+                    None,
+                )
+                .await;
+        }
+
         // 8. Audit. Failures are logged via tracing and swallowed
         //    inside AuditService::log.
         self.audit_service
@@ -412,9 +497,13 @@ mod tests {
         // Wrap the (optional) client in a fixed handle — these unit tests
         // exercise the present/absent-client refund branch, not hot-reload.
         let stripe_handle = Arc::new(StripeHandle::preloaded(stripe_client, None));
+        let enrollment_repo: Arc<dyn SeriesEnrollmentRepository> = Arc::new(
+            crate::repository::SqliteSeriesEnrollmentRepository::new(pool.clone()),
+        );
         let svc = PaymentAdminService::new(
             payment_repo.clone(),
             event_repo,
+            enrollment_repo,
             stripe_handle,
             audit,
             integrations,

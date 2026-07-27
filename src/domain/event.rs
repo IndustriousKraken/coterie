@@ -171,9 +171,122 @@ pub struct EventSeries {
     /// daily horizon-extension job rolls this forward; on creation
     /// we materialize 12 months ahead.
     pub materialized_through: DateTime<Utc>,
+    /// What a member pays for a pass to the whole series, in cents. `0`
+    /// means free — a *known* price, not an unknown one, same as
+    /// [`Event::member_price_cents`]. Above `0` makes this a paid class,
+    /// which requires an `until_date` (see [`EventSeries::validate_pricing`]).
+    pub member_price_cents: i64,
+    /// What a non-member pays for a pass. `0` means free, on the same
+    /// terms. Says nothing about *whether* non-members may enroll —
+    /// that's [`EventSeries::guest_registration_enabled`].
+    pub guest_price_cents: i64,
+    /// Whether non-members may enroll through the public class page.
+    pub guest_registration_enabled: bool,
+    /// How many people may hold a pass to this class. `None` = uncapped.
+    /// This is a series-level number: twelve seats in the course, not
+    /// twelve seats each night.
+    pub max_enrollments: Option<i32>,
     pub created_by: Uuid,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// The pricing/capacity subset of a series, as the create + update paths
+/// carry it. Defaults to free-and-uncapped, which is what every series
+/// was before passes existed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SeriesPassPricing {
+    pub member_price_cents: i64,
+    pub guest_price_cents: i64,
+    pub guest_registration_enabled: bool,
+    pub max_enrollments: Option<i32>,
+}
+
+impl SeriesPassPricing {
+    /// True when a pass costs a member money — the paid-class test,
+    /// available before the series row exists.
+    pub fn is_paid_class(&self) -> bool {
+        self.member_price_cents > 0
+    }
+}
+
+impl EventSeries {
+    /// True when a pass to this series costs a member money. The single
+    /// home for the free-vs-paid-class rule, so templates and services
+    /// don't re-derive `> 0` and drift on the boundary.
+    pub fn is_paid_class(&self) -> bool {
+        self.member_price_cents > 0
+    }
+
+    /// True when a pass costs a non-member money. Mirrors
+    /// [`EventSeries::is_paid_class`]; `false` means public enrollment is
+    /// free, NOT that it is closed.
+    pub fn is_paid_for_guests(&self) -> bool {
+        self.guest_price_cents > 0
+    }
+
+    /// Whether the public class page and endpoint serve this series: the
+    /// org opened the door AND its occurrences are `Public`. A series row
+    /// carries no visibility of its own — that lives per occurrence — so
+    /// the caller supplies one to read it from. Mirrors
+    /// [`Event::publicly_registerable`], and for the same reason: one home
+    /// for the rule so the 404 decision isn't re-derived per call site.
+    pub fn publicly_enrollable(&self, occurrence: &Event) -> bool {
+        self.guest_registration_enabled && occurrence.visibility == EventVisibility::Public
+    }
+
+    /// The pricing/capacity subset, for handing to an update path.
+    pub fn pricing(&self) -> SeriesPassPricing {
+        SeriesPassPricing {
+            member_price_cents: self.member_price_cents,
+            guest_price_cents: self.guest_price_cents,
+            guest_registration_enabled: self.guest_registration_enabled,
+            max_enrollments: self.max_enrollments,
+        }
+    }
+}
+
+/// Validate pass pricing against the series' end date.
+///
+/// Two rules, both enforced wherever a series is created or repriced:
+///
+///   - **A priced class must be bounded.** A flat price buying unlimited
+///     future sessions is a subscription, not a pass, and Coterie already
+///     has recurring billing for subscriptions.
+///   - **Prices are bounded like every other amount** — no negatives, and
+///     nothing above the single-payment cap. Zero is accepted and stored
+///     as zero.
+pub fn validate_pass_pricing(
+    pricing: &SeriesPassPricing,
+    until_date: Option<DateTime<Utc>>,
+) -> Result<(), String> {
+    for (label, cents) in [
+        ("Member pass price", pricing.member_price_cents),
+        ("Guest pass price", pricing.guest_price_cents),
+    ] {
+        if cents < 0 {
+            return Err(format!("{} can't be negative", label));
+        }
+        if cents > crate::domain::MAX_PAYMENT_CENTS {
+            return Err(format!(
+                "{} exceeds the ${} cap on a single payment",
+                label,
+                crate::domain::MAX_PAYMENT_CENTS / 100,
+            ));
+        }
+    }
+
+    if (pricing.member_price_cents > 0 || pricing.guest_price_cents > 0) && until_date.is_none() {
+        return Err(
+            "A priced class must have an end date — set the series' \"repeat until\" date \
+             before giving it a pass price. A flat price on an open-ended series would sell \
+             unlimited future sessions for one payment, which is a subscription rather than \
+             a pass."
+                .to_string(),
+        );
+    }
+
+    Ok(())
 }
 
 /// Legacy event type enum - DEPRECATED
@@ -278,6 +391,25 @@ pub struct EventAttendance {
     pub registered_at: DateTime<Utc>,
     pub attended: bool,
     /// The event-fee payment holding this seat. `None` for free RSVPs.
+    pub payment_id: Option<Uuid>,
+}
+
+/// Somebody's pass to a whole series. Deliberately the same shape as
+/// [`EventAttendance`] — an [`Attendee`] identity, the payment holding
+/// it, and the same [`AttendanceStatus`] lifecycle — because it IS the
+/// same lifecycle at a different scope. A second, parallel status enum
+/// would drift from this one on exactly the double-pay / race / refund
+/// edges the paid-events capability exists to get right.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeriesEnrollment {
+    pub id: Uuid,
+    pub series_id: Uuid,
+    /// Who holds the pass — a member or a guest. See [`Attendee`].
+    pub enrollee: Attendee,
+    pub status: AttendanceStatus,
+    pub enrolled_at: DateTime<Utc>,
+    /// The series-pass payment holding this enrollment. `None` for a free
+    /// class.
     pub payment_id: Option<Uuid>,
 }
 

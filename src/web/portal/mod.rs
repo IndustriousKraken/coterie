@@ -226,6 +226,27 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
             "/events/series/:id",
             get(admin::events::admin_event_series_detail_page),
         )
+        // Paid-class controls: what the pass costs, and the enrollment
+        // roster's operator actions. Admin-authed + CSRF-protected by the
+        // layers on this router; each handler audits its own action.
+        // Refunding an enrollment goes through /payments/:id/refund,
+        // which cancels the enrollment and its future sessions.
+        .route(
+            "/events/series/:id/pricing",
+            post(admin::events::admin_update_series_pricing),
+        )
+        .route(
+            "/events/series/:id/enrollments/at-the-door",
+            post(admin::events::admin_enrollment_record_at_the_door),
+        )
+        .route(
+            "/events/series/:id/enrollments/comp",
+            post(admin::events::admin_enrollment_comp),
+        )
+        .route(
+            "/events/series/:id/enrollments/release",
+            post(admin::events::admin_enrollment_release),
+        )
         .route(
             "/events/series/:id/occurrences/:index/override",
             get(admin::events::admin_occurrence_override_form),
@@ -612,6 +633,8 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route("/api/events/list", get(events::events_list_api))
         .route("/api/events/:id/rsvp", post(events::rsvp_event))
         .route("/api/events/:id/cancel", post(events::cancel_rsvp_event))
+        // Class pass: bought once at series scope, not per occurrence.
+        .route("/api/series/:id/enroll", post(events::enroll_in_series))
         .route(
             "/api/announcements/list",
             get(announcements::announcements_list_api),

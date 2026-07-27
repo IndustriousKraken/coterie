@@ -168,6 +168,11 @@ fn public_routes(_state: AppState) -> Router<AppState> {
             "/events/:id/register",
             post(handlers::public::register_for_event),
         )
+        // Same shape at series scope: a pass to a whole class.
+        .route(
+            "/series/:id/enroll",
+            post(handlers::public::enroll_in_class),
+        )
         .route("/announcements", get(handlers::public::list_announcements))
         .route(
             "/membership-types",

@@ -46,6 +46,13 @@ pub fn create_web_routes(state: AppState) -> Router {
             "/events/:id/register",
             get(templates::event_register::event_register_page),
         )
+        // Same page at series scope: the shareable URL for a class whose
+        // pass is open to non-members. Posts to
+        // POST /public/series/:id/enroll.
+        .route(
+            "/classes/:id/register",
+            get(templates::class_register::class_register_page),
+        )
         // Password reset flow
         .route(
             "/forgot-password",

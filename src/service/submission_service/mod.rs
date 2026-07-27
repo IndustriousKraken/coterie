@@ -414,6 +414,8 @@ impl SubmissionService {
             image_url: None,
             recurrence: None,
             recurrence_until: None,
+            // No recurrence, so no series to price. Free-and-uncapped.
+            series_pricing: Default::default(),
         };
         self.event_admin_service.create(admin_id, input).await
     }

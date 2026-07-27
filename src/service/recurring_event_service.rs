@@ -18,11 +18,15 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        generate_occurrences, Event, EventSeries, OccurrenceExceptionKind, OccurrenceOverride,
-        Recurrence,
+        generate_occurrences, validate_pass_pricing, Event, EventSeries, OccurrenceExceptionKind,
+        OccurrenceOverride, Recurrence, SeriesPassPricing,
     },
     error::{AppError, Result},
-    repository::{EventRepository, EventSeriesRepository},
+    repository::{
+        EventRepository, EventSeriesRepository, SeriesEnrollmentRepository,
+        SqliteSeriesEnrollmentRepository,
+    },
+    service::series_enrollment_service::seat_enrollees_on_occurrence,
 };
 
 /// 12 months. Operator-facing, not RFC-driven — we want the calendar
@@ -34,6 +38,12 @@ pub const DEFAULT_HORIZON: Duration = Duration::weeks(52);
 pub struct RecurringEventService {
     event_repo: Arc<dyn EventRepository>,
     series_repo: Arc<dyn EventSeriesRepository>,
+    /// Class enrollments, so a newly materialized occurrence gets
+    /// attendance rows for everyone who already bought a pass. Built from
+    /// the pool rather than taken as a constructor argument: this service
+    /// already reaches for the pool directly, and threading a fifth
+    /// dependency through six call sites bought nothing.
+    enrollment_repo: Arc<dyn SeriesEnrollmentRepository>,
     /// Held alongside the trait-objects so the few queries that don't
     /// merit a trait method (e.g. "min start_time across this series")
     /// can be served directly. Cheap (Arc'd internally).
@@ -59,6 +69,7 @@ impl RecurringEventService {
         Self {
             event_repo,
             series_repo,
+            enrollment_repo: Arc::new(SqliteSeriesEnrollmentRepository::new(pool.clone())),
             pool,
         }
     }
@@ -73,15 +84,24 @@ impl RecurringEventService {
     ///
     /// `until_date` caps the series. The materializer stops here even
     /// if it's earlier than 12 months out. `None` = open-ended.
+    ///
+    /// `pricing` is the series-pass price + class capacity;
+    /// `SeriesPassPricing::default()` is free-and-uncapped, which is what
+    /// every series was before passes existed. A priced class must be
+    /// bounded — see [`validate_pass_pricing`].
     pub async fn create_series_with_initial_materialization(
         &self,
         rule: Recurrence,
         template: Event,
         until_date: Option<DateTime<Utc>>,
+        pricing: SeriesPassPricing,
         created_by: Uuid,
     ) -> Result<CreatedSeries> {
         rule.validate()
             .map_err(|m| AppError::BadRequest(m.to_string()))?;
+        // Validated BEFORE anything is persisted, so a rejected price
+        // leaves no series and no occurrences behind.
+        validate_pass_pricing(&pricing, until_date).map_err(AppError::BadRequest)?;
 
         let now = Utc::now();
         let target_horizon =
@@ -117,6 +137,10 @@ impl RecurringEventService {
             rule_json,
             until_date,
             materialized_through,
+            member_price_cents: pricing.member_price_cents,
+            guest_price_cents: pricing.guest_price_cents,
+            guest_registration_enabled: pricing.guest_registration_enabled,
+            max_enrollments: pricing.max_enrollments,
             created_by,
             created_at: now,
             updated_at: now,
@@ -314,7 +338,17 @@ impl RecurringEventService {
                 }
             }
 
-            self.event_repo.create(occ).await?;
+            let created = self.event_repo.create(occ).await?;
+            // A pass already bought covers this newly materialized night.
+            // Without this an enrollee silently vanishes from every
+            // session materialized after they enrolled.
+            seat_enrollees_on_occurrence(
+                &*self.enrollment_repo,
+                &*self.event_repo,
+                series.id,
+                created.id,
+            )
+            .await?;
             count += 1;
         }
 
@@ -418,7 +452,17 @@ impl RecurringEventService {
             }
         }
 
-        self.event_repo.create(occ).await
+        let created = self.event_repo.create(occ).await?;
+        // A restored occurrence is a session of the class again, so
+        // pass-holders belong on it — same reason as the horizon roll.
+        seat_enrollees_on_occurrence(
+            &*self.enrollment_repo,
+            &*self.event_repo,
+            series.id,
+            created.id,
+        )
+        .await?;
+        Ok(created)
     }
 
     /// Roll every active series forward to (now + DEFAULT_HORIZON).
@@ -608,6 +652,7 @@ mod tests {
                 rule,
                 template(creator, anchor),
                 None,
+                Default::default(),
                 creator,
             )
             .await;
@@ -643,6 +688,7 @@ mod tests {
                 rule,
                 template(creator, start),
                 Some(until),
+                Default::default(),
                 creator,
             )
             .await;
@@ -679,6 +725,7 @@ mod tests {
                 rule,
                 template(creator, anchor),
                 None,
+                Default::default(),
                 creator,
             )
             .await
@@ -726,6 +773,7 @@ mod tests {
                 rule,
                 template(creator, anchor),
                 None,
+                Default::default(),
                 creator,
             )
             .await
@@ -767,6 +815,7 @@ mod tests {
                 rule,
                 template(creator, anchor),
                 None,
+                Default::default(),
                 creator,
             )
             .await

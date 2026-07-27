@@ -131,7 +131,7 @@ impl RosterMemberForm {
     /// is usable. Guest identity goes through the same validation the
     /// public endpoint uses, so an admin can't hand-post an unbounded
     /// name into a seat.
-    fn attendee(&self) -> Option<Attendee> {
+    pub(super) fn attendee(&self) -> Option<Attendee> {
         if !self.member_id.trim().is_empty() {
             return Uuid::parse_str(self.member_id.trim())
                 .ok()

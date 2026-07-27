@@ -9,9 +9,15 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::{
-    domain::{EventSeries, OccurrenceException, OccurrenceExceptionKind},
+    domain::{EventSeries, OccurrenceException, OccurrenceExceptionKind, SeriesPassPricing},
     error::{AppError, Result},
 };
+
+/// Every column of `event_series`, in one place so the seven queries
+/// below can't disagree about the projection when a column is added.
+const SERIES_COLUMNS: &str = "id, rule_kind, rule_json, until_date, materialized_through, \
+     member_price_cents, guest_price_cents, guest_registration_enabled, max_enrollments, \
+     created_by, created_at, updated_at";
 
 #[async_trait]
 pub trait EventSeriesRepository: Send + Sync {
@@ -26,6 +32,10 @@ pub trait EventSeriesRepository: Send + Sync {
     /// Cap the series at `until` (also touches updated_at). Used by
     /// the "end the series after this date" admin action.
     async fn set_until_date(&self, id: Uuid, until: DateTime<Utc>) -> Result<()>;
+    /// Write the pass pricing + class capacity. Callers validate with
+    /// [`crate::domain::validate_pass_pricing`] first — the bounded-series
+    /// rule is a domain rule, not a storage one.
+    async fn set_pricing(&self, id: Uuid, pricing: &SeriesPassPricing) -> Result<()>;
     async fn delete(&self, id: Uuid) -> Result<()>;
 
     // ---- Per-occurrence exceptions ------------------------------------
@@ -71,6 +81,10 @@ struct SeriesRow {
     rule_json: String,
     until_date: Option<NaiveDateTime>,
     materialized_through: NaiveDateTime,
+    member_price_cents: i64,
+    guest_price_cents: i64,
+    guest_registration_enabled: i32,
+    max_enrollments: Option<i32>,
     created_by: String,
     created_at: NaiveDateTime,
     updated_at: NaiveDateTime,
@@ -89,6 +103,10 @@ impl SeriesRow {
                 self.materialized_through,
                 Utc,
             ),
+            member_price_cents: self.member_price_cents,
+            guest_price_cents: self.guest_price_cents,
+            guest_registration_enabled: self.guest_registration_enabled != 0,
+            max_enrollments: self.max_enrollments,
             created_by: Uuid::parse_str(&self.created_by)
                 .map_err(|e| AppError::Internal(e.to_string()))?,
             created_at: DateTime::from_naive_utc_and_offset(self.created_at, Utc),
@@ -109,14 +127,19 @@ impl EventSeriesRepository for SqliteEventSeriesRepository {
         sqlx::query(
             "INSERT INTO event_series \
                 (id, rule_kind, rule_json, until_date, materialized_through, \
-                 created_by, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 member_price_cents, guest_price_cents, guest_registration_enabled, \
+                 max_enrollments, created_by, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id_str)
         .bind(&series.rule_kind)
         .bind(&series.rule_json)
         .bind(until_naive)
         .bind(through_naive)
+        .bind(series.member_price_cents)
+        .bind(series.guest_price_cents)
+        .bind(i32::from(series.guest_registration_enabled))
+        .bind(series.max_enrollments)
         .bind(&created_by_str)
         .bind(now)
         .bind(now)
@@ -130,11 +153,9 @@ impl EventSeriesRepository for SqliteEventSeriesRepository {
     }
 
     async fn find_by_id(&self, id: Uuid) -> Result<Option<EventSeries>> {
-        let row = sqlx::query_as::<_, SeriesRow>(
-            "SELECT id, rule_kind, rule_json, until_date, materialized_through, \
-                    created_by, created_at, updated_at \
-             FROM event_series WHERE id = ?",
-        )
+        let row = sqlx::query_as::<_, SeriesRow>(&format!(
+            "SELECT {SERIES_COLUMNS} FROM event_series WHERE id = ?",
+        ))
         .bind(id.to_string())
         .fetch_optional(&self.pool)
         .await
@@ -144,13 +165,11 @@ impl EventSeriesRepository for SqliteEventSeriesRepository {
     }
 
     async fn list_active(&self, now: DateTime<Utc>) -> Result<Vec<EventSeries>> {
-        let rows = sqlx::query_as::<_, SeriesRow>(
-            "SELECT id, rule_kind, rule_json, until_date, materialized_through, \
-                    created_by, created_at, updated_at \
-             FROM event_series \
+        let rows = sqlx::query_as::<_, SeriesRow>(&format!(
+            "SELECT {SERIES_COLUMNS} FROM event_series \
              WHERE until_date IS NULL OR until_date > ? \
              ORDER BY created_at ASC",
-        )
+        ))
         .bind(now.naive_utc())
         .fetch_all(&self.pool)
         .await
@@ -180,6 +199,25 @@ impl EventSeriesRepository for SqliteEventSeriesRepository {
             .execute(&self.pool)
             .await
             .map_err(AppError::Database)?;
+        Ok(())
+    }
+
+    async fn set_pricing(&self, id: Uuid, pricing: &SeriesPassPricing) -> Result<()> {
+        sqlx::query(
+            "UPDATE event_series \
+             SET member_price_cents = ?, guest_price_cents = ?, \
+                 guest_registration_enabled = ?, max_enrollments = ?, updated_at = ? \
+             WHERE id = ?",
+        )
+        .bind(pricing.member_price_cents)
+        .bind(pricing.guest_price_cents)
+        .bind(i32::from(pricing.guest_registration_enabled))
+        .bind(pricing.max_enrollments)
+        .bind(Utc::now().naive_utc())
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
         Ok(())
     }
 
@@ -358,6 +396,10 @@ mod tests {
             rule_json: r#"{"kind":"weekly_by_day","interval":1,"weekdays":["mon"]}"#.to_string(),
             until_date: None,
             materialized_through: now + Duration::weeks(52),
+            member_price_cents: 0,
+            guest_price_cents: 0,
+            guest_registration_enabled: false,
+            max_enrollments: None,
             created_by,
             created_at: now,
             updated_at: now,

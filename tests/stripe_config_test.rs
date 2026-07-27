@@ -52,6 +52,9 @@ fn build_handle(pool: &SqlitePool, settings: &Arc<SettingsService>) -> Arc<Strip
     let event_repo: Arc<dyn coterie::repository::EventRepository> = Arc::new(
         coterie::repository::SqliteEventRepository::new(pool.clone()),
     );
+    let enrollment_repo: Arc<dyn coterie::repository::SeriesEnrollmentRepository> = Arc::new(
+        coterie::repository::SqliteSeriesEnrollmentRepository::new(pool.clone()),
+    );
     let processed_events_repo: Arc<dyn ProcessedEventsRepository> =
         Arc::new(SqliteProcessedEventsRepository::new(pool.clone()));
     let mt_service = Arc::new(MembershipTypeService::new(Arc::new(
@@ -68,6 +71,7 @@ fn build_handle(pool: &SqlitePool, settings: &Arc<SettingsService>) -> Arc<Strip
         payment_repo,
         member_repo,
         event_repo,
+        enrollment_repo,
         processed_events_repo,
         mt_service,
         integrations,
@@ -480,6 +484,9 @@ async fn refund_service_picks_up_client_after_rebuild_no_restart() {
     let admin = PaymentAdminService::new(
         payment_repo.clone(),
         event_repo,
+        Arc::new(coterie::repository::SqliteSeriesEnrollmentRepository::new(
+            pool.clone(),
+        )),
         handle.clone(),
         audit,
         integrations,

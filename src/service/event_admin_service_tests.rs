@@ -122,6 +122,7 @@ fn single_input(start: DateTime<Utc>, visibility: EventVisibility) -> CreateEven
         image_url: None,
         recurrence: None,
         recurrence_until: None,
+        series_pricing: Default::default(),
     }
 }
 

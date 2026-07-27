@@ -461,6 +461,12 @@ pub async fn admin_create_event(
     let mut repeat_weekday = String::from("mon");
     let mut repeat_ordinal: i32 = 1;
     let mut repeat_until_str = String::new();
+    // Series-pass pricing. Only meaningful when a recurrence was asked
+    // for; a one-off event has no series to price.
+    let mut series_member_price_str = String::new();
+    let mut series_guest_price_str = String::new();
+    let mut series_capacity: Option<i32> = None;
+    let mut series_guest_registration_enabled = false;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
@@ -519,6 +525,19 @@ pub async fn admin_create_event(
                 }
             }
             "repeat_until" => repeat_until_str = field.text().await.unwrap_or_default(),
+            "series_member_price" => {
+                series_member_price_str = field.text().await.unwrap_or_default()
+            }
+            "series_guest_price" => series_guest_price_str = field.text().await.unwrap_or_default(),
+            "series_capacity" => {
+                if let Ok(text) = field.text().await {
+                    series_capacity = text.parse().ok();
+                }
+            }
+            "series_guest_registration_enabled" => {
+                series_guest_registration_enabled = true;
+                let _ = field.text().await;
+            }
             "image" => {
                 let filename = field.file_name().unwrap_or("").to_string();
                 if !filename.is_empty() {
@@ -630,6 +649,23 @@ pub async fn admin_create_event(
         Err(msg) => return partials::admin_alert("error", msg, false).into_response(),
     };
 
+    // Pass pricing is only read when a recurrence was requested — a
+    // one-off event has no series, and silently carrying a price into
+    // one would be a charge nobody could ever be enrolled against.
+    let series_pricing = if recurrence.is_some() {
+        match parse_series_pricing(
+            &series_member_price_str,
+            &series_guest_price_str,
+            series_capacity,
+            series_guest_registration_enabled,
+        ) {
+            Ok(p) => p,
+            Err(msg) => return partials::admin_alert("error", msg, false).into_response(),
+        }
+    } else {
+        Default::default()
+    };
+
     let input = CreateEventInput {
         title,
         description,
@@ -652,6 +688,7 @@ pub async fn admin_create_event(
         image_url,
         recurrence,
         recurrence_until,
+        series_pricing,
     };
 
     match event_admin_service
@@ -728,7 +765,7 @@ fn build_recurrence(
 /// negative (which expresses no coherent intent) or an over-cap value
 /// is rejected. Accepts dollars with an optional `$` and up to two
 /// decimal places, which is what an admin actually types.
-fn parse_price(raw: &str) -> std::result::Result<i64, &'static str> {
+pub(super) fn parse_price(raw: &str) -> std::result::Result<i64, &'static str> {
     let cleaned = raw.trim().trim_start_matches('$').replace(',', "");
     if cleaned.is_empty() {
         return Ok(0);
@@ -745,6 +782,30 @@ fn parse_price(raw: &str) -> std::result::Result<i64, &'static str> {
         return Err("Price exceeds the cap on a single payment");
     }
     Ok(cents)
+}
+
+/// Parse the admin form's series-pass fields into a
+/// [`crate::domain::SeriesPassPricing`]. Prices go through the same
+/// `parse_price` an event's own prices do, so blank and `0` both mean
+/// free and only a negative or over-cap value is an error. A capacity of
+/// zero or below is treated as "no limit" rather than "nobody may
+/// enroll", which is what an operator clearing the field means.
+///
+/// The bounded-class rule (`until_date` required) is NOT checked here:
+/// it lives in `validate_pass_pricing`, which the create/update service
+/// paths call, so a hand-posted form can't route around it.
+fn parse_series_pricing(
+    member_price: &str,
+    guest_price: &str,
+    capacity: Option<i32>,
+    guest_registration_enabled: bool,
+) -> std::result::Result<crate::domain::SeriesPassPricing, &'static str> {
+    Ok(crate::domain::SeriesPassPricing {
+        member_price_cents: parse_price(member_price)?,
+        guest_price_cents: parse_price(guest_price)?,
+        guest_registration_enabled,
+        max_enrollments: capacity.filter(|c| *c > 0),
+    })
 }
 
 fn parse_until(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -1027,22 +1088,57 @@ pub async fn admin_delete_event(
     let scope = form.scope.as_deref().unwrap_or("this");
     let series_id = event.series_id;
 
+    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
+
     if (scope == "end_series" || scope == "delete_series") && series_id.is_some() {
         // Bulk series removal drops occurrences this handler never sees,
-        // so it can't guarantee each one's attendees were refunded
-        // first. Refuse rather than strand charges — paid series are a
-        // follow-on change; until then, delete priced occurrences one
-        // at a time, where the refund sweep below does run.
+        // so it can't guarantee each one's PER-OCCURRENCE attendees were
+        // refunded first. Refuse rather than strand charges — an org that
+        // prices both the pass and the individual nights deletes the
+        // priced occurrences one at a time, where the sweep below runs.
+        // A class pass is a different matter: it is one payment at series
+        // scope, and the sweep for it is right below.
         if event.is_paid_for_members() {
             return partials::admin_alert(
                 "error",
-                "This series has a member price. Delete its occurrences one at a time so each \
-                 event's attendees are refunded first.",
+                "This series' occurrences have a member price. Delete them one at a time so \
+                 each event's attendees are refunded first.",
                 false,
             )
             .into_response();
         }
         let sid = series_id.unwrap();
+
+        // Refund every class pass BEFORE deleting. Occurrences and their
+        // attendance cascade on series delete, so the reverse order would
+        // destroy the roster while the charges stood. A class that can't
+        // be fully refunded stays alive, visible, and fixable.
+        //
+        // Ending a series deletes future occurrences too, so it refunds on
+        // the same terms — a pass-holder whose remaining sessions all
+        // vanish is owed their money either way.
+        match payment_admin_service
+            .refund_all_series_passes(current_user.member.id, sid, ip)
+            .await
+        {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(
+                "Refunded {} series passes before altering series {}",
+                n,
+                sid
+            ),
+            Err(e) => {
+                return partials::admin_alert(
+                    "error",
+                    &format!(
+                        "Series NOT changed — a refund failed: {}. Fix the refund, then retry.",
+                        e.user_message(),
+                    ),
+                    false,
+                )
+                .into_response();
+            }
+        }
 
         if scope == "end_series" {
             match event_admin_service
@@ -1085,7 +1181,6 @@ pub async fn admin_delete_event(
     // Refund before delete. An event that can't be fully refunded stays
     // alive, visible, and fixable rather than becoming an invisible pile
     // of unreturned charges.
-    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
     match payment_admin_service
         .refund_all_event_fees(current_user.member.id, id, ip)
         .await

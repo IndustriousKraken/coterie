@@ -197,6 +197,12 @@ pub trait EventRepository: Send + Sync {
     /// or `None` if the series has no rows yet. Used by the materializer
     /// to continue numbering on horizon-extension passes.
     async fn max_occurrence_index_for_series(&self, series_id: Uuid) -> Result<Option<i32>>;
+    /// Every materialized occurrence of a series, `start_time` ascending.
+    /// Series-pass enrollment reads this to decide which occurrences are
+    /// still in the future (the tz-correct test needs `Event::start_utc`,
+    /// which SQL can't compute), and the class roster + delete paths
+    /// reuse it.
+    async fn list_series_occurrences(&self, series_id: Uuid) -> Result<Vec<Event>>;
     /// Look up the concrete event row for a `(series_id, occurrence_index)`
     /// pair. Used by per-occurrence exception flows (cancel deletes this
     /// row, override updates it).
@@ -958,6 +964,27 @@ impl EventRepository for SqliteEventRepository {
                 .await
                 .map_err(AppError::Database)?;
         Ok(max)
+    }
+
+    async fn list_series_occurrences(&self, series_id: Uuid) -> Result<Vec<Event>> {
+        let rows = sqlx::query_as::<_, EventRow>(
+            r#"
+            SELECT id, title, description, event_type, event_type_id, visibility,
+                   start_time, end_time, timezone, location, max_attendees, rsvp_required,
+                   member_price_cents, guest_price_cents, guest_registration_enabled,
+                   image_url, created_by, created_at, updated_at,
+                   series_id, occurrence_index
+            FROM events
+            WHERE series_id = ?
+            ORDER BY start_time ASC
+            "#,
+        )
+        .bind(series_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+        rows.into_iter().map(Self::row_to_event).collect()
     }
 
     async fn find_by_series_and_index(

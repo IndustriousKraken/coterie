@@ -125,12 +125,16 @@ async fn build_harness() -> Harness {
     let processed_events_repo: Arc<dyn coterie::repository::ProcessedEventsRepository> = Arc::new(
         coterie::repository::SqliteProcessedEventsRepository::new(pool.clone()),
     );
+    let enrollment_repo: Arc<dyn coterie::repository::SeriesEnrollmentRepository> = Arc::new(
+        coterie::repository::SqliteSeriesEnrollmentRepository::new(pool.clone()),
+    );
     let dispatcher = WebhookDispatcher::new(
         gw,
         "whsec_test_dummy".to_string(),
         payment_repo.clone(),
         member_repo.clone(),
         event_repo.clone(),
+        enrollment_repo.clone(),
         processed_events_repo,
         mt_service.clone(),
         integrations.clone(),
@@ -155,6 +159,7 @@ async fn build_harness() -> Harness {
     let payment_admin = PaymentAdminService::new(
         payment_repo.clone(),
         event_repo.clone(),
+        enrollment_repo.clone(),
         stripe_handle.clone(),
         audit_service.clone(),
         integrations.clone(),
