@@ -155,6 +155,7 @@ pub async fn admin_record_payment_submit(
             PaymentKind::Membership => "Manual membership payment".to_string(),
             PaymentKind::Donation { .. } => "Donation".to_string(),
             PaymentKind::EventFee { .. } => "Event fee".to_string(),
+            PaymentKind::SeriesPass { .. } => "Class pass".to_string(),
             PaymentKind::Other => "Manual payment".to_string(),
         }
     } else {

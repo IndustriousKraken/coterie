@@ -14,6 +14,7 @@ pub mod membership_type_service;
 pub mod payment_admin_service;
 pub mod payment_service;
 pub mod recurring_event_service;
+pub mod series_enrollment_service;
 pub mod settings_service;
 pub mod stripe_import_service;
 pub mod submission_service;
@@ -40,6 +41,7 @@ use membership_type_service::MembershipTypeService;
 use payment_admin_service::PaymentAdminService;
 use payment_service::PaymentService;
 use recurring_event_service::RecurringEventService;
+use series_enrollment_service::SeriesEnrollmentService;
 use settings_service::SettingsService;
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -49,6 +51,7 @@ pub struct ServiceContext {
     pub member_repo: Arc<dyn MemberRepository>,
     pub event_repo: Arc<dyn EventRepository>,
     pub event_series_repo: Arc<dyn EventSeriesRepository>,
+    pub series_enrollment_repo: Arc<dyn SeriesEnrollmentRepository>,
     pub recurring_event_service: Arc<RecurringEventService>,
     pub announcement_repo: Arc<dyn AnnouncementRepository>,
     pub payment_repo: Arc<dyn PaymentRepository>,
@@ -76,6 +79,7 @@ pub struct ServiceContext {
     pub member_service: Arc<MemberService>,
     pub event_admin_service: Arc<EventAdminService>,
     pub event_registration_service: Arc<EventRegistrationService>,
+    pub series_enrollment_service: Arc<SeriesEnrollmentService>,
     pub announcement_admin_service: Arc<AnnouncementAdminService>,
     pub payment_admin_service: Arc<PaymentAdminService>,
     /// Hot-swappable Stripe wiring (client + inbound webhook dispatcher),
@@ -114,6 +118,8 @@ impl ServiceContext {
     ) -> Self {
         let event_series_repo: Arc<dyn EventSeriesRepository> =
             Arc::new(SqliteEventSeriesRepository::new(db_pool.clone()));
+        let series_enrollment_repo: Arc<dyn SeriesEnrollmentRepository> =
+            Arc::new(SqliteSeriesEnrollmentRepository::new(db_pool.clone()));
         let recurring_event_service = Arc::new(RecurringEventService::new(
             event_repo.clone(),
             event_series_repo.clone(),
@@ -171,6 +177,7 @@ impl ServiceContext {
             payment_repo.clone(),
             member_repo.clone(),
             event_repo.clone(),
+            series_enrollment_repo.clone(),
             processed_events_repo.clone(),
             membership_type_service.clone(),
             integration_manager.clone(),
@@ -208,6 +215,14 @@ impl ServiceContext {
             event_repo.clone(),
             payment_repo.clone(),
             stripe_handle.clone(),
+            base_url.clone(),
+        ));
+
+        let series_enrollment_service = Arc::new(SeriesEnrollmentService::new(
+            event_repo.clone(),
+            series_enrollment_repo.clone(),
+            payment_repo.clone(),
+            stripe_handle.clone(),
             base_url,
         ));
 
@@ -220,6 +235,7 @@ impl ServiceContext {
         let payment_admin_service = Arc::new(PaymentAdminService::new(
             payment_repo.clone(),
             event_repo.clone(),
+            series_enrollment_repo.clone(),
             stripe_handle.clone(),
             audit_service.clone(),
             integration_manager.clone(),
@@ -264,6 +280,7 @@ impl ServiceContext {
             member_repo,
             event_repo,
             event_series_repo,
+            series_enrollment_repo,
             recurring_event_service,
             announcement_repo,
             payment_repo,
@@ -288,6 +305,7 @@ impl ServiceContext {
             member_service,
             event_admin_service,
             event_registration_service,
+            series_enrollment_service,
             announcement_admin_service,
             payment_admin_service,
             stripe_handle,

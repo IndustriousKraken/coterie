@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::{
     domain::{
         Event, EventType, EventVisibility, OccurrenceException, OccurrenceExceptionKind,
-        OccurrenceOverride, Recurrence,
+        OccurrenceOverride, Recurrence, SeriesPassPricing,
     },
     error::{AppError, Result},
     integrations::{IntegrationEvent, IntegrationManager},
@@ -58,6 +58,11 @@ pub struct CreateEventInput {
     /// Optional cutoff for series materialization. Ignored when
     /// `recurrence` is None.
     pub recurrence_until: Option<DateTime<Utc>>,
+    /// Series-pass price + class capacity + guest-enrollment toggle.
+    /// Ignored when `recurrence` is None (a one-off event has no series
+    /// to price). Defaults to free-and-uncapped, so a form that never
+    /// mentions passes behaves exactly as it did before they existed.
+    pub series_pricing: SeriesPassPricing,
 }
 
 /// Typed input for updating an event. Carries the editable subset of
@@ -151,6 +156,7 @@ impl EventAdminService {
                     rule,
                     template,
                     input.recurrence_until,
+                    input.series_pricing,
                     actor_id,
                 )
                 .await?;

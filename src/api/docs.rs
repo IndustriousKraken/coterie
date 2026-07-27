@@ -32,6 +32,7 @@ use crate::domain;
         handlers::public::calendar_feed,
         handlers::public::donate,
         handlers::public::register_for_event,
+        handlers::public::enroll_in_class,
         handlers::announcements::private_count,
     ),
     components(schemas(

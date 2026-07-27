@@ -10,17 +10,19 @@ successful repo write, using a centralized `audit_action(method, kind)`
 mapping that produces the action string. The mapping SHALL be, in order:
 
 - `(Waived, EventFee { .. })` → `"waive_event_fee"`
+- `(Waived, SeriesPass { .. })` → `"waive_series_pass"`
 - `(Waived, _)` → `"waive_dues"`
 - `(_, Membership)` → `"manual_payment"`
 - `(_, Donation { .. })` → `"manual_donation"`
 - `(_, EventFee { .. })` → `"manual_event_fee"`
+- `(_, SeriesPass { .. })` → `"manual_series_pass"`
 - `(_, Other)` → `"manual_other"`
 
-The event-fee arms SHALL precede the general `(Waived, _)` arm as shown, so a
-comped event seat audits as `"waive_event_fee"` rather than being absorbed by the
-dues-waiver arm. Every arm that existed before `EventFee` SHALL keep producing
-the same action string it produced before, so existing audit history and any
-queries over it remain meaningful.
+Every waived arm for a specific paid-events kind SHALL precede the general
+`(Waived, _)` arm as shown, so a comped class audits as `"waive_series_pass"`
+rather than being absorbed by the dues-waiver arm. Every arm that existed before
+a given kind was added SHALL keep producing the same action string it produced
+before, so existing audit history and any queries over it remain meaningful.
 
 Centralization SHALL prevent the four sites that previously duplicated this
 from drifting.
@@ -54,6 +56,19 @@ from drifting.
 - **WHEN** `record_manual` records a `(PaymentMethod::Waived,
   PaymentKind::EventFee { .. })` payment
 - **THEN** the emitted audit row SHALL have `action = "waive_event_fee"`; it
+  SHALL NOT be absorbed by the `(Waived, _)` arm and audited as `"waive_dues"`
+
+#### Scenario: At-the-door class payment audits as manual_series_pass
+
+- **WHEN** `record_manual` records a `(PaymentMethod::Manual,
+  PaymentKind::SeriesPass { .. })` payment
+- **THEN** the emitted audit row SHALL have `action = "manual_series_pass"`
+
+#### Scenario: Comped class enrollment audits as waive_series_pass, not waive_dues
+
+- **WHEN** `record_manual` records a `(PaymentMethod::Waived,
+  PaymentKind::SeriesPass { .. })` payment
+- **THEN** the emitted audit row SHALL have `action = "waive_series_pass"`; it
   SHALL NOT be absorbed by the `(Waived, _)` arm and audited as `"waive_dues"`
 
 ### Requirement: Membership-kind payments trigger dues-extension and reschedule (soft-fail)
@@ -124,7 +139,7 @@ All four entry points SHALL persist via `payment_repo.create(...)`. Direct `paym
 
 Why four, not three: `BillingService::process_scheduled_payment` doesn't fit `record_manual` (not operator-initiated) or the webhook path (no inbound event); and the historical backfill fits none of the three — it is neither operator-initiated, nor a live inbound event, nor a Coterie-initiated charge, but a bulk import of settled history. Like the member CSV import, it is INSERT-only, idempotent, and self-auditing, so it does not skip the audit trail the three-site rule exists to protect.
 
-**Pending placeholder rows are a distinct act from recording a payment.** The four entry points above govern **recording a payment** — writing or settling a row that represents money actually collected. Separately, a flow that *initiates* a Stripe charge SHALL be permitted to write a `Pending` placeholder row at initiation time, before any money has moved, so the eventual webhook can find the row by its Stripe id and settle it. This is pre-existing behavior, not a new allowance: the membership-checkout, donation-checkout, and saved-card donation flows all write such a row today at session/charge creation. Event-fee registration writes one on the same basis, whether initiated by a logged-in member or by an anonymous guest through the public registration endpoint — the payer's identity does not change what a placeholder is.
+**Pending placeholder rows are a distinct act from recording a payment.** The four entry points above govern **recording a payment** — writing or settling a row that represents money actually collected. Separately, a flow that *initiates* a Stripe charge SHALL be permitted to write a `Pending` placeholder row at initiation time, before any money has moved, so the eventual webhook can find the row by its Stripe id and settle it. This is pre-existing behavior, not a new allowance: the membership-checkout, donation-checkout, and saved-card donation flows all write such a row today at session/charge creation. Event-fee registration and series-pass enrollment write one on the same basis, whether initiated by a logged-in member or by an anonymous guest.
 
 A `Pending` placeholder SHALL NOT extend dues, dispatch integration events, or emit a payment audit row — it represents intent, not receipt. It SHALL become a recorded payment only by being settled through one of the four entry points above (in practice the webhook dispatcher), which is where the audit row and side effects fire. Because a placeholder carries no money and no side effects, permitting it does not reopen the audit-skipping hole the four-entry-point rule exists to close.
 

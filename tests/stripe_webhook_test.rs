@@ -148,6 +148,9 @@ async fn build_harness() -> Harness {
         payment_repo.clone(),
         member_repo.clone(),
         event_repo.clone(),
+        Arc::new(coterie::repository::SqliteSeriesEnrollmentRepository::new(
+            pool.clone(),
+        )),
         processed_events_repo,
         mt_service.clone(),
         integrations.clone(),

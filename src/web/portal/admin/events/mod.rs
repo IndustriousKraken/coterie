@@ -6,10 +6,12 @@
 //! re-exports below, so the module path `crate::web::portal::admin::events`
 //! is unchanged.
 
+mod enrollments;
 mod occurrences;
 mod roster;
 mod single;
 
+pub use enrollments::*;
 pub use occurrences::*;
 pub use roster::*;
 pub use single::*;

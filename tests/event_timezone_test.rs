@@ -105,6 +105,7 @@ fn single_input(start: NaiveDateTime, zone: &str) -> CreateEventInput {
         image_url: None,
         recurrence: None,
         recurrence_until: None,
+        series_pricing: Default::default(),
     }
 }
 

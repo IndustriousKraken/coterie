@@ -24,12 +24,13 @@ use crate::{
     error::{AppError, Result},
     payments::StripeClient,
     repository::{
-        AnnouncementRepository, DonationCampaignRepository, EventRepository, MemberRepository,
-        PaymentRepository,
+        AnnouncementRepository, DonationCampaignRepository, EventRepository, EventSeriesRepository,
+        MemberRepository, PaymentRepository,
     },
     service::{
         event_registration_service::{EventRegistrationService, RegistrationOutcome},
         membership_type_service::MembershipTypeService,
+        series_enrollment_service::SeriesEnrollmentService,
         settings_service::{stripe_keys, SettingsService, SignupMode},
     },
 };
@@ -1514,6 +1515,126 @@ pub async fn register_for_event(
                 "{}/events/{}/register?registered=1",
                 settings.server.base_url.trim_end_matches('/'),
                 event.id,
+            )
+        });
+        return Ok(axum::response::Redirect::to(&location).into_response());
+    }
+
+    Ok(Json(PublicEventRegisterResponse {
+        checkout_url,
+        status,
+        message,
+    })
+    .into_response())
+}
+
+/// `POST /public/series/:id/enroll` — an anonymous visitor buys a pass to
+/// a publicly-enrollable class.
+///
+/// The class-scope sibling of [`register_for_event`], with the identical
+/// protection order and for the identical reasons — this is an
+/// unauthenticated, money-moving, publicly-reachable endpoint:
+///
+///   1. CORS allowlist (the router's global layer),
+///   2. the per-IP `money_limiter` — BEFORE the provider, so a bursting
+///      IP can't burn the org's Turnstile quota,
+///   3. bot-challenge verification, fail-closed,
+///   4. the enrollability check (404, never 403),
+///   5. then, and only then, a place and a charge.
+///
+/// Nothing before step 5 writes state, so a rate-limited or
+/// challenge-failed request claims no place and creates no payment row.
+#[utoipa::path(
+    post,
+    path = "/public/series/{id}/enroll",
+    tag = "public",
+    request_body = PublicEventRegisterRequest,
+    responses(
+        (status = 200, description = "Place held; redirect the guest to `checkout_url`, or the \
+            enrollment is confirmed for a free class", body = PublicEventRegisterResponse),
+        (status = 400, description = "Invalid name or email, or the class is full"),
+        (status = 403, description = "Bot-challenge verification failed (fail-closed)"),
+        (status = 404, description = "No publicly enrollable class with this id"),
+        (status = 429, description = "Rate limited (per-IP money limiter)"),
+        (status = 503, description = "Payment processing not configured"),
+    ),
+)]
+#[allow(clippy::too_many_arguments)]
+pub async fn enroll_in_class(
+    State(settings): State<Arc<Settings>>,
+    State(money_limiter): State<MoneyLimiter>,
+    State(bot_challenge_verifier): State<Arc<dyn BotChallengeVerifier>>,
+    State(event_repo): State<Arc<dyn EventRepository>>,
+    State(series_repo): State<Arc<dyn EventSeriesRepository>>,
+    State(enrollment_service): State<Arc<SeriesEnrollmentService>>,
+    axum::extract::Path(series_id): axum::extract::Path<Uuid>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Response> {
+    let wants_html = is_form_encoded(&headers);
+    let request: PublicEventRegisterRequest = parse_body(&headers, &body)?;
+
+    // Rate limit FIRST, before the bot-challenge provider is consulted.
+    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
+    if !money_limiter.0.check_and_record(ip) {
+        return Err(AppError::TooManyRequests);
+    }
+
+    // Fail closed: when the org has configured a provider, every request
+    // must carry a token the provider verifies.
+    if bot_challenge_verifier
+        .verify(
+            "public/series/enroll",
+            request.captcha_token.as_deref(),
+            Some(ip),
+        )
+        .await
+        .is_err()
+    {
+        return Err(AppError::Forbidden);
+    }
+
+    // 404, not 403: a members-only class id and a nonexistent one must be
+    // indistinguishable. One home for the rule, shared with the page.
+    let (series, occurrences) = crate::web::templates::class_register::load_enrollable(
+        &*event_repo,
+        &*series_repo,
+        series_id,
+    )
+    .await
+    .ok_or_else(|| AppError::NotFound("Class not found".to_string()))?;
+
+    let title = occurrences
+        .first()
+        .map(|e| e.title.clone())
+        .unwrap_or_else(|| "Class".to_string());
+
+    let outcome = enrollment_service
+        .enroll_guest(&series, &title, &request.name, &request.email)
+        .await?;
+
+    let (checkout_url, status, message) = match outcome {
+        RegistrationOutcome::Checkout { url } => (
+            Some(url),
+            "checkout",
+            "Complete your payment to confirm your place.".to_string(),
+        ),
+        RegistrationOutcome::Registered => (
+            None,
+            "registered",
+            "You're enrolled — check your email for the details.".to_string(),
+        ),
+    };
+
+    if wants_html {
+        // A browser posted a form, so answer with navigation rather than
+        // JSON: Stripe for a paid place, back to the page for a free one
+        // (where the confirmed state is read from the database).
+        let location = checkout_url.unwrap_or_else(|| {
+            format!(
+                "{}/classes/{}/register?registered=1",
+                settings.server.base_url.trim_end_matches('/'),
+                series.id,
             )
         });
         return Ok(axum::response::Redirect::to(&location).into_response());

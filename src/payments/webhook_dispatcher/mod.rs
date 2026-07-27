@@ -26,7 +26,10 @@ use crate::{
     error::{AppError, Result},
     integrations::IntegrationManager,
     payments::gateway::StripeGateway,
-    repository::{EventRepository, MemberRepository, PaymentRepository, ProcessedEventsRepository},
+    repository::{
+        EventRepository, MemberRepository, PaymentRepository, ProcessedEventsRepository,
+        SeriesEnrollmentRepository,
+    },
     service::{
         audit_service::AuditService, billing_service::BillingService,
         membership_type_service::MembershipTypeService,
@@ -49,6 +52,9 @@ pub struct WebhookDispatcher {
     member_repo: Arc<dyn MemberRepository>,
     /// Event-fee completions and refunds move a seat, not just money.
     event_repo: Arc<dyn EventRepository>,
+    /// Series-pass completions and refunds move an enrollment (and, with
+    /// it, the attendance rows the enrollment materialized).
+    enrollment_repo: Arc<dyn SeriesEnrollmentRepository>,
     processed_events_repo: Arc<dyn ProcessedEventsRepository>,
     membership_type_service: Arc<MembershipTypeService>,
     integration_manager: Arc<IntegrationManager>,
@@ -63,6 +69,7 @@ impl WebhookDispatcher {
         payment_repo: Arc<dyn PaymentRepository>,
         member_repo: Arc<dyn MemberRepository>,
         event_repo: Arc<dyn EventRepository>,
+        enrollment_repo: Arc<dyn SeriesEnrollmentRepository>,
         processed_events_repo: Arc<dyn ProcessedEventsRepository>,
         membership_type_service: Arc<MembershipTypeService>,
         integration_manager: Arc<IntegrationManager>,
@@ -74,6 +81,7 @@ impl WebhookDispatcher {
             payment_repo,
             member_repo,
             event_repo,
+            enrollment_repo,
             processed_events_repo,
             membership_type_service,
             integration_manager,

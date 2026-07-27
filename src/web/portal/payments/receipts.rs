@@ -126,6 +126,7 @@ pub async fn receipts_page(
                             "Donation"
                         }
                         PaymentKind::EventFee { .. } => "Event fee",
+                        PaymentKind::SeriesPass { .. } => "Class pass",
                         PaymentKind::Other => "Other",
                     }
                     .to_string();
@@ -304,6 +305,10 @@ async fn build_receipt_template(
         // ("Event registration — Lockpicking 101"), which the receipt
         // renders alongside this label.
         PaymentKind::EventFee { .. } => "Event fee",
+        // The class itself is named in the payment description
+        // ("Class pass — Intro to Lockpicking"), which the receipt
+        // renders alongside this label.
+        PaymentKind::SeriesPass { .. } => "Class pass",
         PaymentKind::Other => "Other",
     }
     .to_string();

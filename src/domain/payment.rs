@@ -59,6 +59,18 @@ pub enum PaymentKind {
     /// — which arrives with a payment id and nothing else — can reach
     /// the seat it has to release without a side lookup table.
     EventFee { event_id: Uuid },
+    /// A single payment buying enrollment in every remaining occurrence
+    /// of a bounded recurring series. Confirms the payer's enrollment
+    /// when it completes, and triggers no dues extension.
+    ///
+    /// A sibling of [`PaymentKind::EventFee`] rather than a
+    /// generalization of it: one seat at one night and a pass to a whole
+    /// course are different products with different refund and capacity
+    /// rules, and two variants keep every match site explicit. The series
+    /// id lives on the variant for the same reason the event id does —
+    /// a `charge.refunded` webhook arrives with a payment id and nothing
+    /// else, and the enrollment has to be reachable from it.
+    SeriesPass { series_id: Uuid },
     /// Free-form bucket — merch, or anything that's neither dues, a
     /// donation, nor an event fee. No automatic side-effects.
     Other,
@@ -72,6 +84,7 @@ impl PaymentKind {
             PaymentKind::Membership => "membership",
             PaymentKind::Donation { .. } => "donation",
             PaymentKind::EventFee { .. } => "event_fee",
+            PaymentKind::SeriesPass { .. } => "series_pass",
             PaymentKind::Other => "other",
         }
     }
@@ -90,6 +103,15 @@ impl PaymentKind {
     pub fn event_id(&self) -> Option<Uuid> {
         match self {
             PaymentKind::EventFee { event_id } => Some(*event_id),
+            _ => None,
+        }
+    }
+
+    /// The series id, if this is a `SeriesPass`. Mirrors
+    /// [`PaymentKind::event_id`] for the enrollment-release paths.
+    pub fn series_id(&self) -> Option<Uuid> {
+        match self {
+            PaymentKind::SeriesPass { series_id } => Some(*series_id),
             _ => None,
         }
     }

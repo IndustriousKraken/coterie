@@ -145,6 +145,34 @@ impl WebhookDispatcher {
                 .await;
         }
 
+        // A refunded class pass cancels the enrollment and the attendance
+        // rows for sessions that haven't started. Past sessions keep their
+        // rows: they record who was there, and a later financial event
+        // doesn't get to rewrite that.
+        if let Some(series_id) = payment.kind.series_id() {
+            crate::service::series_enrollment_service::cancel_enrollment_for_payment(
+                &*self.enrollment_repo,
+                &*self.event_repo,
+                payment.id,
+            )
+            .await?;
+            self.audit_service
+                .log(
+                    None,
+                    "series_enrollment_refunded",
+                    "event_series",
+                    &series_id.to_string(),
+                    None,
+                    Some(&format!(
+                        "${:.2} refunded via Stripe dashboard — payment {}",
+                        payment.amount_cents as f64 / 100.0,
+                        payment.id,
+                    )),
+                    Some(super::STRIPE_WEBHOOK_SOURCE),
+                )
+                .await;
+        }
+
         tracing::info!(
             "Synced refund from Stripe dashboard: payment {} marked Refunded (charge {})",
             payment.id,

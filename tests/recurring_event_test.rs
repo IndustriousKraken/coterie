@@ -186,6 +186,7 @@ async fn weekly_creates_about_52_occurrences() {
             rule,
             template(h.creator, anchor),
             None,
+            Default::default(),
             h.creator,
         )
         .await
@@ -244,6 +245,7 @@ async fn until_date_caps_materialization() {
             rule,
             template(h.creator, anchor),
             Some(until),
+            Default::default(),
             h.creator,
         )
         .await
@@ -286,6 +288,7 @@ async fn extend_horizon_adds_missing_tail() {
             rule,
             template(h.creator, anchor),
             Some(initial_until),
+            Default::default(),
             h.creator,
         )
         .await
@@ -348,6 +351,7 @@ async fn extend_horizon_respects_until_date() {
             rule,
             template(h.creator, anchor),
             Some(until),
+            Default::default(),
             h.creator,
         )
         .await
@@ -396,6 +400,7 @@ async fn update_series_occurrences_from_only_touches_future_rows() {
             rule,
             template(h.creator, anchor),
             Some(weeks_after_anchor(8)),
+            Default::default(),
             h.creator,
         )
         .await
@@ -456,6 +461,7 @@ async fn delete_one_occurrence_leaves_siblings_intact() {
             rule,
             template(h.creator, anchor),
             Some(weeks_after_anchor(8)),
+            Default::default(),
             h.creator,
         )
         .await
@@ -502,6 +508,7 @@ async fn end_series_after_date_deletes_future_only() {
             rule,
             template(h.creator, anchor),
             Some(weeks_after_anchor(52)),
+            Default::default(),
             h.creator,
         )
         .await
@@ -565,6 +572,7 @@ async fn delete_series_cascades_to_occurrences() {
             rule,
             template(h.creator, anchor),
             Some(weeks_after_anchor(30)),
+            Default::default(),
             h.creator,
         )
         .await
@@ -605,6 +613,7 @@ async fn second_wednesday_materializes_correctly() {
             rule,
             template(h.creator, anchor),
             Some(until),
+            Default::default(),
             h.creator,
         )
         .await
@@ -638,6 +647,7 @@ async fn extend_horizon_for_active_series_processes_every_series() {
                 },
                 template(h.creator, anchor),
                 Some(weeks_after_anchor(8)),
+                Default::default(),
                 h.creator,
             )
             .await

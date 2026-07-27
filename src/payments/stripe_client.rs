@@ -291,6 +291,87 @@ impl StripeClient {
         Ok((session.url, payment_id))
     }
 
+    /// Build a Stripe Checkout session for a pass to one recurring class,
+    /// for a member or a guest.
+    ///
+    /// The series-scope sibling of
+    /// [`Self::create_event_fee_checkout_session`]: metadata carries
+    /// `payment_type=series_pass` + `series_id` so the webhook dispatcher
+    /// branches explicitly, and the session expires in 60 minutes for the
+    /// same reason — an abandoned checkout holds a place in the class
+    /// until Stripe fires `checkout.session.expired`.
+    ///
+    /// The `Pending` row written here is a placeholder, not a recorded
+    /// payment — no dues, no integration events, no audit row. It becomes
+    /// a recorded payment only when the completion webhook settles it.
+    pub async fn create_series_pass_checkout_session(
+        &self,
+        payer: &Payer,
+        series_id: Uuid,
+        class_title: &str,
+        amount_cents: i64,
+        success_url: String,
+        cancel_url: String,
+    ) -> Result<(String, Uuid)> {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("payment_type".to_string(), "series_pass".to_string());
+        metadata.insert("series_id".to_string(), series_id.to_string());
+        match payer {
+            Payer::Member(member_id) => {
+                metadata.insert("member_id".to_string(), member_id.to_string());
+            }
+            Payer::PublicDonor { name, email } => {
+                metadata.insert("guest_name".to_string(), name.clone());
+                metadata.insert("guest_email".to_string(), email.clone());
+            }
+        }
+
+        // Names the class, so the Stripe line item and the Coterie receipt
+        // both say what was bought.
+        let description = format!("Class pass — {}", class_title);
+
+        let session = self
+            .gateway
+            .create_checkout_session(CreateCheckoutInput {
+                success_url,
+                cancel_url,
+                line_items: vec![LineItemInput {
+                    amount_cents,
+                    product_name: class_title.to_string(),
+                    product_description: Some(description.clone()),
+                }],
+                metadata,
+                client_reference_id: payer.member_id().map(|id| id.to_string()),
+                customer_email: match payer {
+                    Payer::Member(_) => None,
+                    Payer::PublicDonor { email, .. } => Some(email.clone()),
+                },
+                customer_id: None,
+                save_card_for_offsession: false,
+                expires_at: Some((Utc::now() + chrono::Duration::minutes(60)).timestamp()),
+            })
+            .await?;
+
+        let payment_id = Uuid::new_v4();
+        let payment = Payment {
+            id: payment_id,
+            payer: payer.clone(),
+            amount_cents,
+            currency: "USD".to_string(),
+            status: PaymentStatus::Pending,
+            payment_method: PaymentMethod::Stripe,
+            external_id: Some(StripeRef::CheckoutSession(session.session_id)),
+            description,
+            kind: PaymentKind::SeriesPass { series_id },
+            paid_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        self.payment_repo.create(payment).await?;
+
+        Ok((session.url, payment_id))
+    }
+
     /// Donation Checkout for a public (non-member) donor. The donor's
     /// name and email come from the public form, not from a logged-in
     /// session. Stripe collects card + billing details on the hosted

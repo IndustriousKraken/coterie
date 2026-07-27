@@ -68,6 +68,12 @@ use crate::{
 ///   challenge, in that order, and it only ever serves `Public`
 ///   events that have guest registration enabled.
 ///
+/// * **`POST /public/series/:id/enroll`** — public paid-class
+///   enrollment. Same session-less anonymous caller as the event
+///   endpoint above, gated the same way and further constrained to
+///   series whose occurrences are `Public` and whose guest enrollment
+///   is enabled.
+///
 /// * **`POST /login`** — the browser portal login form
 ///   (`templates/auth/login.html`) posts here; no `session` cookie
 ///   exists yet to bind a CSRF token to. Gated by the per-IP login
@@ -121,6 +127,9 @@ const CSRF_EXEMPT_PATHS: &[(&str, &str)] = &[
     // and further constrained to `Public`-visibility events that have
     // guest registration enabled.
     ("POST", "/public/events/:id/register"),
+    // Public class enrollment — same session-less caller, same
+    // protections in the same order, at series scope.
+    ("POST", "/public/series/:id/enroll"),
     // Browser portal web-auth forms: the caller has no `session`
     // cookie yet (these endpoints exist to authenticate or first-
     // provision them), so there is no session id to bind a CSRF token

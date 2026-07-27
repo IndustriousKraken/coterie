@@ -135,6 +135,69 @@ impl WebhookDispatcher {
             return Ok(());
         }
 
+        if payment_type_str == "series_pass" {
+            // Same shape as the event-fee branch above, at series scope: a
+            // pass has no dues post-work that a failure could strand, so
+            // flip first and guard every side effect behind `won_flip` —
+            // a Stripe redelivery (or the loser of a race) does none of
+            // them a second time.
+            let won_flip = self
+                .payment_repo
+                .complete_pending_payment(payment.id, &pi_for_row)
+                .await?;
+            if !won_flip {
+                tracing::debug!(
+                    "checkout.session.completed series_pass for payment {} already Completed; \
+                     skipping (Stripe retry)",
+                    payment.id,
+                );
+                return Ok(());
+            }
+
+            // Confirming the enrollment is also what materializes the
+            // attendance rows for every occurrence that hasn't started.
+            crate::service::series_enrollment_service::confirm_enrollment_for_payment(
+                &*self.enrollment_repo,
+                &*self.event_repo,
+                payment.id,
+            )
+            .await?;
+
+            // Deliberately NOT extending dues and NOT rescheduling
+            // auto-renew: a class pass buys sessions, not a membership.
+            self.audit_service
+                .log(
+                    None,
+                    "series_enrollment_paid",
+                    "event_series",
+                    &payment
+                        .kind
+                        .series_id()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    None,
+                    Some(&format!(
+                        "${:.2} — {} — payment {}",
+                        payment.amount_cents as f64 / 100.0,
+                        match &payment.payer {
+                            Payer::Member(id) => format!("member {}", id),
+                            Payer::PublicDonor { email, .. } => format!("guest {}", email),
+                        },
+                        payment.id,
+                    )),
+                    Some(super::STRIPE_WEBHOOK_SOURCE),
+                )
+                .await;
+
+            tracing::info!(
+                "Series pass completed: payment={} series={:?} payer={:?}",
+                payment.id,
+                payment.kind.series_id(),
+                payment.payer,
+            );
+            return Ok(());
+        }
+
         if payment_type_str == "donation" {
             // Donations have no dues post-work, so flip-first is correct
             // and cannot strand anything. complete_pending_payment only

@@ -18,6 +18,8 @@ use crate::{
     web::templates::{BaseContext, HtmlTemplate},
 };
 
+use super::RosterRow;
+
 // =====================================================================
 // Per-occurrence exception handlers
 //
@@ -350,11 +352,32 @@ pub struct AdminEventSeriesDetailTemplate {
     pub base: BaseContext,
     pub series_id: String,
     pub rows: Vec<OccurrenceRowInfo>,
+    /// Pass pricing as the form wants it — dollars, blank for free, so
+    /// the field renders empty rather than "0".
+    pub member_price_input: String,
+    pub guest_price_input: String,
+    pub capacity_input: String,
+    pub guest_registration_enabled: bool,
+    /// True when the series has no end date, which is what makes a pass
+    /// price illegal. The form says so instead of only rejecting on save.
+    pub is_open_ended: bool,
+    /// True when a pass costs a member money — drives the roster's
+    /// money-state columns.
+    pub is_paid_class: bool,
+    /// Who bought a pass, with their payment state. Empty for a class
+    /// nobody has enrolled in.
+    pub enrollments: Vec<RosterRow>,
+    /// The shareable public class-registration URL, or `None` when the
+    /// class isn't publicly enrollable.
+    pub registration_url: Option<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn admin_event_series_detail_page(
+    State(settings): State<Arc<crate::config::Settings>>,
     State(event_repo): State<Arc<dyn EventRepository>>,
     State(event_series_repo): State<Arc<dyn EventSeriesRepository>>,
+    State(enrollment_repo): State<Arc<dyn crate::repository::SeriesEnrollmentRepository>>,
     State(csrf_service): State<Arc<CsrfService>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
@@ -422,10 +445,63 @@ pub async fn admin_event_series_detail_page(
     }
     rows.sort_by_key(|r| r.occurrence_index);
 
+    // The series row carries the pass pricing; a missing row means the
+    // page is being asked about a series that no longer exists, which
+    // renders as a free, empty class rather than a 500.
+    let series = event_series_repo.find_by_id(sid).await.ok().flatten();
+    let pricing = series
+        .as_ref()
+        .map(|s| s.pricing())
+        .unwrap_or_else(Default::default);
+    let is_open_ended = series.as_ref().is_none_or(|s| s.until_date.is_none());
+    // One home for the enrollability rule (`EventSeries::publicly_enrollable`),
+    // so this page can't disagree with the public one about whether a URL
+    // exists.
+    let registration_url = series
+        .as_ref()
+        .zip(series_events.first())
+        .filter(|(s, occ)| s.publicly_enrollable(occ))
+        .map(|(s, _)| {
+            format!(
+                "{}/classes/{}/register",
+                settings.server.base_url.trim_end_matches('/'),
+                s.id,
+            )
+        });
+
+    let enrollments: Vec<RosterRow> = enrollment_repo
+        .roster(sid)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(RosterRow::from_entry)
+        .collect();
+
     HtmlTemplate(AdminEventSeriesDetailTemplate {
         base,
         series_id,
         rows,
+        member_price_input: dollars_or_blank(pricing.member_price_cents),
+        guest_price_input: dollars_or_blank(pricing.guest_price_cents),
+        capacity_input: pricing
+            .max_enrollments
+            .map(|c| c.to_string())
+            .unwrap_or_default(),
+        guest_registration_enabled: pricing.guest_registration_enabled,
+        is_open_ended,
+        is_paid_class: pricing.is_paid_class(),
+        enrollments,
+        registration_url,
     })
     .into_response()
+}
+
+/// Dollars for a form field, or an empty string for a free class — a `0`
+/// in a price box reads like a set price rather than an absent one.
+fn dollars_or_blank(cents: i64) -> String {
+    if cents > 0 {
+        format!("{:.2}", cents as f64 / 100.0)
+    } else {
+        String::new()
+    }
 }

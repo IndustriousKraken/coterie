@@ -13,8 +13,11 @@ use crate::{
     api::middleware::auth::{CurrentUser, SessionInfo},
     auth::CsrfService,
     domain::{AttendanceStatus, Attendee},
-    repository::EventRepository,
-    service::event_registration_service::{EventRegistrationService, RegistrationOutcome},
+    repository::{EventRepository, EventSeriesRepository, SeriesEnrollmentRepository},
+    service::{
+        event_registration_service::{EventRegistrationService, RegistrationOutcome},
+        series_enrollment_service::SeriesEnrollmentService,
+    },
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -47,6 +50,8 @@ pub struct EventsListQuery {
 
 pub async fn events_list_api(
     State(event_repo): State<Arc<dyn EventRepository>>,
+    State(series_repo): State<Arc<dyn EventSeriesRepository>>,
+    State(enrollment_repo): State<Arc<dyn SeriesEnrollmentRepository>>,
     Extension(current_user): Extension<CurrentUser>,
     Query(query): Query<EventsListQuery>,
 ) -> impl IntoResponse {
@@ -105,6 +110,11 @@ pub async fn events_list_api(
     let mut html = String::new();
     html.push_str(r#"<div class="space-y-4">"#);
 
+    // One lookup per series, not per occurrence: a six-week class shows up
+    // six times in this list and its pass price is the same every time.
+    let mut class_cache: std::collections::HashMap<Uuid, Option<ClassOffer>> =
+        std::collections::HashMap::new();
+
     for event in filtered_events {
         let is_past = event.start_utc() <= now;
         // Label the wall-clock with the event's zone so a remote member
@@ -127,14 +137,51 @@ pub async fn events_list_api(
             .ok()
             .flatten();
 
-        let rsvp_button = if is_past {
-            String::new()
-        } else {
-            render_rsvp_button(
+        // A paid class is bought once, at series scope, so this occurrence
+        // offers an enroll control instead of a per-night RSVP. The two
+        // never both apply: the class pass IS the registration.
+        let class_offer = match event.series_id {
+            Some(series_id) if !is_past => {
+                let offer = match class_cache.get(&series_id) {
+                    Some(cached) => cached.clone(),
+                    None => {
+                        let fresh = match series_repo.find_by_id(series_id).await.ok().flatten() {
+                            Some(series) if series.is_paid_class() => Some(ClassOffer {
+                                price_cents: series.member_price_cents,
+                                enrolled: matches!(
+                                    enrollment_repo
+                                        .find(series_id, &Attendee::Member(member_id))
+                                        .await
+                                        .ok()
+                                        .flatten()
+                                        .map(|e| e.status),
+                                    Some(AttendanceStatus::Registered)
+                                        | Some(AttendanceStatus::PendingPayment)
+                                ),
+                            }),
+                            _ => None,
+                        };
+                        class_cache.insert(series_id, fresh.clone());
+                        fresh
+                    }
+                };
+                offer.map(|o| (series_id, o))
+            }
+            _ => None,
+        };
+
+        let rsvp_button = match (&class_offer, is_past) {
+            (_, true) => String::new(),
+            (Some((series_id, offer)), _) => render_class_enroll_button(
+                &series_id.to_string(),
+                offer.price_cents,
+                offer.enrolled,
+            ),
+            (None, _) => render_rsvp_button(
                 &event.id.to_string(),
                 rsvp_status.as_ref(),
                 event.member_price_cents,
-            )
+            ),
         };
 
         let image_html = event.image_url.as_ref().map(|url| {
@@ -184,6 +231,53 @@ pub async fn events_list_api(
 
     html.push_str("</div>");
     axum::response::Html(html)
+}
+
+/// What a paid class costs this member, and whether they already hold a
+/// pass. Cached per series while rendering the list.
+#[derive(Clone)]
+struct ClassOffer {
+    price_cents: i64,
+    /// True for a confirmed OR in-flight enrollment — both mean "don't
+    /// offer to sell them the class again".
+    enrolled: bool,
+}
+
+/// The enroll control for one occurrence of a paid class. The label names
+/// the price so a member knows what the button costs before clicking, and
+/// says "class" so they know it buys every session, not this night.
+///
+/// Self-wrapped in `<div class="text-right">` like every RSVP fragment,
+/// so repeated swaps keep resolving `hx-target="closest div.text-right"`.
+pub(crate) fn render_class_enroll_button(
+    series_id: &str,
+    price_cents: i64,
+    enrolled: bool,
+) -> String {
+    if enrolled {
+        return r#"<div class="text-right">
+                    <div class="flex flex-col items-end gap-2">
+                        <span class="text-sm text-green-600 font-medium">You're enrolled in this class</span>
+                        <span class="text-xs text-gray-500">Need a refund? Contact an organizer.</span>
+                    </div>
+                </div>"#
+            .to_string();
+    }
+    format!(
+        r#"<div class="text-right">
+                    <div class="flex flex-col items-end gap-2">
+                        <button hx-post="/portal/api/series/{}/enroll"
+                                hx-swap="outerHTML"
+                                hx-target="closest div.text-right"
+                                class="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
+                            Enroll in the class — ${:.2}
+                        </button>
+                        <span class="text-xs text-gray-500">One payment covers every remaining session.</span>
+                    </div>
+                </div>"#,
+        series_id,
+        price_cents as f64 / 100.0,
+    )
 }
 
 /// Render the appropriate RSVP button based on current status.
@@ -383,6 +477,74 @@ pub async fn rsvp_event(
     }
 }
 
+/// Enroll the current member in a paid class.
+///
+/// The series-scope sibling of [`rsvp_event`], and the same contract: a
+/// Checkout URL comes back as an `HX-Redirect` so HTMX sends the browser
+/// to Stripe, and the member is not enrolled until the completion webhook
+/// says so.
+pub async fn enroll_in_series(
+    State(series_repo): State<Arc<dyn EventSeriesRepository>>,
+    State(event_repo): State<Arc<dyn EventRepository>>,
+    State(enrollment_service): State<Arc<SeriesEnrollmentService>>,
+    Extension(current_user): Extension<CurrentUser>,
+    Path(series_id): Path<Uuid>,
+) -> Response {
+    let sid = series_id.to_string();
+    let series = match series_repo.find_by_id(series_id).await {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return axum::response::Html(render_class_error(&sid, 0, false, "Class not found"))
+                .into_response()
+        }
+        Err(e) => {
+            return axum::response::Html(render_class_error(&sid, 0, false, &e.to_string()))
+                .into_response()
+        }
+    };
+    let price = series.member_price_cents;
+    // The series row has no title; the class is named by its occurrences.
+    let title =
+        crate::service::series_enrollment_service::class_title(&*event_repo, series_id).await;
+
+    match enrollment_service
+        .enroll(&current_user.member, &series, &title)
+        .await
+    {
+        Ok(RegistrationOutcome::Registered) => {
+            axum::response::Html(render_class_enroll_button(&sid, price, true)).into_response()
+        }
+        Ok(RegistrationOutcome::Checkout { url }) => (
+            [("HX-Redirect", url)],
+            // The body reports the held state so a non-HTMX client still
+            // sees something true.
+            axum::response::Html(render_class_enroll_button(&sid, price, true)),
+        )
+            .into_response(),
+        Err(e) => {
+            // Enrollment failed: state is unchanged, so re-render the
+            // enroll button (a working retry) alongside the error.
+            axum::response::Html(render_class_error(&sid, price, false, &e.to_string()))
+                .into_response()
+        }
+    }
+}
+
+/// Class-enroll error fragment. Same shape as [`render_rsvp_error`] and
+/// for the same reason: the error shares the `div.text-right` wrapper the
+/// buttons target, so a failure doesn't strand the member with a
+/// buttonless message only a page refresh can clear.
+fn render_class_error(series_id: &str, price_cents: i64, enrolled: bool, error: &str) -> String {
+    render_class_enroll_button(series_id, price_cents, enrolled).replacen(
+        r#"<div class="text-right">"#,
+        &format!(
+            r#"<div class="text-right"><p class="text-red-600 text-sm mb-2">Error: {}</p>"#,
+            crate::web::escape_html(error)
+        ),
+        1,
+    )
+}
+
 /// Handle cancel RSVP
 pub async fn cancel_rsvp_event(
     State(event_repo): State<Arc<dyn EventRepository>>,
@@ -451,6 +613,31 @@ mod tests {
         repository::{MemberRepository, SqliteEventRepository, SqliteMemberRepository},
     };
 
+    /// The three repositories `events_list_api` extracts, without
+    /// standing up the whole `AppState` for one fragment test.
+    #[derive(Clone)]
+    struct ListState {
+        event_repo: Arc<dyn EventRepository>,
+        series_repo: Arc<dyn EventSeriesRepository>,
+        enrollment_repo: Arc<dyn SeriesEnrollmentRepository>,
+    }
+
+    impl axum::extract::FromRef<ListState> for Arc<dyn EventRepository> {
+        fn from_ref(s: &ListState) -> Self {
+            s.event_repo.clone()
+        }
+    }
+    impl axum::extract::FromRef<ListState> for Arc<dyn EventSeriesRepository> {
+        fn from_ref(s: &ListState) -> Self {
+            s.series_repo.clone()
+        }
+    }
+    impl axum::extract::FromRef<ListState> for Arc<dyn SeriesEnrollmentRepository> {
+        fn from_ref(s: &ListState) -> Self {
+            s.enrollment_repo.clone()
+        }
+    }
+
     async fn migrated_pool() -> sqlx::SqlitePool {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
@@ -517,7 +704,15 @@ mod tests {
         let app = Router::new()
             .route("/portal/api/events/list", get(events_list_api))
             .layer(Extension(CurrentUser { member }))
-            .with_state(event_repo);
+            .with_state(ListState {
+                event_repo,
+                series_repo: Arc::new(crate::repository::SqliteEventSeriesRepository::new(
+                    pool.clone(),
+                )),
+                enrollment_repo: Arc::new(
+                    crate::repository::SqliteSeriesEnrollmentRepository::new(pool.clone()),
+                ),
+            });
 
         let resp = app
             .oneshot(
