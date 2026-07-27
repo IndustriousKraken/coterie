@@ -505,3 +505,56 @@ fn dollars_or_blank(cents: i64) -> String {
         String::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A guest name with a double-quote in it must survive to the release
+    /// control. It can't ride in `hx-vals`: the browser decodes the
+    /// attribute's `&quot;` back to `"` before HTMX parses the JSON, so
+    /// the vals are unparseable and the button does nothing. As a form
+    /// value the same escaping is exactly right.
+    #[test]
+    fn release_control_survives_a_quoted_guest_name() {
+        let row = RosterRow {
+            member_id: String::new(),
+            guest_name: r#"John "The Man" Doe"#.to_string(),
+            guest_email: "john@example.com".to_string(),
+            is_guest: true,
+            name: r#"John "The Man" Doe"#.to_string(),
+            email: "john@example.com".to_string(),
+            status: "PendingPayment".to_string(),
+            payment_state: "Awaiting payment".to_string(),
+            amount_display: "$120.00".to_string(),
+            is_pending_payment: true,
+            refundable_payment_id: String::new(),
+        };
+        let html = AdminEventSeriesDetailTemplate {
+            base: BaseContext::for_anon(),
+            series_id: "s1".to_string(),
+            rows: vec![],
+            member_price_input: String::new(),
+            guest_price_input: String::new(),
+            capacity_input: String::new(),
+            guest_registration_enabled: false,
+            is_open_ended: false,
+            is_paid_class: true,
+            enrollments: vec![row],
+            registration_url: None,
+        }
+        .render()
+        .unwrap();
+
+        assert!(
+            !html.contains("hx-vals"),
+            "identity must travel as form fields, not JSON in an attribute",
+        );
+        assert!(
+            html.contains(
+                r#"<input type="hidden" name="guest_name" value="John &quot;The Man&quot; Doe">"#
+            ),
+            "the quoted name should be attribute-escaped in a hidden input:\n{html}",
+        );
+    }
+}

@@ -116,14 +116,23 @@
                         <td class="px-3 py-2 text-sm text-gray-700">{{ row.amount_display }}</td>
                         <td class="px-3 py-2 text-right text-sm space-x-1">
                             {% if row.is_pending_payment %}
-                            <button type="button"
-                                    class="px-2 py-1 text-xs text-gray-700 border border-gray-300 rounded hover:bg-gray-50"
-                                    hx-post="/portal/admin/events/series/{{ series_id }}/enrollments/release"
-                                    hx-vals='{"member_id": "{{ row.member_id }}", "guest_name": "{{ row.guest_name }}", "guest_email": "{{ row.guest_email }}"}'
-                                    hx-target="#enrollment-result" hx-swap="innerHTML"
-                                    hx-headers='{"X-CSRF-Token": "{{ base.csrf_token }}"}'>
-                                Release
-                            </button>
+                            {# Hidden inputs, not hx-vals: a guest name containing a
+                               double-quote survives HTML attribute escaping as a form
+                               value, but would break the JSON hx-vals has to parse.
+                               Same shape as the single-event roster's release form. #}
+                            <form hx-post="/portal/admin/events/series/{{ series_id }}/enrollments/release"
+                                  hx-target="#enrollment-result" hx-swap="innerHTML"
+                                  hx-confirm="Release this held place? No refund is issued."
+                                  hx-headers='{"X-CSRF-Token": "{{ base.csrf_token }}"}'
+                                  class="inline">
+                                <input type="hidden" name="member_id" value="{{ row.member_id }}">
+                                <input type="hidden" name="guest_name" value="{{ row.guest_name }}">
+                                <input type="hidden" name="guest_email" value="{{ row.guest_email }}">
+                                <button type="submit"
+                                        class="px-2 py-1 text-xs text-gray-700 border border-gray-300 rounded hover:bg-gray-50">
+                                    Release
+                                </button>
+                            </form>
                             {% endif %}
                             {% if !row.refundable_payment_id.is_empty() %}
                             <button type="button"
