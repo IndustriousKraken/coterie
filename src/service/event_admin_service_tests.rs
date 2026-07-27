@@ -117,6 +117,8 @@ fn single_input(start: DateTime<Utc>, visibility: EventVisibility) -> CreateEven
         max_attendees: None,
         rsvp_required: false,
         member_price_cents: 0,
+        guest_price_cents: 0,
+        guest_registration_enabled: false,
         image_url: None,
         recurrence: None,
         recurrence_until: None,
@@ -248,6 +250,8 @@ fn update_input_from(event: &Event) -> UpdateEventInput {
         max_attendees: event.max_attendees,
         rsvp_required: event.rsvp_required,
         member_price_cents: 0,
+        guest_price_cents: 0,
+        guest_registration_enabled: false,
         image_url: event.image_url.clone(),
     }
 }
@@ -1242,6 +1246,8 @@ async fn update_one_errors_when_event_id_not_found() {
         max_attendees: None,
         rsvp_required: false,
         member_price_cents: 0,
+        guest_price_cents: 0,
+        guest_registration_enabled: false,
         image_url: None,
     };
 

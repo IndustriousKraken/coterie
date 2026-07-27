@@ -685,6 +685,28 @@ impl Notifications {
     /// error is logged, not propagated, so email trouble can't roll back
     /// a payment. The one-time history backfill deliberately does NOT
     /// call this.
+    /// Email a guest their event-registration confirmation with the
+    /// amount paid as its receipt. Same gating and never-fails-the-caller
+    /// contract as [`Self::send_payment_receipt`] — see
+    /// [`dispatch_guest_event_confirmation`].
+    pub async fn send_guest_event_confirmation(
+        &self,
+        to_email: &str,
+        to_name: &str,
+        event: &crate::domain::Event,
+        payment: &Payment,
+    ) {
+        dispatch_guest_event_confirmation(
+            &self.email_sender,
+            &self.settings_service,
+            to_email,
+            to_name,
+            event,
+            Some(payment),
+        )
+        .await;
+    }
+
     pub async fn send_payment_receipt(&self, to_email: &str, to_name: &str, payment: &Payment) {
         dispatch_payment_receipt(
             &self.email_sender,
@@ -695,6 +717,88 @@ impl Notifications {
             payment,
         )
         .await;
+    }
+}
+
+/// Render + send a guest's event-registration confirmation, gated on a
+/// configured email provider exactly as [`dispatch_payment_receipt`] is.
+///
+/// A guest has no portal account, so this email is their only artifact of
+/// the registration. `paid` carries the amount when money actually moved,
+/// which turns the email into a receipt as well; a free registration
+/// passes `None` and gets no receipt block.
+///
+/// Standalone (not a method) so both confirmation sites can call it: the
+/// completion webhook for a paid seat, and the public registration
+/// handler for a free one, which is confirmed inline.
+pub async fn dispatch_guest_event_confirmation(
+    email_sender: &Arc<dyn EmailSender>,
+    settings_service: &SettingsService,
+    to_email: &str,
+    to_name: &str,
+    event: &crate::domain::Event,
+    paid: Option<&crate::domain::Payment>,
+) {
+    use crate::email::{
+        self,
+        templates::{EventRegistrationHtml, EventRegistrationText},
+    };
+
+    // Gate: a `log`-mode sink is a dev no-op, not a real provider. A
+    // missing provider skips the send silently — the seat still stands.
+    if !settings_service.is_email_configured().await {
+        return;
+    }
+
+    let org_name = settings_service
+        .get_value("org.name")
+        .await
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Coterie".to_string());
+
+    // Render the event's own wall-clock in its own zone, labeled — the
+    // same treatment the reminder email gives it, so a guest in another
+    // timezone isn't misled about when to show up.
+    let event_start = format!(
+        "{} {}",
+        event.start_time.format("%A, %B %-d, %Y at %-I:%M %p"),
+        event.zone_abbr(),
+    );
+    let amount = paid.map(|p| format!("${:.2}", p.amount_cents as f64 / 100.0));
+    let receipt_id = paid.map(|p| p.id.to_string()).unwrap_or_default();
+
+    let html = EventRegistrationHtml {
+        full_name: to_name,
+        org_name: &org_name,
+        event_title: &event.title,
+        event_start: &event_start,
+        event_location: event.location.as_deref(),
+        amount_paid: amount.as_deref(),
+        receipt_id: &receipt_id,
+    };
+    let text = EventRegistrationText {
+        full_name: to_name,
+        org_name: &org_name,
+        event_title: &event.title,
+        event_start: &event_start,
+        event_location: event.location.as_deref(),
+        amount_paid: amount.as_deref(),
+        receipt_id: &receipt_id,
+    };
+    let subject = format!("You're registered: {}", event.title);
+
+    match email::message_from_templates(to_email.to_string(), subject, &html, &text) {
+        Ok(message) => {
+            if let Err(e) = email_sender.send(&message).await {
+                tracing::error!(
+                    "Couldn't email event-registration confirmation to {}: {}",
+                    to_email,
+                    e,
+                );
+            }
+        }
+        Err(e) => tracing::error!("Couldn't render event-registration email: {}", e),
     }
 }
 

@@ -205,6 +205,7 @@ listing; `GET /health` is the health check.
 | `/portal/events` | View and RSVP to events |
 | `/portal/payments` | Payment history and receipts |
 | `/portal/admin/*` | Admin: members, events, announcements, payments, settings, audit |
+| `/events/:id/register` | Public, shareable guest registration page (no login) |
 
 **Public API** (`/public/*`, for your website):
 
@@ -212,7 +213,8 @@ listing; `GET /health` is the health check.
 |----------|-------------|
 | `POST /public/signup` | Register a new member |
 | `POST /public/donate` | One-time donation (returns a Stripe Checkout URL) |
-| `GET /public/events` | Public events (JSON or iCal) |
+| `POST /public/events/:id/register` | Guest (non-member) event registration — free, or a Stripe Checkout URL |
+| `GET /public/events` | Public events (JSON or iCal); a registerable event carries `registration_url` + `guest_price_cents` |
 | `GET /public/announcements` | Public announcements |
 | `GET /public/feed/rss` | RSS feed |
 | `GET /public/feed/calendar` | iCal calendar feed |

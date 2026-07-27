@@ -8,7 +8,7 @@ use super::{events::render_rsvp_button, MemberInfo};
 use crate::{
     api::middleware::auth::{CurrentUser, SessionInfo},
     auth::CsrfService,
-    domain::AttendanceStatus,
+    domain::{AttendanceStatus, Attendee},
     repository::{EventRepository, PaymentRepository},
     service::membership_type_service::MembershipTypeService,
     service::settings_service::SettingsService,
@@ -151,7 +151,7 @@ pub async fn upcoming_events(
 
     for event in events {
         let rsvp = event_repo
-            .get_member_attendance_status(event.id, member_id)
+            .attendance_status(event.id, &Attendee::Member(member_id))
             .await
             .ok()
             .flatten();
@@ -294,6 +294,8 @@ mod tests {
                 max_attendees: None,
                 rsvp_required: false,
                 member_price_cents: 0,
+                guest_price_cents: 0,
+                guest_registration_enabled: false,
                 image_url: None,
                 created_by: member.id,
                 created_at: now,
@@ -306,7 +308,7 @@ mod tests {
 
         // Member registered elsewhere; now they load the dashboard.
         event_repo
-            .register_attendance(event_id, member.id)
+            .register_attendance(event_id, &Attendee::Member(member.id))
             .await
             .unwrap();
 

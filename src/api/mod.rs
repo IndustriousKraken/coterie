@@ -160,6 +160,14 @@ fn public_routes(_state: AppState) -> Router<AppState> {
             "/events/private-count",
             get(handlers::public::private_event_count),
         )
+        // Unauthenticated money endpoint: rate limit → bot challenge →
+        // registerability → seat + charge, in that order, inside the
+        // handler. CSRF-exempt (the caller has no session) and covered by
+        // the router's CORS allowlist like the other /public routes.
+        .route(
+            "/events/:id/register",
+            post(handlers::public::register_for_event),
+        )
         .route("/announcements", get(handlers::public::list_announcements))
         .route(
             "/membership-types",

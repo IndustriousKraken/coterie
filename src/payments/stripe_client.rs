@@ -202,7 +202,8 @@ impl StripeClient {
         Ok((session.url, payment_id))
     }
 
-    /// Build a Stripe Checkout session for one event's member fee.
+    /// Build a Stripe Checkout session for one event's fee, for a member
+    /// or a guest.
     ///
     /// Metadata carries `payment_type=event_fee` + `event_id` so the
     /// webhook dispatcher branches exactly as it does for `membership`
@@ -211,13 +212,19 @@ impl StripeClient {
     /// `checkout.session.expired`, and an unbounded session would hold
     /// one for a day.
     ///
+    /// The payer's identity is stamped into the metadata and onto the
+    /// payment row — `member_id` for a member, `guest_name`/`guest_email`
+    /// for a guest — so a receipt has a name to go to. The completion
+    /// webhook still finds the row by session id, so the metadata is
+    /// observability rather than a lookup key.
+    ///
     /// The `Pending` row written here is a placeholder, not a recorded
     /// payment — no dues, no integration events, no audit row. It
     /// becomes a recorded payment only when the completion webhook
     /// settles it.
     pub async fn create_event_fee_checkout_session(
         &self,
-        member_id: Uuid,
+        payer: &Payer,
         event_id: Uuid,
         event_title: &str,
         amount_cents: i64,
@@ -225,9 +232,17 @@ impl StripeClient {
         cancel_url: String,
     ) -> Result<(String, Uuid)> {
         let mut metadata = std::collections::HashMap::new();
-        metadata.insert("member_id".to_string(), member_id.to_string());
         metadata.insert("payment_type".to_string(), "event_fee".to_string());
         metadata.insert("event_id".to_string(), event_id.to_string());
+        match payer {
+            Payer::Member(member_id) => {
+                metadata.insert("member_id".to_string(), member_id.to_string());
+            }
+            Payer::PublicDonor { name, email } => {
+                metadata.insert("guest_name".to_string(), name.clone());
+                metadata.insert("guest_email".to_string(), email.clone());
+            }
+        }
 
         let description = format!("Event registration — {}", event_title);
 
@@ -242,8 +257,14 @@ impl StripeClient {
                     product_description: Some(description.clone()),
                 }],
                 metadata,
-                client_reference_id: Some(member_id.to_string()),
-                customer_email: None,
+                client_reference_id: payer.member_id().map(|id| id.to_string()),
+                // Prefill the guest's address on the hosted page so
+                // Stripe's own receipt reaches them; a member's session
+                // is unchanged (Stripe collects it).
+                customer_email: match payer {
+                    Payer::Member(_) => None,
+                    Payer::PublicDonor { email, .. } => Some(email.clone()),
+                },
                 customer_id: None,
                 save_card_for_offsession: false,
                 expires_at: Some((Utc::now() + chrono::Duration::minutes(60)).timestamp()),
@@ -253,7 +274,7 @@ impl StripeClient {
         let payment_id = Uuid::new_v4();
         let payment = Payment {
             id: payment_id,
-            payer: Payer::Member(member_id),
+            payer: payer.clone(),
             amount_cents,
             currency: "USD".to_string(),
             status: PaymentStatus::Pending,

@@ -32,6 +32,16 @@ pub struct Event {
     /// *known* price, not an unknown one, which is why this is not an
     /// `Option`. See [`Event::is_paid_for_members`].
     pub member_price_cents: i64,
+    /// What a non-member pays to attend, in cents. `0` means free, on
+    /// the same terms as the member price. Says nothing about *whether*
+    /// non-members may register — that's
+    /// [`Event::guest_registration_enabled`].
+    pub guest_price_cents: i64,
+    /// Whether non-members may register through the public page at all.
+    /// Kept separate from the price so "the public attends free" and
+    /// "the public may not attend" are different states. See
+    /// [`Event::publicly_registerable`].
+    pub guest_registration_enabled: bool,
     pub image_url: Option<String>,
     pub created_by: Uuid,
     pub created_at: DateTime<Utc>,
@@ -52,6 +62,43 @@ impl Event {
     /// re-derive `> 0` and drift on the boundary.
     pub fn is_paid_for_members(&self) -> bool {
         self.member_price_cents > 0
+    }
+
+    /// True when attending costs a non-member money. Mirrors
+    /// [`Event::is_paid_for_members`]; `false` means the public
+    /// registration is free, NOT that it is closed.
+    pub fn is_paid_for_guests(&self) -> bool {
+        self.guest_price_cents > 0
+    }
+
+    /// Whether the public registration page and endpoint serve this
+    /// event: it is `Public` AND the org opened the door to non-members.
+    ///
+    /// The price is deliberately NOT part of this test — a free workshop
+    /// with twenty seats is registerable, and a $0 price must not close
+    /// a public door any more than a `NULL` should have meant "free".
+    /// One home for the rule so the 404 decision isn't re-derived (and
+    /// re-broken) per call site.
+    pub fn publicly_registerable(&self) -> bool {
+        self.visibility == EventVisibility::Public && self.guest_registration_enabled
+    }
+
+    /// The absolute URL of the Coterie-hosted public registration page,
+    /// or `None` when the event is not publicly registerable.
+    ///
+    /// Resolving it server-side is the point: whether an event may be
+    /// publicly registered is an authorization rule, so the answer is
+    /// emitted rather than the ingredients. A consumer decides by testing
+    /// this for presence — never by re-deriving the rule from prices and
+    /// visibility flags, which would be a second implementation of it.
+    pub fn registration_url(&self, base_url: &str) -> Option<String> {
+        self.publicly_registerable().then(|| {
+            format!(
+                "{}/events/{}/register",
+                base_url.trim_end_matches('/'),
+                self.id,
+            )
+        })
     }
 
     /// The event's IANA zone, falling back to UTC when the stored name
@@ -159,10 +206,74 @@ pub enum EventVisibility {
     AdminOnly,
 }
 
+/// Who holds a seat. A sum type for the same reason [`crate::domain::Payer`]
+/// is one: a row is a member's seat or a guest's seat, never both and never
+/// neither, and three loose optionals (`member_id`, `guest_name`,
+/// `guest_email`) would let a caller construct the states the DB CHECK
+/// rejects. The DB stores the three nullable columns; the repository maps
+/// them to (and from) this.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Attendee {
+    Member(Uuid),
+    /// A non-member registering through the public page. The identity is
+    /// unverified input, captured for the roster and the confirmation
+    /// email — it is deliberately NOT matched against the member
+    /// directory (see the paid-events spec).
+    Guest {
+        name: String,
+        email: String,
+    },
+}
+
+impl Attendee {
+    /// The member uuid, or `None` for a guest. Mirrors
+    /// [`crate::domain::Payer::member_id`].
+    pub fn member_id(&self) -> Option<Uuid> {
+        match self {
+            Attendee::Member(id) => Some(*id),
+            Attendee::Guest { .. } => None,
+        }
+    }
+
+    /// The guest email, or `None` for a member. The seat's identity
+    /// column on the guest side.
+    pub fn guest_email(&self) -> Option<&str> {
+        match self {
+            Attendee::Member(_) => None,
+            Attendee::Guest { email, .. } => Some(email),
+        }
+    }
+
+    pub fn guest_name(&self) -> Option<&str> {
+        match self {
+            Attendee::Member(_) => None,
+            Attendee::Guest { name, .. } => Some(name),
+        }
+    }
+
+    /// The payer this attendee pays as. A guest is a non-member payer —
+    /// the `PublicDonor` variant, whose structure ("non-member payer
+    /// whose identity we captured for receipts") already describes a
+    /// guest registrant exactly.
+    pub fn as_payer(&self) -> crate::domain::Payer {
+        match self {
+            Attendee::Member(id) => crate::domain::Payer::Member(*id),
+            Attendee::Guest { name, email } => crate::domain::Payer::PublicDonor {
+                name: name.clone(),
+                email: email.clone(),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventAttendance {
+    /// Surrogate key (migration 043). A guest row can't be identified by
+    /// `(event_id, member_id)` because it has no member.
+    pub id: Uuid,
     pub event_id: Uuid,
-    pub member_id: Uuid,
+    /// Who holds the seat — a member or a guest. See [`Attendee`].
+    pub attendee: Attendee,
     pub status: AttendanceStatus,
     pub registered_at: DateTime<Utc>,
     pub attended: bool,
@@ -214,6 +325,8 @@ mod tz_tests {
             max_attendees: None,
             rsvp_required: false,
             member_price_cents: 0,
+            guest_price_cents: 0,
+            guest_registration_enabled: false,
             image_url: None,
             created_by: Uuid::new_v4(),
             created_at: Utc::now(),

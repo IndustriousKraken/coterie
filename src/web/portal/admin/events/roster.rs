@@ -24,11 +24,12 @@ use uuid::Uuid;
 
 use crate::{
     api::middleware::auth::CurrentUser,
-    domain::{AttendanceStatus, PaymentKind, PaymentMethod, PaymentStatus},
+    domain::{AttendanceStatus, Attendee, PaymentKind, PaymentMethod, PaymentStatus},
     repository::{EventRepository, PaymentRepository, RosterEntry},
     service::{
         audit_service::AuditService,
         billing_service::BillingService,
+        event_registration_service::guest_attendee,
         payment_service::{PaymentService, RecordManualPaymentInput},
     },
     web::portal::admin::partials,
@@ -37,15 +38,27 @@ use crate::{
 /// One rendered roster line. Strings, because this is view data — the
 /// template shouldn't be re-deriving "is this paid" from two enums.
 pub struct RosterRow {
+    /// The member's id, or empty for a guest. The per-row action forms
+    /// post whichever identity fields are non-empty, so one handler
+    /// serves both kinds of seat.
     pub member_id: String,
-    pub member_name: String,
-    pub member_email: String,
+    pub guest_name: String,
+    pub guest_email: String,
+    /// True for a seat with no member account behind it — drives the
+    /// "Guest" badge the roster is required to show.
+    pub is_guest: bool,
+    pub name: String,
+    pub email: String,
     pub status: String,
     pub payment_state: String,
     pub amount_display: String,
     /// Drives the "release seat" control — only a held-but-unpaid seat
     /// can be released.
     pub is_pending_payment: bool,
+    /// The payment id when there is a refundable (Completed, non-comped)
+    /// payment on this seat — the roster's refund control, which is how
+    /// a guest's fee gets refunded since a guest has no member page.
+    pub refundable_payment_id: String,
 }
 
 impl RosterRow {
@@ -62,10 +75,22 @@ impl RosterRow {
         }
         .to_string();
 
+        // A comped ($0 Waived) seat has nothing to refund, and only a
+        // Completed payment can be.
+        let refundable = matches!(e.payment_status, Some(PaymentStatus::Completed))
+            && !matches!(e.payment_method, Some(PaymentMethod::Waived));
+
         Self {
-            member_id: e.member_id.to_string(),
-            member_name: e.member_name,
-            member_email: e.member_email,
+            member_id: e
+                .attendee
+                .member_id()
+                .map(|id| id.to_string())
+                .unwrap_or_default(),
+            guest_name: e.attendee.guest_name().unwrap_or_default().to_string(),
+            guest_email: e.attendee.guest_email().unwrap_or_default().to_string(),
+            is_guest: e.attendee.member_id().is_none(),
+            name: e.name,
+            email: e.email,
             status: format!("{:?}", e.status),
             payment_state,
             amount_display: e
@@ -73,19 +98,49 @@ impl RosterRow {
                 .map(|c| format!("${:.2}", c as f64 / 100.0))
                 .unwrap_or_else(|| "—".to_string()),
             is_pending_payment: matches!(e.status, AttendanceStatus::PendingPayment),
+            refundable_payment_id: match (refundable, e.payment_id) {
+                (true, Some(id)) => id.to_string(),
+                _ => String::new(),
+            },
         }
     }
 }
 
+/// Identity of the roster row an action applies to. The template posts
+/// the fields it has: `member_id` for a member seat, `guest_name` +
+/// `guest_email` for a guest one. One form shape, one handler, both
+/// kinds of seat — the alternative was a parallel set of guest routes
+/// that would drift from these on the next fix.
 #[derive(serde::Deserialize)]
 pub struct RosterMemberForm {
+    #[serde(default)]
     pub member_id: String,
+    #[serde(default)]
+    pub guest_name: String,
+    #[serde(default)]
+    pub guest_email: String,
     #[serde(default)]
     #[allow(dead_code)]
     pub csrf_token: String,
 }
 
-/// Record a cash/at-the-door event fee and seat the member.
+impl RosterMemberForm {
+    /// The attendee this action targets, or `None` when neither identity
+    /// is usable. Guest identity goes through the same validation the
+    /// public endpoint uses, so an admin can't hand-post an unbounded
+    /// name into a seat.
+    fn attendee(&self) -> Option<Attendee> {
+        if !self.member_id.trim().is_empty() {
+            return Uuid::parse_str(self.member_id.trim())
+                .ok()
+                .map(Attendee::Member);
+        }
+        guest_attendee(&self.guest_name, &self.guest_email).ok()
+    }
+}
+
+/// Record a cash/at-the-door event fee and seat the attendee. Works for
+/// a guest row on the same terms as a member row.
 pub async fn admin_roster_record_at_the_door(
     State(event_repo): State<Arc<dyn EventRepository>>,
     State(payment_service): State<Arc<PaymentService>>,
@@ -100,7 +155,7 @@ pub async fn admin_roster_record_at_the_door(
         billing_service,
         current_user,
         &event_id,
-        &form.member_id,
+        &form,
         PaymentMethod::Manual,
     )
     .await
@@ -121,7 +176,7 @@ pub async fn admin_roster_comp_seat(
         billing_service,
         current_user,
         &event_id,
-        &form.member_id,
+        &form,
         PaymentMethod::Waived,
     )
     .await
@@ -134,11 +189,11 @@ async fn record_seat_payment(
     billing_service: Arc<BillingService>,
     current_user: CurrentUser,
     event_id: &str,
-    member_id: &str,
+    form: &RosterMemberForm,
     method: PaymentMethod,
 ) -> axum::response::Response {
-    let (event_id, member_id) = match (Uuid::parse_str(event_id), Uuid::parse_str(member_id)) {
-        (Ok(e), Ok(m)) => (e, m),
+    let (event_id, attendee) = match (Uuid::parse_str(event_id), form.attendee()) {
+        (Ok(e), Some(a)) => (e, a),
         _ => return partials::admin_alert("error", "Invalid ID", false).into_response(),
     };
 
@@ -147,17 +202,18 @@ async fn record_seat_payment(
         _ => return partials::admin_alert("error", "Event not found", false).into_response(),
     };
 
-    // A comp is $0 by definition; an at-the-door payment is the event's
-    // listed member price.
-    let amount_cents = match method {
-        PaymentMethod::Waived => 0,
-        _ => event.member_price_cents,
+    // A comp is $0 by definition; an at-the-door payment is the price
+    // that applies to who is paying it.
+    let amount_cents = match (&method, &attendee) {
+        (PaymentMethod::Waived, _) => 0,
+        (_, Attendee::Member(_)) => event.member_price_cents,
+        (_, Attendee::Guest { .. }) => event.guest_price_cents,
     };
 
     let payment = match payment_service
         .record_manual(
             RecordManualPaymentInput {
-                member_id,
+                payer: attendee.as_payer(),
                 amount_cents,
                 kind: PaymentKind::EventFee { event_id },
                 description: format!("Event registration — {}", event.title),
@@ -179,7 +235,7 @@ async fn record_seat_payment(
     // Seat them, then point the seat at the payment that bought it.
     // Deliberately bypasses the capacity guard: an admin adding someone
     // at the door has already made that call in the room.
-    if let Err(e) = event_repo.register_attendance(event_id, member_id).await {
+    if let Err(e) = event_repo.register_attendance(event_id, &attendee).await {
         return partials::admin_alert(
             "error",
             &format!("Payment recorded but seat not confirmed: {}", e),
@@ -188,7 +244,7 @@ async fn record_seat_payment(
         .into_response();
     }
     if let Err(e) = event_repo
-        .link_payment(event_id, member_id, payment.id)
+        .link_payment(event_id, &attendee, payment.id)
         .await
     {
         tracing::error!(
@@ -215,16 +271,15 @@ pub async fn admin_roster_release_seat(
     Path(event_id): Path<String>,
     axum::Form(form): axum::Form<RosterMemberForm>,
 ) -> impl IntoResponse {
-    let (event_id, member_id) = match (Uuid::parse_str(&event_id), Uuid::parse_str(&form.member_id))
-    {
-        (Ok(e), Ok(m)) => (e, m),
+    let (event_id, attendee) = match (Uuid::parse_str(&event_id), form.attendee()) {
+        (Ok(e), Some(a)) => (e, a),
         _ => return partials::admin_alert("error", "Invalid ID", false).into_response(),
     };
 
     // Fail the placeholder first so the abandoned checkout can never
     // settle into a Completed payment for a seat that no longer exists.
     if let Some(payment) = payment_repo
-        .find_event_fee_payment(event_id, member_id)
+        .find_event_fee_payment(event_id, &attendee.as_payer())
         .await
         .ok()
         .flatten()
@@ -241,7 +296,7 @@ pub async fn admin_roster_release_seat(
         }
     }
 
-    if let Err(e) = event_repo.release_seat(event_id, member_id).await {
+    if let Err(e) = event_repo.release_seat(event_id, &attendee).await {
         return partials::admin_alert("error", &format!("Error releasing seat: {}", e), false)
             .into_response();
     }
@@ -253,7 +308,10 @@ pub async fn admin_roster_release_seat(
             "event",
             &event_id.to_string(),
             None,
-            Some(&format!("member {}", member_id)),
+            Some(&match &attendee {
+                Attendee::Member(id) => format!("member {}", id),
+                Attendee::Guest { email, .. } => format!("guest {}", email),
+            }),
             None,
         )
         .await;

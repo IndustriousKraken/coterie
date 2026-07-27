@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::{
     api::middleware::auth::{CurrentUser, SessionInfo},
     auth::CsrfService,
-    domain::AttendanceStatus,
+    domain::{AttendanceStatus, Attendee},
     repository::EventRepository,
     service::event_registration_service::{EventRegistrationService, RegistrationOutcome},
     web::templates::{BaseContext, HtmlTemplate},
@@ -122,7 +122,7 @@ pub async fn events_list_api(
 
         // Check member's RSVP status for this event
         let rsvp_status = event_repo
-            .get_member_attendance_status(event.id, member_id)
+            .attendance_status(event.id, &Attendee::Member(member_id))
             .await
             .ok()
             .flatten();
@@ -412,7 +412,10 @@ pub async fn cancel_rsvp_event(
     }
 
     // Cancel attendance
-    if let Err(e) = event_repo.cancel_attendance(event_id, member_id).await {
+    if let Err(e) = event_repo
+        .cancel_attendance(event_id, &Attendee::Member(member_id))
+        .await
+    {
         // Cancel failed: member is still attending, so re-render the Cancel
         // button (unchanged state) alongside the error. ponytail: shows the
         // "Registered" label even if the member was waitlisted — the retry
@@ -499,6 +502,8 @@ mod tests {
                 max_attendees: None,
                 rsvp_required: false,
                 member_price_cents: 0,
+                guest_price_cents: 0,
+                guest_registration_enabled: false,
                 image_url: None,
                 created_by: member.id,
                 created_at: now,

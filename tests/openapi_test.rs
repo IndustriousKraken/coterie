@@ -46,6 +46,7 @@ fn openapi_spec_documents_all_public_endpoints() {
         ("/public/feed/rss", "get"),
         ("/public/feed/calendar", "get"),
         ("/public/donate", "post"),
+        ("/public/events/{id}/register", "post"),
     ];
 
     for (path, method) in expected {
@@ -78,6 +79,8 @@ fn openapi_spec_registers_all_dto_schemas() {
         "PrivateEventCount",
         "PublicDonateRequest",
         "PublicDonateResponse",
+        "PublicEventRegisterRequest",
+        "PublicEventRegisterResponse",
         "PrivateAnnouncementCount",
         "Event",
         "EventType",

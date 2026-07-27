@@ -45,6 +45,12 @@ pub struct CreateEventInput {
     pub rsvp_required: bool,
     /// What a member pays to attend, in cents. `0` = free.
     pub member_price_cents: i64,
+    /// What a non-member pays to attend, in cents. `0` = free.
+    pub guest_price_cents: i64,
+    /// Whether non-members may register through the public page. Kept
+    /// separate from the price so a free-but-invite-only event and a
+    /// free-and-public one are different states.
+    pub guest_registration_enabled: bool,
     pub image_url: Option<String>,
     /// Some → materialize a full recurring series via
     /// `RecurringEventService`. None → single-row insert.
@@ -71,6 +77,12 @@ pub struct UpdateEventInput {
     pub rsvp_required: bool,
     /// What a member pays to attend, in cents. `0` = free.
     pub member_price_cents: i64,
+    /// What a non-member pays to attend, in cents. `0` = free.
+    pub guest_price_cents: i64,
+    /// Whether non-members may register through the public page. Kept
+    /// separate from the price so a free-but-invite-only event and a
+    /// free-and-public one are different states.
+    pub guest_registration_enabled: bool,
     pub image_url: Option<String>,
 }
 
@@ -119,6 +131,8 @@ impl EventAdminService {
             max_attendees: input.max_attendees,
             rsvp_required: input.rsvp_required,
             member_price_cents: input.member_price_cents,
+            guest_price_cents: input.guest_price_cents,
+            guest_registration_enabled: input.guest_registration_enabled,
             image_url: input.image_url,
             created_by: actor_id,
             created_at: Utc::now(),
@@ -213,6 +227,8 @@ impl EventAdminService {
             max_attendees: input.max_attendees,
             rsvp_required: input.rsvp_required,
             member_price_cents: input.member_price_cents,
+            guest_price_cents: input.guest_price_cents,
+            guest_registration_enabled: input.guest_registration_enabled,
             image_url: input.image_url,
             created_by: existing.created_by,
             created_at: existing.created_at,
@@ -267,6 +283,8 @@ impl EventAdminService {
             max_attendees: input.max_attendees,
             rsvp_required: input.rsvp_required,
             member_price_cents: input.member_price_cents,
+            guest_price_cents: input.guest_price_cents,
+            guest_registration_enabled: input.guest_registration_enabled,
             image_url: input.image_url,
             created_by: actor_id,
             created_at: Utc::now(),
@@ -654,6 +672,8 @@ impl EventAdminService {
             max_attendees: prototype.max_attendees,
             rsvp_required: prototype.rsvp_required,
             member_price_cents: prototype.member_price_cents,
+            guest_price_cents: prototype.guest_price_cents,
+            guest_registration_enabled: prototype.guest_registration_enabled,
             image_url: prototype.image_url.clone(),
             created_by: existing.created_by,
             created_at: existing.created_at,

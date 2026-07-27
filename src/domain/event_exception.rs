@@ -145,6 +145,8 @@ mod tests {
             max_attendees: Some(10),
             rsvp_required: false,
             member_price_cents: 0,
+            guest_price_cents: 0,
+            guest_registration_enabled: false,
             image_url: None,
             created_by: Uuid::new_v4(),
             created_at: Utc::now(),

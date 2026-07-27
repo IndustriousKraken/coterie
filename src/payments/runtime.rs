@@ -145,6 +145,25 @@ impl StripeHandle {
         }
     }
 
+    /// Test seam: swap a fake-gateway client into an existing handle.
+    ///
+    /// Needed because services capture the `ServiceContext`-owned handle
+    /// at construction (as production does), so a router test can't
+    /// configure Stripe for them by handing `AppState` a different
+    /// handle — it has to reach the one they already hold. Production
+    /// gets there through [`Self::rebuild`], which reads DB config.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn install_for_test(
+        &self,
+        client: Option<Arc<StripeClient>>,
+        webhook_dispatcher: Option<Arc<WebhookDispatcher>>,
+    ) {
+        *self.runtime.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(StripeRuntime {
+            client,
+            webhook_dispatcher,
+        });
+    }
+
     /// Snapshot the current wiring. Cheap: a read-lock plus two Arc
     /// clones. Callers read this per request so a concurrent `rebuild`
     /// is picked up on the next call.

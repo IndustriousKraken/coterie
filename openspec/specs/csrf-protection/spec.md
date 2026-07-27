@@ -75,6 +75,7 @@ The exempt entries SHALL include every state-changing endpoint whose caller has 
 - `POST /api/payments/webhook/stripe` — Stripe HMAC signature is the auth.
 - `POST /public/signup` — cross-origin from marketing site; gated by CORS allowlist + rate limit + bot challenge.
 - `POST /public/donate` — same as signup.
+- `POST /public/events/:id/register` — public paid-event registration; the caller is an anonymous visitor with no session, so there is no session id to bind a token to. Gated by CORS allowlist + `money_limiter` + bot challenge, in that order, and further constrained by serving only `Public`-visibility events that carry a guest price.
 - `POST /login` — the browser portal login form (`templates/auth/login.html`) posts here; no session exists yet to bind a token to. Gated by the per-IP login rate limiter and SameSite=Lax cookies.
 - `POST /login/totp` — the second-factor step of the portal login; the caller holds only a `pending_login` cookie at this step, not a `session` cookie, so there is no session id to bind a CSRF token to.
 - `POST /forgot-password` — anonymous password-reset request; no session. Gated by the per-IP login rate limiter and an enumeration-safe response.
@@ -99,6 +100,11 @@ The exempt entries SHALL include every state-changing endpoint whose caller has 
 
 - **WHEN** a logout POST arrives without a valid CSRF token
 - **THEN** the middleware SHALL reject it with 403 Forbidden
+
+#### Scenario: Anonymous public event registration is exempt, not rejected
+
+- **WHEN** an anonymous `POST /public/events/:id/register` arrives with no `session` cookie
+- **THEN** the CSRF middleware SHALL treat the path as exempt and forward it to its handler, which applies the rate limit and bot challenge in place of a session-bound token
 
 ### Requirement: SessionInfo is injected on success
 

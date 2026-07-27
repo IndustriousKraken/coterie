@@ -3,10 +3,10 @@ use clap::Parser;
 use config::{Config, File};
 use coterie::{
     domain::{
-        Announcement, AnnouncementType, BasicTypeKind, CreateBasicTypeRequest, CreateMemberRequest,
-        CreateMembershipTypeRequest, Event, EventType, EventVisibility, MemberStatus,
-        MembershipTypeConfig as DbMembershipTypeConfig, Payer, Payment, PaymentKind, PaymentMethod,
-        PaymentStatus, StripeRef, UpdateMemberRequest,
+        Announcement, AnnouncementType, Attendee, BasicTypeKind, CreateBasicTypeRequest,
+        CreateMemberRequest, CreateMembershipTypeRequest, Event, EventType, EventVisibility,
+        MemberStatus, MembershipTypeConfig as DbMembershipTypeConfig, Payer, Payment, PaymentKind,
+        PaymentMethod, PaymentStatus, StripeRef, UpdateMemberRequest,
     },
     repository::{
         AnnouncementRepository, BasicTypeRepository, EventRepository, MemberRepository,
@@ -245,6 +245,8 @@ fn make_event(
         max_attendees: Some(30),
         rsvp_required: true,
         member_price_cents: 0,
+        guest_price_cents: 0,
+        guest_registration_enabled: false,
         image_url: image_url.map(String::from),
         created_by,
         created_at: Utc::now() - Duration::days(days_offset.abs() + 7),
@@ -804,7 +806,7 @@ async fn seed_events(
             shuffled.shuffle(rng);
             for (member_id, _) in shuffled.iter().take(attendee_count) {
                 let _ = event_repo
-                    .register_attendance(created_event.id, *member_id)
+                    .register_attendance(created_event.id, &Attendee::Member(*member_id))
                     .await;
             }
         }

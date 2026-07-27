@@ -72,6 +72,34 @@ impl WebhookDispatcher {
 
             self.event_repo.confirm_seat(payment.id).await?;
 
+            // A guest has no portal to check, so the confirmation email
+            // is their only artifact of the registration — sent here,
+            // where the seat actually becomes theirs, and carrying the
+            // amount paid as its receipt. Skipped silently when no email
+            // provider is configured; never fails the webhook.
+            if let Payer::PublicDonor { name, email } = &payment.payer {
+                match payment.kind.event_id() {
+                    Some(event_id) => match self.event_repo.find_by_id(event_id).await {
+                        Ok(Some(event)) => {
+                            billing_service
+                                .notifications
+                                .send_guest_event_confirmation(email, name, &event, &payment)
+                                .await;
+                        }
+                        _ => tracing::warn!(
+                            "Event-fee payment {} completed but event {} is gone; \
+                             no guest confirmation sent",
+                            payment.id,
+                            event_id,
+                        ),
+                    },
+                    None => tracing::warn!(
+                        "Event-fee payment {} has no event id; no guest confirmation sent",
+                        payment.id,
+                    ),
+                }
+            }
+
             // Deliberately NOT extending dues and NOT rescheduling
             // auto-renew: an event fee buys a seat, not a membership.
             self.audit_service
@@ -86,9 +114,12 @@ impl WebhookDispatcher {
                         .unwrap_or_else(|| "unknown".to_string()),
                     None,
                     Some(&format!(
-                        "${:.2} — member {:?} — payment {}",
+                        "${:.2} — {} — payment {}",
                         payment.amount_cents as f64 / 100.0,
-                        payment.member_id(),
+                        match &payment.payer {
+                            Payer::Member(id) => format!("member {}", id),
+                            Payer::PublicDonor { email, .. } => format!("guest {}", email),
+                        },
                         payment.id,
                     )),
                     Some(super::STRIPE_WEBHOOK_SOURCE),
@@ -96,10 +127,10 @@ impl WebhookDispatcher {
                 .await;
 
             tracing::info!(
-                "Event fee completed: payment={} event={:?} member={:?}",
+                "Event fee completed: payment={} event={:?} payer={:?}",
                 payment.id,
                 payment.kind.event_id(),
-                payment.member_id(),
+                payment.payer,
             );
             return Ok(());
         }

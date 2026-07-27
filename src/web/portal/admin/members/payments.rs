@@ -170,7 +170,7 @@ pub async fn admin_record_payment_submit(
     if let Err(e) = payment_service
         .record_manual(
             RecordManualPaymentInput {
-                member_id: id,
+                payer: crate::domain::Payer::Member(id),
                 amount_cents,
                 kind,
                 description,

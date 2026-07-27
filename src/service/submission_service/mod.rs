@@ -409,6 +409,8 @@ impl SubmissionService {
             rsvp_required: false,
             // A promoted proposal is free; an admin can price it after.
             member_price_cents: 0,
+            guest_price_cents: 0,
+            guest_registration_enabled: false,
             image_url: None,
             recurrence: None,
             recurrence_until: None,

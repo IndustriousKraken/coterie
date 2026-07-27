@@ -148,6 +148,8 @@ fn template(creator: Uuid, start: DateTime<Utc>) -> Event {
         max_attendees: Some(20),
         rsvp_required: true,
         member_price_cents: 0,
+        guest_price_cents: 0,
+        guest_registration_enabled: false,
         image_url: None,
         created_by: creator,
         created_at: Utc::now(),

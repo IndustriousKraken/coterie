@@ -105,6 +105,19 @@ pub async fn build_app_state_custom(
     stripe_handle: Option<Arc<coterie::payments::StripeHandle>>,
     verifier: Option<Arc<dyn BotChallengeVerifier>>,
 ) -> AppState {
+    build_app_state_full(pool, stripe_handle, verifier, None).await
+}
+
+/// Variant of [`build_app_state_custom`] that also sets
+/// `server.cors_origins` — for tests that assert the CORS allowlist
+/// actually reaches a given public endpoint (with `None`, the layer is
+/// same-origin only and emits no allow-origin header at all).
+pub async fn build_app_state_full(
+    pool: SqlitePool,
+    stripe_handle: Option<Arc<coterie::payments::StripeHandle>>,
+    verifier: Option<Arc<dyn BotChallengeVerifier>>,
+    cors_origins: Option<String>,
+) -> AppState {
     let crypto = Arc::new(SecretCrypto::new("test-secret-please-ignore"));
     let totp_service = Arc::new(TotpService::new(
         pool.clone(),
@@ -115,7 +128,15 @@ pub async fn build_app_state_custom(
         pool.clone(),
         "test-session-secret-please-ignore".to_string(),
     ));
-    build_app_state_with_services(pool, totp_service, auth_service, stripe_handle, verifier).await
+    build_app_state_with_services_and_cors(
+        pool,
+        totp_service,
+        auth_service,
+        stripe_handle,
+        verifier,
+        cors_origins,
+    )
+    .await
 }
 
 /// Variant of [`build_app_state`] that lets the caller inject a custom
@@ -159,6 +180,25 @@ async fn build_app_state_with_services(
     stripe_handle_override: Option<Arc<coterie::payments::StripeHandle>>,
     verifier: Option<Arc<dyn BotChallengeVerifier>>,
 ) -> AppState {
+    build_app_state_with_services_and_cors(
+        pool,
+        totp_service,
+        auth_service,
+        stripe_handle_override,
+        verifier,
+        None,
+    )
+    .await
+}
+
+async fn build_app_state_with_services_and_cors(
+    pool: SqlitePool,
+    totp_service: Arc<TotpService>,
+    auth_service: Arc<AuthService>,
+    stripe_handle_override: Option<Arc<coterie::payments::StripeHandle>>,
+    verifier: Option<Arc<dyn BotChallengeVerifier>>,
+    cors_origins: Option<String>,
+) -> AppState {
     let settings = Settings {
         server: coterie::config::ServerConfig {
             host: "127.0.0.1".to_string(),
@@ -167,7 +207,7 @@ async fn build_app_state_with_services(
             data_dir: "./data".to_string(),
             uploads_dir: None,
             secure_cookies: Some(false),
-            cors_origins: None,
+            cors_origins,
             trust_forwarded_for: Some(false),
         },
         database: coterie::config::DatabaseConfig {
@@ -229,8 +269,23 @@ async fn build_app_state_with_services(
     // Default: the ServiceContext-owned handle stays unconfigured (no
     // Stripe surface). Tests that exercise checkout paths pass a
     // preloaded handle wired to a FakeStripeGateway.
-    let stripe_handle =
-        stripe_handle_override.unwrap_or_else(|| service_context.stripe_handle.clone());
+    //
+    // The override is ALSO installed into the ServiceContext-owned handle,
+    // because services (e.g. `EventRegistrationService`) capture that one
+    // at construction the way production does — in production both are
+    // the same handle. Without this, a router test would configure Stripe
+    // for handlers but leave it unconfigured for services, and a checkout
+    // path through a service would answer 503.
+    let stripe_handle = match stripe_handle_override {
+        Some(handle) => {
+            let runtime = handle.current();
+            service_context
+                .stripe_handle
+                .install_for_test(runtime.client.clone(), runtime.webhook_dispatcher.clone());
+            handle
+        }
+        None => service_context.stripe_handle.clone(),
+    };
     let verifier = verifier.unwrap_or_else(|| Arc::new(DisabledVerifier));
 
     AppState::new(

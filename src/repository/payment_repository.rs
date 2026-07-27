@@ -89,16 +89,21 @@ pub trait PaymentRepository: Send + Sync {
 
     // ---- Paid-event support -------------------------------------------
 
-    /// The member's live event-fee payment for this event, if any —
+    /// The payer's live event-fee payment for this event, if any —
     /// the double-charge guard. `Failed` rows are excluded: they hold
     /// neither money nor a seat, so they must not block a retry. The
     /// result is ordered `Completed` first, then `Pending`, then
     /// anything else (a `Refunded` row, whose seat was cancelled and
-    /// which therefore does not stop the member registering again).
+    /// which therefore does not stop the payer registering again).
+    ///
+    /// A member payer matches on `member_id`, a guest on `donor_email` —
+    /// the same identity split the `payments` table has carried since
+    /// public donations (migration 016), so the guard is keyed on
+    /// `(event_id, guest_email)` for a guest without a second query.
     async fn find_event_fee_payment(
         &self,
         event_id: Uuid,
-        member_id: Uuid,
+        payer: &crate::domain::Payer,
     ) -> Result<Option<Payment>>;
 
     /// Every `Completed` event-fee payment for this event. Drives the
@@ -600,8 +605,11 @@ impl PaymentRepository for SqlitePaymentRepository {
     async fn find_event_fee_payment(
         &self,
         event_id: Uuid,
-        member_id: Uuid,
+        payer: &crate::domain::Payer,
     ) -> Result<Option<Payment>> {
+        // `IS` rather than `=` on both identity columns so a bound NULL
+        // matches the NULL column: one statement answers "this member's"
+        // and "this guest email's" event fee.
         let row = sqlx::query_as::<_, PaymentRow>(
             r#"
             SELECT id, member_id, amount_cents, currency, status,
@@ -611,7 +619,8 @@ impl PaymentRepository for SqlitePaymentRepository {
                    paid_at, created_at, updated_at
             FROM payments
             WHERE event_id = ?
-              AND member_id = ?
+              AND member_id IS ?
+              AND donor_email IS ?
               AND payment_type = 'event_fee'
               AND status <> 'Failed'
             ORDER BY CASE status
@@ -624,7 +633,11 @@ impl PaymentRepository for SqlitePaymentRepository {
             "#,
         )
         .bind(event_id.to_string())
-        .bind(member_id.to_string())
+        .bind(payer.member_id().map(|id| id.to_string()))
+        .bind(match payer {
+            crate::domain::Payer::Member(_) => None,
+            crate::domain::Payer::PublicDonor { email, .. } => Some(email.as_str()),
+        })
         .fetch_optional(&self.pool)
         .await
         .map_err(AppError::Database)?;

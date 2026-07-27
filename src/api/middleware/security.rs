@@ -60,6 +60,14 @@ use crate::{
 ///   the CORS allowed-origins list and rate-limited; that's the
 ///   security model for these endpoints.
 ///
+/// * **`POST /public/events/:id/register`** — public paid-event
+///   registration. The caller is an anonymous visitor (from the
+///   marketing site or Coterie's own hosted registration page) with no
+///   `session` cookie, so there is no session id to bind a token to.
+///   Gated by the CORS allowlist + the per-IP `money_limiter` + the bot
+///   challenge, in that order, and it only ever serves `Public`
+///   events that have guest registration enabled.
+///
 /// * **`POST /login`** — the browser portal login form
 ///   (`templates/auth/login.html`) posts here; no `session` cookie
 ///   exists yet to bind a CSRF token to. Gated by the per-IP login
@@ -106,6 +114,13 @@ const CSRF_EXEMPT_PATHS: &[(&str, &str)] = &[
     ("POST", "/api/payments/webhook/stripe"),
     ("POST", "/public/signup"),
     ("POST", "/public/donate"),
+    // Public paid-event registration. The caller is an anonymous
+    // visitor with no `session` cookie, so there is no session id to
+    // bind a CSRF token to. Gated by the CORS allowlist, then the
+    // per-IP `money_limiter`, then the bot challenge — in that order —
+    // and further constrained to `Public`-visibility events that have
+    // guest registration enabled.
+    ("POST", "/public/events/:id/register"),
     // Browser portal web-auth forms: the caller has no `session`
     // cookie yet (these endpoints exist to authenticate or first-
     // provision them), so there is no session id to bind a CSRF token
@@ -123,7 +138,36 @@ const CSRF_EXEMPT_PATHS: &[(&str, &str)] = &[
 fn is_exempt(method: &Method, path: &str) -> bool {
     CSRF_EXEMPT_PATHS
         .iter()
-        .any(|(m, p)| *m == method.as_str() && *p == path)
+        .any(|(m, p)| *m == method.as_str() && path_matches(p, path))
+}
+
+/// Exact segment match, except a `:param` segment in the pattern matches
+/// any one non-empty segment.
+///
+/// This layer sits above the router, so it compares raw request paths
+/// against the route patterns itself rather than reading axum's
+/// `MatchedPath` — which isn't populated yet here. String equality alone
+/// would silently fail to exempt any parameterized route, and "silently
+/// not exempt" on a session-less endpoint means a 403 nobody can debug.
+fn path_matches(pattern: &str, path: &str) -> bool {
+    let mut pattern_segments = pattern.split('/');
+    let mut path_segments = path.split('/');
+    loop {
+        match (pattern_segments.next(), path_segments.next()) {
+            (None, None) => return true,
+            (Some(p), Some(actual)) => {
+                let ok = if let Some(name) = p.strip_prefix(':') {
+                    !name.is_empty() && !actual.is_empty()
+                } else {
+                    p == actual
+                };
+                if !ok {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
 }
 
 /// Top-level CSRF middleware.
@@ -300,4 +344,28 @@ async fn validate_multipart_body(
     parts.extensions.insert(SessionInfo { session_id });
     let request = Request::from_parts(parts, Body::from(bytes));
     Ok(next.run(request).await)
+}
+
+#[cfg(test)]
+mod path_match_tests {
+    use super::*;
+
+    #[test]
+    fn parameterized_exempt_path_matches_a_concrete_id() {
+        let post = Method::POST;
+        assert!(is_exempt(
+            &post,
+            "/public/events/f7c1e1a0-0000-4000-8000-000000000000/register",
+        ));
+        // A missing or extra segment is not a match, so the exemption
+        // can't leak onto a neighbouring route.
+        assert!(!is_exempt(&post, "/public/events//register"));
+        assert!(!is_exempt(&post, "/public/events/register"));
+        assert!(!is_exempt(&post, "/public/events/abc/register/extra"));
+        assert!(!is_exempt(&post, "/public/events/abc/cancel"));
+        // Static entries still match exactly, and only for their method.
+        assert!(is_exempt(&post, "/public/donate"));
+        assert!(!is_exempt(&post, "/public/donate/extra"));
+        assert!(!is_exempt(&Method::DELETE, "/public/donate"));
+    }
 }

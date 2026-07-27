@@ -28,7 +28,11 @@ use crate::{
 /// shape. Putting validation here means the campaign-existence check
 /// and the amount cap are enforced uniformly regardless of caller.
 pub struct RecordManualPaymentInput {
-    pub member_id: Uuid,
+    /// Who paid. `Payer::Member` for the usual admin-recorded member
+    /// payment; `Payer::PublicDonor` for a non-member — an at-the-door
+    /// or comped guest seat on a paid event's roster, which is the same
+    /// operator action against a payer who has no account.
+    pub payer: Payer,
     pub amount_cents: i64,
     pub kind: PaymentKind,
     pub description: String,
@@ -98,16 +102,16 @@ impl PaymentService {
                 "Stripe payments are recorded via StripeClient, not record_manual".to_string(),
             ));
         }
-        if self
-            .member_repo
-            .find_by_id(input.member_id)
-            .await?
-            .is_none()
-        {
-            return Err(AppError::BadRequest(format!(
-                "member {} not found",
-                input.member_id,
-            )));
+        // Member payers must exist; a guest payer has no directory row
+        // to check — the identity is captured text, validated at the
+        // boundary that accepted it.
+        if let Payer::Member(member_id) = &input.payer {
+            if self.member_repo.find_by_id(*member_id).await?.is_none() {
+                return Err(AppError::BadRequest(format!(
+                    "member {} not found",
+                    member_id
+                )));
+            }
         }
         // Campaign-existence check: the dropdown only offers valid
         // campaigns, but a stale form / forged JSON could otherwise
@@ -127,7 +131,7 @@ impl PaymentService {
         let now = chrono::Utc::now();
         let payment = Payment {
             id: Uuid::new_v4(),
-            payer: Payer::Member(input.member_id),
+            payer: input.payer.clone(),
             amount_cents: input.amount_cents,
             currency: "USD".to_string(),
             status: PaymentStatus::Completed,
@@ -142,29 +146,32 @@ impl PaymentService {
         let payment = self.payment_repo.create(payment).await?;
 
         // ---- Post-work: dues + reschedule (membership only) ----------
-        if matches!(input.kind, PaymentKind::Membership) {
+        // Dues belong to a member; a guest payer has no membership to
+        // extend, and `Membership` + guest is not a shape any caller
+        // constructs.
+        if let (PaymentKind::Membership, Some(member_id)) = (&input.kind, input.payer.member_id()) {
             if let Some(slug) = &input.membership_type_slug {
                 if let Err(e) = billing_service
                     .auto_renew
-                    .extend_member_dues_by_slug(payment.id, input.member_id, slug)
+                    .extend_member_dues_by_slug(payment.id, member_id, slug)
                     .await
                 {
                     tracing::error!(
                         "Recorded {:?} payment for {} but dues extension failed: {}",
                         input.payment_method,
-                        input.member_id,
+                        member_id,
                         e,
                     );
                 }
                 if let Err(e) = billing_service
                     .auto_renew
-                    .reschedule_after_payment(input.member_id, slug)
+                    .reschedule_after_payment(member_id, slug)
                     .await
                 {
                     tracing::error!(
                         "Recorded {:?} payment for {} but reschedule failed: {}",
                         input.payment_method,
-                        input.member_id,
+                        member_id,
                         e,
                     );
                 }
@@ -173,12 +180,19 @@ impl PaymentService {
 
         // ---- Audit ----------------------------------------------------
         let action = audit_action(&input.payment_method, &input.kind);
+        // Same action string for a guest as for a member — the operator
+        // did the same thing — against the entity that actually names
+        // the payer.
+        let (entity_type, entity_id) = match &input.payer {
+            Payer::Member(id) => ("member", id.to_string()),
+            Payer::PublicDonor { email, .. } => ("guest", email.clone()),
+        };
         self.audit_service
             .log(
                 Some(input.actor_id),
                 action,
-                "member",
-                &input.member_id.to_string(),
+                entity_type,
+                &entity_id,
                 None,
                 Some(&format!(
                     "${:.2} — {}",

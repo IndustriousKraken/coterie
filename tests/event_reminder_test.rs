@@ -164,6 +164,8 @@ async fn build_with_tz(
         max_attendees: None,
         rsvp_required: true,
         member_price_cents: 0,
+        guest_price_cents: 0,
+        guest_registration_enabled: false,
         image_url: None,
         created_by: member.id,
         created_at: Utc::now(),

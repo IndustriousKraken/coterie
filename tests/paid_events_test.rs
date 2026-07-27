@@ -14,10 +14,9 @@ use coterie::{
     api::state::{MoneyLimiter, RateLimiter},
     auth::SecretCrypto,
     domain::{
-        AttendanceStatus, CreateMemberRequest, Event, EventType, EventVisibility, Member,
+        AttendanceStatus, Attendee, CreateMemberRequest, Event, EventType, EventVisibility, Member,
         MemberStatus, Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus, StripeRef,
     },
-    email::LogSender,
     error::AppError,
     integrations::IntegrationManager,
     payments::{
@@ -41,7 +40,36 @@ use coterie::{
 };
 use serde_json::json;
 use sqlx::SqlitePool;
+use tokio::sync::Mutex;
 use uuid::Uuid;
+
+// ---------------------------------------------------------------------
+// Recording EmailSender — the guest confirmation is the guest's only
+// artifact of the registration, so it is asserted, not assumed.
+// ---------------------------------------------------------------------
+
+struct RecordingSender {
+    sent: Mutex<Vec<coterie::email::EmailMessage>>,
+}
+
+impl RecordingSender {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            sent: Mutex::new(Vec::new()),
+        })
+    }
+    async fn all(&self) -> Vec<coterie::email::EmailMessage> {
+        self.sent.lock().await.clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl coterie::email::EmailSender for RecordingSender {
+    async fn send(&self, message: &coterie::email::EmailMessage) -> Result<(), AppError> {
+        self.sent.lock().await.push(message.clone());
+        Ok(())
+    }
+}
 
 mod common;
 use common::fresh_pool;
@@ -61,6 +89,7 @@ struct Harness {
     payment_service: PaymentService,
     billing: BillingService,
     fake: Arc<FakeStripeGateway>,
+    emails: Arc<RecordingSender>,
 }
 
 async fn build_harness() -> Harness {
@@ -80,10 +109,8 @@ async fn build_harness() -> Harness {
     )));
     let crypto = Arc::new(SecretCrypto::new("test-secret-please-ignore"));
     let settings = Arc::new(SettingsService::new(pool.clone(), crypto));
-    let email_sender = Arc::new(LogSender::new(
-        "test@example.com".to_string(),
-        "Test".to_string(),
-    ));
+    let emails = RecordingSender::new();
+    let email_sender: Arc<dyn coterie::email::EmailSender> = emails.clone();
     let donation_campaign_repo: Arc<dyn coterie::repository::DonationCampaignRepository> = Arc::new(
         coterie::repository::SqliteDonationCampaignRepository::new(pool.clone()),
     );
@@ -159,6 +186,7 @@ async fn build_harness() -> Harness {
         payment_service,
         billing,
         fake,
+        emails,
     }
 }
 
@@ -203,6 +231,8 @@ impl Harness {
                 max_attendees,
                 rsvp_required: true,
                 member_price_cents: price_cents,
+                guest_price_cents: 0,
+                guest_registration_enabled: false,
                 image_url: None,
                 created_by: creator,
                 created_at: now,
@@ -214,9 +244,54 @@ impl Harness {
             .unwrap()
     }
 
+    /// An event a non-member may register for: `Public` visibility plus
+    /// the guest-registration flag, which is the whole test.
+    async fn guest_event(
+        &self,
+        creator: Uuid,
+        member_price_cents: i64,
+        guest_price_cents: i64,
+        max_attendees: Option<i32>,
+    ) -> Event {
+        let mut e = self.event(creator, member_price_cents, max_attendees).await;
+        e.visibility = EventVisibility::Public;
+        e.guest_price_cents = guest_price_cents;
+        e.guest_registration_enabled = true;
+        self.event_repo.update(e.id, e.clone()).await.unwrap()
+    }
+
+    /// Make `is_email_configured()` true, so the confirmation email is
+    /// actually attempted (the default `log` mode is a dev no-op that
+    /// skips silently).
+    async fn configure_email(&self) {
+        sqlx::query("UPDATE app_settings SET value = 'smtp' WHERE key = 'email.mode'")
+            .execute(&self.pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE app_settings SET value = 'smtp.example.com' WHERE key = 'email.smtp_host'",
+        )
+        .execute(&self.pool)
+        .await
+        .unwrap();
+    }
+
+    async fn guest_status(&self, event_id: Uuid, email: &str) -> Option<AttendanceStatus> {
+        self.event_repo
+            .attendance_status(
+                event_id,
+                &Attendee::Guest {
+                    name: "ignored".to_string(),
+                    email: email.to_string(),
+                },
+            )
+            .await
+            .unwrap()
+    }
+
     async fn attendance_status(&self, event_id: Uuid, member_id: Uuid) -> Option<AttendanceStatus> {
         self.event_repo
-            .get_member_attendance_status(event_id, member_id)
+            .attendance_status(event_id, &Attendee::Member(member_id))
             .await
             .unwrap()
     }
@@ -398,7 +473,7 @@ async fn expired_checkout_releases_the_seat_for_the_next_member() {
     // runs — the payment leaving Pending is what frees the seat.
     let pending = h
         .payment_repo
-        .find_event_fee_payment(event.id, a.id)
+        .find_event_fee_payment(event.id, &Payer::Member(a.id))
         .await
         .unwrap()
         .unwrap();
@@ -448,7 +523,7 @@ async fn registering_again_after_paying_charges_nothing() {
     h.registration.register(&m, &event).await.unwrap();
     let payment = h
         .payment_repo
-        .find_event_fee_payment(event.id, m.id)
+        .find_event_fee_payment(event.id, &Payer::Member(m.id))
         .await
         .unwrap()
         .unwrap();
@@ -537,7 +612,7 @@ async fn completion_is_idempotent_and_does_not_extend_dues() {
     h.registration.register(&m, &event).await.unwrap();
     let payment = h
         .payment_repo
-        .find_event_fee_payment(event.id, m.id)
+        .find_event_fee_payment(event.id, &Payer::Member(m.id))
         .await
         .unwrap()
         .unwrap();
@@ -598,7 +673,7 @@ async fn admin_refund_cancels_the_seat() {
         .payment_service
         .record_manual(
             RecordManualPaymentInput {
-                member_id: m.id,
+                payer: Payer::Member(m.id),
                 amount_cents: 3000,
                 kind: PaymentKind::EventFee { event_id: event.id },
                 description: "Event registration — Lockpicking 101".to_string(),
@@ -611,11 +686,11 @@ async fn admin_refund_cancels_the_seat() {
         .await
         .unwrap();
     h.event_repo
-        .register_attendance(event.id, m.id)
+        .register_attendance(event.id, &Attendee::Member(m.id))
         .await
         .unwrap();
     h.event_repo
-        .link_payment(event.id, m.id, payment.id)
+        .link_payment(event.id, &Attendee::Member(m.id), payment.id)
         .await
         .unwrap();
     assert_eq!(h.event_repo.count_held_seats(event.id).await.unwrap(), 1);
@@ -675,11 +750,11 @@ async fn out_of_band_charge_refunded_cancels_the_seat() {
         .await
         .unwrap();
     h.event_repo
-        .register_attendance(event.id, m.id)
+        .register_attendance(event.id, &Attendee::Member(m.id))
         .await
         .unwrap();
     h.event_repo
-        .link_payment(event.id, m.id, payment.id)
+        .link_payment(event.id, &Attendee::Member(m.id), payment.id)
         .await
         .unwrap();
 
@@ -719,7 +794,7 @@ async fn seat_a_paid_attendee(
         .payment_service
         .record_manual(
             RecordManualPaymentInput {
-                member_id: m.id,
+                payer: Payer::Member(m.id),
                 amount_cents: 3000,
                 kind: PaymentKind::EventFee { event_id: event.id },
                 description: "Event registration — Lockpicking 101".to_string(),
@@ -732,11 +807,11 @@ async fn seat_a_paid_attendee(
         .await
         .unwrap();
     h.event_repo
-        .register_attendance(event.id, m.id)
+        .register_attendance(event.id, &Attendee::Member(m.id))
         .await
         .unwrap();
     h.event_repo
-        .link_payment(event.id, m.id, payment.id)
+        .link_payment(event.id, &Attendee::Member(m.id), payment.id)
         .await
         .unwrap();
     (m, payment)
@@ -810,11 +885,11 @@ async fn a_failing_refund_aborts_the_delete_and_leaves_the_roster_intact() {
         .await
         .unwrap();
     h.event_repo
-        .register_attendance(event.id, m.id)
+        .register_attendance(event.id, &Attendee::Member(m.id))
         .await
         .unwrap();
     h.event_repo
-        .link_payment(event.id, m.id, payment.id)
+        .link_payment(event.id, &Attendee::Member(m.id), payment.id)
         .await
         .unwrap();
 
@@ -980,7 +1055,7 @@ async fn event_fee_audit_actions_do_not_collide_with_dues() {
         h.payment_service
             .record_manual(
                 RecordManualPaymentInput {
-                    member_id: member,
+                    payer: Payer::Member(member),
                     amount_cents: amount,
                     kind,
                     description: "test".to_string(),
@@ -1089,10 +1164,646 @@ async fn event_fee_session_is_stamped_and_expires_within_an_hour() {
     // The payment row names the event, so the receipt does too.
     let payment = h
         .payment_repo
-        .find_event_fee_payment(event.id, m.id)
+        .find_event_fee_payment(event.id, &Payer::Member(m.id))
         .await
         .unwrap()
         .unwrap();
     assert!(payment.description.contains("Lockpicking 101"));
     assert_eq!(payment.kind, PaymentKind::EventFee { event_id: event.id });
+}
+
+// =====================================================================
+// Guest registration (a42). A guest seat is the same seat with a
+// different payer — every test here checks that claim, so any drift
+// toward a second state machine breaks something.
+// =====================================================================
+
+const GUEST: (&str, &str) = ("Ada Lovelace", "ada@example.com");
+
+// 7.2 — the two questions stay two columns. "Non-members may not
+// register" and "non-members attend free" must be different states in
+// storage, because collapsing them is the bug this design exists to
+// avoid.
+#[tokio::test]
+async fn disabled_guest_registration_is_distinguishable_from_a_zero_price() {
+    let h = build_harness().await;
+    let creator = h.active_member("creator").await;
+
+    // Enabled at a zero price: a free workshop with a seat list.
+    let free_public = h.guest_event(creator.id, 0, 0, Some(20)).await;
+    // Disabled, also at a zero price: the weekly talk anyone walks into.
+    let mut show_up = h.event(creator.id, 0, None).await;
+    show_up.visibility = EventVisibility::Public;
+    let show_up = h
+        .event_repo
+        .update(show_up.id, show_up.clone())
+        .await
+        .unwrap();
+
+    assert!(free_public.publicly_registerable());
+    assert!(!show_up.publicly_registerable());
+    assert_eq!(free_public.guest_price_cents, 0);
+    assert_eq!(show_up.guest_price_cents, 0);
+
+    // Both are findable by equality on the price — the NULL-as-sentinel
+    // failure the split avoids — and separable by the flag.
+    let (zero_priced,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM events WHERE guest_price_cents = 0")
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        zero_priced, 2,
+        "a zero guest price is stored as zero, not NULL"
+    );
+    let (registerable,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM events WHERE guest_registration_enabled = 1 AND visibility = 'Public'",
+    )
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+    assert_eq!(registerable, 1, "only the enabled one is registerable");
+
+    // A registerable event carries a resolved URL; a show-up event does not.
+    assert!(free_public
+        .registration_url("https://coterie.example")
+        .is_some());
+    assert_eq!(show_up.registration_url("https://coterie.example"), None);
+}
+
+// 7.3 — the guest happy path end to end: seat held at Stripe, webhook
+// confirms it, confirmation email carries the event AND the receipt.
+#[tokio::test]
+async fn guest_pays_and_the_webhook_confirms_the_seat_with_a_receipt_email() {
+    let h = build_harness().await;
+    h.configure_email().await;
+    let creator = h.active_member("creator").await;
+    let event = h.guest_event(creator.id, 0, 3000, Some(2)).await;
+
+    let outcome = h
+        .registration
+        .register_guest(&event, GUEST.0, GUEST.1)
+        .await
+        .unwrap();
+    assert!(matches!(outcome, RegistrationOutcome::Checkout { .. }));
+    assert_eq!(
+        h.guest_status(event.id, GUEST.1).await,
+        Some(AttendanceStatus::PendingPayment),
+        "the seat is held while the guest is at Stripe",
+    );
+    assert_eq!(h.event_repo.count_held_seats(event.id).await.unwrap(), 1);
+
+    // The payment names a non-member payer and the event.
+    let payment = h
+        .payment_repo
+        .find_event_fee_payment(
+            event.id,
+            &Payer::PublicDonor {
+                name: GUEST.0.to_string(),
+                email: GUEST.1.to_string(),
+            },
+        )
+        .await
+        .unwrap()
+        .expect("a guest event-fee payment exists");
+    assert_eq!(payment.status, PaymentStatus::Pending);
+    assert_eq!(payment.member_id(), None);
+    assert_eq!(
+        payment.payer,
+        Payer::PublicDonor {
+            name: GUEST.0.to_string(),
+            email: GUEST.1.to_string()
+        },
+    );
+    assert_eq!(payment.kind, PaymentKind::EventFee { event_id: event.id });
+
+    // Only the webhook confirms the seat.
+    let session_id = payment.external_id.as_ref().unwrap().as_str().to_string();
+    h.dispatcher
+        .dispatch_checkout_session_completed(
+            event_fee_session(&session_id, event.id, Some("pi_guest_1")),
+            &h.billing,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        h.guest_status(event.id, GUEST.1).await,
+        Some(AttendanceStatus::Registered),
+    );
+    let emails = h.emails.all().await;
+    let confirmation = emails
+        .iter()
+        .find(|m| m.to == GUEST.1)
+        .expect("the guest is emailed their confirmation");
+    assert!(confirmation.subject.contains("Lockpicking 101"));
+    assert!(confirmation.text_body.contains("Lockpicking 101"));
+    assert!(
+        confirmation.text_body.contains("$30.00"),
+        "a paid registration's confirmation carries the amount paid: {}",
+        confirmation.text_body,
+    );
+    assert_eq!(h.audit_count("event_registration_paid").await, 1);
+}
+
+// 3.1b / 7.2b — a free guest registration confirms immediately, writes
+// no payment row, and still counts against capacity.
+#[tokio::test]
+async fn free_guest_registration_confirms_without_any_payment_machinery() {
+    let h = build_harness().await;
+    h.configure_email().await;
+    let creator = h.active_member("creator").await;
+    let event = h.guest_event(creator.id, 0, 0, Some(1)).await;
+
+    let outcome = h
+        .registration
+        .register_guest(&event, GUEST.0, GUEST.1)
+        .await
+        .unwrap();
+    assert_eq!(outcome, RegistrationOutcome::Registered);
+    assert_eq!(
+        h.guest_status(event.id, GUEST.1).await,
+        Some(AttendanceStatus::Registered),
+    );
+    assert_eq!(h.payment_count().await, 0, "no payment row for a free seat");
+    assert_eq!(
+        h.fake.count_where(|c| matches!(
+            c,
+            coterie::payments::fake_gateway::FakeCall::CreateCheckoutSession(_)
+        )),
+        0,
+        "no Checkout session for a free seat",
+    );
+    assert_eq!(
+        h.event_repo.count_held_seats(event.id).await.unwrap(),
+        1,
+        "a free seat still occupies capacity",
+    );
+
+    // Re-submitting returns the existing seat rather than seating them twice.
+    assert_eq!(
+        h.registration
+            .register_guest(&event, GUEST.0, GUEST.1)
+            .await
+            .unwrap(),
+        RegistrationOutcome::Registered,
+    );
+    assert_eq!(h.event_repo.roster(event.id).await.unwrap().len(), 1);
+
+    // The one-seat event is now full for everybody else.
+    let other = h.active_member("other").await;
+    assert!(
+        h.registration.register(&other, &event).await.is_ok(),
+        "free member RSVP is unchanged"
+    );
+}
+
+// The free confirmation email confirms the seat and carries no receipt —
+// a zero-amount receipt is noise.
+#[tokio::test]
+async fn free_guest_confirmation_carries_no_receipt() {
+    let h = build_harness().await;
+    h.configure_email().await;
+    let creator = h.active_member("creator").await;
+    let event = h.guest_event(creator.id, 0, 0, None).await;
+
+    // The free path is confirmed by the public handler, which is what
+    // sends the email; here we call the same dispatch the handler does.
+    h.registration
+        .register_guest(&event, GUEST.0, GUEST.1)
+        .await
+        .unwrap();
+    coterie::service::billing_service::notifications::dispatch_guest_event_confirmation(
+        &(h.emails.clone() as Arc<dyn coterie::email::EmailSender>),
+        &coterie::service::settings_service::SettingsService::new(
+            h.pool.clone(),
+            Arc::new(SecretCrypto::new("test-secret-please-ignore")),
+        ),
+        GUEST.1,
+        GUEST.0,
+        &event,
+        None,
+    )
+    .await;
+
+    let emails = h.emails.all().await;
+    let confirmation = emails.iter().find(|m| m.to == GUEST.1).expect("email sent");
+    assert!(confirmation.text_body.contains("Lockpicking 101"));
+    assert!(
+        !confirmation.text_body.contains("Amount paid"),
+        "a free registration gets no receipt: {}",
+        confirmation.text_body,
+    );
+}
+
+// 7.4 — abandonment frees a guest seat through a41's expiry path, with
+// no guest-specific code involved.
+#[tokio::test]
+async fn abandoned_guest_checkout_frees_the_seat() {
+    let h = build_harness().await;
+    let creator = h.active_member("creator").await;
+    let event = h.guest_event(creator.id, 0, 3000, Some(1)).await;
+
+    h.registration
+        .register_guest(&event, GUEST.0, GUEST.1)
+        .await
+        .unwrap();
+    assert_eq!(h.event_repo.count_held_seats(event.id).await.unwrap(), 1);
+
+    let pending = h
+        .payment_repo
+        .find_event_fee_payment(
+            event.id,
+            &Payer::PublicDonor {
+                name: GUEST.0.to_string(),
+                email: GUEST.1.to_string(),
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let session_id = pending.external_id.as_ref().unwrap().as_str().to_string();
+    h.dispatcher
+        .dispatch_expired_session(expired_session(&session_id))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        h.event_repo.count_held_seats(event.id).await.unwrap(),
+        0,
+        "the payment leaving Pending is what frees the seat",
+    );
+    // And the next guest can take it.
+    assert!(matches!(
+        h.registration
+            .register_guest(&event, "Bob", "bob@example.com")
+            .await,
+        Ok(RegistrationOutcome::Checkout { .. }),
+    ));
+}
+
+// 7.5 — one capacity, two kinds of seat. The count is row-based, so it
+// needed no change; this proves it.
+#[tokio::test]
+async fn guest_and_member_seats_compete_for_the_same_capacity() {
+    let h = build_harness().await;
+    let creator = h.active_member("creator").await;
+    let event = h.guest_event(creator.id, 2000, 3000, Some(1)).await;
+    let member = h.active_member("m").await;
+
+    h.registration
+        .register_guest(&event, GUEST.0, GUEST.1)
+        .await
+        .unwrap();
+
+    let err = h.registration.register(&member, &event).await;
+    assert!(
+        matches!(&err, Err(AppError::BadRequest(msg)) if msg.contains("full")),
+        "a guest's held seat closes the event for a member: {err:?}",
+    );
+
+    // And the other way around: free the guest seat, seat the member,
+    // then the next guest is refused.
+    h.event_repo
+        .release_seat(
+            event.id,
+            &Attendee::Guest {
+                name: GUEST.0.to_string(),
+                email: GUEST.1.to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    h.registration.register(&member, &event).await.unwrap();
+    let err = h
+        .registration
+        .register_guest(&event, "Bob", "bob@example.com")
+        .await;
+    assert!(
+        matches!(&err, Err(AppError::BadRequest(msg)) if msg.contains("full")),
+        "a member's held seat closes the event for a guest: {err:?}",
+    );
+}
+
+// 7.6 — the UNIQUE(event_id, guest_email) constraint, not just the
+// service guard: two concurrent submissions of one email yield one seat.
+#[tokio::test]
+async fn concurrent_duplicate_guest_email_yields_exactly_one_seat() {
+    let h = build_harness().await;
+    let creator = h.active_member("creator").await;
+    let event = h.guest_event(creator.id, 0, 3000, Some(5)).await;
+
+    let (svc1, svc2) = (h.registration.clone(), h.registration.clone());
+    let (e1, e2) = (event.clone(), event.clone());
+    let t1 = tokio::spawn(async move { svc1.register_guest(&e1, GUEST.0, GUEST.1).await });
+    let t2 = tokio::spawn(async move { svc2.register_guest(&e2, GUEST.0, GUEST.1).await });
+    let _ = (t1.await.unwrap(), t2.await.unwrap());
+
+    let roster = h.event_repo.roster(event.id).await.unwrap();
+    assert_eq!(roster.len(), 1, "exactly one attendance row: {roster:?}");
+    let (rows,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM event_attendance WHERE event_id = ? AND guest_email = ?",
+    )
+    .bind(event.id.to_string())
+    .bind(GUEST.1)
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+    assert_eq!(rows, 1, "the DB constraint is the guarantee, not the guard");
+}
+
+// 3.3 / 7.7 — a guest typing a member's address gets a guest seat. No
+// row is written into that member's account, and the price bracket is
+// the guest one. This is the deliberate divergence from /public/donate.
+#[tokio::test]
+async fn guest_using_a_member_email_does_not_touch_that_member() {
+    let h = build_harness().await;
+    let creator = h.active_member("creator").await;
+    let event = h.guest_event(creator.id, 1000, 3000, None).await;
+    let member = h.active_member("victim").await;
+
+    h.registration
+        .register_guest(&event, "Not The Member", &member.email)
+        .await
+        .unwrap();
+
+    // The member holds no seat and owns no payment.
+    assert_eq!(
+        h.attendance_status(event.id, member.id).await,
+        None,
+        "no attendance row in the member's account",
+    );
+    assert!(
+        h.payment_repo
+            .find_by_member(member.id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "no payment row in the member's account",
+    );
+
+    // The seat that does exist is a guest seat at the guest price.
+    let roster = h.event_repo.roster(event.id).await.unwrap();
+    assert_eq!(roster.len(), 1);
+    assert_eq!(
+        roster[0].attendee,
+        Attendee::Guest {
+            name: "Not The Member".to_string(),
+            email: member.email.clone(),
+        },
+    );
+    let payment = h
+        .payment_repo
+        .find_event_fee_payment(
+            event.id,
+            &Payer::PublicDonor {
+                name: "Not The Member".to_string(),
+                email: member.email.clone(),
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(payment.member_id(), None);
+    assert_eq!(
+        payment.amount_cents, 3000,
+        "charged the guest price, not the member's bracket",
+    );
+}
+
+// 3.2 — the double-charge guard is keyed on (event, guest email).
+#[tokio::test]
+async fn a_paid_guest_resubmitting_is_not_charged_twice() {
+    let h = build_harness().await;
+    let creator = h.active_member("creator").await;
+    let event = h.guest_event(creator.id, 0, 3000, None).await;
+    let payer = Payer::PublicDonor {
+        name: GUEST.0.to_string(),
+        email: GUEST.1.to_string(),
+    };
+
+    h.registration
+        .register_guest(&event, GUEST.0, GUEST.1)
+        .await
+        .unwrap();
+    let payment = h
+        .payment_repo
+        .find_event_fee_payment(event.id, &payer)
+        .await
+        .unwrap()
+        .unwrap();
+    let session_id = payment.external_id.as_ref().unwrap().as_str().to_string();
+    h.dispatcher
+        .dispatch_checkout_session_completed(
+            event_fee_session(&session_id, event.id, Some("pi_guest_2")),
+            &h.billing,
+        )
+        .await
+        .unwrap();
+
+    let sessions_before = h.fake.count_where(|c| {
+        matches!(
+            c,
+            coterie::payments::fake_gateway::FakeCall::CreateCheckoutSession(_)
+        )
+    });
+    let payments_before = h.payment_count().await;
+
+    assert_eq!(
+        h.registration
+            .register_guest(&event, GUEST.0, GUEST.1)
+            .await
+            .unwrap(),
+        RegistrationOutcome::Registered,
+        "an already-paid guest is returned their registration",
+    );
+    assert_eq!(
+        h.fake.count_where(|c| matches!(
+            c,
+            coterie::payments::fake_gateway::FakeCall::CreateCheckoutSession(_)
+        )),
+        sessions_before,
+        "no second Checkout session",
+    );
+    assert_eq!(
+        h.payment_count().await,
+        payments_before,
+        "no second payment row"
+    );
+}
+
+// 7.9 — refunding a guest's fee releases the seat, by the same
+// payment-keyed path a member's refund takes.
+#[tokio::test]
+async fn guest_refund_releases_the_seat() {
+    let h = build_harness().await;
+    let creator = h.active_member("creator").await;
+    let admin = h.active_member("admin").await;
+    let event = h.guest_event(creator.id, 0, 3000, Some(1)).await;
+    let payer = Payer::PublicDonor {
+        name: GUEST.0.to_string(),
+        email: GUEST.1.to_string(),
+    };
+
+    h.registration
+        .register_guest(&event, GUEST.0, GUEST.1)
+        .await
+        .unwrap();
+    let payment = h
+        .payment_repo
+        .find_event_fee_payment(event.id, &payer)
+        .await
+        .unwrap()
+        .unwrap();
+    let session_id = payment.external_id.as_ref().unwrap().as_str().to_string();
+    h.dispatcher
+        .dispatch_checkout_session_completed(
+            event_fee_session(&session_id, event.id, Some("pi_guest_3")),
+            &h.billing,
+        )
+        .await
+        .unwrap();
+    assert_eq!(h.event_repo.count_held_seats(event.id).await.unwrap(), 1);
+
+    h.payment_admin
+        .refund(admin.id, payment.id, loopback())
+        .await
+        .expect("a guest's event fee is refundable like a member's");
+
+    let after = h
+        .payment_repo
+        .find_by_id(payment.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.status, PaymentStatus::Refunded);
+    assert_eq!(
+        h.guest_status(event.id, GUEST.1).await,
+        Some(AttendanceStatus::Cancelled),
+    );
+    assert_eq!(
+        h.event_repo.count_held_seats(event.id).await.unwrap(),
+        0,
+        "the seat is available again",
+    );
+}
+
+// 6.2 / 6.3 — the roster shows a guest with their supplied identity and
+// distinguishes them from a member, and the operator actions work on the
+// guest row with identical audit actions.
+#[tokio::test]
+async fn roster_shows_guests_and_admin_actions_work_on_them() {
+    let h = build_harness().await;
+    let creator = h.active_member("creator").await;
+    let admin = h.active_member("admin").await;
+    let member = h.active_member("m").await;
+    let event = h.guest_event(creator.id, 2000, 3000, None).await;
+
+    h.event_repo
+        .register_attendance(event.id, &Attendee::Member(member.id))
+        .await
+        .unwrap();
+    h.registration
+        .register_guest(&event, GUEST.0, GUEST.1)
+        .await
+        .unwrap();
+
+    let roster = h.event_repo.roster(event.id).await.unwrap();
+    assert_eq!(roster.len(), 2, "both kinds of seat are listed: {roster:?}");
+    let guest_row = roster
+        .iter()
+        .find(|r| r.attendee.member_id().is_none())
+        .expect("the guest row is on the roster");
+    assert_eq!(guest_row.name, GUEST.0);
+    assert_eq!(guest_row.email, GUEST.1);
+    let member_row = roster
+        .iter()
+        .find(|r| r.attendee.member_id() == Some(member.id))
+        .expect("the member row is on the roster");
+    assert_eq!(member_row.email, member.email);
+
+    // At-the-door for the guest: a Manual event fee at the GUEST price,
+    // audited with the same action a member's would be.
+    let guest = Attendee::Guest {
+        name: GUEST.0.to_string(),
+        email: GUEST.1.to_string(),
+    };
+    let at_the_door = h
+        .payment_service
+        .record_manual(
+            RecordManualPaymentInput {
+                payer: guest.as_payer(),
+                amount_cents: event.guest_price_cents,
+                kind: PaymentKind::EventFee { event_id: event.id },
+                description: "Event registration — Lockpicking 101".to_string(),
+                payment_method: PaymentMethod::Manual,
+                membership_type_slug: None,
+                actor_id: admin.id,
+            },
+            &h.billing,
+        )
+        .await
+        .expect("a guest can pay at the door");
+    assert_eq!(at_the_door.member_id(), None);
+    assert_eq!(at_the_door.amount_cents, 3000);
+    assert_eq!(h.audit_count("manual_event_fee").await, 1);
+
+    h.event_repo
+        .register_attendance(event.id, &guest)
+        .await
+        .unwrap();
+    h.event_repo
+        .link_payment(event.id, &guest, at_the_door.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        h.guest_status(event.id, GUEST.1).await,
+        Some(AttendanceStatus::Registered),
+    );
+
+    // Comping a guest: $0 Waived, same audit action as a comped member.
+    let other_guest = Attendee::Guest {
+        name: "Bob".to_string(),
+        email: "bob@example.com".to_string(),
+    };
+    h.payment_service
+        .record_manual(
+            RecordManualPaymentInput {
+                payer: other_guest.as_payer(),
+                amount_cents: 0,
+                kind: PaymentKind::EventFee { event_id: event.id },
+                description: "Event registration — Lockpicking 101".to_string(),
+                payment_method: PaymentMethod::Waived,
+                membership_type_slug: None,
+                actor_id: admin.id,
+            },
+            &h.billing,
+        )
+        .await
+        .expect("a guest seat can be comped");
+    assert_eq!(h.audit_count("waive_event_fee").await, 1);
+}
+
+// A guest identity is bounded and validated before it can reach a seat.
+#[tokio::test]
+async fn guest_registration_rejects_unusable_identities() {
+    let h = build_harness().await;
+    let creator = h.active_member("creator").await;
+    let event = h.guest_event(creator.id, 0, 3000, None).await;
+
+    for (name, email) in [("Ada", "no-at-sign"), ("", "ada@example.com"), ("Ada", "")] {
+        assert!(
+            h.registration
+                .register_guest(&event, name, email)
+                .await
+                .is_err(),
+            "name={name:?} email={email:?} should be rejected",
+        );
+    }
+    assert_eq!(
+        h.payment_count().await,
+        0,
+        "a rejected identity writes nothing"
+    );
+    assert!(h.event_repo.roster(event.id).await.unwrap().is_empty());
 }
