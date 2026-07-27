@@ -38,6 +38,14 @@ pub fn create_web_routes(state: AppState) -> Router {
         .route("/logout", post(templates::auth::logout_handler))
         // Email verification landing (from signup email link)
         .route("/verify", get(templates::verify::verify_handler))
+        // Coterie-hosted public event registration page. Anonymous: the
+        // shareable URL an organizer pastes into Discord or a newsletter.
+        // The money endpoint it posts to lives on the API surface at
+        // POST /public/events/:id/register.
+        .route(
+            "/events/:id/register",
+            get(templates::event_register::event_register_page),
+        )
         // Password reset flow
         .route(
             "/forgot-password",

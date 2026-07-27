@@ -167,6 +167,16 @@ impl FakeStripeGateway {
             .push_back(Ok(output));
     }
 
+    /// Simulate Stripe rejecting the next session creation — the path
+    /// that must release an already-claimed paid-event seat.
+    pub fn next_checkout_session_err(&self, e: AppError) {
+        self.queues
+            .lock()
+            .unwrap()
+            .create_checkout
+            .push_back(Err(e));
+    }
+
     pub fn next_retrieve_checkout_session(&self, retrieved: RetrievedCheckoutSession) {
         self.queues
             .lock()

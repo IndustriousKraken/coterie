@@ -25,7 +25,7 @@ use crate::{
     error::AppError,
     integrations::{IntegrationEvent, IntegrationManager},
     payments::StripeHandle,
-    repository::PaymentRepository,
+    repository::{EventRepository, PaymentRepository},
     service::audit_service::AuditService,
 };
 
@@ -88,6 +88,9 @@ impl RefundError {
 
 pub struct PaymentAdminService {
     payment_repo: Arc<dyn PaymentRepository>,
+    /// Refunding an event fee also releases its seat — a member doesn't
+    /// keep a seat for an event whose fee went back to them.
+    event_repo: Arc<dyn EventRepository>,
     /// Hot-swappable Stripe wiring — read `current().client` at refund
     /// time (not captured once) so a portal key rotation reaches this
     /// path without a restart, same as the webhook + per-request charges.
@@ -100,6 +103,7 @@ pub struct PaymentAdminService {
 impl PaymentAdminService {
     pub fn new(
         payment_repo: Arc<dyn PaymentRepository>,
+        event_repo: Arc<dyn EventRepository>,
         stripe_handle: Arc<StripeHandle>,
         audit_service: Arc<AuditService>,
         integration_manager: Arc<IntegrationManager>,
@@ -107,6 +111,7 @@ impl PaymentAdminService {
     ) -> Self {
         Self {
             payment_repo,
+            event_repo,
             stripe_handle,
             audit_service,
             integration_manager,
@@ -145,7 +150,68 @@ impl PaymentAdminService {
         if !self.money_limiter.0.check_and_record(ip) {
             return Err(RefundError::RateLimited);
         }
+        self.refund_claimed(actor_id, payment_id).await
+    }
 
+    /// Refund every `Completed` event-fee payment on an event, in one
+    /// operator action. Used by the delete-an-event path, which MUST
+    /// refund before deleting: `event_attendance` cascades on event
+    /// delete, so delete-then-refund would destroy the roster while the
+    /// charges stood. Aborts on the FIRST failure and returns it, so
+    /// the caller leaves the event in place and fixable.
+    ///
+    /// The per-IP limit is checked once for the whole sweep rather than
+    /// once per attendee: this is a single admin action, and charging
+    /// it per attendee would abort a large event's delete halfway on the
+    /// eleventh refund.
+    pub async fn refund_all_event_fees(
+        &self,
+        actor_id: Uuid,
+        event_id: Uuid,
+        ip: IpAddr,
+    ) -> Result<usize, RefundError> {
+        if !self.money_limiter.0.check_and_record(ip) {
+            return Err(RefundError::RateLimited);
+        }
+
+        let payments = self
+            .payment_repo
+            .list_completed_event_fees(event_id)
+            .await
+            .map_err(RefundError::InternalDatabaseError)?;
+        if payments.is_empty() {
+            return Ok(0);
+        }
+
+        let mut refunded = 0usize;
+        for payment in &payments {
+            self.refund_claimed(actor_id, payment.id).await?;
+            refunded += 1;
+        }
+
+        self.audit_service
+            .log(
+                Some(actor_id),
+                "refund_event_fees_bulk",
+                "event",
+                &event_id.to_string(),
+                None,
+                Some(&format!("{} event-fee payments refunded", refunded)),
+                None,
+            )
+            .await;
+
+        Ok(refunded)
+    }
+
+    /// The refund chain minus the rate-limit check, so the single-payment
+    /// route and the delete-time sweep share one implementation of
+    /// validate → claim → Stripe → seat → audit → alert.
+    async fn refund_claimed(
+        &self,
+        actor_id: Uuid,
+        payment_id: Uuid,
+    ) -> Result<RefundOutcome, RefundError> {
         // 2. Load the payment row.
         let payment = self
             .payment_repo
@@ -232,7 +298,32 @@ impl PaymentAdminService {
             _ => format!("Refunded ${:.2}", payment.amount_cents as f64 / 100.0),
         };
 
-        // 7. Audit. Failures are logged via tracing and swallowed
+        // 7. A refunded event fee releases its seat. Done before the
+        //    audit so the audit row describes a completed transition.
+        if let Some(event_id) = payment.kind.event_id() {
+            if let Err(e) = self.event_repo.cancel_seat_for_payment(payment.id).await {
+                // The money is already back; a stuck seat is the lesser
+                // problem and an admin can release it from the roster.
+                tracing::error!(
+                    "Refunded event-fee payment {} but could not cancel its seat: {}",
+                    payment.id,
+                    e,
+                );
+            }
+            self.audit_service
+                .log(
+                    Some(actor_id),
+                    "event_registration_refunded",
+                    "event",
+                    &event_id.to_string(),
+                    None,
+                    Some(&detail),
+                    None,
+                )
+                .await;
+        }
+
+        // 8. Audit. Failures are logged via tracing and swallowed
         //    inside AuditService::log.
         self.audit_service
             .log(
@@ -246,7 +337,7 @@ impl PaymentAdminService {
             )
             .await;
 
-        // 8. Visibility: a refund is unusual enough to alert on.
+        // 9. Visibility: a refund is unusual enough to alert on.
         //    Per-integration failures are logged inside
         //    IntegrationManager; the call always returns.
         self.integration_manager
@@ -314,6 +405,8 @@ mod tests {
     ) -> (PaymentAdminService, Arc<dyn PaymentRepository>) {
         let payment_repo: Arc<dyn PaymentRepository> =
             Arc::new(SqlitePaymentRepository::new(pool.clone()));
+        let event_repo: Arc<dyn EventRepository> =
+            Arc::new(crate::repository::SqliteEventRepository::new(pool.clone()));
         let audit = Arc::new(AuditService::new(pool.clone()));
         let integrations = Arc::new(IntegrationManager::new());
         // Wrap the (optional) client in a fixed handle — these unit tests
@@ -321,6 +414,7 @@ mod tests {
         let stripe_handle = Arc::new(StripeHandle::preloaded(stripe_client, None));
         let svc = PaymentAdminService::new(
             payment_repo.clone(),
+            event_repo,
             stripe_handle,
             audit,
             integrations,

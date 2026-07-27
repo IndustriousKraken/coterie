@@ -49,21 +49,29 @@ fn build_handle(pool: &SqlitePool, settings: &Arc<SettingsService>) -> Arc<Strip
         Arc::new(SqlitePaymentRepository::new(pool.clone()));
     let member_repo: Arc<dyn MemberRepository> =
         Arc::new(SqliteMemberRepository::new(pool.clone()));
+    let event_repo: Arc<dyn coterie::repository::EventRepository> = Arc::new(
+        coterie::repository::SqliteEventRepository::new(pool.clone()),
+    );
     let processed_events_repo: Arc<dyn ProcessedEventsRepository> =
         Arc::new(SqliteProcessedEventsRepository::new(pool.clone()));
     let mt_service = Arc::new(MembershipTypeService::new(Arc::new(
         SqliteMembershipTypeRepository::new(pool.clone()),
     )));
     let integrations = Arc::new(IntegrationManager::new());
+    let audit = Arc::new(coterie::service::audit_service::AuditService::new(
+        pool.clone(),
+    ));
 
     Arc::new(StripeHandle::with_gateway_factory(
         factory,
         settings.clone(),
         payment_repo,
         member_repo,
+        event_repo,
         processed_events_repo,
         mt_service,
         integrations,
+        audit,
     ))
 }
 
@@ -466,8 +474,12 @@ async fn refund_service_picks_up_client_after_rebuild_no_restart() {
 
     // The service captures the SHARED handle — the same one rebuild()
     // swaps — not a client snapshot taken now.
+    let event_repo: Arc<dyn coterie::repository::EventRepository> = Arc::new(
+        coterie::repository::SqliteEventRepository::new(pool.clone()),
+    );
     let admin = PaymentAdminService::new(
         payment_repo.clone(),
+        event_repo,
         handle.clone(),
         audit,
         integrations,

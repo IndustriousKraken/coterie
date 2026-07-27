@@ -173,6 +173,34 @@ pub struct EventReminderText<'a> {
     pub event_url: &'a str,
 }
 
+/// Guest registration confirmation. `amount_paid` carries a receipt only
+/// when money actually changed hands — a free registration gets the
+/// event details with no receipt block, because a zero-amount receipt is
+/// noise.
+#[derive(Template)]
+#[template(path = "emails/event_registration.html")]
+pub struct EventRegistrationHtml<'a> {
+    pub full_name: &'a str,
+    pub org_name: &'a str,
+    pub event_title: &'a str,
+    pub event_start: &'a str,
+    pub event_location: Option<&'a str>,
+    pub amount_paid: Option<&'a str>,
+    pub receipt_id: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "emails/event_registration.txt")]
+pub struct EventRegistrationText<'a> {
+    pub full_name: &'a str,
+    pub org_name: &'a str,
+    pub event_title: &'a str,
+    pub event_start: &'a str,
+    pub event_location: Option<&'a str>,
+    pub amount_paid: Option<&'a str>,
+    pub receipt_id: &'a str,
+}
+
 #[derive(Template)]
 #[template(path = "emails/admin_alert.html")]
 pub struct AdminAlertHtml<'a> {

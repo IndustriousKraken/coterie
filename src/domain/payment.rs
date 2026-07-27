@@ -53,8 +53,14 @@ pub enum PaymentKind {
     /// Charitable donation. `campaign_id` is the donation_campaigns
     /// row this counts toward, or `None` for a general donation.
     Donation { campaign_id: Option<Uuid> },
-    /// Free-form bucket — merch, event fees, anything that's neither
-    /// dues nor a donation. No automatic dues / campaign side-effects.
+    /// A fee paid to attend one event. Confirms the payer's seat on
+    /// `event_id` when it completes, and triggers no dues extension.
+    /// The event id lives on the variant so a `charge.refunded` webhook
+    /// — which arrives with a payment id and nothing else — can reach
+    /// the seat it has to release without a side lookup table.
+    EventFee { event_id: Uuid },
+    /// Free-form bucket — merch, or anything that's neither dues, a
+    /// donation, nor an event fee. No automatic side-effects.
     Other,
 }
 
@@ -65,6 +71,7 @@ impl PaymentKind {
         match self {
             PaymentKind::Membership => "membership",
             PaymentKind::Donation { .. } => "donation",
+            PaymentKind::EventFee { .. } => "event_fee",
             PaymentKind::Other => "other",
         }
     }
@@ -74,6 +81,15 @@ impl PaymentKind {
     pub fn campaign_id(&self) -> Option<Uuid> {
         match self {
             PaymentKind::Donation { campaign_id } => *campaign_id,
+            _ => None,
+        }
+    }
+
+    /// The event id, if this is an `EventFee`. Mirrors
+    /// [`PaymentKind::campaign_id`] for the seat-release paths.
+    pub fn event_id(&self) -> Option<Uuid> {
+        match self {
+            PaymentKind::EventFee { event_id } => Some(*event_id),
             _ => None,
         }
     }

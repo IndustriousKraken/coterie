@@ -147,9 +147,13 @@ async fn build_harness() -> Harness {
         "whsec_test_dummy".to_string(),
         payment_repo.clone(),
         member_repo.clone(),
+        event_repo.clone(),
         processed_events_repo,
         mt_service.clone(),
         integrations.clone(),
+        Arc::new(coterie::service::audit_service::AuditService::new(
+            pool.clone(),
+        )),
     );
 
     let billing = BillingService::new(

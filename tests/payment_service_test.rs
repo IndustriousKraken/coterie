@@ -12,7 +12,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use coterie::{
     auth::SecretCrypto,
-    domain::{CreateMemberRequest, PaymentKind, PaymentMethod, MAX_PAYMENT_CENTS},
+    domain::{CreateMemberRequest, Payer, PaymentKind, PaymentMethod, MAX_PAYMENT_CENTS},
     email::{EmailMessage, EmailSender},
     error::{AppError, Result as CoterieResult},
     integrations::IntegrationManager,
@@ -157,7 +157,7 @@ async fn record_manual_rejects_negative_amount() {
         .payment_service
         .record_manual(
             RecordManualPaymentInput {
-                member_id,
+                payer: Payer::Member(member_id),
                 amount_cents: -100,
                 kind: PaymentKind::Membership,
                 description: "neg".to_string(),
@@ -197,7 +197,7 @@ async fn record_manual_rejects_over_cap_amount() {
         .payment_service
         .record_manual(
             RecordManualPaymentInput {
-                member_id,
+                payer: Payer::Member(member_id),
                 amount_cents: MAX_PAYMENT_CENTS + 1,
                 kind: PaymentKind::Membership,
                 description: "over".to_string(),
@@ -235,7 +235,7 @@ async fn record_manual_rejects_stripe_method() {
         .payment_service
         .record_manual(
             RecordManualPaymentInput {
-                member_id,
+                payer: Payer::Member(member_id),
                 amount_cents: 1_000,
                 kind: PaymentKind::Membership,
                 description: "stripe-not-here".to_string(),
@@ -271,7 +271,7 @@ async fn record_manual_rejects_unknown_member() {
         .payment_service
         .record_manual(
             RecordManualPaymentInput {
-                member_id: unknown_member,
+                payer: Payer::Member(unknown_member),
                 amount_cents: 500,
                 kind: PaymentKind::Membership,
                 description: "no-such-member".to_string(),
@@ -309,7 +309,7 @@ async fn record_manual_rejects_donation_with_stale_campaign_id() {
         .payment_service
         .record_manual(
             RecordManualPaymentInput {
-                member_id,
+                payer: Payer::Member(member_id),
                 amount_cents: 2_500,
                 kind: PaymentKind::Donation {
                     campaign_id: Some(stale_campaign),
@@ -349,7 +349,7 @@ async fn record_manual_waived_dues_audits_as_waive_dues() {
     h.payment_service
         .record_manual(
             RecordManualPaymentInput {
-                member_id,
+                payer: Payer::Member(member_id),
                 amount_cents: 0,
                 kind: PaymentKind::Membership,
                 description: "comp'd this quarter".to_string(),
@@ -381,7 +381,7 @@ async fn record_manual_cash_membership_audits_as_manual_payment() {
     h.payment_service
         .record_manual(
             RecordManualPaymentInput {
-                member_id,
+                payer: Payer::Member(member_id),
                 amount_cents: 10_00,
                 kind: PaymentKind::Membership,
                 description: "cash in hand".to_string(),
@@ -408,7 +408,7 @@ async fn record_manual_donation_audits_as_manual_donation() {
     h.payment_service
         .record_manual(
             RecordManualPaymentInput {
-                member_id,
+                payer: Payer::Member(member_id),
                 amount_cents: 25_00,
                 kind: PaymentKind::Donation { campaign_id: None },
                 description: "general fund".to_string(),

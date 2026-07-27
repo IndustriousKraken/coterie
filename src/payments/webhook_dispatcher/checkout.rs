@@ -52,6 +52,89 @@ impl WebhookDispatcher {
             .cloned()
             .unwrap_or_else(|| payment.kind.as_str().to_string());
 
+        if payment_type_str == "event_fee" {
+            // Flip first: an event fee has no dues post-work that a
+            // failure could strand. The seat confirmation and the audit
+            // row sit behind `won_flip`, so a Stripe redelivery (or the
+            // loser of a race) does neither a second time.
+            let won_flip = self
+                .payment_repo
+                .complete_pending_payment(payment.id, &pi_for_row)
+                .await?;
+            if !won_flip {
+                tracing::debug!(
+                    "checkout.session.completed event_fee for payment {} already Completed; \
+                     skipping (Stripe retry)",
+                    payment.id,
+                );
+                return Ok(());
+            }
+
+            self.event_repo.confirm_seat(payment.id).await?;
+
+            // A guest has no portal to check, so the confirmation email
+            // is their only artifact of the registration — sent here,
+            // where the seat actually becomes theirs, and carrying the
+            // amount paid as its receipt. Skipped silently when no email
+            // provider is configured; never fails the webhook.
+            if let Payer::PublicDonor { name, email } = &payment.payer {
+                match payment.kind.event_id() {
+                    Some(event_id) => match self.event_repo.find_by_id(event_id).await {
+                        Ok(Some(event)) => {
+                            billing_service
+                                .notifications
+                                .send_guest_event_confirmation(email, name, &event, &payment)
+                                .await;
+                        }
+                        _ => tracing::warn!(
+                            "Event-fee payment {} completed but event {} is gone; \
+                             no guest confirmation sent",
+                            payment.id,
+                            event_id,
+                        ),
+                    },
+                    None => tracing::warn!(
+                        "Event-fee payment {} has no event id; no guest confirmation sent",
+                        payment.id,
+                    ),
+                }
+            }
+
+            // Deliberately NOT extending dues and NOT rescheduling
+            // auto-renew: an event fee buys a seat, not a membership.
+            self.audit_service
+                .log(
+                    None,
+                    "event_registration_paid",
+                    "event",
+                    &payment
+                        .kind
+                        .event_id()
+                        .map(|e| e.to_string())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    None,
+                    Some(&format!(
+                        "${:.2} — {} — payment {}",
+                        payment.amount_cents as f64 / 100.0,
+                        match &payment.payer {
+                            Payer::Member(id) => format!("member {}", id),
+                            Payer::PublicDonor { email, .. } => format!("guest {}", email),
+                        },
+                        payment.id,
+                    )),
+                    Some(super::STRIPE_WEBHOOK_SOURCE),
+                )
+                .await;
+
+            tracing::info!(
+                "Event fee completed: payment={} event={:?} payer={:?}",
+                payment.id,
+                payment.kind.event_id(),
+                payment.payer,
+            );
+            return Ok(());
+        }
+
         if payment_type_str == "donation" {
             // Donations have no dues post-work, so flip-first is correct
             // and cannot strand anything. complete_pending_payment only
@@ -261,6 +344,13 @@ impl WebhookDispatcher {
         Ok(())
     }
 
+    /// Abandoned checkout: flip the payment to `Failed`.
+    ///
+    /// This needs no seat-specific logic. The held-seat count only
+    /// counts a `PendingPayment` row whose payment is still `Pending`,
+    /// so failing the payment releases the seat as a side effect —
+    /// and the attendance row survives, which is what lets the admin
+    /// roster show "started paying, didn't finish".
     pub(super) async fn handle_expired_session(&self, session: CheckoutSession) -> Result<()> {
         let session_id = session.id.to_string();
 

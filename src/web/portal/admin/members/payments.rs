@@ -154,6 +154,7 @@ pub async fn admin_record_payment_submit(
         match kind {
             PaymentKind::Membership => "Manual membership payment".to_string(),
             PaymentKind::Donation { .. } => "Donation".to_string(),
+            PaymentKind::EventFee { .. } => "Event fee".to_string(),
             PaymentKind::Other => "Manual payment".to_string(),
         }
     } else {
@@ -169,7 +170,7 @@ pub async fn admin_record_payment_submit(
     if let Err(e) = payment_service
         .record_manual(
             RecordManualPaymentInput {
-                member_id: id,
+                payer: crate::domain::Payer::Member(id),
                 amount_cents,
                 kind,
                 description,

@@ -28,6 +28,7 @@ use crate::{
         PaymentRepository,
     },
     service::{
+        event_registration_service::{EventRegistrationService, RegistrationOutcome},
         membership_type_service::MembershipTypeService,
         settings_service::{stripe_keys, SettingsService, SignupMode},
     },
@@ -101,10 +102,31 @@ pub struct PublicEvent {
     pub image_url: Option<String>,
     pub max_attendees: Option<i32>,
     pub rsvp_required: bool,
+    /// Absolute URL of the Coterie-hosted public registration page, or
+    /// `null` when the event is not publicly registerable. Present
+    /// exactly when `guest_price_cents` is, and it is the ONLY thing a
+    /// consumer should test to decide whether to offer registration —
+    /// re-deriving that from price/visibility/`rsvp_required` would be a
+    /// second implementation of a server-side authorization rule.
+    ///
+    /// Most events carry `null` here: the ordinary recurring talk anyone
+    /// may walk into has no guest registration enabled. Presence is the
+    /// unusual condition worth surfacing.
+    pub registration_url: Option<String>,
+    /// What a non-member pays, in cents, or `null` when the event is not
+    /// publicly registerable. `0` means free — and a zero price never
+    /// suppresses `registration_url`.
+    pub guest_price_cents: Option<i64>,
 }
 
-impl From<Event> for PublicEvent {
-    fn from(e: Event) -> Self {
+impl PublicEvent {
+    /// Project an event for the public feed. `base_url` resolves the
+    /// registration URL server-side; the two guest fields are populated
+    /// together from `Event::registration_url` or not at all, so they
+    /// can't disagree about registerability.
+    fn from_event(e: Event, base_url: &str) -> Self {
+        let registration_url = e.registration_url(base_url);
+        let guest_price_cents = registration_url.as_ref().map(|_| e.guest_price_cents);
         PublicEvent {
             id: e.id,
             title: e.title,
@@ -118,6 +140,8 @@ impl From<Event> for PublicEvent {
             image_url: e.image_url,
             max_attendees: e.max_attendees,
             rsvp_required: e.rsvp_required,
+            registration_url,
+            guest_price_cents,
         }
     }
 }
@@ -327,8 +351,7 @@ pub async fn signup(
                 }
             }
             return Err(AppError::Conflict(
-                "Registration failed: an account with this information already exists"
-                    .to_string(),
+                "Registration failed: an account with this information already exists".to_string(),
             ));
         }
     };
@@ -573,7 +596,8 @@ async fn retry_pending_checkout(
     // this 200 only ever answers the member's own account.)
     if !member.email_verified() {
         if let Err(e) =
-            send_verification_email(db_pool, settings, settings_service, email_sender, &member).await
+            send_verification_email(db_pool, settings, settings_service, email_sender, &member)
+                .await
         {
             tracing::error!(
                 "Signup retry: re-queue verification email failed for member {}: {}",
@@ -754,6 +778,7 @@ async fn org_name(settings_service: &SettingsService) -> String {
 )]
 pub async fn list_events(
     State(event_repo): State<Arc<dyn EventRepository>>,
+    State(settings): State<Arc<Settings>>,
     Query(params): Query<PublicEventsQuery>,
 ) -> Result<Response> {
     // Get public events (full details)
@@ -770,12 +795,17 @@ pub async fn list_events(
     let mut events: Vec<Event> = public_events
         .into_iter()
         .chain(private_events.into_iter().map(|mut e| {
-            // Sanitize private events
+            // Sanitize private events. `guest_registration_enabled` is
+            // cleared alongside the other fields so a members-only event
+            // can never advertise a public registration URL — the
+            // projection derives that from the event, and this is where
+            // members-only events stop being registerable.
             e.title = "Members-Only Event".to_string();
             e.description =
                 "This event is for members only. Log in to the portal to see details.".to_string();
             e.location = None;
             e.image_url = None;
+            e.guest_registration_enabled = false;
             e
         }))
         .collect();
@@ -816,7 +846,10 @@ pub async fn list_events(
         // Project to PublicEvent so internal-only fields (created_by,
         // timestamps, event_type_id, series_id, occurrence_index) never
         // reach anonymous callers. Sanitization already ran above.
-        let public: Vec<PublicEvent> = events.into_iter().map(PublicEvent::from).collect();
+        let public: Vec<PublicEvent> = events
+            .into_iter()
+            .map(|e| PublicEvent::from_event(e, &settings.server.base_url))
+            .collect();
         Ok(Json(public).into_response())
     }
 }
@@ -1320,6 +1353,199 @@ pub async fn donate(
             checkout_url,
         }),
     ))
+}
+
+// ---------------------------------------------------------------------
+// Public event registration (guests)
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Default, Deserialize, ToSchema)]
+pub struct PublicEventRegisterRequest {
+    /// The guest's name, as they typed it. Bounded and validated at the
+    /// service boundary; never matched against the member directory.
+    pub name: String,
+    pub email: String,
+    /// Bot-challenge token from the registration form's CAPTCHA widget.
+    /// Required when the org has configured a provider; ignored when
+    /// `bot_challenge.provider = "disabled"`. Same contract as
+    /// `/public/signup` and `/public/donate`.
+    #[serde(default)]
+    pub captcha_token: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PublicEventRegisterResponse {
+    /// Stripe-hosted Checkout URL when the event has a guest price —
+    /// redirect the guest here. `null` for a free registration, whose
+    /// seat is already confirmed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkout_url: Option<String>,
+    /// `"registered"` when the seat is confirmed (free event, or an
+    /// already-paid guest), `"checkout"` when payment is still owed.
+    pub status: &'static str,
+    pub message: String,
+}
+
+/// `POST /public/events/:id/register` — an anonymous visitor registers
+/// for a publicly-registerable event.
+///
+/// This is an unauthenticated, money-moving, publicly-reachable endpoint
+/// — the same shape as `/public/signup` and `/public/donate`, which are
+/// exactly the endpoints card-testing abuse hit. The protections are
+/// therefore in a fixed order and are not optional:
+///
+///   1. CORS allowlist (the router's global layer),
+///   2. the per-IP `money_limiter` — BEFORE the provider, so a bursting
+///      IP can't burn the org's Turnstile quota,
+///   3. bot-challenge verification, fail-closed,
+///   4. the registerability check (404, never 403 — a 403 on a
+///      members-only id would confirm the event exists),
+///   5. then, and only then, a seat and a charge.
+///
+/// Nothing before step 5 writes state, so a rate-limited or
+/// challenge-failed request claims no seat and creates no payment row.
+///
+/// Accepts JSON (the marketing site's `fetch`) or form-urlencoded (the
+/// Coterie-hosted page's plain `<form>`, which works with no JavaScript);
+/// a form post gets a redirect, a JSON post gets JSON.
+#[utoipa::path(
+    post,
+    path = "/public/events/{id}/register",
+    tag = "public",
+    request_body = PublicEventRegisterRequest,
+    responses(
+        (status = 200, description = "Seat held; redirect the guest to `checkout_url`, or the \
+            seat is confirmed for a free event", body = PublicEventRegisterResponse),
+        (status = 400, description = "Invalid name or email, or the event is full"),
+        (status = 403, description = "Bot-challenge verification failed (fail-closed)"),
+        (status = 404, description = "No publicly registerable event with this id — the same \
+            response a members-only event and a nonexistent id both get"),
+        (status = 429, description = "Rate limited (per-IP money limiter)"),
+        (status = 503, description = "Payment processing not configured"),
+    ),
+)]
+pub async fn register_for_event(
+    State(settings): State<Arc<Settings>>,
+    State(money_limiter): State<MoneyLimiter>,
+    State(bot_challenge_verifier): State<Arc<dyn BotChallengeVerifier>>,
+    State(event_repo): State<Arc<dyn EventRepository>>,
+    State(registration_service): State<Arc<EventRegistrationService>>,
+    State(email_sender): State<Arc<dyn EmailSender>>,
+    State(settings_service): State<Arc<SettingsService>>,
+    axum::extract::Path(event_id): axum::extract::Path<Uuid>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Response> {
+    let wants_html = is_form_encoded(&headers);
+    let request: PublicEventRegisterRequest = parse_body(&headers, &body)?;
+
+    // Rate limit FIRST, before the bot-challenge provider is consulted:
+    // a bursting IP must not be able to spend the org's provider quota.
+    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
+    if !money_limiter.0.check_and_record(ip) {
+        return Err(AppError::TooManyRequests);
+    }
+
+    // Fail closed: when the org has configured a provider, every request
+    // must carry a token the provider verifies. A free registration gets
+    // no relaxation — with no card in front of it, this and the limiter
+    // are the only controls it has.
+    if bot_challenge_verifier
+        .verify(
+            "public/events/register",
+            request.captcha_token.as_deref(),
+            Some(ip),
+        )
+        .await
+        .is_err()
+    {
+        return Err(AppError::Forbidden);
+    }
+
+    // 404, not 403: a members-only event id and a nonexistent one must be
+    // indistinguishable, or the response leaks which private events exist.
+    let event = event_repo
+        .find_by_id(event_id)
+        .await?
+        .filter(|e| e.publicly_registerable())
+        .ok_or_else(|| AppError::NotFound("Event not found".to_string()))?;
+
+    let outcome = registration_service
+        .register_guest(&event, &request.name, &request.email)
+        .await?;
+
+    // Free registrations are confirmed right here, so this is where their
+    // confirmation email goes out. A paid one is confirmed by the
+    // completion webhook, which sends it there — the seat and the email
+    // stay together in both cases.
+    if let RegistrationOutcome::Registered = outcome {
+        if !event.is_paid_for_guests() {
+            crate::service::billing_service::notifications::dispatch_guest_event_confirmation(
+                &email_sender,
+                &settings_service,
+                &request.email,
+                &request.name,
+                &event,
+                None,
+            )
+            .await;
+        }
+    }
+
+    let (checkout_url, status, message) = match outcome {
+        RegistrationOutcome::Checkout { url } => (
+            Some(url),
+            "checkout",
+            "Complete your payment to confirm your seat.".to_string(),
+        ),
+        RegistrationOutcome::Registered => (
+            None,
+            "registered",
+            "You're registered — check your email for the details.".to_string(),
+        ),
+    };
+
+    if wants_html {
+        // A browser posted a form, so answer with navigation rather than
+        // JSON: Stripe for a paid seat, back to the page for a free one
+        // (where the confirmed state is read from the database).
+        let location = checkout_url.unwrap_or_else(|| {
+            format!(
+                "{}/events/{}/register?registered=1",
+                settings.server.base_url.trim_end_matches('/'),
+                event.id,
+            )
+        });
+        return Ok(axum::response::Redirect::to(&location).into_response());
+    }
+
+    Ok(Json(PublicEventRegisterResponse {
+        checkout_url,
+        status,
+        message,
+    })
+    .into_response())
+}
+
+fn is_form_encoded(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("application/x-www-form-urlencoded"))
+}
+
+/// Parse the registration body as JSON or as a URL-encoded form. Two
+/// callers, one contract: the marketing site posts JSON cross-origin,
+/// and Coterie's own hosted page posts a plain `<form>` so it works
+/// without JavaScript.
+fn parse_body<T: serde::de::DeserializeOwned>(headers: &HeaderMap, body: &[u8]) -> Result<T> {
+    if is_form_encoded(headers) {
+        serde_urlencoded::from_bytes(body)
+            .map_err(|e| AppError::BadRequest(format!("Invalid form body: {}", e)))
+    } else {
+        serde_json::from_slice(body)
+            .map_err(|e| AppError::BadRequest(format!("Invalid JSON body: {}", e)))
+    }
 }
 
 #[cfg(test)]

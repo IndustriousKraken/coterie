@@ -31,6 +31,7 @@ use crate::domain;
         handlers::public::rss_feed,
         handlers::public::calendar_feed,
         handlers::public::donate,
+        handlers::public::register_for_event,
         handlers::announcements::private_count,
     ),
     components(schemas(
@@ -46,6 +47,8 @@ use crate::domain;
         handlers::public::PublicMembershipType,
         handlers::public::PublicDonateRequest,
         handlers::public::PublicDonateResponse,
+        handlers::public::PublicEventRegisterRequest,
+        handlers::public::PublicEventRegisterResponse,
         handlers::announcements::PrivateAnnouncementCount,
         // Domain types referenced from responses
         domain::Event,

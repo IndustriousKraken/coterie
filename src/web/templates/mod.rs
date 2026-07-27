@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod event_register;
 pub mod filters;
 pub mod reset;
 pub mod setup;

@@ -1,0 +1,13 @@
+Hi {{ full_name }},
+
+You're registered for {{ event_title }} on {{ event_start }}.
+{% if let Some(loc) = event_location %}
+Location: {{ loc }}
+{% endif %}{% if let Some(paid) = amount_paid %}
+  Amount paid: {{ paid }}
+  Receipt:     {{ receipt_id }}
+{% endif %}
+Keep this email — it's your confirmation. If you can no longer attend,
+reply to this address and we'll release your seat.
+
+— {{ org_name }}

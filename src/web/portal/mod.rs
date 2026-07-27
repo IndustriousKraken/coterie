@@ -57,10 +57,7 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
             get(submissions::submissions_page).post(submissions::create_submission),
         )
         .route("/submissions/new", get(submissions::new_submission_page))
-        .route(
-            "/submissions/:id",
-            get(submissions::submission_detail_page),
-        )
+        .route("/submissions/:id", get(submissions::submission_detail_page))
         .route(
             "/submissions/:id/update",
             post(submissions::update_submission),
@@ -208,6 +205,20 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route(
             "/events/:id/delete",
             post(admin::events::admin_delete_event),
+        )
+        // Paid-event roster actions. Admin-authed + CSRF-protected by
+        // the layers on this router; each handler audits its own action.
+        .route(
+            "/events/:id/roster/at-the-door",
+            post(admin::events::admin_roster_record_at_the_door),
+        )
+        .route(
+            "/events/:id/roster/comp",
+            post(admin::events::admin_roster_comp_seat),
+        )
+        .route(
+            "/events/:id/roster/release",
+            post(admin::events::admin_roster_release_seat),
         )
         // Per-occurrence exception handlers (cancel / override /
         // restore one occurrence within a recurring series).

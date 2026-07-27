@@ -122,6 +122,29 @@ impl WebhookDispatcher {
         // Out-of-band full refund. Flip to Refunded.
         self.payment_repo.mark_refunded(payment.id).await?;
 
+        // A refunded event fee releases its seat: a member doesn't keep
+        // a confirmed seat for an event whose fee went back to them.
+        // Reached only on the out-of-band path — the admin refund route
+        // cancels the seat itself and its echo returns above.
+        if let Some(event_id) = payment.kind.event_id() {
+            self.event_repo.cancel_seat_for_payment(payment.id).await?;
+            self.audit_service
+                .log(
+                    None,
+                    "event_registration_refunded",
+                    "event",
+                    &event_id.to_string(),
+                    None,
+                    Some(&format!(
+                        "${:.2} refunded via Stripe dashboard — payment {}",
+                        payment.amount_cents as f64 / 100.0,
+                        payment.id,
+                    )),
+                    Some(super::STRIPE_WEBHOOK_SOURCE),
+                )
+                .await;
+        }
+
         tracing::info!(
             "Synced refund from Stripe dashboard: payment {} marked Refunded (charge {})",
             payment.id,

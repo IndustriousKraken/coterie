@@ -23,8 +23,11 @@ use crate::{
         gateway::{RealStripeGateway, StripeGateway},
         StripeClient, WebhookDispatcher,
     },
-    repository::{MemberRepository, PaymentRepository, ProcessedEventsRepository},
-    service::{membership_type_service::MembershipTypeService, settings_service::SettingsService},
+    repository::{EventRepository, MemberRepository, PaymentRepository, ProcessedEventsRepository},
+    service::{
+        audit_service::AuditService, membership_type_service::MembershipTypeService,
+        settings_service::SettingsService,
+    },
 };
 
 /// The current Stripe wiring. `client` and `webhook_dispatcher` are
@@ -50,9 +53,11 @@ struct RebuildDeps {
     settings_service: Arc<SettingsService>,
     payment_repo: Arc<dyn PaymentRepository>,
     member_repo: Arc<dyn MemberRepository>,
+    event_repo: Arc<dyn EventRepository>,
     processed_events_repo: Arc<dyn ProcessedEventsRepository>,
     membership_type_service: Arc<MembershipTypeService>,
     integration_manager: Arc<IntegrationManager>,
+    audit_service: Arc<AuditService>,
 }
 
 /// Swappable handle over the running Stripe wiring. Reads the current
@@ -74,18 +79,22 @@ impl StripeHandle {
         settings_service: Arc<SettingsService>,
         payment_repo: Arc<dyn PaymentRepository>,
         member_repo: Arc<dyn MemberRepository>,
+        event_repo: Arc<dyn EventRepository>,
         processed_events_repo: Arc<dyn ProcessedEventsRepository>,
         membership_type_service: Arc<MembershipTypeService>,
         integration_manager: Arc<IntegrationManager>,
+        audit_service: Arc<AuditService>,
     ) -> Self {
         Self::with_gateway_factory(
             Arc::new(|key| Arc::new(RealStripeGateway::new(key)) as Arc<dyn StripeGateway>),
             settings_service,
             payment_repo,
             member_repo,
+            event_repo,
             processed_events_repo,
             membership_type_service,
             integration_manager,
+            audit_service,
         )
     }
 
@@ -97,9 +106,11 @@ impl StripeHandle {
         settings_service: Arc<SettingsService>,
         payment_repo: Arc<dyn PaymentRepository>,
         member_repo: Arc<dyn MemberRepository>,
+        event_repo: Arc<dyn EventRepository>,
         processed_events_repo: Arc<dyn ProcessedEventsRepository>,
         membership_type_service: Arc<MembershipTypeService>,
         integration_manager: Arc<IntegrationManager>,
+        audit_service: Arc<AuditService>,
     ) -> Self {
         Self {
             runtime: RwLock::new(Arc::new(StripeRuntime::default())),
@@ -108,9 +119,11 @@ impl StripeHandle {
                 settings_service,
                 payment_repo,
                 member_repo,
+                event_repo,
                 processed_events_repo,
                 membership_type_service,
                 integration_manager,
+                audit_service,
             }),
         }
     }
@@ -130,6 +143,25 @@ impl StripeHandle {
             })),
             deps: None,
         }
+    }
+
+    /// Test seam: swap a fake-gateway client into an existing handle.
+    ///
+    /// Needed because services capture the `ServiceContext`-owned handle
+    /// at construction (as production does), so a router test can't
+    /// configure Stripe for them by handing `AppState` a different
+    /// handle — it has to reach the one they already hold. Production
+    /// gets there through [`Self::rebuild`], which reads DB config.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn install_for_test(
+        &self,
+        client: Option<Arc<StripeClient>>,
+        webhook_dispatcher: Option<Arc<WebhookDispatcher>>,
+    ) {
+        *self.runtime.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(StripeRuntime {
+            client,
+            webhook_dispatcher,
+        });
     }
 
     /// Snapshot the current wiring. Cheap: a read-lock plus two Arc
@@ -199,9 +231,11 @@ impl StripeHandle {
             webhook_secret,
             deps.payment_repo.clone(),
             deps.member_repo.clone(),
+            deps.event_repo.clone(),
             deps.processed_events_repo.clone(),
             deps.membership_type_service.clone(),
             deps.integration_manager.clone(),
+            deps.audit_service.clone(),
         ));
 
         StripeRuntime {
