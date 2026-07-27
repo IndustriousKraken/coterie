@@ -7,9 +7,11 @@
 //! is unchanged.
 
 mod occurrences;
+mod roster;
 mod single;
 
 pub use occurrences::*;
+pub use roster::*;
 pub use single::*;
 
 /// Simple struct for type options in dropdowns

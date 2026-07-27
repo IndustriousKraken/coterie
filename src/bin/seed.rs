@@ -244,6 +244,7 @@ fn make_event(
         location: location.map(String::from),
         max_attendees: Some(30),
         rsvp_required: true,
+        member_price_cents: 0,
         image_url: image_url.map(String::from),
         created_by,
         created_at: Utc::now() - Duration::days(days_offset.abs() + 7),

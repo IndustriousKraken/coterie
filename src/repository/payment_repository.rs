@@ -87,6 +87,25 @@ pub trait PaymentRepository: Send + Sync {
         billing_period: crate::domain::configurable_types::BillingPeriod,
     ) -> Result<Option<MemberStatus>>;
 
+    // ---- Paid-event support -------------------------------------------
+
+    /// The member's live event-fee payment for this event, if any —
+    /// the double-charge guard. `Failed` rows are excluded: they hold
+    /// neither money nor a seat, so they must not block a retry. The
+    /// result is ordered `Completed` first, then `Pending`, then
+    /// anything else (a `Refunded` row, whose seat was cancelled and
+    /// which therefore does not stop the member registering again).
+    async fn find_event_fee_payment(
+        &self,
+        event_id: Uuid,
+        member_id: Uuid,
+    ) -> Result<Option<Payment>>;
+
+    /// Every `Completed` event-fee payment for this event. Drives the
+    /// refund-before-delete sweep, which must not leave a charged
+    /// attendee behind when the event (and its cascading roster) goes.
+    async fn list_completed_event_fees(&self, event_id: Uuid) -> Result<Vec<Payment>>;
+
     // ---- Admin billing dashboard support ------------------------------
 
     /// Sum of completed-payment cents grouped by (year, month,
@@ -111,6 +130,7 @@ struct PaymentRow {
     description: String,
     payment_type: String,
     donation_campaign_id: Option<String>,
+    event_id: Option<String>,
     donor_name: Option<String>,
     donor_email: Option<String>,
     paid_at: Option<NaiveDateTime>,
@@ -158,10 +178,22 @@ impl SqlitePaymentRepository {
             .donation_campaign_id
             .as_deref()
             .and_then(|s| Uuid::parse_str(s).ok());
+        let event_id = row
+            .event_id
+            .as_deref()
+            .and_then(|s| Uuid::parse_str(s).ok());
         let kind = match row.payment_type.as_str() {
             "membership" => PaymentKind::Membership,
             "donation" => PaymentKind::Donation {
                 campaign_id: donation_campaign_id,
+            },
+            // An `event_fee` row without a parseable event_id can't name
+            // its seat, so it degrades to the untyped bucket rather than
+            // fabricating a uuid. Only reachable if the column was
+            // cleared out from under us by hand.
+            "event_fee" => match event_id {
+                Some(event_id) => PaymentKind::EventFee { event_id },
+                None => PaymentKind::Other,
             },
             "other" => PaymentKind::Other,
             _ => PaymentKind::Membership,
@@ -250,6 +282,7 @@ impl PaymentRepository for SqlitePaymentRepository {
         };
         let payment_type_str = payment.kind.as_str();
         let donation_campaign_id_str = payment.kind.campaign_id().map(|u| u.to_string());
+        let event_id_str = payment.kind.event_id().map(|u| u.to_string());
         let stripe_id_str = payment.external_id.as_ref().map(|r| r.as_str().to_string());
 
         sqlx::query(
@@ -257,10 +290,10 @@ impl PaymentRepository for SqlitePaymentRepository {
             INSERT INTO payments (
                 id, member_id, amount_cents, currency, status,
                 payment_method, stripe_payment_id, description,
-                payment_type, donation_campaign_id,
+                payment_type, donation_campaign_id, event_id,
                 donor_name, donor_email,
                 paid_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&id_str)
@@ -273,6 +306,7 @@ impl PaymentRepository for SqlitePaymentRepository {
         .bind(&payment.description)
         .bind(payment_type_str)
         .bind(&donation_campaign_id_str)
+        .bind(&event_id_str)
         .bind(&donor_name)
         .bind(&donor_email)
         .bind(paid_at_naive)
@@ -293,7 +327,7 @@ impl PaymentRepository for SqlitePaymentRepository {
             r#"
             SELECT id, member_id, amount_cents, currency, status,
                    payment_method, stripe_payment_id, description,
-                   payment_type, donation_campaign_id,
+                   payment_type, donation_campaign_id, event_id,
                    donor_name, donor_email,
                    paid_at, created_at, updated_at
             FROM payments
@@ -317,7 +351,7 @@ impl PaymentRepository for SqlitePaymentRepository {
             r#"
             SELECT id, member_id, amount_cents, currency, status,
                    payment_method, stripe_payment_id, description,
-                   payment_type, donation_campaign_id,
+                   payment_type, donation_campaign_id, event_id,
                    donor_name, donor_email,
                    paid_at, created_at, updated_at
             FROM payments
@@ -338,7 +372,7 @@ impl PaymentRepository for SqlitePaymentRepository {
             r#"
             SELECT id, member_id, amount_cents, currency, status,
                    payment_method, stripe_payment_id, description,
-                   payment_type, donation_campaign_id,
+                   payment_type, donation_campaign_id, event_id,
                    donor_name, donor_email,
                    paid_at, created_at, updated_at
             FROM payments
@@ -561,6 +595,67 @@ impl PaymentRepository for SqlitePaymentRepository {
         Ok(Some(
             MemberStatus::from_str(&prior_status_str).unwrap_or(MemberStatus::Active),
         ))
+    }
+
+    async fn find_event_fee_payment(
+        &self,
+        event_id: Uuid,
+        member_id: Uuid,
+    ) -> Result<Option<Payment>> {
+        let row = sqlx::query_as::<_, PaymentRow>(
+            r#"
+            SELECT id, member_id, amount_cents, currency, status,
+                   payment_method, stripe_payment_id, description,
+                   payment_type, donation_campaign_id, event_id,
+                   donor_name, donor_email,
+                   paid_at, created_at, updated_at
+            FROM payments
+            WHERE event_id = ?
+              AND member_id = ?
+              AND payment_type = 'event_fee'
+              AND status <> 'Failed'
+            ORDER BY CASE status
+                         WHEN 'Completed' THEN 0
+                         WHEN 'Pending' THEN 1
+                         ELSE 2
+                     END,
+                     created_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(event_id.to_string())
+        .bind(member_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+        match row {
+            Some(r) => Ok(Some(Self::row_to_payment(r)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_completed_event_fees(&self, event_id: Uuid) -> Result<Vec<Payment>> {
+        let rows = sqlx::query_as::<_, PaymentRow>(
+            r#"
+            SELECT id, member_id, amount_cents, currency, status,
+                   payment_method, stripe_payment_id, description,
+                   payment_type, donation_campaign_id, event_id,
+                   donor_name, donor_email,
+                   paid_at, created_at, updated_at
+            FROM payments
+            WHERE event_id = ?
+              AND payment_type = 'event_fee'
+              AND status = 'Completed'
+            ORDER BY created_at ASC
+            "#,
+        )
+        .bind(event_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+        rows.into_iter().map(Self::row_to_payment).collect()
     }
 
     async fn revenue_by_month(&self, months_back: u32) -> Result<Vec<MonthlyRevenue>> {

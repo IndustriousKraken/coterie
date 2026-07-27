@@ -131,6 +131,9 @@ struct EventSummary {
     // register/cancel control — a member registered elsewhere must be able to
     // cancel from here after a reload, matching the Events page.
     rsvp: Option<AttendanceStatus>,
+    /// Drives the control's label ("RSVP" vs "Register — $30"), same
+    /// rule as the Events page.
+    member_price_cents: i64,
 }
 
 pub async fn upcoming_events(
@@ -169,6 +172,7 @@ pub async fn upcoming_events(
             location: event.location,
             image_url: event.image_url,
             rsvp,
+            member_price_cents: event.member_price_cents,
         });
     }
 
@@ -200,12 +204,18 @@ pub async fn upcoming_events(
                 crate::web::escape_html(&event.title),
                 event.date,
                 event.time,
-                event.location.map(|l| format!(r#"<p class="text-sm text-gray-600">📍 {}</p>"#, crate::web::escape_html(&l))).unwrap_or_default(),
+                event
+                    .location
+                    .map(|l| format!(
+                        r#"<p class="text-sm text-gray-600">📍 {}</p>"#,
+                        crate::web::escape_html(&l)
+                    ))
+                    .unwrap_or_default(),
                 // Shared control from the Events page: self-wrapped in
                 // div.text-right with hx-target="closest div.text-right", so the
                 // RSVP <-> cancel toggle works in both directions, including for a
                 // member who registered elsewhere and then reloaded the dashboard.
-                render_rsvp_button(&event.id, event.rsvp.as_ref())
+                render_rsvp_button(&event.id, event.rsvp.as_ref(), event.member_price_cents)
             ));
         }
         html.push_str("</div>");
@@ -283,6 +293,7 @@ mod tests {
                 location: None,
                 max_attendees: None,
                 rsvp_required: false,
+                member_price_cents: 0,
                 image_url: None,
                 created_by: member.id,
                 created_at: now,
@@ -367,7 +378,11 @@ pub async fn recent_payments(
             // paid_at is when the money moved (correct for imported/backdated
             // rows); created_at is just row insertion. Same convention as the
             // payments-page list and receipts.
-            date: p.paid_at.unwrap_or(p.created_at).format("%B %d, %Y").to_string(),
+            date: p
+                .paid_at
+                .unwrap_or(p.created_at)
+                .format("%B %d, %Y")
+                .to_string(),
             description: if p.description.is_empty() {
                 "Membership dues".to_string()
             } else {

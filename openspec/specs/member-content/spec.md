@@ -20,7 +20,11 @@ Members SHALL see both public and members-only content; the public/private flag 
 
 ### Requirement: Members can RSVP to events
 
-`POST /portal/api/events/:id/rsvp` and `POST /portal/api/events/:id/cancel` SHALL allow Active/Honorary members to manage their RSVP. The handlers SHALL call `event_repo.register_attendance` / `cancel_attendance` and return an updated HTMX button fragment.
+`POST /portal/api/events/:id/rsvp` and `POST /portal/api/events/:id/cancel` SHALL allow Active/Honorary members to manage their RSVP. For a **free** event (`member_price_cents = 0`) the handlers SHALL call `event_repo.register_attendance` / `cancel_attendance` and return an updated HTMX button fragment, exactly as before.
+
+For a **paid** event (`member_price_cents > 0`) the RSVP handler SHALL NOT register the member directly. It SHALL instead route through the paid-registration path — claiming the seat as `PendingPayment` and returning a redirect to Stripe Checkout — per the `paid-events` capability. The member becomes `Registered` only when the checkout-completion webhook confirms payment.
+
+The button label SHALL reflect which path applies, so a member can tell before clicking whether the control registers them or sends them to pay.
 
 #### Scenario: RSVP is CSRF-protected
 
@@ -29,6 +33,11 @@ Members SHALL see both public and members-only content; the public/private flag 
 
 #### Scenario: RSVP changes are NOT currently audited
 
-- **WHEN** a member RSVPs or cancels their RSVP
-- **THEN** no `audit_logs` row SHALL be written today; this is observed behavior. (Whether to audit RSVP transitions is a policy question for a follow-up change; today's spec captures truth.)
+- **WHEN** a member RSVPs to, or cancels their RSVP for, a **free** event
+- **THEN** no `audit_logs` row SHALL be written today; this is observed behavior. (Whether to audit free-event RSVP transitions is a policy question for a follow-up change; today's spec captures truth.) Paid registrations are the exception and SHALL be audited, because they move money.
+
+#### Scenario: RSVP on a paid event sends the member to checkout
+
+- **WHEN** an Active member submits the RSVP control on an event whose `member_price_cents` is greater than `0`
+- **THEN** the handler SHALL return a redirect to a Stripe Checkout session rather than an "RSVP confirmed" fragment, and the member SHALL NOT yet be `Registered`
 

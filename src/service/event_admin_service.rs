@@ -43,6 +43,8 @@ pub struct CreateEventInput {
     pub location: Option<String>,
     pub max_attendees: Option<i32>,
     pub rsvp_required: bool,
+    /// What a member pays to attend, in cents. `0` = free.
+    pub member_price_cents: i64,
     pub image_url: Option<String>,
     /// Some → materialize a full recurring series via
     /// `RecurringEventService`. None → single-row insert.
@@ -67,6 +69,8 @@ pub struct UpdateEventInput {
     pub location: Option<String>,
     pub max_attendees: Option<i32>,
     pub rsvp_required: bool,
+    /// What a member pays to attend, in cents. `0` = free.
+    pub member_price_cents: i64,
     pub image_url: Option<String>,
 }
 
@@ -114,6 +118,7 @@ impl EventAdminService {
             location: input.location,
             max_attendees: input.max_attendees,
             rsvp_required: input.rsvp_required,
+            member_price_cents: input.member_price_cents,
             image_url: input.image_url,
             created_by: actor_id,
             created_at: Utc::now(),
@@ -207,6 +212,7 @@ impl EventAdminService {
             location: input.location,
             max_attendees: input.max_attendees,
             rsvp_required: input.rsvp_required,
+            member_price_cents: input.member_price_cents,
             image_url: input.image_url,
             created_by: existing.created_by,
             created_at: existing.created_at,
@@ -260,6 +266,7 @@ impl EventAdminService {
             location: input.location,
             max_attendees: input.max_attendees,
             rsvp_required: input.rsvp_required,
+            member_price_cents: input.member_price_cents,
             image_url: input.image_url,
             created_by: actor_id,
             created_at: Utc::now(),
@@ -646,6 +653,7 @@ impl EventAdminService {
             location: prototype.location.clone(),
             max_attendees: prototype.max_attendees,
             rsvp_required: prototype.rsvp_required,
+            member_price_cents: prototype.member_price_cents,
             image_url: prototype.image_url.clone(),
             created_by: existing.created_by,
             created_at: existing.created_at,

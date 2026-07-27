@@ -131,6 +131,11 @@ pub struct CreateCheckoutInput {
     /// the paying card is saved to the customer for later
     /// Coterie-initiated charges (signup auto-renew enrollment).
     pub save_card_for_offsession: bool,
+    /// Unix timestamp at which Stripe expires the session. Event-fee
+    /// checkouts set this so an abandoned seat is bounded — the expiry
+    /// fires `checkout.session.expired`, which fails the payment and
+    /// releases the held seat. `None` leaves Stripe's default (24h).
+    pub expires_at: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -379,9 +384,8 @@ impl StripeGateway for RealStripeGateway {
             .customer_id
             .as_deref()
             .map(|c| {
-                c.parse::<CustomerId>().map_err(|_| {
-                    AppError::BadRequest(format!("Invalid Stripe customer ID: {}", c))
-                })
+                c.parse::<CustomerId>()
+                    .map_err(|_| AppError::BadRequest(format!("Invalid Stripe customer ID: {}", c)))
             })
             .transpose()?;
         params.customer = customer_id_parsed;
@@ -422,6 +426,7 @@ impl StripeGateway for RealStripeGateway {
         if let Some(ref_id) = input.client_reference_id.as_deref() {
             params.client_reference_id = Some(ref_id);
         }
+        params.expires_at = input.expires_at;
 
         let session = timed(CheckoutSession::create(&self.client, params)).await?;
         let url = session
@@ -740,8 +745,12 @@ mod tests {
     fn cancel_tolerates_unparseable_success_response() {
         // Stripe accepted the DELETE but returned a body we can't parse:
         // treat as a successful cancel (webhook reconciles state).
-        let out = classify_cancel_result::<stripe::Subscription>(Err(json_deserialize_error()), "sub_x");
-        assert!(out.is_ok(), "JSONSerialize must be tolerated as cancel success");
+        let out =
+            classify_cancel_result::<stripe::Subscription>(Err(json_deserialize_error()), "sub_x");
+        assert!(
+            out.is_ok(),
+            "JSONSerialize must be tolerated as cancel success"
+        );
     }
 
     #[test]

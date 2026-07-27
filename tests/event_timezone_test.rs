@@ -99,6 +99,7 @@ fn single_input(start: NaiveDateTime, zone: &str) -> CreateEventInput {
         location: None,
         max_attendees: None,
         rsvp_required: false,
+        member_price_cents: 0,
         image_url: None,
         recurrence: None,
         recurrence_until: None,

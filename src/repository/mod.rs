@@ -18,14 +18,14 @@ pub mod submission_repository;
 pub use announcement_repository::{AnnouncementRepository, SqliteAnnouncementRepository};
 pub use basic_type_repository::{BasicTypeRepository, SqliteBasicTypeRepository};
 pub use donation_repository::{DonationCampaignRepository, SqliteDonationCampaignRepository};
-pub use event_repository::{EventRepository, SqliteEventRepository};
+pub use event_repository::{EventRepository, RosterEntry, SqliteEventRepository};
 pub use event_series_repository::{EventSeriesRepository, SqliteEventSeriesRepository};
-pub use member_field_repository::{MemberFieldRepository, SqliteMemberFieldRepository};
 pub use expense_account_repository::{ExpenseAccountRepository, SqliteExpenseAccountRepository};
 pub use expense_category_repository::{ExpenseCategoryRepository, SqliteExpenseCategoryRepository};
 pub use expense_repository::{
     DateRange, ExpenseFilter, ExpenseRepository, SqliteExpenseRepository,
 };
+pub use member_field_repository::{MemberFieldRepository, SqliteMemberFieldRepository};
 pub use member_repository::{
     MemberExportRow, MemberQuery, MemberRepository, MemberSortField, SortOrder,
     SqliteMemberRepository,

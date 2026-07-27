@@ -17,13 +17,14 @@ use crate::{
     config::Settings,
     repository::EventRepository,
     service::event_admin_service::{CreateEventInput, EventAdminService, UpdateEventInput},
+    service::payment_admin_service::PaymentAdminService,
     service::settings_service::SettingsService,
     web::portal::admin::partials,
     web::templates::{BaseContext, HtmlTemplate},
     web::uploads::save_uploaded_file,
 };
 
-use super::TypeOption;
+use super::{RosterRow, TypeOption};
 
 #[derive(Template)]
 #[template(path = "admin/events.html")]
@@ -249,6 +250,14 @@ pub struct AdminEventDetail {
     pub rsvp_required: bool,
     pub image_url: Option<String>,
     pub attendee_count: i64,
+    /// Price as the form wants it — dollars, or empty for a free event
+    /// so the field renders blank rather than "0".
+    pub member_price_input: String,
+    pub member_price_display: String,
+    pub is_paid: bool,
+    /// Attendees with their seat + money state. Empty for an event
+    /// nobody has registered for.
+    pub roster: Vec<RosterRow>,
     pub is_past: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -287,9 +296,17 @@ pub async fn admin_event_detail_page(
     };
 
     let attendee_count = event_repo.get_attendee_count(event.id).await.unwrap_or(0);
+    let roster: Vec<RosterRow> = event_repo
+        .roster(event.id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(RosterRow::from_entry)
+        .collect();
 
     let now = chrono::Utc::now();
     let is_past = event.start_utc() <= now;
+    let member_price_cents = event.member_price_cents;
 
     let detail = AdminEventDetail {
         id: event.id.to_string(),
@@ -310,6 +327,14 @@ pub async fn admin_event_detail_page(
         rsvp_required: event.rsvp_required,
         image_url: event.image_url,
         attendee_count,
+        member_price_input: if member_price_cents > 0 {
+            format!("{:.2}", member_price_cents as f64 / 100.0)
+        } else {
+            String::new()
+        },
+        member_price_display: format!("${:.2}", member_price_cents as f64 / 100.0),
+        is_paid: member_price_cents > 0,
+        roster,
         is_past,
         created_at: event.created_at.format("%b %d, %Y %H:%M").to_string(),
         updated_at: event.updated_at.format("%b %d, %Y %H:%M").to_string(),
@@ -393,6 +418,9 @@ pub async fn admin_create_event(
     let mut location_str = String::new();
     let mut max_attendees: Option<i32> = None;
     let mut rsvp_required = false;
+    // Raw price text; parsed after the loop so a blank field and a typed
+    // "0" both land on 0 and only a real negative / over-cap value errors.
+    let mut member_price_str = String::new();
     let mut image_url: Option<String> = None;
     // Recurrence form fields. `repeat_kind` defaults to "none" so an
     // unchecked form behaves identically to the pre-recurrence flow.
@@ -427,6 +455,7 @@ pub async fn admin_create_event(
                 rsvp_required = true;
                 let _ = field.text().await;
             }
+            "member_price" => member_price_str = field.text().await.unwrap_or_default(),
             "repeat_kind" => repeat_kind = field.text().await.unwrap_or_default(),
             "repeat_interval" => {
                 if let Ok(text) = field.text().await {
@@ -554,6 +583,11 @@ pub async fn admin_create_event(
     // the public/iCal read path derive the correct instant.
     let timezone = settings_service.org_timezone().await.name().to_string();
 
+    let member_price_cents = match parse_member_price(&member_price_str) {
+        Ok(cents) => cents,
+        Err(msg) => return partials::admin_alert("error", msg, false).into_response(),
+    };
+
     let input = CreateEventInput {
         title,
         description,
@@ -570,6 +604,7 @@ pub async fn admin_create_event(
         },
         max_attendees,
         rsvp_required,
+        member_price_cents,
         image_url,
         recurrence,
         recurrence_until,
@@ -642,6 +677,32 @@ fn build_recurrence(
     Ok(rule)
 }
 
+/// Parse the admin form's member-price field into cents.
+///
+/// A blank field and a typed `0` BOTH mean free and both store `0` —
+/// neither is an error, and neither is rewritten to NULL. Only a
+/// negative (which expresses no coherent intent) or an over-cap value
+/// is rejected. Accepts dollars with an optional `$` and up to two
+/// decimal places, which is what an admin actually types.
+fn parse_member_price(raw: &str) -> std::result::Result<i64, &'static str> {
+    let cleaned = raw.trim().trim_start_matches('$').replace(',', "");
+    if cleaned.is_empty() {
+        return Ok(0);
+    }
+    let dollars: f64 = cleaned.parse().map_err(|_| "Invalid price")?;
+    if !dollars.is_finite() {
+        return Err("Invalid price");
+    }
+    if dollars < 0.0 {
+        return Err("Price can't be negative");
+    }
+    let cents = (dollars * 100.0).round() as i64;
+    if cents > crate::domain::MAX_PAYMENT_CENTS {
+        return Err("Price exceeds the cap on a single payment");
+    }
+    Ok(cents)
+}
+
 fn parse_until(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     if s.is_empty() {
         return None;
@@ -686,6 +747,7 @@ pub async fn admin_update_event(
     let mut location_str = String::new();
     let mut max_attendees: Option<i32> = None;
     let mut rsvp_required = false;
+    let mut member_price_str = String::new();
     let mut new_image_url: Option<String> = None;
     let mut remove_image = false;
     // For series occurrences: "this" (default), "this_and_future".
@@ -715,6 +777,7 @@ pub async fn admin_update_event(
                 rsvp_required = true;
                 let _ = field.text().await;
             }
+            "member_price" => member_price_str = field.text().await.unwrap_or_default(),
             "edit_scope" => edit_scope = field.text().await.unwrap_or_default(),
             "remove_image" => {
                 remove_image = true;
@@ -798,6 +861,13 @@ pub async fn admin_update_event(
         None
     };
 
+    // Changing the price never re-bills an existing attendee — their
+    // recorded payment is a separate, already-settled row.
+    let member_price_cents = match parse_member_price(&member_price_str) {
+        Ok(cents) => cents,
+        Err(msg) => return partials::admin_alert("error", msg, false).into_response(),
+    };
+
     let input = UpdateEventInput {
         title,
         description,
@@ -813,6 +883,7 @@ pub async fn admin_update_event(
         },
         max_attendees,
         rsvp_required,
+        member_price_cents,
         image_url,
     };
 
@@ -861,12 +932,20 @@ pub async fn admin_update_event(
     partials::admin_alert("success", &msg, false).into_response()
 }
 
+/// Delete an event.
+///
+/// For a paid event the roster's `Completed` event fees are refunded
+/// FIRST, and a failing refund aborts the delete. `event_attendance`
+/// cascades on event delete, so the reverse order would vaporize the
+/// record of who was owed money while the charges stood.
 pub async fn admin_delete_event(
     State(settings): State<Arc<Settings>>,
     State(event_repo): State<Arc<dyn EventRepository>>,
     State(event_admin_service): State<Arc<EventAdminService>>,
+    State(payment_admin_service): State<Arc<PaymentAdminService>>,
     Extension(current_user): Extension<CurrentUser>,
     Path(event_id): Path<String>,
+    headers: axum::http::HeaderMap,
     axum::Form(form): axum::Form<DeleteEventForm>,
 ) -> impl IntoResponse {
     let id = match uuid::Uuid::parse_str(&event_id) {
@@ -892,6 +971,20 @@ pub async fn admin_delete_event(
     let series_id = event.series_id;
 
     if (scope == "end_series" || scope == "delete_series") && series_id.is_some() {
+        // Bulk series removal drops occurrences this handler never sees,
+        // so it can't guarantee each one's attendees were refunded
+        // first. Refuse rather than strand charges — paid series are a
+        // follow-on change; until then, delete priced occurrences one
+        // at a time, where the refund sweep below does run.
+        if event.is_paid_for_members() {
+            return partials::admin_alert(
+                "error",
+                "This series has a member price. Delete its occurrences one at a time so each \
+                 event's attendees are refunded first.",
+                false,
+            )
+            .into_response();
+        }
         let sid = series_id.unwrap();
 
         if scope == "end_series" {
@@ -932,6 +1025,33 @@ pub async fn admin_delete_event(
         }
     }
 
+    // Refund before delete. An event that can't be fully refunded stays
+    // alive, visible, and fixable rather than becoming an invisible pile
+    // of unreturned charges.
+    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
+    match payment_admin_service
+        .refund_all_event_fees(current_user.member.id, id, ip)
+        .await
+    {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(
+            "Refunded {} event-fee payments before deleting event {}",
+            n,
+            id
+        ),
+        Err(e) => {
+            return partials::admin_alert(
+                "error",
+                &format!(
+                    "Event NOT deleted — a refund failed: {}. Fix the refund, then delete.",
+                    e.user_message(),
+                ),
+                false,
+            )
+            .into_response();
+        }
+    }
+
     // Default: delete this single row, scope=="this".
     let image_to_delete = event.image_url.clone();
     match event_admin_service
@@ -959,4 +1079,51 @@ pub struct DeleteEventForm {
     #[serde(default)]
     #[allow(dead_code)]
     pub csrf_token: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_member_price;
+    use crate::domain::MAX_PAYMENT_CENTS;
+
+    // A blank field and a typed 0 both mean "free" and both store 0.
+    // Neither is an error — an admin shouldn't have to learn a storage
+    // convention to price an event at nothing.
+    #[test]
+    fn blank_and_zero_both_store_zero() {
+        for raw in ["", "   ", "0", "0.00", "$0"] {
+            assert_eq!(parse_member_price(raw), Ok(0), "input {raw:?}");
+        }
+    }
+
+    #[test]
+    fn dollars_convert_to_cents() {
+        assert_eq!(parse_member_price("30"), Ok(3000));
+        assert_eq!(parse_member_price("12.50"), Ok(1250));
+        assert_eq!(parse_member_price("$1,200"), Ok(120_000));
+    }
+
+    // Unlike 0, a negative expresses no coherent intent.
+    #[test]
+    fn negative_is_rejected() {
+        assert!(parse_member_price("-1").is_err());
+        assert!(parse_member_price("-0.01").is_err());
+    }
+
+    #[test]
+    fn over_cap_is_rejected() {
+        let over = (MAX_PAYMENT_CENTS / 100) + 1;
+        assert!(parse_member_price(&over.to_string()).is_err());
+        // Exactly at the cap is fine.
+        assert_eq!(
+            parse_member_price(&(MAX_PAYMENT_CENTS / 100).to_string()),
+            Ok(MAX_PAYMENT_CENTS),
+        );
+    }
+
+    #[test]
+    fn garbage_is_rejected_rather_than_silently_zeroed() {
+        assert!(parse_member_price("free").is_err());
+        assert!(parse_member_price("1o").is_err());
+    }
 }

@@ -109,6 +109,7 @@ impl StripeClient {
                 customer_email: None,
                 customer_id,
                 save_card_for_offsession: save_card,
+                expires_at: None,
             })
             .await?;
 
@@ -177,6 +178,7 @@ impl StripeClient {
                 customer_email: None,
                 customer_id: None,
                 save_card_for_offsession: false,
+                expires_at: None,
             })
             .await?;
 
@@ -191,6 +193,74 @@ impl StripeClient {
             external_id: Some(StripeRef::CheckoutSession(session.session_id)),
             description: product_name,
             kind: PaymentKind::Donation { campaign_id },
+            paid_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        self.payment_repo.create(payment).await?;
+
+        Ok((session.url, payment_id))
+    }
+
+    /// Build a Stripe Checkout session for one event's member fee.
+    ///
+    /// Metadata carries `payment_type=event_fee` + `event_id` so the
+    /// webhook dispatcher branches exactly as it does for `membership`
+    /// and `donation`. The session expires in 60 minutes: an abandoned
+    /// checkout holds a seat until Stripe fires
+    /// `checkout.session.expired`, and an unbounded session would hold
+    /// one for a day.
+    ///
+    /// The `Pending` row written here is a placeholder, not a recorded
+    /// payment — no dues, no integration events, no audit row. It
+    /// becomes a recorded payment only when the completion webhook
+    /// settles it.
+    pub async fn create_event_fee_checkout_session(
+        &self,
+        member_id: Uuid,
+        event_id: Uuid,
+        event_title: &str,
+        amount_cents: i64,
+        success_url: String,
+        cancel_url: String,
+    ) -> Result<(String, Uuid)> {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("member_id".to_string(), member_id.to_string());
+        metadata.insert("payment_type".to_string(), "event_fee".to_string());
+        metadata.insert("event_id".to_string(), event_id.to_string());
+
+        let description = format!("Event registration — {}", event_title);
+
+        let session = self
+            .gateway
+            .create_checkout_session(CreateCheckoutInput {
+                success_url,
+                cancel_url,
+                line_items: vec![LineItemInput {
+                    amount_cents,
+                    product_name: event_title.to_string(),
+                    product_description: Some(description.clone()),
+                }],
+                metadata,
+                client_reference_id: Some(member_id.to_string()),
+                customer_email: None,
+                customer_id: None,
+                save_card_for_offsession: false,
+                expires_at: Some((Utc::now() + chrono::Duration::minutes(60)).timestamp()),
+            })
+            .await?;
+
+        let payment_id = Uuid::new_v4();
+        let payment = Payment {
+            id: payment_id,
+            payer: Payer::Member(member_id),
+            amount_cents,
+            currency: "USD".to_string(),
+            status: PaymentStatus::Pending,
+            payment_method: PaymentMethod::Stripe,
+            external_id: Some(StripeRef::CheckoutSession(session.session_id)),
+            description,
+            kind: PaymentKind::EventFee { event_id },
             paid_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -253,6 +323,7 @@ impl StripeClient {
                 customer_email: Some(donor_email.to_string()),
                 customer_id: None,
                 save_card_for_offsession: false,
+                expires_at: None,
             })
             .await?;
 

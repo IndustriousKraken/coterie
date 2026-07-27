@@ -26,7 +26,9 @@ use crate::{
     service::{
         announcement_admin_service::AnnouncementAdminService, audit_service::AuditService,
         basic_type_service::BasicTypeService, billing_service::BillingService,
-        event_admin_service::EventAdminService, expense_account_service::ExpenseAccountService,
+        event_admin_service::EventAdminService,
+        event_registration_service::EventRegistrationService,
+        expense_account_service::ExpenseAccountService,
         expense_category_service::ExpenseCategoryService, expense_service::ExpenseService,
         member_service::MemberService, membership_type_service::MembershipTypeService,
         payment_admin_service::PaymentAdminService, payment_service::PaymentService,
@@ -415,6 +417,12 @@ impl FromRef<AppState> for Arc<MemberService> {
 impl FromRef<AppState> for Arc<EventAdminService> {
     fn from_ref(state: &AppState) -> Self {
         state.service_context.event_admin_service.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<EventRegistrationService> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.event_registration_service.clone()
     }
 }
 

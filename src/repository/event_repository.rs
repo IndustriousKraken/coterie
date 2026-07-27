@@ -5,9 +5,31 @@ use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
 
 use crate::{
-    domain::{wall_clock_to_utc, AttendanceStatus, Event, EventType, EventVisibility},
+    domain::{
+        wall_clock_to_utc, AttendanceStatus, Event, EventType, EventVisibility, PaymentMethod,
+        PaymentStatus,
+    },
     error::{AppError, Result},
 };
+
+/// The held-seat predicate, shared by `count_held_seats` and the
+/// capacity guard inside `claim_seat` so the two can never disagree
+/// about what "full" means. Expects the attendance row aliased `a` and
+/// a LEFT JOIN of `payments` aliased `p`.
+///
+/// A `PendingPayment` row holds its seat while its payment is still
+/// `Pending` — and also while `payment_id` is still NULL, which is the
+/// instant between claiming the seat and creating the Checkout session.
+/// Without that second case two members racing for the last seat both
+/// see it free, because neither has linked a payment yet.
+///
+/// ponytail: a row that never gets linked (the process dies between the
+/// claim and the session) therefore holds its seat until an admin uses
+/// the roster's release control — the same bounded, manually-fixable
+/// ceiling as a webhook that never arrives. A background sweeper is
+/// speculative until an org actually reports a stuck seat.
+const HELD_SEAT_PREDICATE: &str = "(a.status = 'Registered' \
+     OR (a.status = 'PendingPayment' AND (a.payment_id IS NULL OR p.status = 'Pending')))";
 
 /// One candidate row for the event-reminder runner — a flat join of
 /// the attendee, event, and member rows that the runner needs to
@@ -44,6 +66,22 @@ impl EventReminderRow {
     }
 }
 
+/// One line of the admin roster: who is on the event, what state their
+/// seat is in, and what state the money is in. Payment fields are `None`
+/// for a free RSVP (no payment row exists) — that absence IS the answer,
+/// so it isn't papered over with a default.
+#[derive(Debug, Clone)]
+pub struct RosterEntry {
+    pub member_id: Uuid,
+    pub member_name: String,
+    pub member_email: String,
+    pub status: AttendanceStatus,
+    pub payment_id: Option<Uuid>,
+    pub payment_status: Option<PaymentStatus>,
+    pub payment_method: Option<PaymentMethod>,
+    pub amount_cents: Option<i64>,
+}
+
 #[async_trait]
 pub trait EventRepository: Send + Sync {
     async fn create(&self, event: Event) -> Result<Event>;
@@ -63,6 +101,52 @@ pub trait EventRepository: Send + Sync {
         event_id: Uuid,
         member_id: Uuid,
     ) -> Result<Option<AttendanceStatus>>;
+
+    // ---- Paid-event seats ---------------------------------------------
+
+    /// Seats currently held: `Registered` rows, plus `PendingPayment`
+    /// rows whose linked payment is still `Pending`. A pending seat
+    /// whose payment left `Pending` (expired checkout, failed intent)
+    /// stops holding capacity by virtue of that flip — nothing has to
+    /// delete the row, which is what lets the existing
+    /// `checkout.session.expired` handler free a seat with no new code.
+    async fn count_held_seats(&self, event_id: Uuid) -> Result<i64>;
+
+    /// Atomically claim a seat as `PendingPayment`, rejecting with
+    /// `BadRequest` when the event is already full. The count and the
+    /// insert are ONE statement — a count outside the write is the race
+    /// this method exists to prevent, because a lost race for a paid
+    /// seat is a refund incident rather than a rejected click.
+    ///
+    /// `max_attendees` of `None` means uncapped.
+    async fn claim_seat(
+        &self,
+        event_id: Uuid,
+        member_id: Uuid,
+        max_attendees: Option<i32>,
+    ) -> Result<()>;
+
+    /// Point a claimed seat at the payment that will pay for it.
+    async fn link_payment(&self, event_id: Uuid, member_id: Uuid, payment_id: Uuid) -> Result<()>;
+
+    /// Promote the seat linked to `payment_id` from `PendingPayment` to
+    /// `Registered`. Conditional on the row still being pending, so a
+    /// late webhook can't resurrect a seat that was already cancelled.
+    /// Returns true when a row moved.
+    async fn confirm_seat(&self, payment_id: Uuid) -> Result<bool>;
+
+    /// Drop a `PendingPayment` claim entirely — the rollback for a
+    /// checkout session that could not be created, and the admin's
+    /// release-a-stuck-seat control. Never touches a confirmed seat.
+    async fn release_seat(&self, event_id: Uuid, member_id: Uuid) -> Result<()>;
+
+    /// Cancel the seat linked to `payment_id` — the refund path. A
+    /// member does not keep a seat for an event whose fee was returned.
+    async fn cancel_seat_for_payment(&self, payment_id: Uuid) -> Result<()>;
+
+    /// Attendees of an event with their attendance status and the state
+    /// of any linked payment, for the admin roster.
+    async fn roster(&self, event_id: Uuid) -> Result<Vec<RosterEntry>>;
 
     // ---- Event-reminder support ---------------------------------------
 
@@ -131,6 +215,7 @@ struct EventRow {
     location: Option<String>,
     max_attendees: Option<i32>,
     rsvp_required: i32,
+    member_price_cents: i64,
     image_url: Option<String>,
     created_by: String,
     created_at: NaiveDateTime,
@@ -177,6 +262,7 @@ impl SqliteEventRepository {
             location: row.location,
             max_attendees: row.max_attendees,
             rsvp_required: row.rsvp_required != 0,
+            member_price_cents: row.member_price_cents,
             image_url: row.image_url,
             created_by: Uuid::parse_str(&row.created_by)
                 .map_err(|e| AppError::Internal(e.to_string()))?,
@@ -219,6 +305,40 @@ impl SqliteEventRepository {
         }
     }
 
+    fn parse_attendance_status(s: &str) -> Result<AttendanceStatus> {
+        match s {
+            "Registered" => Ok(AttendanceStatus::Registered),
+            "Waitlisted" => Ok(AttendanceStatus::Waitlisted),
+            "Cancelled" => Ok(AttendanceStatus::Cancelled),
+            "PendingPayment" => Ok(AttendanceStatus::PendingPayment),
+            _ => Err(AppError::Internal(format!(
+                "Invalid attendance status: {}",
+                s
+            ))),
+        }
+    }
+
+    /// Joined payment columns are read leniently: an unrecognized value
+    /// on the roster costs a display detail, not the whole page.
+    fn parse_payment_status(s: &str) -> Option<PaymentStatus> {
+        match s {
+            "Pending" => Some(PaymentStatus::Pending),
+            "Completed" => Some(PaymentStatus::Completed),
+            "Failed" => Some(PaymentStatus::Failed),
+            "Refunded" => Some(PaymentStatus::Refunded),
+            _ => None,
+        }
+    }
+
+    fn parse_payment_method(s: &str) -> Option<PaymentMethod> {
+        match s {
+            "Stripe" => Some(PaymentMethod::Stripe),
+            "Manual" => Some(PaymentMethod::Manual),
+            "Waived" => Some(PaymentMethod::Waived),
+            _ => None,
+        }
+    }
+
     fn visibility_to_str(visibility: &EventVisibility) -> &'static str {
         match visibility {
             EventVisibility::Public => "Public",
@@ -249,9 +369,9 @@ impl EventRepository for SqliteEventRepository {
             INSERT INTO events (
                 id, title, description, event_type, event_type_id, visibility,
                 start_time, end_time, timezone, location, max_attendees, rsvp_required,
-                image_url, created_by, created_at, updated_at,
+                member_price_cents, image_url, created_by, created_at, updated_at,
                 series_id, occurrence_index
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&id_str)
@@ -266,6 +386,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(&event.location)
         .bind(max_attendees_int)
         .bind(rsvp_required_int)
+        .bind(event.member_price_cents)
         .bind(&event.image_url)
         .bind(&created_by_str)
         .bind(now)
@@ -287,7 +408,7 @@ impl EventRepository for SqliteEventRepository {
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, timezone, location, max_attendees, rsvp_required,
-                   image_url, created_by, created_at, updated_at,
+                   member_price_cents, image_url, created_by, created_at, updated_at,
                    series_id, occurrence_index
             FROM events
             WHERE id = ?
@@ -309,7 +430,7 @@ impl EventRepository for SqliteEventRepository {
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, timezone, location, max_attendees, rsvp_required,
-                   image_url, created_by, created_at, updated_at,
+                   member_price_cents, image_url, created_by, created_at, updated_at,
                    series_id, occurrence_index
             FROM events
             ORDER BY start_time DESC
@@ -339,7 +460,7 @@ impl EventRepository for SqliteEventRepository {
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, timezone, location, max_attendees, rsvp_required,
-                   image_url, created_by, created_at, updated_at,
+                   member_price_cents, image_url, created_by, created_at, updated_at,
                    series_id, occurrence_index
             FROM events
             WHERE start_time > ?
@@ -369,7 +490,7 @@ impl EventRepository for SqliteEventRepository {
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, timezone, location, max_attendees, rsvp_required,
-                   image_url, created_by, created_at, updated_at,
+                   member_price_cents, image_url, created_by, created_at, updated_at,
                    series_id, occurrence_index
             FROM events
             WHERE visibility = ?
@@ -391,7 +512,7 @@ impl EventRepository for SqliteEventRepository {
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, timezone, location, max_attendees, rsvp_required,
-                   image_url, created_by, created_at, updated_at,
+                   member_price_cents, image_url, created_by, created_at, updated_at,
                    series_id, occurrence_index
             FROM events
             WHERE visibility = ?
@@ -420,7 +541,7 @@ impl EventRepository for SqliteEventRepository {
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, timezone, location, max_attendees, rsvp_required,
-                   image_url, created_by, created_at, updated_at,
+                   member_price_cents, image_url, created_by, created_at, updated_at,
                    series_id, occurrence_index
             FROM events
             WHERE visibility = ? AND start_time > ?
@@ -458,7 +579,7 @@ impl EventRepository for SqliteEventRepository {
             UPDATE events
             SET title = ?, description = ?, event_type = ?, event_type_id = ?, visibility = ?,
                 start_time = ?, end_time = ?, location = ?, max_attendees = ?,
-                rsvp_required = ?, image_url = ?, updated_at = ?
+                rsvp_required = ?, member_price_cents = ?, image_url = ?, updated_at = ?
             WHERE id = ?
             "#,
         )
@@ -472,6 +593,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(&event.location)
         .bind(max_attendees_int)
         .bind(rsvp_required_int)
+        .bind(event.member_price_cents)
         .bind(&event.image_url)
         .bind(now)
         .bind(&id_str)
@@ -576,22 +698,156 @@ impl EventRepository for SqliteEventRepository {
         .map_err(AppError::Database)?;
 
         match row {
-            Some((status,)) => {
-                let attendance_status = match status.as_str() {
-                    "Registered" => AttendanceStatus::Registered,
-                    "Waitlisted" => AttendanceStatus::Waitlisted,
-                    "Cancelled" => AttendanceStatus::Cancelled,
-                    _ => {
-                        return Err(AppError::Internal(format!(
-                            "Invalid attendance status: {}",
-                            status
-                        )))
-                    }
-                };
-                Ok(Some(attendance_status))
-            }
+            Some((status,)) => Ok(Some(Self::parse_attendance_status(&status)?)),
             None => Ok(None),
         }
+    }
+
+    async fn count_held_seats(&self, event_id: Uuid) -> Result<i64> {
+        let sql = format!(
+            "SELECT COUNT(*) FROM event_attendance a \
+             LEFT JOIN payments p ON p.id = a.payment_id \
+             WHERE a.event_id = ? AND {HELD_SEAT_PREDICATE}",
+        );
+        let row: (i64,) = sqlx::query_as(&sql)
+            .bind(event_id.to_string())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(AppError::Database)?;
+        Ok(row.0)
+    }
+
+    async fn claim_seat(
+        &self,
+        event_id: Uuid,
+        member_id: Uuid,
+        max_attendees: Option<i32>,
+    ) -> Result<()> {
+        // One statement, so SQLite holds the write lock across the
+        // count AND the insert: two members racing for the last seat
+        // cannot both see "one left". An explicit BEGIN/COUNT/INSERT
+        // transaction would be a deferred read that upgrades to a write
+        // — the exact window this avoids.
+        //
+        // The `ON CONFLICT` arm re-claims a row the member previously
+        // cancelled (or abandoned); the capacity guard in the SELECT
+        // still applies, since neither of those states holds a seat.
+        let cap = max_attendees.map(i64::from).unwrap_or(i64::MAX);
+        let sql = format!(
+            "INSERT INTO event_attendance (event_id, member_id, status, registered_at, payment_id) \
+             SELECT ?1, ?2, 'PendingPayment', CURRENT_TIMESTAMP, NULL \
+             WHERE (SELECT COUNT(*) FROM event_attendance a \
+                    LEFT JOIN payments p ON p.id = a.payment_id \
+                    WHERE a.event_id = ?1 AND {HELD_SEAT_PREDICATE}) < ?3 \
+             ON CONFLICT (event_id, member_id) DO UPDATE \
+             SET status = 'PendingPayment', registered_at = CURRENT_TIMESTAMP, payment_id = NULL",
+        );
+        let res = sqlx::query(&sql)
+            .bind(event_id.to_string())
+            .bind(member_id.to_string())
+            .bind(cap)
+            .execute(&self.pool)
+            .await
+            .map_err(AppError::Database)?;
+
+        if res.rows_affected() == 0 {
+            return Err(AppError::BadRequest(
+                "This event is full — no seats are available".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn link_payment(&self, event_id: Uuid, member_id: Uuid, payment_id: Uuid) -> Result<()> {
+        sqlx::query(
+            "UPDATE event_attendance SET payment_id = ? WHERE event_id = ? AND member_id = ?",
+        )
+        .bind(payment_id.to_string())
+        .bind(event_id.to_string())
+        .bind(member_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+        Ok(())
+    }
+
+    async fn confirm_seat(&self, payment_id: Uuid) -> Result<bool> {
+        let res = sqlx::query(
+            "UPDATE event_attendance SET status = 'Registered' \
+             WHERE payment_id = ? AND status = 'PendingPayment'",
+        )
+        .bind(payment_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    async fn release_seat(&self, event_id: Uuid, member_id: Uuid) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM event_attendance \
+             WHERE event_id = ? AND member_id = ? AND status = 'PendingPayment'",
+        )
+        .bind(event_id.to_string())
+        .bind(member_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+        Ok(())
+    }
+
+    async fn cancel_seat_for_payment(&self, payment_id: Uuid) -> Result<()> {
+        sqlx::query("UPDATE event_attendance SET status = 'Cancelled' WHERE payment_id = ?")
+            .bind(payment_id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(AppError::Database)?;
+        Ok(())
+    }
+
+    async fn roster(&self, event_id: Uuid) -> Result<Vec<RosterEntry>> {
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        )> = sqlx::query_as(
+            r#"
+            SELECT m.id, m.full_name, m.email, a.status,
+                   a.payment_id, p.status, p.payment_method, p.amount_cents
+            FROM event_attendance a
+            JOIN members m ON m.id = a.member_id
+            LEFT JOIN payments p ON p.id = a.payment_id
+            WHERE a.event_id = ?
+            ORDER BY a.registered_at ASC
+            "#,
+        )
+        .bind(event_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+        rows.into_iter()
+            .map(
+                |(mid, name, email, status, pay_id, pay_status, pay_method, amount)| {
+                    Ok(RosterEntry {
+                        member_id: Uuid::parse_str(&mid)
+                            .map_err(|e| AppError::Internal(e.to_string()))?,
+                        member_name: name,
+                        member_email: email,
+                        status: Self::parse_attendance_status(&status)?,
+                        payment_id: pay_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
+                        payment_status: pay_status.as_deref().and_then(Self::parse_payment_status),
+                        payment_method: pay_method.as_deref().and_then(Self::parse_payment_method),
+                        amount_cents: amount,
+                    })
+                },
+            )
+            .collect()
     }
 
     async fn max_occurrence_index_for_series(&self, series_id: Uuid) -> Result<Option<i32>> {
@@ -613,7 +869,7 @@ impl EventRepository for SqliteEventRepository {
             r#"
             SELECT id, title, description, event_type, event_type_id, visibility,
                    start_time, end_time, timezone, location, max_attendees, rsvp_required,
-                   image_url, created_by, created_at, updated_at,
+                   member_price_cents, image_url, created_by, created_at, updated_at,
                    series_id, occurrence_index
             FROM events
             WHERE series_id = ? AND occurrence_index = ?
@@ -670,6 +926,7 @@ impl EventRepository for SqliteEventRepository {
                 location = ?,
                 max_attendees = ?,
                 rsvp_required = ?,
+                member_price_cents = ?,
                 updated_at = ?
             WHERE series_id = ? AND start_time >= ?
             "#,
@@ -682,6 +939,7 @@ impl EventRepository for SqliteEventRepository {
         .bind(&template.location)
         .bind(template.max_attendees)
         .bind(rsvp_int)
+        .bind(template.member_price_cents)
         .bind(Utc::now().naive_utc())
         .bind(series_id.to_string())
         .bind(from.naive_utc())

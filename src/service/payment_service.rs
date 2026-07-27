@@ -196,10 +196,15 @@ impl PaymentService {
 /// Audit action string for the recorded payment. Centralized so the
 /// four sites that used to duplicate this can't drift.
 fn audit_action(method: &PaymentMethod, kind: &PaymentKind) -> &'static str {
+    // Order matters: the event-fee arms come FIRST so a comped seat
+    // audits as "waive_event_fee" instead of being absorbed by the
+    // dues-waiver arm below it.
     match (method, kind) {
+        (PaymentMethod::Waived, PaymentKind::EventFee { .. }) => "waive_event_fee",
         (PaymentMethod::Waived, _) => "waive_dues",
         (_, PaymentKind::Membership) => "manual_payment",
         (_, PaymentKind::Donation { .. }) => "manual_donation",
+        (_, PaymentKind::EventFee { .. }) => "manual_event_fee",
         (_, PaymentKind::Other) => "manual_other",
     }
 }

@@ -23,8 +23,11 @@ use crate::{
         gateway::{RealStripeGateway, StripeGateway},
         StripeClient, WebhookDispatcher,
     },
-    repository::{MemberRepository, PaymentRepository, ProcessedEventsRepository},
-    service::{membership_type_service::MembershipTypeService, settings_service::SettingsService},
+    repository::{EventRepository, MemberRepository, PaymentRepository, ProcessedEventsRepository},
+    service::{
+        audit_service::AuditService, membership_type_service::MembershipTypeService,
+        settings_service::SettingsService,
+    },
 };
 
 /// The current Stripe wiring. `client` and `webhook_dispatcher` are
@@ -50,9 +53,11 @@ struct RebuildDeps {
     settings_service: Arc<SettingsService>,
     payment_repo: Arc<dyn PaymentRepository>,
     member_repo: Arc<dyn MemberRepository>,
+    event_repo: Arc<dyn EventRepository>,
     processed_events_repo: Arc<dyn ProcessedEventsRepository>,
     membership_type_service: Arc<MembershipTypeService>,
     integration_manager: Arc<IntegrationManager>,
+    audit_service: Arc<AuditService>,
 }
 
 /// Swappable handle over the running Stripe wiring. Reads the current
@@ -74,18 +79,22 @@ impl StripeHandle {
         settings_service: Arc<SettingsService>,
         payment_repo: Arc<dyn PaymentRepository>,
         member_repo: Arc<dyn MemberRepository>,
+        event_repo: Arc<dyn EventRepository>,
         processed_events_repo: Arc<dyn ProcessedEventsRepository>,
         membership_type_service: Arc<MembershipTypeService>,
         integration_manager: Arc<IntegrationManager>,
+        audit_service: Arc<AuditService>,
     ) -> Self {
         Self::with_gateway_factory(
             Arc::new(|key| Arc::new(RealStripeGateway::new(key)) as Arc<dyn StripeGateway>),
             settings_service,
             payment_repo,
             member_repo,
+            event_repo,
             processed_events_repo,
             membership_type_service,
             integration_manager,
+            audit_service,
         )
     }
 
@@ -97,9 +106,11 @@ impl StripeHandle {
         settings_service: Arc<SettingsService>,
         payment_repo: Arc<dyn PaymentRepository>,
         member_repo: Arc<dyn MemberRepository>,
+        event_repo: Arc<dyn EventRepository>,
         processed_events_repo: Arc<dyn ProcessedEventsRepository>,
         membership_type_service: Arc<MembershipTypeService>,
         integration_manager: Arc<IntegrationManager>,
+        audit_service: Arc<AuditService>,
     ) -> Self {
         Self {
             runtime: RwLock::new(Arc::new(StripeRuntime::default())),
@@ -108,9 +119,11 @@ impl StripeHandle {
                 settings_service,
                 payment_repo,
                 member_repo,
+                event_repo,
                 processed_events_repo,
                 membership_type_service,
                 integration_manager,
+                audit_service,
             }),
         }
     }
@@ -199,9 +212,11 @@ impl StripeHandle {
             webhook_secret,
             deps.payment_repo.clone(),
             deps.member_repo.clone(),
+            deps.event_repo.clone(),
             deps.processed_events_repo.clone(),
             deps.membership_type_service.clone(),
             deps.integration_manager.clone(),
+            deps.audit_service.clone(),
         ));
 
         StripeRuntime {

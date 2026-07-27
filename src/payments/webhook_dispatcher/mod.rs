@@ -26,9 +26,17 @@ use crate::{
     error::{AppError, Result},
     integrations::IntegrationManager,
     payments::gateway::StripeGateway,
-    repository::{MemberRepository, PaymentRepository, ProcessedEventsRepository},
-    service::{billing_service::BillingService, membership_type_service::MembershipTypeService},
+    repository::{EventRepository, MemberRepository, PaymentRepository, ProcessedEventsRepository},
+    service::{
+        audit_service::AuditService, billing_service::BillingService,
+        membership_type_service::MembershipTypeService,
+    },
 };
+
+/// `ip_address` stamp on audit rows this dispatcher writes. Webhook
+/// transitions have no acting member, so the source field is what
+/// identifies them — see the paid-events audit requirement.
+pub(crate) const STRIPE_WEBHOOK_SOURCE: &str = "stripe-webhook";
 
 pub struct WebhookDispatcher {
     /// Used by `handle_charge_refunded` to walk back from a PaymentIntent
@@ -39,29 +47,37 @@ pub struct WebhookDispatcher {
     webhook_secret: String,
     payment_repo: Arc<dyn PaymentRepository>,
     member_repo: Arc<dyn MemberRepository>,
+    /// Event-fee completions and refunds move a seat, not just money.
+    event_repo: Arc<dyn EventRepository>,
     processed_events_repo: Arc<dyn ProcessedEventsRepository>,
     membership_type_service: Arc<MembershipTypeService>,
     integration_manager: Arc<IntegrationManager>,
+    audit_service: Arc<AuditService>,
 }
 
 impl WebhookDispatcher {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         gateway: Arc<dyn StripeGateway>,
         webhook_secret: String,
         payment_repo: Arc<dyn PaymentRepository>,
         member_repo: Arc<dyn MemberRepository>,
+        event_repo: Arc<dyn EventRepository>,
         processed_events_repo: Arc<dyn ProcessedEventsRepository>,
         membership_type_service: Arc<MembershipTypeService>,
         integration_manager: Arc<IntegrationManager>,
+        audit_service: Arc<AuditService>,
     ) -> Self {
         Self {
             gateway,
             webhook_secret,
             payment_repo,
             member_repo,
+            event_repo,
             processed_events_repo,
             membership_type_service,
             integration_manager,
+            audit_service,
         }
     }
 

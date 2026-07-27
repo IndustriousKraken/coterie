@@ -125,6 +125,7 @@ pub async fn receipts_page(
                             donations_cents += p.amount_cents;
                             "Donation"
                         }
+                        PaymentKind::EventFee { .. } => "Event fee",
                         PaymentKind::Other => "Other",
                     }
                     .to_string();
@@ -299,6 +300,10 @@ async fn build_receipt_template(
     let kind_label = match payment.kind {
         PaymentKind::Membership => "Dues",
         PaymentKind::Donation { .. } => "Donation",
+        // The event itself is named in the payment description
+        // ("Event registration — Lockpicking 101"), which the receipt
+        // renders alongside this label.
+        PaymentKind::EventFee { .. } => "Event fee",
         PaymentKind::Other => "Other",
     }
     .to_string();

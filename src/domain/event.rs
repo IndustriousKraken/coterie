@@ -28,6 +28,10 @@ pub struct Event {
     pub location: Option<String>,
     pub max_attendees: Option<i32>,
     pub rsvp_required: bool,
+    /// What a member pays to attend, in cents. `0` means free — a
+    /// *known* price, not an unknown one, which is why this is not an
+    /// `Option`. See [`Event::is_paid_for_members`].
+    pub member_price_cents: i64,
     pub image_url: Option<String>,
     pub created_by: Uuid,
     pub created_at: DateTime<Utc>,
@@ -43,6 +47,13 @@ pub struct Event {
 }
 
 impl Event {
+    /// True when attending costs a member money. The single place the
+    /// free-vs-paid rule lives, so templates and services don't
+    /// re-derive `> 0` and drift on the boundary.
+    pub fn is_paid_for_members(&self) -> bool {
+        self.member_price_cents > 0
+    }
+
     /// The event's IANA zone, falling back to UTC when the stored name
     /// is empty or unrecognized. The setting validator rejects bad zone
     /// names on write, so the fallback is purely defensive.
@@ -155,14 +166,21 @@ pub struct EventAttendance {
     pub status: AttendanceStatus,
     pub registered_at: DateTime<Utc>,
     pub attended: bool,
+    /// The event-fee payment holding this seat. `None` for free RSVPs.
+    pub payment_id: Option<Uuid>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "TEXT")]
 pub enum AttendanceStatus {
     Registered,
     Waitlisted,
     Cancelled,
+    /// Seat held while the member is at Stripe Checkout. Holds capacity
+    /// only while its linked payment is still `Pending` — an abandoned
+    /// checkout releases the seat by virtue of the payment being flipped
+    /// to `Failed`, without the row having to be deleted.
+    PendingPayment,
 }
 
 #[cfg(test)]
@@ -195,6 +213,7 @@ mod tz_tests {
             location: None,
             max_attendees: None,
             rsvp_required: false,
+            member_price_cents: 0,
             image_url: None,
             created_by: Uuid::new_v4(),
             created_at: Utc::now(),

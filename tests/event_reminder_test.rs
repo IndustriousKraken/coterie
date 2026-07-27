@@ -163,6 +163,7 @@ async fn build_with_tz(
         location: Some("HQ".to_string()),
         max_attendees: None,
         rsvp_required: true,
+        member_price_cents: 0,
         image_url: None,
         created_by: member.id,
         created_at: Utc::now(),

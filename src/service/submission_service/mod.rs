@@ -407,6 +407,8 @@ impl SubmissionService {
             location: None,
             max_attendees: None,
             rsvp_required: false,
+            // A promoted proposal is free; an admin can price it after.
+            member_price_cents: 0,
             image_url: None,
             recurrence: None,
             recurrence_until: None,

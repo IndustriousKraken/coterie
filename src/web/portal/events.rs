@@ -3,7 +3,7 @@ use std::sync::Arc;
 use askama::Template;
 use axum::{
     extract::{Path, Query, State},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     Extension,
 };
 use serde::Deserialize;
@@ -14,6 +14,7 @@ use crate::{
     auth::CsrfService,
     domain::AttendanceStatus,
     repository::EventRepository,
+    service::event_registration_service::{EventRegistrationService, RegistrationOutcome},
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -129,7 +130,11 @@ pub async fn events_list_api(
         let rsvp_button = if is_past {
             String::new()
         } else {
-            render_rsvp_button(&event.id.to_string(), rsvp_status.as_ref())
+            render_rsvp_button(
+                &event.id.to_string(),
+                rsvp_status.as_ref(),
+                event.member_price_cents,
+            )
         };
 
         let image_html = event.image_url.as_ref().map(|url| {
@@ -188,8 +193,39 @@ pub async fn events_list_api(
 /// swap replaces and re-emits the same targeted element, so repeated
 /// RSVP <-> cancel toggles keep resolving the target instead of failing
 /// silently after the first swap.
-pub(crate) fn render_rsvp_button(event_id: &str, status: Option<&AttendanceStatus>) -> String {
+pub(crate) fn render_rsvp_button(
+    event_id: &str,
+    status: Option<&AttendanceStatus>,
+    price_cents: i64,
+) -> String {
+    let is_paid = price_cents > 0;
     match status {
+        // A paid seat gets no self-service cancel button: cancelling
+        // would drop the seat while the charge stood, and refunds are
+        // an operator action. Free RSVPs keep today's toggle.
+        Some(AttendanceStatus::Registered) if is_paid => r#"<div class="text-right">
+                    <div class="flex flex-col items-end gap-2">
+                        <span class="text-sm text-green-600 font-medium">You're attending — paid</span>
+                        <span class="text-xs text-gray-500">Need a refund? Contact an organizer.</span>
+                    </div>
+                </div>"#
+            .to_string(),
+        Some(AttendanceStatus::PendingPayment) => {
+            format!(
+                r#"<div class="text-right">
+                    <div class="flex flex-col items-end gap-2">
+                        <span class="text-sm text-yellow-600 font-medium">Awaiting payment</span>
+                        <button hx-post="/portal/api/events/{}/rsvp"
+                                hx-swap="outerHTML"
+                                hx-target="closest div.text-right"
+                                class="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
+                            Complete payment
+                        </button>
+                    </div>
+                </div>"#,
+                event_id
+            )
+        }
         Some(AttendanceStatus::Registered) => {
             format!(
                 r#"<div class="text-right">
@@ -223,16 +259,23 @@ pub(crate) fn render_rsvp_button(event_id: &str, status: Option<&AttendanceStatu
             )
         }
         Some(AttendanceStatus::Cancelled) | None => {
+            // The label says which this control is — an RSVP, or a trip
+            // to a payment page — so a member knows before clicking.
+            let label = if is_paid {
+                format!("Register — ${:.2}", price_cents as f64 / 100.0)
+            } else {
+                "RSVP".to_string()
+            };
             format!(
                 r#"<div class="text-right">
                     <button hx-post="/portal/api/events/{}/rsvp"
                             hx-swap="outerHTML"
                             hx-target="closest div.text-right"
                             class="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
-                        RSVP
+                        {}
                     </button>
                 </div>"#,
-                event_id
+                event_id, label
             )
         }
     }
@@ -246,8 +289,13 @@ pub(crate) fn render_rsvp_button(event_id: &str, status: Option<&AttendanceStatu
 /// keeps the `hx-target="closest div.text-right"` target alive after the swap
 /// instead of leaving a buttonless error message that freezes the UI until a
 /// full page refresh.
-fn render_rsvp_error(event_id: &str, status: Option<&AttendanceStatus>, error: &str) -> String {
-    let button = render_rsvp_button(event_id, status);
+fn render_rsvp_error(
+    event_id: &str,
+    status: Option<&AttendanceStatus>,
+    price_cents: i64,
+    error: &str,
+) -> String {
+    let button = render_rsvp_button(event_id, status, price_cents);
     // render_rsvp_button always emits a `<div class="text-right">` root
     // (asserted by every_rsvp_fragment_root_matches_hx_target), so inject the
     // error span right after that opening tag to share the target wrapper.
@@ -261,30 +309,78 @@ fn render_rsvp_error(event_id: &str, status: Option<&AttendanceStatus>, error: &
     )
 }
 
-/// Handle RSVP to an event
+/// Handle RSVP to an event.
+///
+/// Free events behave exactly as before. A paid event routes through
+/// `EventRegistrationService`, which claims the seat and returns a
+/// Checkout URL — handed back as an `HX-Redirect` so HTMX sends the
+/// browser to Stripe instead of swapping a fragment. The member is not
+/// `Registered` until the completion webhook says so.
 pub async fn rsvp_event(
     State(event_repo): State<Arc<dyn EventRepository>>,
+    State(registration_service): State<Arc<EventRegistrationService>>,
     Extension(current_user): Extension<CurrentUser>,
     Path(event_id): Path<Uuid>,
-) -> impl IntoResponse {
-    let member_id = current_user.member.id;
+) -> Response {
+    let event = match event_repo.find_by_id(event_id).await {
+        Ok(Some(e)) => e,
+        Ok(None) => {
+            return axum::response::Html(render_rsvp_error(
+                &event_id.to_string(),
+                None,
+                0,
+                "Event not found",
+            ))
+            .into_response()
+        }
+        Err(e) => {
+            return axum::response::Html(render_rsvp_error(
+                &event_id.to_string(),
+                None,
+                0,
+                &e.to_string(),
+            ))
+            .into_response()
+        }
+    };
+    let price = event.member_price_cents;
 
-    // Register attendance
-    if let Err(e) = event_repo.register_attendance(event_id, member_id).await {
-        // Registration failed: member is still unregistered, so re-render the
-        // RSVP button (unchanged state) alongside the error.
-        return axum::response::Html(render_rsvp_error(
+    match registration_service
+        .register(&current_user.member, &event)
+        .await
+    {
+        Ok(RegistrationOutcome::Registered) => axum::response::Html(render_rsvp_button(
             &event_id.to_string(),
-            None,
-            &e.to_string(),
-        ));
+            Some(&AttendanceStatus::Registered),
+            price,
+        ))
+        .into_response(),
+        Ok(RegistrationOutcome::Checkout { url }) => {
+            // 200 + HX-Redirect: HTMX navigates the whole page. The
+            // body is the pending-payment fragment so a non-HTMX
+            // client still sees the seat's real state.
+            (
+                [("HX-Redirect", url)],
+                axum::response::Html(render_rsvp_button(
+                    &event_id.to_string(),
+                    Some(&AttendanceStatus::PendingPayment),
+                    price,
+                )),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            // Registration failed: state is unchanged, so re-render the
+            // register button (working retry) alongside the error.
+            axum::response::Html(render_rsvp_error(
+                &event_id.to_string(),
+                None,
+                price,
+                &e.to_string(),
+            ))
+            .into_response()
+        }
     }
-
-    // Return updated button
-    axum::response::Html(render_rsvp_button(
-        &event_id.to_string(),
-        Some(&AttendanceStatus::Registered),
-    ))
 }
 
 /// Handle cancel RSVP
@@ -292,8 +388,28 @@ pub async fn cancel_rsvp_event(
     State(event_repo): State<Arc<dyn EventRepository>>,
     Extension(current_user): Extension<CurrentUser>,
     Path(event_id): Path<Uuid>,
-) -> impl IntoResponse {
+) -> Response {
     let member_id = current_user.member.id;
+    let price = event_repo
+        .find_by_id(event_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|e| e.member_price_cents)
+        .unwrap_or(0);
+
+    // Self-service cancel on a paid event would surrender the seat while
+    // the charge stood. Releasing the money is an operator action
+    // (refund), which cancels the seat as a side effect.
+    if price > 0 {
+        return axum::response::Html(render_rsvp_error(
+            &event_id.to_string(),
+            Some(&AttendanceStatus::Registered),
+            price,
+            "Paid registrations can't be cancelled here — contact an organizer for a refund.",
+        ))
+        .into_response();
+    }
 
     // Cancel attendance
     if let Err(e) = event_repo.cancel_attendance(event_id, member_id).await {
@@ -305,12 +421,14 @@ pub async fn cancel_rsvp_event(
         return axum::response::Html(render_rsvp_error(
             &event_id.to_string(),
             Some(&AttendanceStatus::Registered),
+            price,
             &e.to_string(),
-        ));
+        ))
+        .into_response();
     }
 
     // Return updated button (shows RSVP button again)
-    axum::response::Html(render_rsvp_button(&event_id.to_string(), None))
+    axum::response::Html(render_rsvp_button(&event_id.to_string(), None, price)).into_response()
 }
 
 #[cfg(test)]
@@ -380,6 +498,7 @@ mod tests {
                 location: None,
                 max_attendees: None,
                 rsvp_required: false,
+                member_price_cents: 0,
                 image_url: None,
                 created_by: member.id,
                 created_at: now,
@@ -433,9 +552,10 @@ mod tests {
             Some(AttendanceStatus::Cancelled),
             Some(AttendanceStatus::Registered),
             Some(AttendanceStatus::Waitlisted),
+            Some(AttendanceStatus::PendingPayment),
         ];
         for status in statuses {
-            let fragment = render_rsvp_button("evt-1", status.as_ref());
+            let fragment = render_rsvp_button("evt-1", status.as_ref(), 0);
             let root = fragment.trim_start();
             assert!(
                 root.starts_with(r#"<div class="text-right">"#),
@@ -453,22 +573,64 @@ mod tests {
     #[test]
     fn rsvp_error_fragment_keeps_target_and_retry_button() {
         // Register failure: unchanged state is "not attending" -> RSVP button.
-        let register_err = render_rsvp_error("evt-1", None, "boom");
+        let register_err = render_rsvp_error("evt-1", None, 0, "boom");
         // Cancel failure: unchanged state is "attending" -> Cancel button.
-        let cancel_err = render_rsvp_error("evt-1", Some(&AttendanceStatus::Registered), "boom");
+        let cancel_err = render_rsvp_error("evt-1", Some(&AttendanceStatus::Registered), 0, "boom");
 
         for (fragment, endpoint) in [(&register_err, "rsvp"), (&cancel_err, "cancel")] {
-            assert!(fragment.trim_start().starts_with(r#"<div class="text-right">"#));
+            assert!(fragment
+                .trim_start()
+                .starts_with(r#"<div class="text-right">"#));
             assert!(fragment.contains(r#"hx-target="closest div.text-right""#));
             assert!(fragment.contains(&format!("/portal/api/events/evt-1/{endpoint}")));
             assert!(fragment.contains("Error: boom"));
         }
     }
 
+    // The control's label tells a member which it is BEFORE they click:
+    // an RSVP that registers them, or a trip to a payment page.
+    #[test]
+    fn paid_event_button_shows_the_price() {
+        let free = render_rsvp_button("evt-1", None, 0);
+        assert!(
+            free.contains(">\n                        RSVP\n"),
+            "got: {free}"
+        );
+        assert!(!free.contains('$'));
+
+        let paid = render_rsvp_button("evt-1", None, 3000);
+        assert!(paid.contains("Register — $30.00"), "got: {paid}");
+        assert!(paid.contains("/portal/api/events/evt-1/rsvp"));
+    }
+
+    // A seat held at Stripe reads as awaiting payment and offers a way
+    // back to the same checkout, not a second registration.
+    #[test]
+    fn pending_payment_fragment_offers_completion() {
+        let f = render_rsvp_button("evt-1", Some(&AttendanceStatus::PendingPayment), 3000);
+        assert!(f.trim_start().starts_with(r#"<div class="text-right">"#));
+        assert!(f.contains("Awaiting payment"));
+        assert!(f.contains("Complete payment"));
+        assert!(f.contains("/portal/api/events/evt-1/rsvp"));
+    }
+
+    // Cancelling a paid seat would surrender it while the charge stood,
+    // so the member-facing control simply isn't offered.
+    #[test]
+    fn paid_registered_fragment_has_no_self_service_cancel() {
+        let paid = render_rsvp_button("evt-1", Some(&AttendanceStatus::Registered), 3000);
+        assert!(!paid.contains("/cancel"), "got: {paid}");
+        assert!(paid.contains("You're attending — paid"));
+
+        // Free events keep today's toggle.
+        let free = render_rsvp_button("evt-1", Some(&AttendanceStatus::Registered), 0);
+        assert!(free.contains("/portal/api/events/evt-1/cancel"));
+    }
+
     // Error strings are HTML-escaped so a failure message can't inject markup.
     #[test]
     fn rsvp_error_fragment_escapes_message() {
-        let fragment = render_rsvp_error("evt-1", None, "<script>x</script>");
+        let fragment = render_rsvp_error("evt-1", None, 0, "<script>x</script>");
         assert!(!fragment.contains("<script>"));
         assert!(fragment.contains("&lt;script&gt;"));
     }

@@ -4,6 +4,7 @@ pub mod basic_type_service;
 pub mod billing_service;
 pub mod configurable_types;
 pub mod event_admin_service;
+pub mod event_registration_service;
 pub mod expense_account_service;
 pub mod expense_category_service;
 pub mod expense_service;
@@ -29,19 +30,20 @@ use announcement_admin_service::AnnouncementAdminService;
 use audit_service::AuditService;
 use basic_type_service::BasicTypeService;
 use event_admin_service::EventAdminService;
+use event_registration_service::EventRegistrationService;
 use expense_account_service::ExpenseAccountService;
-use member_field_service::MemberFieldService;
 use expense_category_service::ExpenseCategoryService;
 use expense_service::ExpenseService;
+use member_field_service::MemberFieldService;
 use member_service::MemberService;
 use membership_type_service::MembershipTypeService;
 use payment_admin_service::PaymentAdminService;
 use payment_service::PaymentService;
 use recurring_event_service::RecurringEventService;
 use settings_service::SettingsService;
-use submission_service::SubmissionService;
 use sqlx::SqlitePool;
 use std::sync::Arc;
+use submission_service::SubmissionService;
 
 pub struct ServiceContext {
     pub member_repo: Arc<dyn MemberRepository>,
@@ -73,6 +75,7 @@ pub struct ServiceContext {
     pub payment_service: Arc<PaymentService>,
     pub member_service: Arc<MemberService>,
     pub event_admin_service: Arc<EventAdminService>,
+    pub event_registration_service: Arc<EventRegistrationService>,
     pub announcement_admin_service: Arc<AnnouncementAdminService>,
     pub payment_admin_service: Arc<PaymentAdminService>,
     /// Hot-swappable Stripe wiring (client + inbound webhook dispatcher),
@@ -167,9 +170,11 @@ impl ServiceContext {
             settings_service.clone(),
             payment_repo.clone(),
             member_repo.clone(),
+            event_repo.clone(),
             processed_events_repo.clone(),
             membership_type_service.clone(),
             integration_manager.clone(),
+            audit_service.clone(),
         ));
 
         let payment_service = Arc::new(PaymentService::new(
@@ -188,7 +193,7 @@ impl ServiceContext {
             membership_type_service.clone(),
             settings_service.clone(),
             db_pool.clone(),
-            base_url,
+            base_url.clone(),
         ));
 
         let event_admin_service = Arc::new(EventAdminService::new(
@@ -199,6 +204,13 @@ impl ServiceContext {
             integration_manager.clone(),
         ));
 
+        let event_registration_service = Arc::new(EventRegistrationService::new(
+            event_repo.clone(),
+            payment_repo.clone(),
+            stripe_handle.clone(),
+            base_url,
+        ));
+
         let announcement_admin_service = Arc::new(AnnouncementAdminService::new(
             announcement_repo.clone(),
             audit_service.clone(),
@@ -207,6 +219,7 @@ impl ServiceContext {
 
         let payment_admin_service = Arc::new(PaymentAdminService::new(
             payment_repo.clone(),
+            event_repo.clone(),
             stripe_handle.clone(),
             audit_service.clone(),
             integration_manager.clone(),
@@ -274,6 +287,7 @@ impl ServiceContext {
             payment_service,
             member_service,
             event_admin_service,
+            event_registration_service,
             announcement_admin_service,
             payment_admin_service,
             stripe_handle,
