@@ -1807,3 +1807,103 @@ async fn guest_registration_rejects_unusable_identities() {
     );
     assert!(h.event_repo.roster(event.id).await.unwrap().is_empty());
 }
+
+// The roster's "Release seat" control issues no refund, so it must
+// refuse a seat whose fee is already Completed. That pairing is
+// reachable: the completion webhook flips the payment, then fails to
+// confirm the seat (an unlinked row, or a `confirm_seat` error whose
+// Stripe retry short-circuits on the already-Completed payment). The
+// row stays PendingPayment, which is what offers this control.
+#[tokio::test]
+async fn releasing_a_seat_refuses_when_the_attendee_already_paid() {
+    use axum::{extract::State, response::IntoResponse, Extension, Form};
+    use coterie::api::middleware::auth::CurrentUser;
+    use coterie::web::portal::admin::events::{admin_roster_release_seat, RosterMemberForm};
+
+    let h = build_harness().await;
+    let admin = h.active_member("admin").await;
+    let event = h.event(admin.id, 3000, None).await;
+    let paid = h.active_member("paid").await;
+    let abandoned = h.active_member("abandoned").await;
+
+    for m in [&paid, &abandoned] {
+        h.registration.register(m, &event).await.unwrap();
+    }
+
+    // The money moved, but the seat was never confirmed.
+    let payment = h
+        .payment_repo
+        .find_event_fee_payment(event.id, &Payer::Member(paid.id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(h
+        .payment_repo
+        .complete_pending_payment(payment.id, "pi_stuck")
+        .await
+        .unwrap());
+    // ...and the link never landed, so `confirm_seat` matched nothing.
+    sqlx::query("UPDATE event_attendance SET payment_id = NULL WHERE event_id = ?")
+        .bind(event.id.to_string())
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        h.attendance_status(event.id, paid.id).await,
+        Some(AttendanceStatus::PendingPayment),
+    );
+
+    let audit = Arc::new(AuditService::new(h.pool.clone()));
+    let release = |member_id: Uuid| {
+        admin_roster_release_seat(
+            State(h.event_repo.clone()),
+            State(h.payment_repo.clone()),
+            State(audit.clone()),
+            Extension(CurrentUser {
+                member: admin.clone(),
+            }),
+            axum::extract::Path(event.id.to_string()),
+            Form(RosterMemberForm {
+                member_id: member_id.to_string(),
+                guest_name: String::new(),
+                guest_email: String::new(),
+                csrf_token: String::new(),
+            }),
+        )
+    };
+
+    let body = axum::body::to_bytes(
+        release(paid.id).await.into_response().into_body(),
+        usize::MAX,
+    )
+    .await
+    .unwrap();
+    let body = String::from_utf8_lossy(&body);
+    assert!(
+        body.contains("already paid") && body.contains("refund"),
+        "the admin is sent to the refund route: {body}",
+    );
+    assert_eq!(
+        h.attendance_status(event.id, paid.id).await,
+        Some(AttendanceStatus::PendingPayment),
+        "a paid seat is NOT deleted by a control that issues no refund",
+    );
+    assert_eq!(
+        h.payment_repo
+            .find_by_id(payment.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        PaymentStatus::Completed,
+        "and the money is left where it is, for the refund route to return",
+    );
+
+    // The control it exists for still works: an unpaid held seat goes.
+    let _ = release(abandoned.id).await;
+    assert_eq!(
+        h.attendance_status(event.id, abandoned.id).await,
+        None,
+        "a seat nobody paid for is still released",
+    );
+}

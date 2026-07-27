@@ -11,7 +11,9 @@
 //!
 //! Releasing a stuck seat deliberately issues NO refund — it exists for
 //! the never-arrived-webhook case. An operator who needs the money back
-//! uses the refund route, which cancels the seat as a side effect.
+//! uses the refund route, which cancels the seat as a side effect. For
+//! the same reason releasing REFUSES to touch a seat whose event fee is
+//! already `Completed`: no-refund is only safe while no money moved.
 
 use std::sync::Arc;
 
@@ -276,23 +278,44 @@ pub async fn admin_roster_release_seat(
         _ => return partials::admin_alert("error", "Invalid ID", false).into_response(),
     };
 
-    // Fail the placeholder first so the abandoned checkout can never
-    // settle into a Completed payment for a seat that no longer exists.
     if let Some(payment) = payment_repo
         .find_event_fee_payment(event_id, &attendee.as_payer())
         .await
         .ok()
         .flatten()
     {
-        if payment.status == PaymentStatus::Pending {
-            if let Err(e) = payment_repo.fail_pending_payment(payment.id).await {
+        match payment.status {
+            // Fail the placeholder first so the abandoned checkout can
+            // never settle into a Completed payment for a seat that no
+            // longer exists.
+            PaymentStatus::Pending => {
+                if let Err(e) = payment_repo.fail_pending_payment(payment.id).await {
+                    return partials::admin_alert(
+                        "error",
+                        &format!("Could not release the pending payment: {}", e),
+                        false,
+                    )
+                    .into_response();
+                }
+            }
+            // Money WAS taken for this seat, even though the row is still
+            // PendingPayment — reachable when the completion webhook
+            // flipped the payment but couldn't confirm the seat (an
+            // unlinked row, or a failed `confirm_seat` whose Stripe retry
+            // short-circuits on the already-Completed payment). Releasing
+            // here would delete a paid seat with no refund, which is the
+            // one thing this control must never do. Refunding cancels the
+            // seat as a side effect, so that is the way out.
+            PaymentStatus::Completed if payment.payment_method != PaymentMethod::Waived => {
                 return partials::admin_alert(
                     "error",
-                    &format!("Could not release the pending payment: {}", e),
+                    "This attendee has already paid — refund the payment to release the seat. \
+                     Releasing issues no refund.",
                     false,
                 )
                 .into_response();
             }
+            _ => {}
         }
     }
 
