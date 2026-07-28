@@ -83,6 +83,12 @@ pub struct UpdateProfileRequest {
     pub csrf_token: String,
 }
 
+/// Member-side door to `members.full_name`. The other door is the
+/// unauthenticated `POST /public/signup` (`src/api/handlers/public.rs`);
+/// both write the same column, so the bound here intentionally mirrors
+/// signup's 200-character cap and trimmed-value semantics. Change one,
+/// change the other — otherwise the two doors drift and the looser one
+/// becomes the storage-abuse vector.
 pub async fn update_profile(
     State(member_repo): State<Arc<dyn MemberRepository>>,
     Extension(current_user): Extension<CurrentUser>,
@@ -90,8 +96,24 @@ pub async fn update_profile(
 ) -> axum::response::Response {
     use crate::domain::UpdateMemberRequest;
 
+    let inline_error = |msg: &str| -> axum::response::Response {
+        axum::response::Html(format!(
+            "<div class=\"p-4 bg-red-50 text-red-800 rounded-md\">{}</div>",
+            crate::web::escape_html(msg)
+        ))
+        .into_response()
+    };
+
+    let full_name = form.full_name.trim();
+    if full_name.is_empty() {
+        return inline_error("Name is required");
+    }
+    if full_name.chars().count() > 200 {
+        return inline_error("Name is too long (max 200 characters)");
+    }
+
     let update = UpdateMemberRequest {
-        full_name: Some(form.full_name.clone()),
+        full_name: Some(full_name.to_string()),
         ..Default::default()
     };
 
@@ -115,6 +137,120 @@ pub async fn update_profile(
             );
             axum::response::Html(html).into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        routing::post,
+        Router,
+    };
+    use tower::ServiceExt;
+
+    use crate::{
+        domain::{CreateMemberRequest, Member},
+        repository::SqliteMemberRepository,
+    };
+
+    async fn member_and_app() -> (Member, Arc<dyn MemberRepository>, Router) {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let member_repo: Arc<dyn MemberRepository> = Arc::new(SqliteMemberRepository::new(pool));
+        let member = member_repo
+            .create(CreateMemberRequest {
+                email: "member@example.com".to_string(),
+                username: "member".to_string(),
+                full_name: "Original Name".to_string(),
+                password: "p4ssword_long_enough".to_string(),
+                membership_type_id: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let app = Router::new()
+            .route("/portal/profile", post(update_profile))
+            .layer(Extension(CurrentUser {
+                member: member.clone(),
+            }))
+            .with_state(member_repo.clone());
+
+        (member, member_repo, app)
+    }
+
+    async fn post_full_name(app: Router, full_name: &str) -> (StatusCode, String, Option<String>) {
+        let body =
+            serde_urlencoded::to_string([("full_name", full_name), ("csrf_token", "t")]).unwrap();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/portal/profile")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let status = resp.status();
+        let redirect = resp
+            .headers()
+            .get("HX-Redirect")
+            .map(|v| v.to_str().unwrap().to_string());
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8(body.to_vec()).unwrap(), redirect)
+    }
+
+    #[tokio::test]
+    async fn profile_update_rejects_overlong_full_name() {
+        let (member, member_repo, app) = member_and_app().await;
+
+        let (_, body, _) = post_full_name(app, &"a".repeat(201)).await;
+        assert!(
+            body.contains("too long"),
+            "expected the inline too-long error fragment, got: {body}"
+        );
+
+        let stored = member_repo.find_by_id(member.id).await.unwrap().unwrap();
+        assert_eq!(stored.full_name, "Original Name");
+    }
+
+    #[tokio::test]
+    async fn profile_update_rejects_blank_full_name() {
+        let (member, member_repo, app) = member_and_app().await;
+
+        let (_, body, _) = post_full_name(app, "   ").await;
+        assert!(
+            body.contains("Name is required"),
+            "expected the inline required error fragment, got: {body}"
+        );
+
+        let stored = member_repo.find_by_id(member.id).await.unwrap().unwrap();
+        assert_eq!(stored.full_name, "Original Name");
+    }
+
+    #[tokio::test]
+    async fn profile_update_trims_and_persists_valid_name() {
+        let (member, member_repo, app) = member_and_app().await;
+
+        let (status, _, redirect) = post_full_name(app, "  Ada Lovelace  ").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(redirect.as_deref(), Some("/portal/profile"));
+
+        let stored = member_repo.find_by_id(member.id).await.unwrap().unwrap();
+        assert_eq!(stored.full_name, "Ada Lovelace");
     }
 }
 
