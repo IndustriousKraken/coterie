@@ -61,17 +61,28 @@ pub async fn setup_page(
         return redirect_to_login();
     }
 
-    if check_admin_exists(&db_pool).await {
-        // Arm the flag for consistency with the middleware's cache
-        // semantics — subsequent requests skip the redundant query.
-        admin_exists_observed.store(true, Ordering::Relaxed);
-        return redirect_to_login();
+    match query_admin_exists(&db_pool).await {
+        Ok(true) => {
+            // Arm the flag for consistency with the middleware's cache
+            // semantics — subsequent requests skip the redundant query.
+            admin_exists_observed.store(true, Ordering::Relaxed);
+            redirect_to_login()
+        }
+        // Unknown is treated as "an admin exists" (same as
+        // `check_admin_exists`), but deliberately does NOT arm the
+        // sticky flag: a transient DB error must not permanently
+        // disable the wizard on a genuine fresh install.
+        Err(e) => {
+            tracing::error!("Failed to check for admin: {}", e);
+            redirect_to_login()
+        }
+        Ok(false) => {
+            let template = SetupTemplate {
+                base: BaseContext::for_anon(),
+            };
+            HtmlTemplate(template).into_response()
+        }
     }
-
-    let template = SetupTemplate {
-        base: BaseContext::for_anon(),
-    };
-    HtmlTemplate(template).into_response()
 }
 
 fn redirect_to_login() -> Response {
@@ -131,6 +142,14 @@ pub async fn setup_handler(
             .into_response();
     }
 
+    // Fast path: once any surface has observed an admin, the wizard is
+    // closed for the rest of the process — no DB round-trip, and no way
+    // for a later query error to re-open it. Not a replacement for the
+    // in-lock re-check below, which still covers a cold process.
+    if admin_exists_observed.load(Ordering::Relaxed) {
+        return setup_already_completed();
+    }
+
     // Serialize first-admin creation. Without this, two concurrent setup
     // requests can both pass the "no admin exists" check and both create
     // admin accounts. The lock is held across check + create + promote.
@@ -139,15 +158,7 @@ pub async fn setup_handler(
     // Re-check inside the lock using the authoritative is_admin column
     // (not the legacy notes-LIKE heuristic).
     if check_admin_exists(&db_pool).await {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(SetupResponse {
-                success: false,
-                redirect: None,
-                error: Some("Setup has already been completed".to_string()),
-            }),
-        )
-            .into_response();
+        return setup_already_completed();
     }
 
     // Create the admin member. Membership type defaults to the first
@@ -262,6 +273,21 @@ pub async fn setup_handler(
         .into_response()
 }
 
+/// The wizard's refusal response, shared by the cached fast path and
+/// the in-lock DB re-check. Both mean the same thing to the caller:
+/// this instance is already provisioned (or can't prove it isn't).
+fn setup_already_completed() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(SetupResponse {
+            success: false,
+            redirect: None,
+            error: Some("Setup has already been completed".to_string()),
+        }),
+    )
+        .into_response()
+}
+
 /// Best-effort removal of the just-created member row when a later setup
 /// step fails. Leaves a retryable state: without this, the orphaned
 /// `Pending` row trips the UNIQUE email/username constraint on the
@@ -270,24 +296,189 @@ pub async fn setup_handler(
 /// already failing.
 async fn cleanup_partial_admin(member_repo: &dyn MemberRepository, id: Uuid) {
     if let Err(e) = member_repo.delete(id).await {
-        tracing::warn!("Couldn't remove partial admin row after setup failure: {}", e);
+        tracing::warn!(
+            "Couldn't remove partial admin row after setup failure: {}",
+            e
+        );
     }
 }
 
 /// Check if at least one admin user exists in the database.
 /// Uses the `is_admin` column — the authoritative source.
+///
+/// Fails CLOSED: an unreadable answer (any query error — pool timeout,
+/// `SQLITE_BUSY`, I/O) is treated as "an admin exists", so the
+/// unauthenticated, CSRF-exempt setup wizard can never be re-opened on
+/// a provisioned instance by a database error. Matches
+/// `src/api/middleware/setup.rs::check_admin_exists`, which makes the
+/// same choice for the same reason.
 async fn check_admin_exists(db_pool: &SqlitePool) -> bool {
-    let result: Result<Option<(i64,)>, _> =
-        sqlx::query_as("SELECT 1 as exists_flag FROM members WHERE is_admin = 1 LIMIT 1")
-            .fetch_optional(db_pool)
-            .await;
-
-    match result {
-        Ok(Some(_)) => true,
-        Ok(None) => false,
+    match query_admin_exists(db_pool).await {
+        Ok(exists) => exists,
         Err(e) => {
             tracing::error!("Failed to check for admin: {}", e);
-            false
+            true
         }
+    }
+}
+
+/// The raw admin-existence query. Callers that arm the sticky
+/// `admin_exists_observed` cache use this directly so they can tell
+/// "no admin" from "couldn't tell" — only a definitive positive may
+/// arm the flag.
+async fn query_admin_exists(db_pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+    let row: Option<(i64,)> =
+        sqlx::query_as("SELECT 1 as exists_flag FROM members WHERE is_admin = 1 LIMIT 1")
+            .fetch_optional(db_pool)
+            .await?;
+    Ok(row.is_some())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use axum::body::to_bytes;
+    use sqlx::Executor;
+
+    use crate::{auth::SecretCrypto, repository::SqliteMemberRepository};
+
+    /// Migrated in-memory pool, pinned to one connection (a
+    /// `sqlite::memory:` DB is connection-private).
+    async fn fresh_pool() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    conn.execute("PRAGMA foreign_keys = ON").await?;
+                    Ok(())
+                })
+            })
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect to :memory:");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrate");
+        pool
+    }
+
+    fn valid_request() -> SetupRequest {
+        SetupRequest {
+            org_name: "Test Org".to_string(),
+            email: "admin@example.com".to_string(),
+            username: "admin".to_string(),
+            full_name: "Admin User".to_string(),
+            password: "WizardPass1".to_string(),
+            password_confirm: "WizardPass1".to_string(),
+        }
+    }
+
+    /// Drive `POST /setup` with the handler's own extractors. The route
+    /// wiring is `web::create_web_routes`' business; what matters here
+    /// is the handler's gate.
+    async fn post_setup(pool: &SqlitePool, observed: &Arc<AtomicBool>) -> Response {
+        let member_repo: Arc<dyn MemberRepository> =
+            Arc::new(SqliteMemberRepository::new(pool.clone()));
+        let settings_service = Arc::new(SettingsService::new(
+            pool.clone(),
+            Arc::new(SecretCrypto::new("test-secret-please-ignore")),
+        ));
+        setup_handler(
+            State(Arc::new(AsyncMutex::new(()))),
+            State(observed.clone()),
+            State(pool.clone()),
+            State(member_repo),
+            State(settings_service),
+            Json(valid_request()),
+        )
+        .await
+    }
+
+    async fn error_field(response: Response) -> Option<String> {
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).expect("json body");
+        parsed
+            .get("error")
+            .and_then(|e| e.as_str())
+            .map(str::to_string)
+    }
+
+    async fn member_count(pool: &SqlitePool) -> i64 {
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM members")
+            .fetch_one(pool)
+            .await
+            .expect("count members");
+        count
+    }
+
+    /// Regression: the admin-existence check used to return "no admin"
+    /// when its query errored, so any unauthenticated caller who could
+    /// make that one SELECT fail (pool timeout, SQLITE_BUSY) could mint
+    /// a second admin on a provisioned instance. Unknown now means
+    /// "an admin exists".
+    #[tokio::test]
+    async fn setup_refuses_when_admin_check_errors() {
+        let pool = fresh_pool().await;
+        // Closed pool → every query returns Err, including the gate's.
+        pool.close().await;
+
+        let observed = Arc::new(AtomicBool::new(false));
+        let response = post_setup(&pool, &observed).await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "a query error must refuse setup, not open it"
+        );
+        assert!(
+            error_field(response).await.is_some(),
+            "refusal should carry an error message"
+        );
+    }
+
+    /// The process-cached flag is authoritative on its own: once armed,
+    /// the wizard refuses without touching the DB — even though this
+    /// DB genuinely holds no admin row.
+    #[tokio::test]
+    async fn setup_refuses_when_admin_already_observed() {
+        let pool = fresh_pool().await;
+        let observed = Arc::new(AtomicBool::new(true));
+
+        let response = post_setup(&pool, &observed).await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            member_count(&pool).await,
+            0,
+            "no member row may be created once an admin has been observed"
+        );
+    }
+
+    /// First boot is unchanged: the wizard creates one Active admin and
+    /// arms the cache.
+    #[tokio::test]
+    async fn setup_creates_first_admin() {
+        let pool = fresh_pool().await;
+        let observed = Arc::new(AtomicBool::new(false));
+
+        let response = post_setup(&pool, &observed).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        assert_eq!(member_count(&pool).await, 1);
+        let (is_admin, status): (i64, String) =
+            sqlx::query_as("SELECT is_admin, status FROM members")
+                .fetch_one(&pool)
+                .await
+                .expect("fetch the created admin");
+        assert_eq!(is_admin, 1);
+        assert_eq!(status, "Active");
+        assert!(
+            observed.load(Ordering::Relaxed),
+            "wizard must arm the process cache after creating the first admin"
+        );
     }
 }
