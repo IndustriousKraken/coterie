@@ -15,7 +15,7 @@ use crate::{
     },
     auth::CsrfService,
     config::Settings,
-    repository::EventRepository,
+    repository::{EventRepository, PaymentRepository},
     service::event_admin_service::{CreateEventInput, EventAdminService, UpdateEventInput},
     service::payment_admin_service::PaymentAdminService,
     service::settings_service::SettingsService,
@@ -1061,6 +1061,7 @@ pub async fn admin_delete_event(
     State(event_repo): State<Arc<dyn EventRepository>>,
     State(event_admin_service): State<Arc<EventAdminService>>,
     State(payment_admin_service): State<Arc<PaymentAdminService>>,
+    State(payment_repo): State<Arc<dyn PaymentRepository>>,
     Extension(current_user): Extension<CurrentUser>,
     Path(event_id): Path<String>,
     headers: axum::http::HeaderMap,
@@ -1090,24 +1091,55 @@ pub async fn admin_delete_event(
 
     let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
 
-    if (scope == "end_series" || scope == "delete_series") && series_id.is_some() {
+    let bulk_scope = scope == "end_series" || scope == "delete_series";
+    if let Some(sid) = series_id.filter(|_| bulk_scope) {
         // Bulk series removal drops occurrences this handler never sees,
-        // so it can't guarantee each one's PER-OCCURRENCE attendees were
-        // refunded first. Refuse rather than strand charges — an org that
-        // prices both the pass and the individual nights deletes the
-        // priced occurrences one at a time, where the sweep below runs.
-        // A class pass is a different matter: it is one payment at series
-        // scope, and the sweep for it is right below.
-        if event.is_paid_for_members() {
-            return partials::admin_alert(
-                "error",
-                "This series' occurrences have a member price. Delete them one at a time so \
-                 each event's attendees are refunded first.",
-                false,
-            )
-            .into_response();
+        // so it can't refund their PER-OCCURRENCE attendees — only the
+        // per-occurrence path below can. Refuse whenever ANY occurrence
+        // of the series still carries a `Completed` event fee, member or
+        // guest: the two price columns are independent (free for members,
+        // priced for the public is a supported shape) and a price that
+        // was later zeroed doesn't return the money already taken, so
+        // only the payments themselves answer the question. A lookup
+        // that fails answers nothing, so it refuses too — an unreadable
+        // roster must not authorise destroying one. A class pass is a
+        // different matter: it is one payment at series scope, and the
+        // sweep for it is right below.
+        let outstanding_fees = async {
+            for occ in event_repo.list_series_occurrences(sid).await? {
+                if !payment_repo
+                    .list_completed_event_fees(occ.id)
+                    .await?
+                    .is_empty()
+                {
+                    return crate::error::Result::Ok(true);
+                }
+            }
+            crate::error::Result::Ok(false)
         }
-        let sid = series_id.unwrap();
+        .await;
+        match outstanding_fees {
+            Ok(false) => {}
+            Ok(true) => {
+                return partials::admin_alert(
+                    "error",
+                    "Attendees have paid for individual sessions of this series. Delete those \
+                     sessions one at a time so each one's attendees are refunded first.",
+                    false,
+                )
+                .into_response();
+            }
+            Err(e) => {
+                tracing::error!("series {} paid-occurrence check failed: {}", sid, e);
+                return partials::admin_alert(
+                    "error",
+                    "Couldn't check this series' sessions for paid attendees, so nothing was \
+                     deleted. Try again.",
+                    false,
+                )
+                .into_response();
+            }
+        }
 
         // Refund every class pass BEFORE deleting. Occurrences and their
         // attendance cascade on series delete, so the reverse order would
@@ -1277,5 +1309,391 @@ mod tests {
     fn garbage_is_rejected_rather_than_silently_zeroed() {
         assert!(parse_price("free").is_err());
         assert!(parse_price("1o").is_err());
+    }
+}
+
+/// The series-scope delete guard, exercised through the handler itself:
+/// the bulk scopes drop occurrences the handler never sees, so the only
+/// safe answer when ANY of them still holds a `Completed` event fee is
+/// "no". Kept in its own module because it needs a live pool and the
+/// whole service graph, unlike the pure `parse_price` tests above.
+#[cfg(test)]
+mod series_delete_guard_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use axum::{
+        extract::{Path, State},
+        response::IntoResponse,
+        Extension,
+    };
+    use chrono::{DateTime, Datelike, Utc, Weekday};
+    use sqlx::{Executor, SqlitePool};
+    use uuid::Uuid;
+
+    use super::{admin_delete_event, DeleteEventForm};
+    use crate::{
+        api::{
+            middleware::auth::CurrentUser,
+            state::{MoneyLimiter, RateLimiter},
+        },
+        config::{AuthConfig, DatabaseConfig, ServerConfig, Settings},
+        domain::{
+            Attendee, CreateMemberRequest, Event, EventType, EventVisibility, Payer, Payment,
+            PaymentKind, PaymentMethod, PaymentStatus, Recurrence, WeekdayCode,
+        },
+        integrations::IntegrationManager,
+        payments::StripeHandle,
+        repository::{
+            EventRepository, EventSeriesRepository, MemberRepository, PaymentRepository,
+            SeriesEnrollmentRepository, SqliteEventRepository, SqliteEventSeriesRepository,
+            SqliteMemberRepository, SqlitePaymentRepository, SqliteSeriesEnrollmentRepository,
+        },
+        service::{
+            audit_service::AuditService,
+            event_admin_service::{CreateEventInput, EventAdminService},
+            payment_admin_service::PaymentAdminService,
+            recurring_event_service::RecurringEventService,
+        },
+    };
+
+    struct Harness {
+        pool: SqlitePool,
+        settings: Arc<Settings>,
+        event_repo: Arc<dyn EventRepository>,
+        payment_repo: Arc<dyn PaymentRepository>,
+        event_admin: Arc<EventAdminService>,
+        payment_admin: Arc<PaymentAdminService>,
+        admin: CurrentUser,
+    }
+
+    async fn build_harness() -> Harness {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    conn.execute("PRAGMA foreign_keys = ON").await?;
+                    Ok(())
+                })
+            })
+            .connect("sqlite::memory:")
+            .await
+            .expect(":memory:");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrate");
+
+        let event_repo: Arc<dyn EventRepository> =
+            Arc::new(SqliteEventRepository::new(pool.clone()));
+        let series_repo: Arc<dyn EventSeriesRepository> =
+            Arc::new(SqliteEventSeriesRepository::new(pool.clone()));
+        let payment_repo: Arc<dyn PaymentRepository> =
+            Arc::new(SqlitePaymentRepository::new(pool.clone()));
+        let enrollment_repo: Arc<dyn SeriesEnrollmentRepository> =
+            Arc::new(SqliteSeriesEnrollmentRepository::new(pool.clone()));
+        let audit = Arc::new(AuditService::new(pool.clone()));
+        let integrations = Arc::new(IntegrationManager::new());
+        let recurring = Arc::new(RecurringEventService::new(
+            event_repo.clone(),
+            series_repo.clone(),
+            pool.clone(),
+        ));
+
+        let event_admin = Arc::new(EventAdminService::new(
+            event_repo.clone(),
+            series_repo,
+            recurring,
+            audit.clone(),
+            integrations.clone(),
+        ));
+        // No Stripe client: nothing on these paths should reach a
+        // gateway, and a refund that tried to would fail loudly.
+        let payment_admin = Arc::new(PaymentAdminService::new(
+            payment_repo.clone(),
+            event_repo.clone(),
+            enrollment_repo,
+            Arc::new(StripeHandle::preloaded(None, None)),
+            audit,
+            integrations,
+            MoneyLimiter(RateLimiter::new(1000, Duration::from_secs(60))),
+        ));
+
+        let member = SqliteMemberRepository::new(pool.clone())
+            .create(CreateMemberRequest {
+                email: format!("admin-{}@example.com", Uuid::new_v4()),
+                username: format!("u_{}", Uuid::new_v4().simple()),
+                full_name: "Test Admin".to_string(),
+                password: "p4ssword_long_enough".to_string(),
+                membership_type_id: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        Harness {
+            pool,
+            settings: Arc::new(test_settings()),
+            event_repo,
+            payment_repo,
+            event_admin,
+            payment_admin,
+            admin: CurrentUser { member },
+        }
+    }
+
+    fn test_settings() -> Settings {
+        Settings {
+            server: ServerConfig {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+                base_url: "http://127.0.0.1".to_string(),
+                data_dir: "./data".to_string(),
+                uploads_dir: None,
+                secure_cookies: Some(false),
+                cors_origins: None,
+                trust_forwarded_for: Some(false),
+            },
+            database: DatabaseConfig {
+                url: "sqlite::memory:".to_string(),
+                max_connections: 1,
+            },
+            auth: AuthConfig {
+                session_secret: "test-session-secret-please-ignore".to_string(),
+                session_duration_hours: 24,
+                totp_issuer: "Coterie Test".to_string(),
+            },
+            stripe: Default::default(),
+            integrations: Default::default(),
+            seed: Default::default(),
+        }
+    }
+
+    /// Next Tuesday at 18:00 UTC, strictly after tomorrow — the weekly
+    /// rule requires the anchor to fall on the day it repeats.
+    fn next_tuesday_anchor() -> DateTime<Utc> {
+        let start = Utc::now() + chrono::Duration::days(1);
+        let days = (Weekday::Tue.num_days_from_monday() as i64
+            - start.weekday().num_days_from_monday() as i64)
+            .rem_euclid(7);
+        (start.date_naive() + chrono::Duration::days(days))
+            .and_hms_opt(18, 0, 0)
+            .unwrap()
+            .and_utc()
+    }
+
+    /// A weekly public workshop: free for members, $25 for guests —
+    /// the combination the spec calls out as supported, and the one the
+    /// old member-price-only guard waved through.
+    async fn make_series(h: &Harness, member_price_cents: i64, guest_price_cents: i64) -> Event {
+        let start = next_tuesday_anchor();
+        let input = CreateEventInput {
+            title: "Lockpicking 101".to_string(),
+            description: "Bring a padlock".to_string(),
+            event_type: EventType::Workshop,
+            event_type_id: None,
+            visibility: EventVisibility::Public,
+            start_time: start,
+            end_time: None,
+            timezone: "UTC".to_string(),
+            location: None,
+            max_attendees: None,
+            rsvp_required: true,
+            member_price_cents,
+            guest_price_cents,
+            guest_registration_enabled: true,
+            image_url: None,
+            recurrence: Some(Recurrence::WeeklyByDay {
+                interval: 1,
+                weekdays: vec![WeekdayCode::Tue],
+            }),
+            recurrence_until: Some(start + chrono::Duration::weeks(8)),
+            series_pricing: Default::default(),
+        };
+        h.event_admin
+            .create(h.admin.member.id, input)
+            .await
+            .unwrap()
+    }
+
+    /// Seat `attendee` on `event_id` with a `Completed` event fee, the
+    /// way a real registration leaves the two rows.
+    async fn seat_and_charge(h: &Harness, event_id: Uuid, payer: Payer, attendee: Attendee) {
+        let now = Utc::now();
+        let payment = h
+            .payment_repo
+            .create(Payment {
+                id: Uuid::new_v4(),
+                payer,
+                amount_cents: 2500,
+                currency: "USD".to_string(),
+                status: PaymentStatus::Completed,
+                payment_method: PaymentMethod::Manual,
+                kind: PaymentKind::EventFee { event_id },
+                external_id: None,
+                description: "Event registration — Lockpicking 101".to_string(),
+                paid_at: Some(now),
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+        h.event_repo
+            .register_attendance(event_id, &attendee)
+            .await
+            .unwrap();
+        h.event_repo
+            .link_payment(event_id, &attendee, payment.id)
+            .await
+            .unwrap();
+    }
+
+    async fn post_delete(h: &Harness, event_id: Uuid, scope: &str) -> String {
+        let resp = admin_delete_event(
+            State(h.settings.clone()),
+            State(h.event_repo.clone()),
+            State(h.event_admin.clone()),
+            State(h.payment_admin.clone()),
+            State(h.payment_repo.clone()),
+            Extension(h.admin.clone()),
+            Path(event_id.to_string()),
+            axum::http::HeaderMap::new(),
+            axum::Form(DeleteEventForm {
+                scope: Some(scope.to_string()),
+                csrf_token: String::new(),
+            }),
+        )
+        .await
+        .into_response();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&body).to_string()
+    }
+
+    async fn occurrence_count(h: &Harness, series_id: Uuid) -> i64 {
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM events WHERE series_id = ?")
+            .bind(series_id.to_string())
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+        count.0
+    }
+
+    async fn series_exists(h: &Harness, series_id: Uuid) -> bool {
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM event_series WHERE id = ?")
+            .bind(series_id.to_string())
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+        count.0 == 1
+    }
+
+    // A guest fee is a `Completed` event-fee payment like any other, so
+    // the bulk delete that would cascade its roster away has to refuse —
+    // even though the member price is 0 and the old guard saw nothing.
+    #[tokio::test]
+    async fn series_delete_refused_when_a_guest_paid_an_occurrence() {
+        let h = build_harness().await;
+        let anchor = make_series(&h, 0, 2500).await;
+        let series_id = anchor.series_id.unwrap();
+        let before = occurrence_count(&h, series_id).await;
+        assert!(before > 1, "expected a materialized series");
+
+        // The guest bought a seat on a LATER night, not the one the
+        // admin happens to have open.
+        let occurrences = h
+            .event_repo
+            .list_series_occurrences(series_id)
+            .await
+            .unwrap();
+        let paid_night = occurrences.last().unwrap().id;
+        seat_and_charge(
+            &h,
+            paid_night,
+            Payer::PublicDonor {
+                name: "Ada Lovelace".to_string(),
+                email: "ada@example.com".to_string(),
+            },
+            Attendee::Guest {
+                name: "Ada Lovelace".to_string(),
+                email: "ada@example.com".to_string(),
+            },
+        )
+        .await;
+
+        let body = post_delete(&h, anchor.id, "delete_series").await;
+        assert!(
+            body.contains("paid for individual sessions"),
+            "expected the refusal alert, got: {body}"
+        );
+        assert!(series_exists(&h, series_id).await, "series row survived");
+        assert_eq!(
+            occurrence_count(&h, series_id).await,
+            before,
+            "no occurrence may be dropped by a refused delete"
+        );
+        let seats: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM event_attendance WHERE event_id = ?")
+                .bind(paid_night.to_string())
+                .fetch_one(&h.pool)
+                .await
+                .unwrap();
+        assert_eq!(seats.0, 1, "the roster the refund needs is intact");
+    }
+
+    // The guard keys on payments, not on the price column: a series
+    // priced for guests but never bought is still bulk-deletable.
+    #[tokio::test]
+    async fn series_delete_allowed_when_no_occurrence_was_paid() {
+        let h = build_harness().await;
+        let anchor = make_series(&h, 0, 2500).await;
+        let series_id = anchor.series_id.unwrap();
+        assert!(occurrence_count(&h, series_id).await > 1);
+
+        let body = post_delete(&h, anchor.id, "delete_series").await;
+        assert!(
+            !body.contains("paid for individual sessions"),
+            "a priced-but-unsold series must not be refused, got: {body}"
+        );
+        assert!(!series_exists(&h, series_id).await, "series row deleted");
+        assert_eq!(occurrence_count(&h, series_id).await, 0);
+    }
+
+    // The member case the old guard covered stays covered under the new
+    // rule — and `end_series` is refused on the same terms as a delete,
+    // because it drops future occurrences the same way.
+    #[tokio::test]
+    async fn end_series_refused_when_a_member_paid_an_occurrence() {
+        let h = build_harness().await;
+        let anchor = make_series(&h, 2500, 0).await;
+        let series_id = anchor.series_id.unwrap();
+        let before = occurrence_count(&h, series_id).await;
+
+        let occurrences = h
+            .event_repo
+            .list_series_occurrences(series_id)
+            .await
+            .unwrap();
+        let paid_night = occurrences.last().unwrap().id;
+        let member_id = h.admin.member.id;
+        seat_and_charge(
+            &h,
+            paid_night,
+            Payer::Member(member_id),
+            Attendee::Member(member_id),
+        )
+        .await;
+
+        let body = post_delete(&h, anchor.id, "end_series").await;
+        assert!(
+            body.contains("paid for individual sessions"),
+            "expected the refusal alert, got: {body}"
+        );
+        assert_eq!(
+            occurrence_count(&h, series_id).await,
+            before,
+            "ending a series must not drop a paid night either"
+        );
     }
 }
