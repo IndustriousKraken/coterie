@@ -17,6 +17,18 @@ Everything else in this change is invisible without it.
 - [ ] 0.3 Confirm no double-logging: the layer must appear exactly once in the
   final router.
 
+## 0b. Client-IP resolution visibility
+
+- [ ] 0b.1 Log the resolved client-IP mode once at startup: forwarded headers
+  trusted or not, and whether that was explicit config or scheme inference.
+- [ ] 0b.2 Warn when the effective mode would collapse every caller onto the
+  localhost placeholder — that turns per-IP rate limiting into one shared bucket
+  for the whole organization, and today nothing says so.
+- [ ] 0b.3 Verified on production 2026-07-29 that bucketing is genuinely per-IP:
+  one IP received `429` while a different IP's request reached the login handler
+  in the same second. No fix needed to the resolution logic itself; this section
+  is about making the mode observable before it silently changes.
+
 ## 1. Shared shape
 
 - [ ] 1.1 Define the field set once (a small helper or macro) so every call site

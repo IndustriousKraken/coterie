@@ -46,6 +46,44 @@ application's own logs, without recourse to the reverse proxy's access log.
   logging from every portal route while leaving the API surface working and so
   fails silently
 
+### Requirement: The effective client-IP resolution mode is logged at startup
+
+The application SHALL log, once at startup, how it will resolve the client IP used
+to key rate limiting: whether `X-Forwarded-For` / `X-Real-Ip` are trusted, and
+whether that decision was configured explicitly or inferred from the base URL's
+scheme.
+
+When the effective configuration would cause `client_ip` to fall back to the
+localhost placeholder for ordinary requests — forwarded headers untrusted, with no
+peer address available — the application SHALL emit a **warning** stating that
+per-IP rate limiting has collapsed to a single shared bucket.
+
+This matters because the collapse is otherwise undetectable from the outside and
+its symptom is indistinguishable from correct behavior: every member shares one
+five-attempts-per-fifteen-minutes budget, so a handful of failed logins anywhere
+in the organization locks out everyone. An operator would see scattered reports of
+"too many requests" from people who had barely tried, with nothing in the logs to
+explain it.
+
+The trust decision is currently **inferred** from whether the base URL is
+`https://`, which is a reasonable default and a silent coupling: changing the base
+URL scheme, or terminating TLS differently, would flip rate limiting from per-IP
+to global without any other visible change. Logging the resolved mode makes that
+coupling observable at the moment it matters.
+
+#### Scenario: The resolved mode is visible at startup
+
+- **WHEN** the application boots
+- **THEN** it SHALL log whether forwarded headers are trusted and whether that came
+  from explicit configuration or from scheme inference
+
+#### Scenario: A collapsed bucket is warned about, not silently accepted
+
+- **WHEN** the effective configuration would make every request resolve to the
+  same placeholder IP
+- **THEN** a warning SHALL be emitted naming the consequence — that per-IP rate
+  limiting has become a single shared budget for all callers
+
 ### Requirement: Every authentication outcome emits a structured log event
 
 Each outcome on the authentication surface SHALL emit exactly one `tracing` event
