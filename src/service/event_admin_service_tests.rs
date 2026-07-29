@@ -491,6 +491,17 @@ async fn cancelled_occurrence_does_not_reappear_after_materializer_run() {
     // is a no-op when materialized_through is already at the target,
     // so force a re-materialization by calling extend_horizon
     // directly with a target beyond the current horizon.
+    //
+    // `make_series_with_anchor` caps the series at anchor + 12 weeks and
+    // extend_horizon clamps its target to until_date — so without lifting
+    // the cap the extension window is zero-wide and this test asserts
+    // nothing. Clear until_date first, then assert the run actually
+    // materialized rows so the window can't silently close again.
+    sqlx::query("UPDATE event_series SET until_date = NULL WHERE id = ?")
+        .bind(series_id.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
     let series = svc
         .event_series_repo
         .find_by_id(series_id)
@@ -498,10 +509,16 @@ async fn cancelled_occurrence_does_not_reappear_after_materializer_run() {
         .unwrap()
         .unwrap();
     let new_target = series.materialized_through + chrono::Duration::weeks(20);
-    svc.recurring_event_service
+    let added = svc
+        .recurring_event_service
         .extend_horizon(&series, new_target)
         .await
         .unwrap();
+    assert!(
+        added > 0,
+        "the materializer run must materialize new occurrences, or this \
+         test's assertion is vacuous",
+    );
 
     // Occurrence 4 should still be absent.
     let still_gone = svc

@@ -64,6 +64,14 @@ The reason: the materializer's horizon is `now + 12 months`. A fixed-calendar an
 
 Relative-anchor helpers (e.g., `next_tuesday_anchor()` returning the next Tuesday after `Utc::now() + 1 day`) keep the test inputs in the same temporal position regardless of when the suite runs.
 
+**Runtime-relative is necessary but not sufficient for horizon-extension tests.** A test that asserts a horizon extension *produced* occurrences (`extend_horizon(...)` returning a non-zero count, or new occurrence rows appearing) SHALL additionally derive both its `until_date` and its extension target from `DEFAULT_HORIZON` rather than from absolute day counts, and SHALL leave an extension window wide enough to contain at least one occurrence of the rule under test on **every** weekday the suite might run on.
+
+The reason is that `create_series_with_initial_materialization` fills up to `min(now + DEFAULT_HORIZON, until_date)` and `extend_horizon` caps its target at `until_date`. An `until_date` at or just past `now + DEFAULT_HORIZON` therefore leaves the extension nothing — or almost nothing — to do, no matter how far out the extension target is set. A window narrower than the recurrence interval contains an occurrence only on some days of the week, which produces a test that passes on the day it is written and fails later on an unrelated commit.
+
+Absolute day counts SHALL NOT be used to position these bounds even when they are computed from `Utc::now()`, because they silently stop lining up if `DEFAULT_HORIZON` changes. Deriving from the constant keeps the window correct by construction.
+
+**Diagnostic signature:** an occurrence-count assertion that passes locally and fails in CI on some days — or that starts failing on a commit that touched nothing related — SHALL be treated as a horizon-window defect in the test's bounds, NOT as flaky infrastructure to be retried or as a regression in the materializer.
+
 #### Scenario: Test anchor is computed from runtime, not hardcoded
 
 - **WHEN** a contributor writes a test that calls `create_series_with_initial_materialization` and asserts an occurrence count or `materialized_through` value
@@ -78,6 +86,21 @@ Relative-anchor helpers (e.g., `next_tuesday_anchor()` returning the next Tuesda
 
 - **WHEN** an inline `#[cfg(test)] mod tests` block inside a service file (e.g., `src/service/event_admin_service.rs`) exercises the materializer or the service that wraps it
 - **THEN** the test SHALL use runtime-relative anchors. The helpers MAY be duplicated per-file rather than shared until a third caller appears; premature extraction to a shared `src/service/test_helpers.rs` is not required
+
+#### Scenario: An extension test derives its bounds from DEFAULT_HORIZON
+
+- **WHEN** a contributor writes a test asserting that `extend_horizon` materialized new occurrences
+- **THEN** the series `until_date` and the extension target SHALL both be expressed as offsets from `DEFAULT_HORIZON` (e.g. `Utc::now() + DEFAULT_HORIZON + Duration::days(90)` and `... + Duration::days(60)`), NOT as absolute day counts
+
+#### Scenario: An extension window narrower than the recurrence interval is a defect
+
+- **WHEN** a test's `until_date` sits at or barely beyond `now + DEFAULT_HORIZON`, leaving an extension window shorter than the interval of the rule under test
+- **THEN** that test SHALL be treated as defective even if it currently passes, because it asserts a non-zero occurrence count against a window that contains an occurrence only on some weekdays
+
+#### Scenario: A weekday-dependent failure is diagnosed as a window bug
+
+- **WHEN** an occurrence-count assertion fails in CI on some days and passes on others, with no related code change
+- **THEN** the failure SHALL be investigated as a horizon-window defect in the test's bounds and SHALL NOT be dismissed as infrastructure flakiness or retried until green
 
 ### Requirement: Admin event detail page exposes per-occurrence exception controls
 

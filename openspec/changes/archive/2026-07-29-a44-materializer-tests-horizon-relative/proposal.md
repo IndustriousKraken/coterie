@@ -49,3 +49,9 @@ rule that would have prevented it does not exist in canon and needs to.
   `tests/recurring_event_test.rs` were audited and are already safe — they use
   deliberately short caps (8 and 13 weeks) well inside the horizon, so their
   extension windows are months wide. No further test changes are needed.
+- **Amendment (implementation):** the task-2.3 sweep over the remaining
+  `extend_horizon` callers turned up one more window defect —
+  `event_admin_service_tests.rs::cancelled_occurrence_does_not_reappear_after_materializer_run`
+  extended a series still capped at `anchor + 12 weeks`, so the target clamped
+  back to `materialized_through` and the run added nothing, making the assertion
+  vacuous. Fixed there: clear `until_date` first, assert `added > 0`.
