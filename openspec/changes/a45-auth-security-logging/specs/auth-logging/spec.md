@@ -51,7 +51,15 @@ application's own logs, without recourse to the reverse proxy's access log.
 The application SHALL log, once at startup, how it will resolve the client IP used
 to key rate limiting: whether `X-Forwarded-For` / `X-Real-Ip` are trusted, and
 whether that decision was configured explicitly or inferred from the base URL's
-scheme.
+scheme. It SHALL log the resolved session-cookie `Secure` flag on the same terms,
+because that value is inferred from the same signal and is equally invisible at
+runtime.
+
+Both values SHALL report *how* they were resolved, not merely what they resolved
+to. "Secure cookies: true (inferred from https base URL)" and "Secure cookies:
+true (explicitly configured)" describe the same current behavior but very
+different exposure to a future change, and an operator auditing the deployment
+needs to tell them apart.
 
 When the effective configuration would cause `client_ip` to fall back to the
 localhost placeholder for ordinary requests — forwarded headers untrusted, with no
@@ -76,6 +84,13 @@ coupling observable at the moment it matters.
 - **WHEN** the application boots
 - **THEN** it SHALL log whether forwarded headers are trusted and whether that came
   from explicit configuration or from scheme inference
+
+#### Scenario: The resolved cookie-security mode is logged with its provenance
+
+- **WHEN** the application boots with `secure_cookies` unset and an `https://` base
+  URL
+- **THEN** it SHALL log that the `Secure` flag resolved to true *by inference from
+  the base URL*, distinguishably from having been configured explicitly
 
 #### Scenario: A collapsed bucket is warned about, not silently accepted
 

@@ -20,7 +20,12 @@ Everything else in this change is invisible without it.
 ## 0b. Client-IP resolution visibility
 
 - [ ] 0b.1 Log the resolved client-IP mode once at startup: forwarded headers
-  trusted or not, and whether that was explicit config or scheme inference.
+  trusted or not, and whether that was explicit config or scheme inference. Log
+  the resolved session-cookie `Secure` flag the same way — same inference source,
+  same invisibility.
+- [ ] 0b.1b Report provenance, not just value: "(inferred from https base URL)"
+  vs "(explicitly configured)". Same behavior today, different exposure to a
+  future base-URL change.
 - [ ] 0b.2 Warn when the effective mode would collapse every caller onto the
   localhost placeholder — that turns per-IP rate limiting into one shared bucket
   for the whole organization, and today nothing says so.
