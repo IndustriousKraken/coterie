@@ -467,6 +467,16 @@ fn paid(member_cents: i64) -> SeriesPassPricing {
     }
 }
 
+/// Priced for members AND guests, with the public door open.
+fn paid_for_all(cents: i64) -> SeriesPassPricing {
+    SeriesPassPricing {
+        member_price_cents: cents,
+        guest_price_cents: cents,
+        guest_registration_enabled: true,
+        max_enrollments: None,
+    }
+}
+
 // ---------------------------------------------------------------------
 // 8.1 A priced class must be bounded
 // ---------------------------------------------------------------------
@@ -1303,6 +1313,156 @@ async fn manual_and_waived_series_passes_audit_under_their_own_actions() {
             "expected exactly one `{expected}` audit row",
         );
     }
+}
+
+// ---------------------------------------------------------------------
+// A finished class cannot be bought
+//
+// The floor under flat pricing. `seat_future_occurrences` seats nobody
+// once every session has started, so a sale past that point is money for
+// zero attendance — the failure paid events exist to prevent. The class
+// page hides the form, but the endpoints are the trust boundary.
+// ---------------------------------------------------------------------
+
+impl Harness {
+    async fn enrollment_row_count(&self) -> i64 {
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM series_enrollment")
+            .fetch_one(&self.pool)
+            .await
+            .unwrap();
+        n
+    }
+
+    fn checkout_sessions_created(&self) -> usize {
+        self.fake.count_where(|c| {
+            matches!(
+                c,
+                coterie::payments::fake_gateway::FakeCall::CreateCheckoutSession(_)
+            )
+        })
+    }
+}
+
+#[tokio::test]
+async fn enroll_guest_is_refused_when_every_session_has_started() {
+    let h = build_harness().await;
+    let creator = h.active_member("creator").await;
+    let series = h
+        .class(creator.id, paid_for_all(12_000), &[-28, -21, -14, -7])
+        .await;
+
+    let err = h
+        .enrollment
+        .enroll_guest(
+            &series,
+            "Intro to Lockpicking",
+            "Ada Lovelace",
+            "ada@example.com",
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, AppError::BadRequest(_)), "got {err:?}");
+    assert_eq!(h.enrollment_row_count().await, 0, "no enrollment row");
+    assert_eq!(h.payment_count().await, 0, "no payment row");
+    assert_eq!(h.checkout_sessions_created(), 0, "no Checkout session");
+}
+
+#[tokio::test]
+async fn enroll_member_is_refused_when_every_session_has_started() {
+    let h = build_harness().await;
+    let creator = h.active_member("creator").await;
+    let series = h
+        .class(creator.id, paid(12_000), &[-28, -21, -14, -7])
+        .await;
+    let m = h.active_member("late").await;
+
+    let err = h
+        .enrollment
+        .enroll(&m, &series, "Intro to Lockpicking")
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, AppError::BadRequest(_)), "got {err:?}");
+    assert_eq!(h.enrollment_row_count().await, 0, "no enrollment row");
+    assert_eq!(h.payment_count().await, 0, "no payment row");
+    assert_eq!(h.checkout_sessions_created(), 0, "no Checkout session");
+}
+
+/// The floor is a floor, not proration: one session left is a full-price
+/// sale.
+#[tokio::test]
+async fn enroll_succeeds_with_one_session_remaining() {
+    let h = build_harness().await;
+    let creator = h.active_member("creator").await;
+    let series = h
+        .class(creator.id, paid(12_000), &[-35, -28, -21, -14, -7, 7])
+        .await;
+    let m = h.active_member("last-minute").await;
+
+    let outcome = h
+        .enrollment
+        .enroll(&m, &series, "Intro to Lockpicking")
+        .await
+        .unwrap();
+    assert!(
+        matches!(outcome, RegistrationOutcome::Checkout { .. }),
+        "got {outcome:?}",
+    );
+
+    let payment = h.pass_payment(series.id, m.id).await;
+    assert_eq!(payment.amount_cents, 12_000, "still the full pass price");
+    assert_eq!(
+        h.enrollment_repo
+            .find(series.id, &Attendee::Member(m.id))
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AttendanceStatus::PendingPayment,
+    );
+}
+
+/// The free short-circuit is behind the same guard — a free finished
+/// class would hand out an enrollment that seats nobody.
+#[tokio::test]
+async fn free_finished_class_enrollment_is_refused() {
+    let h = build_harness().await;
+    let creator = h.active_member("creator").await;
+    let series = h
+        .class_with_until(
+            creator.id,
+            SeriesPassPricing::default(),
+            &[-28, -21, -14, -7],
+            None,
+        )
+        .await;
+    let m = h.active_member("m").await;
+
+    let err = h
+        .enrollment
+        .enroll(&m, &series, "Intro to Lockpicking")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::BadRequest(_)), "got {err:?}");
+
+    let guest_err = h
+        .enrollment
+        .enroll_guest(
+            &series,
+            "Intro to Lockpicking",
+            "Ada Lovelace",
+            "ada@example.com",
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(guest_err, AppError::BadRequest(_)),
+        "got {guest_err:?}",
+    );
+
+    assert_eq!(h.enrollment_row_count().await, 0, "no enrollment row");
+    assert_eq!(h.payment_count().await, 0, "no payment row");
 }
 
 // ---------------------------------------------------------------------

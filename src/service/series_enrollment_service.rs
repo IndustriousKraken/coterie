@@ -17,6 +17,8 @@
 //! coming on week three" has exactly one answer. Occurrences that already
 //! started are never back-filled, because a roster asserting attendance at
 //! a session that already happened is a lie check-in data would inherit.
+//! Which is why a pass is only sellable while at least one session has not
+//! started: a purchase past that point would buy zero attendance rows.
 //!
 //! The free functions at the bottom exist because the completion webhook
 //! and the refund path need this logic too, and the dispatcher is built by
@@ -75,6 +77,8 @@ impl SeriesEnrollmentService {
         series: &EventSeries,
         class_title: &str,
     ) -> Result<RegistrationOutcome> {
+        self.require_remaining_session(series.id).await?;
+
         // Mirrors the single-event rule: only Active/Honorary members
         // register. Checked here as well as in middleware so a future
         // non-portal caller can't claim a place for an expired member.
@@ -107,12 +111,41 @@ impl SeriesEnrollmentService {
         name: &str,
         email: &str,
     ) -> Result<RegistrationOutcome> {
+        self.require_remaining_session(series.id).await?;
+
         let enrollee = guest_attendee(name, email)?;
         if !series.is_paid_for_guests() {
             return self.enroll_free(series, &enrollee).await;
         }
         self.hold_and_charge(series, &enrollee, series.guest_price_cents, class_title)
             .await
+    }
+
+    /// The floor under flat pricing: a pass is sellable only while at
+    /// least one session has not started. Past that point a confirmed
+    /// pass would seat the buyer on nothing — `seat_future_occurrences`
+    /// skips every started occurrence — which is money taken for a seat
+    /// that does not exist.
+    ///
+    /// Tested on the derived UTC instant, never the naive `start_time`,
+    /// for the same timezone reason `seat_future_occurrences` documents.
+    ///
+    /// The buyer-facing entry points call this; the admin at-the-door /
+    /// comp path deliberately does not, on the same grounds it already
+    /// bypasses the capacity guard, and neither does the completion
+    /// webhook, which must still settle a checkout started while a
+    /// session remained.
+    async fn require_remaining_session(&self, series_id: Uuid) -> Result<()> {
+        let now = chrono::Utc::now();
+        let occurrences = self.event_repo.list_series_occurrences(series_id).await?;
+        if occurrences.iter().any(|o| o.start_utc() > now) {
+            return Ok(());
+        }
+        Err(AppError::BadRequest(
+            "This class has finished — every session has already started, so there is \
+             nothing left to enroll in."
+                .to_string(),
+        ))
     }
 
     /// Free class: claim through the capacity guard, then confirm. No
