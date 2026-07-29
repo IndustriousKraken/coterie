@@ -34,6 +34,29 @@ Added / Changed / Deprecated / Removed / Fixed / Security.
 
 ### Fixed
 
+## [v1.0.17] — 2026-07-27
+
+### Added
+
+- Adds paid events — an admin can put a member price on an event, and registering routes through Stripe Checkout instead of a plain RSVP: the seat is claimed before the payment starts, capacity is enforced for paid events, and a refund releases the seat (deleting a paid event refunds every paid attendee first, and refuses to delete if a refund fails). Each paid event gets an admin roster showing payment state, with at-the-door and comped recording; event fees are recorded as their own payment kind, so event revenue is separable in billing.
+- Adds public registration for paid events — a separate guest price and a "guest registration may happen at all" toggle, plus a shareable Coterie-hosted registration page at `/events/:id/register` that can be pasted into a post or newsletter. The page is protected by the bot challenge, the money rate limiter, and a public-visibility check, offers members a login for member pricing, and never attaches a guest to an existing member's account; the public events feed now carries a registration URL and guest price for registerable events.
+- Adds series passes for paid classes — one payment enrolls an attendee in every remaining session of a bounded recurring series ("six Tuesdays, $120"), with capacity counted across the class rather than per night. Pricing is flat (joining late costs full price, cancelling refunds in full), attendance is materialized per occurrence so rosters, check-in, reminders, and iCal keep working unchanged, and cancelling a single occurrence is not a refund event.
+
+## [v1.0.16] — 2026-07-24
+
+### Added
+
+- Adds bot-challenge (Turnstile) configuration to the admin settings page — provider, secret key (encrypted at rest), and timeout are stored in the database like the Stripe and Discord integrations, so an operator can turn the captcha on or rotate its key from the portal instead of editing a file on the server, and the change takes effect without a restart. The environment-variable configuration is retired.
+- Adds owner actions on terminal submissions — a member can delete their own `withdrawn` or `declined` submission (removing its attachment), and re-open a `withdrawn` one back to `submitted` for revision and resubmission; a `declined` submission is not re-openable.
+
+### Changed
+
+- Shows members only settled payments (`Completed` and `Refunded`) in their Payments history, so abandoned checkouts no longer fill it with `Pending`/`Failed` rows. Admin payment views still show every status, and a genuinely failed renewal still surfaces through the dues-status pill and reminder emails.
+
+### Security
+
+- Requires a verified email before payment-mode signup reaches Stripe — signup now creates the pending member and sends the verification email, and the Stripe customer and Checkout session are created only when that link is clicked. This closes the card-testing path where an unauthenticated request ran a stolen card through the org's live Stripe in one hop; the abandoned-checkout retry requires verification too, and legitimate members click one link before paying.
+
 ## [v1.0.15] — 2026-07-22
 
 ### Added
