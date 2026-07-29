@@ -1050,6 +1050,26 @@ pub async fn admin_update_event(
     partials::admin_alert("success", &msg, false).into_response()
 }
 
+/// Does ANY occurrence of `series_id` still carry a `Completed` event
+/// fee, from a member or a guest? An `Err` means the question could not
+/// be answered — callers must treat that as a refusal, not a "no".
+async fn series_has_paid_occurrence(
+    event_repo: &dyn EventRepository,
+    payment_repo: &dyn PaymentRepository,
+    series_id: uuid::Uuid,
+) -> crate::error::Result<bool> {
+    for occ in event_repo.list_series_occurrences(series_id).await? {
+        if !payment_repo
+            .list_completed_event_fees(occ.id)
+            .await?
+            .is_empty()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Delete an event.
 ///
 /// For a paid event the roster's `Completed` event fees are refunded
@@ -1105,20 +1125,7 @@ pub async fn admin_delete_event(
         // roster must not authorise destroying one. A class pass is a
         // different matter: it is one payment at series scope, and the
         // sweep for it is right below.
-        let outstanding_fees = async {
-            for occ in event_repo.list_series_occurrences(sid).await? {
-                if !payment_repo
-                    .list_completed_event_fees(occ.id)
-                    .await?
-                    .is_empty()
-                {
-                    return crate::error::Result::Ok(true);
-                }
-            }
-            crate::error::Result::Ok(false)
-        }
-        .await;
-        match outstanding_fees {
+        match series_has_paid_occurrence(&*event_repo, &*payment_repo, sid).await {
             Ok(false) => {}
             Ok(true) => {
                 return partials::admin_alert(
