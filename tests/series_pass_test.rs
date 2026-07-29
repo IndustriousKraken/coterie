@@ -41,7 +41,7 @@ use coterie::{
         membership_type_service::MembershipTypeService,
         payment_admin_service::{PaymentAdminService, RefundError},
         payment_service::{PaymentService, RecordManualPaymentInput},
-        recurring_event_service::RecurringEventService,
+        recurring_event_service::{RecurringEventService, DEFAULT_HORIZON},
         series_enrollment_service::SeriesEnrollmentService,
         settings_service::SettingsService,
     },
@@ -689,8 +689,22 @@ async fn horizon_roll_forward_seats_enrollees_on_new_occurrences() {
     let h = build_harness().await;
     let creator = h.active_member("creator").await;
 
-    // A real series, so the real materializer runs. Anchor 7 days out,
-    // horizon initially only 3 weeks.
+    // A real series, so the real materializer runs. Anchor 7 days out.
+    //
+    // Both bounds below are derived from DEFAULT_HORIZON rather than
+    // written as absolute day counts. `create_series_with_initial_
+    // materialization` fills up to `min(now + DEFAULT_HORIZON, until_date)`,
+    // and `extend_horizon` caps its target at `until_date` — so if
+    // `until_date` sits at or just past the initial horizon there is
+    // nothing left for the roll-forward to materialize and `added` is 0.
+    //
+    // That is exactly how this test used to fail: `until_date` was
+    // now + 365 days, one day past the 52-week horizon, leaving a
+    // one-day extension window that contained a Tuesday only when CI
+    // happened to run on a Monday. Giving the window a 60-day span keeps
+    // several Tuesdays inside it on every weekday, and deriving it from
+    // the constant means a change to DEFAULT_HORIZON can't silently
+    // shrink it back to nothing.
     let anchor = Utc::now() + Duration::days(7);
     let created = h
         .recurring
@@ -706,7 +720,7 @@ async fn horizon_roll_forward_seats_enrollees_on_new_occurrences() {
                 t.start_time = next_tuesday(anchor);
                 t
             },
-            Some(Utc::now() + Duration::days(365)),
+            Some(Utc::now() + DEFAULT_HORIZON + Duration::days(90)),
             paid(12_000),
             creator.id,
         )
@@ -735,12 +749,13 @@ async fn horizon_roll_forward_seats_enrollees_on_new_occurrences() {
     let series = h.series_repo.find_by_id(series.id).await.unwrap().unwrap();
     let added = h
         .recurring
-        .extend_horizon(&series, Utc::now() + Duration::days(400))
+        .extend_horizon(&series, Utc::now() + DEFAULT_HORIZON + Duration::days(60))
         .await
         .unwrap();
     assert!(
         added > 0,
-        "the roll-forward should materialize new sessions"
+        "the roll-forward should materialize new sessions (window is \
+         DEFAULT_HORIZON..+60d and must stay under until_date at +90d)"
     );
 
     for occ in h.occurrences(series.id).await {
