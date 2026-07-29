@@ -6,6 +6,7 @@ use crate::{
         MemberRepository, SqliteEventRepository, SqliteEventSeriesRepository,
         SqliteMemberRepository,
     },
+    service::recurring_event_service::DEFAULT_HORIZON,
 };
 use chrono::{Datelike, Duration, Weekday};
 use sqlx::{Executor, SqlitePool};
@@ -493,13 +494,15 @@ async fn cancelled_occurrence_does_not_reappear_after_materializer_run() {
     // directly with a target beyond the current horizon.
     //
     // `make_series_with_anchor` caps the series at anchor + 12 weeks and
-    // extend_horizon clamps its target to until_date — so without lifting
-    // the cap the extension window is zero-wide and this test asserts
-    // nothing. Clear until_date first, then assert the run actually
-    // materialized rows so the window can't silently close again.
-    sqlx::query("UPDATE event_series SET until_date = NULL WHERE id = ?")
-        .bind(series_id.to_string())
-        .execute(&pool)
+    // extend_horizon clamps its target to until_date — so without moving
+    // the cap out past the target the extension window is zero-wide and
+    // this test asserts nothing. Both bounds are derived from
+    // DEFAULT_HORIZON rather than written as absolute day counts, so a
+    // change to the constant can't silently squeeze the window shut; the
+    // +90d cap stays clear of the +60d target on every weekday. The
+    // `added > 0` assertion keeps that window from closing again unnoticed.
+    svc.event_series_repo
+        .set_until_date(series_id, Utc::now() + DEFAULT_HORIZON + Duration::days(90))
         .await
         .unwrap();
     let series = svc
@@ -508,10 +511,9 @@ async fn cancelled_occurrence_does_not_reappear_after_materializer_run() {
         .await
         .unwrap()
         .unwrap();
-    let new_target = series.materialized_through + chrono::Duration::weeks(20);
     let added = svc
         .recurring_event_service
-        .extend_horizon(&series, new_target)
+        .extend_horizon(&series, Utc::now() + DEFAULT_HORIZON + Duration::days(60))
         .await
         .unwrap();
     assert!(
