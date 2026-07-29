@@ -11,7 +11,6 @@ use axum::{
 use tower_http::{
     compression::CompressionLayer,
     cors::{AllowOrigin, CorsLayer},
-    trace::TraceLayer,
 };
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -77,7 +76,6 @@ pub fn create_app(app_state: AppState) -> Router {
         ))
         .layer(CompressionLayer::new())
         .layer(cors_layer)
-        .layer(TraceLayer::new_for_http())
 }
 
 /// Build CORS layer from configuration. If `cors_origins` is set, only those

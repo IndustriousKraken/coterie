@@ -19,6 +19,7 @@ use sqlx::{
 };
 use std::str::FromStr;
 use std::sync::Arc;
+use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
@@ -542,7 +543,22 @@ async fn main() -> anyhow::Result<()> {
         .layer(axum::middleware::from_fn_with_state(
             app_state,
             api::middleware::security::csrf_protect_unless_exempt,
-        ));
+        ))
+        // Request tracing must be applied HERE, after the merge, for the
+        // same axum-0.7 reason CSRF is: a layer added inside
+        // `api::create_app` does not propagate to routes brought in by
+        // `Router::merge`. It used to live in there, which meant the
+        // ENTIRE portal surface — /login, /forgot-password,
+        // /reset-password, every /portal/* route — produced no request
+        // log at all. Twenty days of production ran with zero log lines
+        // for any login attempt, so a locked-out member's 429s were
+        // invisible to the operator and only recoverable from Caddy's
+        // access log.
+        //
+        // Outermost is deliberate: it wraps CSRF and the setup gate, so
+        // requests rejected by those are logged too rather than
+        // disappearing before they reach a handler.
+        .layer(TraceLayer::new_for_http());
 
     let listener =
         tokio::net::TcpListener::bind(format!("{}:{}", settings.server.host, settings.server.port))
