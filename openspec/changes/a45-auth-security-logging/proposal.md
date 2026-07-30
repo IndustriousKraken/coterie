@@ -63,7 +63,10 @@ request-level status.
 
 - **Spec:** new capability `auth-logging` (6 ADDED requirements). MODIFIED:
   `audit-logging` (the locus-of-emission requirement gains the password/2FA
-  lifecycle events alongside the logout entry it already lists).
+  lifecycle events alongside the logout entry it already lists, and aligns
+  the announcements/events sub-bullet with the route-through-service
+  canonical pattern — audit emission is service-owned, routed through
+  `AnnouncementAdminService` and `EventAdminService` respectively).
 - **Code (extend):** `src/api/handlers/auth.rs` and `src/web/templates/` login
   paths (login success/failure, TOTP, logout), `src/web/templates/reset.rs`
   (reset request, token consumption, completion), `src/web/portal/profile.rs`
