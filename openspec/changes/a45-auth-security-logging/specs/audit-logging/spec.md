@@ -8,13 +8,14 @@ Audit-log emission SHALL live EITHER in the service layer OR in the handler, dep
 
 - **Payments**: emitted from `PaymentService::record_manual`, the per-event handlers inside `WebhookDispatcher`, `BillingService::process_scheduled_payment`, and — for the one-time Stripe payment-history backfill — from the backfill routine itself, which emits its own `import_payment` and `import_payments_batch` rows (mirroring the member CSV import). Adding any OTHER new payment-recording call site WITHOUT going through one of these four would skip the audit; the `payment-recording` capability spec lists the four permitted entry points.
 - **Member operations** (activate, suspend, update, extend-dues, set-dues, expire-now, create, update-discord-id, resend-verification, bulk-import): emitted from `MemberService` in `src/service/member_service.rs`. The handler in `src/web/portal/admin/members/` SHALL NOT emit audit logs directly for these operations; the service handles it.
-- **Settings, types, announcements, events**: emitted from the handler. (The `admin-types` capability's audit emission is a real bug today — the spec says the handler audits, but the code doesn't. A separate change adds the missing calls.)
+- **Settings, types**: emitted from the handler. (The `admin-types` capability's audit emission is a real bug today — the spec says the handler audits, but the code doesn't. A separate change adds the missing calls.)
+- **Announcements, events**: emitted from `AnnouncementAdminService` and `EventAdminService` respectively, in the service layer.
 - **Logout**: emitted from the handler in `src/api/handlers/auth.rs`.
 - **Credential and second-factor lifecycle** (self-service password change, completed password reset, TOTP enrolment, TOTP disablement, recovery-code regeneration): emitted from the handler that performs the change — `src/web/portal/profile.rs` for the logged-in flows and `src/web/templates/reset.rs` for the reset completion. These join logout as the auth-surface events that are reviewable account history, and the `auth-logging` capability specifies their accompanying log events.
 
 Auth-surface events whose volume is controlled by an **unauthenticated** caller — failed logins, rate-limit rejections, and password-policy rejections — SHALL NOT write audit rows. They are log-only, per the `auth-logging` capability. Persisting them would let an anonymous caller drive unbounded writes against the same database that serves every request, and would bury operator-reviewable history under machine-generated noise. The dividing line is therefore not "is it security-relevant" but "is its volume attacker-controlled".
 
-This reflects current code structure: member operations and payments follow the CLAUDE.md "side-effects in services" rule; type/setting/announcement/event ops have audit in handlers.
+This reflects current code structure: member operations and payments follow the CLAUDE.md "side-effects in services" rule; type/setting ops have audit in handlers; announcement and event ops have audit in their respective services.
 
 #### Scenario: New member-mutation method must emit its own audit row from the service
 
