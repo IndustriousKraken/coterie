@@ -180,11 +180,19 @@
 
                         <div class="form-group">
                             <label for="password">Password *</label>
+                            <!-- These requirements mirror Coterie's `validate_password`
+                                 (10-128 bytes, upper + lower + digit). They are a
+                                 convenience so the ceiling is discoverable before
+                                 submission; the server check is the enforcement. No
+                                 `maxlength` — it silently clips a pasted password-manager
+                                 value on a masked field, and it counts UTF-16 code units
+                                 rather than the bytes the server measures. -->
                             <input type="password" id="password" name="password" required
-                                   minlength="8">
+                                   minlength="10">
                             <ul class="password-requirements">
-                                <li>At least 8 characters</li>
-                                <li>Mix of letters and numbers recommended</li>
+                                <li>Between 10 and 128 bytes</li>
+                                <li>Most characters are one byte; accented letters and emoji use more</li>
+                                <li>At least one uppercase letter, one lowercase letter and one number</li>
                             </ul>
                         </div>
 

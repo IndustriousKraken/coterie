@@ -66,7 +66,15 @@
 
                         <div class="form-group">
                             <label for="password">Password</label>
-                            <input type="password" id="password" name="password" required minlength="8">
+                            <!-- The hint mirrors Coterie's `validate_password` (10-128
+                                 bytes). It is a convenience so the ceiling is
+                                 discoverable before submission; the server check is the
+                                 enforcement. No `maxlength` — it silently clips a pasted
+                                 password-manager value on a masked field, and it counts
+                                 UTF-16 code units rather than the bytes the server
+                                 measures. -->
+                            <input type="password" id="password" name="password" required minlength="10">
+                            <small>10-128 bytes. Most characters are one byte; accented letters and emoji use more.</small>
                         </div>
 
                         <div class="form-group">

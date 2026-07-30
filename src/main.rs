@@ -510,6 +510,18 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // And for the recovery limiter — same window, same cadence, its own
+    // map (see AppState::recovery_limiter).
+    {
+        let limiter = app_state.recovery_limiter.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(15 * 60)).await;
+                limiter.cleanup();
+            }
+        });
+    }
+
     // And for the money-endpoint limiter. Shorter window means we
     // sweep more often to keep the per-IP map small.
     {

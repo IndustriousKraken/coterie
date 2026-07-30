@@ -166,6 +166,13 @@
                            class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
                 </div>
 
+                <!-- The hint below mirrors `validate_password` in src/auth/mod.rs
+                     (10-128 bytes). It is a convenience so the ceiling is discoverable
+                     before submission; the server check is the enforcement. Deliberately
+                     no `maxlength`: it silently clips a pasted password-manager value on
+                     a masked field, and it counts UTF-16 code units rather than the bytes
+                     the server measures. `data-max-bytes` opts the field into the
+                     non-destructive TextEncoder warning in layouts/base.html. -->
                 <div>
                     <label for="new_password" class="block text-sm font-medium text-gray-700">New Password</label>
                     <input type="password"
@@ -173,7 +180,12 @@
                            name="new_password"
                            required
                            minlength="10"
+                           data-max-bytes="128"
                            class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                    <p class="mt-1 text-xs text-gray-500">
+                        10-128 bytes. Most characters are one byte; accented letters and
+                        emoji use more.
+                    </p>
                 </div>
 
                 <div>
@@ -183,7 +195,9 @@
                            name="confirm_password"
                            required
                            minlength="10"
+                           data-max-bytes="128"
                            class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                    <p class="mt-1 text-xs text-gray-500">10-128 bytes, matching the field above.</p>
                 </div>
 
                 <div id="password-message"></div>

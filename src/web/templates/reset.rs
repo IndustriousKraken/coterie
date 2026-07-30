@@ -7,6 +7,11 @@
 //!   GET /reset-password?token=X  -> new-password form
 //!   POST /reset-password  -> verify token, hash new password, update,
 //!                            invalidate all sessions
+//!
+//! A refused reset renders the same body it always has but returns a
+//! non-200 status, so "password changed" and "password refused" are
+//! distinguishable in the app, proxy, and uptime logs. The body stays
+//! deliberately vague; only the status got honest.
 
 use std::sync::Arc;
 
@@ -21,7 +26,7 @@ use serde::Deserialize;
 use sqlx::SqlitePool;
 
 use crate::{
-    api::state::LoginLimiter,
+    api::state::RecoveryLimiter,
     auth::{self, AuthService},
     config::Settings,
     email::{
@@ -59,7 +64,7 @@ pub async fn forgot_password_page() -> Response {
 
 pub async fn forgot_password_handler(
     State(settings): State<Arc<Settings>>,
-    State(login_limiter): State<LoginLimiter>,
+    State(recovery_limiter): State<RecoveryLimiter>,
     State(member_repo): State<Arc<dyn MemberRepository>>,
     State(db_pool): State<SqlitePool>,
     State(settings_service): State<Arc<SettingsService>>,
@@ -68,9 +73,14 @@ pub async fn forgot_password_handler(
     Form(form): Form<ForgotPasswordForm>,
 ) -> Response {
     // Rate-limit so the endpoint can't be used as a mass-email
-    // generator or to probe for valid addresses.
+    // generator or to probe for valid addresses. On `recovery_limiter`,
+    // NOT `login_limiter`: failed logins must not close the recovery
+    // path for the member who just forgot their password.
     let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
-    if !login_limiter.0.check_and_record(ip, "auth.password_reset") {
+    if !recovery_limiter
+        .0
+        .check_and_record(ip, "auth.password_reset")
+    {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             "Too many requests. Please try again later.",
@@ -249,20 +259,26 @@ pub async fn reset_password_handler(
             None,
             None,
         );
-        return HtmlTemplate(ResetPasswordTemplate {
-            base: BaseContext::for_anon(),
-            token: form.token,
-            error: Some("Passwords do not match.".to_string()),
-        })
-        .into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            HtmlTemplate(ResetPasswordTemplate {
+                base: BaseContext::for_anon(),
+                token: form.token,
+                error: Some("Passwords do not match.".to_string()),
+            }),
+        )
+            .into_response();
     }
     if let Err(rule) = crate::auth::validate_password_logged(&form.new_password, None, Some(ip)) {
-        return HtmlTemplate(ResetPasswordTemplate {
-            base: BaseContext::for_anon(),
-            token: form.token,
-            error: Some(rule.message().to_string()),
-        })
-        .into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            HtmlTemplate(ResetPasswordTemplate {
+                base: BaseContext::for_anon(),
+                token: form.token,
+                error: Some(rule.message()),
+            }),
+        )
+            .into_response();
     }
 
     // Consume the token atomically. Any further attempts with the same
@@ -284,14 +300,17 @@ pub async fn reset_password_handler(
                 None,
                 None,
             );
-            return HtmlTemplate(ResetPasswordResultTemplate {
-                base: BaseContext::for_anon(),
-                success: false,
-                message:
-                    "This reset link is invalid or has expired. Request a new one and try again."
-                        .to_string(),
-            })
-            .into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                HtmlTemplate(ResetPasswordResultTemplate {
+                    base: BaseContext::for_anon(),
+                    success: false,
+                    message:
+                        "This reset link is invalid or has expired. Request a new one and try again."
+                            .to_string(),
+                }),
+            )
+                .into_response();
         }
         Err(e) => {
             tracing::error!("Reset token consume failed: {}", e);
@@ -303,12 +322,15 @@ pub async fn reset_password_handler(
                 None,
                 None,
             );
-            return HtmlTemplate(ResetPasswordResultTemplate {
-                base: BaseContext::for_anon(),
-                success: false,
-                message: "Something went wrong. Please try again.".to_string(),
-            })
-            .into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                HtmlTemplate(ResetPasswordResultTemplate {
+                    base: BaseContext::for_anon(),
+                    success: false,
+                    message: "Something went wrong. Please try again.".to_string(),
+                }),
+            )
+                .into_response();
         }
     };
 
@@ -325,12 +347,15 @@ pub async fn reset_password_handler(
                 None,
                 None,
             );
-            return HtmlTemplate(ResetPasswordResultTemplate {
-                base: BaseContext::for_anon(),
-                success: false,
-                message: "Something went wrong. Please try again.".to_string(),
-            })
-            .into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                HtmlTemplate(ResetPasswordResultTemplate {
+                    base: BaseContext::for_anon(),
+                    success: false,
+                    message: "Something went wrong. Please try again.".to_string(),
+                }),
+            )
+                .into_response();
         }
     };
 
@@ -347,12 +372,15 @@ pub async fn reset_password_handler(
             None,
             None,
         );
-        return HtmlTemplate(ResetPasswordResultTemplate {
-            base: BaseContext::for_anon(),
-            success: false,
-            message: "Something went wrong. Please try again.".to_string(),
-        })
-        .into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            HtmlTemplate(ResetPasswordResultTemplate {
+                base: BaseContext::for_anon(),
+                success: false,
+                message: "Something went wrong. Please try again.".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     // Invalidate all existing sessions — whoever had them might be

@@ -790,6 +790,36 @@ async fn a_rejected_password_logs_its_rule_and_length_only() {
     );
 }
 
+/// The a46 pairing: the over-length rejection a security tester tripped
+/// is answerable from the operator side too. `length` is the same UTF-8
+/// byte count the user is now shown, so a "it didn't warn me" report can
+/// be matched against the log without guessing at units.
+#[tokio::test]
+async fn an_over_length_password_is_logged_as_too_long_with_its_byte_count() {
+    let (capture, _guard) = capture();
+    let (pool, state, app) = harness().await;
+    let (member_id, _email) = active_member(&state, PASSWORD).await;
+    let token = reset_token(&pool, member_id, chrono::Duration::hours(1)).await;
+
+    // 63 characters, 243 bytes — the mismatch that made the old message
+    // read as a malfunction.
+    let long = format!("Aa1{}", "\u{1F600}".repeat(60));
+    post_form(&app, "/reset-password", reset_body(&token, &long)).await;
+
+    let event = capture.only("auth.password_rejected");
+    assert_eq!(event.level, tracing::Level::WARN);
+    assert_eq!(event.f("reason"), "too_long");
+    assert_eq!(
+        event.f("length"),
+        "243",
+        "the log measures bytes, not chars"
+    );
+    assert!(
+        !event.contains(&long),
+        "the password itself must not be logged"
+    );
+}
+
 // ---------------------------------------------------------------------
 // 7.4  Account-state changes are audited exactly once
 // ---------------------------------------------------------------------

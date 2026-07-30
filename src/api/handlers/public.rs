@@ -273,7 +273,7 @@ pub async fn signup(
 
     // Validate password strength
     if let Err(rule) = crate::auth::validate_password_logged(&request.password, None, Some(ip)) {
-        return Err(AppError::BadRequest(rule.message().to_string()));
+        return Err(AppError::BadRequest(rule.message()));
     }
 
     // Resolve the requested membership_type slug to an FK. Unknown
