@@ -222,6 +222,27 @@ async fn post_login(app: &Router, username: &str, password: &str) -> (StatusCode
     (status, String::from_utf8(bytes.to_vec()).unwrap())
 }
 
+/// The other login surface: JSON `/auth/login`, keyed on `email` rather
+/// than `username`.
+async fn post_json_login(app: &Router, email: &str, password: &str) -> (StatusCode, String) {
+    let body = serde_json::json!({ "email": email, "password": password }).to_string();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/auth/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
 async fn post_form(app: &Router, uri: &str, body: String) -> (StatusCode, String) {
     let resp = app
         .clone()
@@ -469,6 +490,46 @@ async fn unknown_email_and_bad_password_log_differently_and_respond_identically(
         "a wrong password on a KNOWN account should name the member"
     );
     assert_eq!(events[0].f("identifier"), "nobody@example.com");
+}
+
+#[tokio::test]
+async fn the_json_surface_names_the_member_on_a_bad_password_too() {
+    // The two login surfaces must agree. `/login` loads the member before
+    // checking the password, so naming them is free; `/auth/login` reads
+    // only the credential row first (the dummy-verify timing defense), so
+    // it carries the id out of that same read rather than re-querying.
+    // Without this the whole point of the change — correlating a denial to
+    // a member — is lost on one of the two surfaces.
+    let (capture, _guard) = capture();
+    let (_pool, state, app) = harness().await;
+    let (member_id, email) = active_member(&state, PASSWORD).await;
+
+    let (unknown_status, unknown_body) =
+        post_json_login(&app, "nobody@example.com", "Wr0ngPassword!!").await;
+    let (bad_status, bad_body) = post_json_login(&app, &email, "Wr0ngPassword!!").await;
+
+    assert_eq!(unknown_status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        (unknown_status, unknown_body.as_str()),
+        (bad_status, bad_body.as_str()),
+        "naming the member in the LOG must not make the response any more \
+         specific — the enumeration guard is the point"
+    );
+
+    let events = capture.auth("auth.login");
+    let reasons: Vec<String> = events.iter().map(|e| e.f("reason").to_string()).collect();
+    assert_eq!(reasons, vec!["unknown_email", "bad_password"]);
+    assert_eq!(
+        events[1].f("member_id"),
+        member_id.to_string(),
+        "a wrong password on a KNOWN account must name the member on the \
+         JSON surface exactly as it does on the web surface"
+    );
+    assert_eq!(
+        events[0].f("member_id"),
+        "-",
+        "an unknown email has no member to name"
+    );
 }
 
 #[tokio::test]

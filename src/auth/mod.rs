@@ -225,14 +225,29 @@ pub fn validate_password_logged(
     Ok(())
 }
 
-pub async fn get_password_hash(pool: &SqlitePool, email: &str) -> Result<Option<String>> {
-    let result =
-        sqlx::query_scalar::<_, String>("SELECT password_hash FROM members WHERE email = ?")
-            .bind(email)
-            .fetch_optional(pool)
-            .await?;
+/// The member id and password hash for an email, or `None` if no member
+/// has that address.
+///
+/// The id comes back alongside the hash because the row is already being
+/// read: `/auth/login` verifies the password before it loads the member,
+/// so without the id here its `bad_password` denial could not name who it
+/// was for — and re-querying to find out would add a round-trip on the
+/// one path an attacker controls the volume of.
+pub async fn get_password_hash(pool: &SqlitePool, email: &str) -> Result<Option<(Uuid, String)>> {
+    let result = sqlx::query_as::<_, (String, String)>(
+        "SELECT id, password_hash FROM members WHERE email = ?",
+    )
+    .bind(email)
+    .fetch_optional(pool)
+    .await?;
 
-    Ok(result)
+    result
+        .map(|(id, hash)| {
+            Uuid::parse_str(&id)
+                .map(|id| (id, hash))
+                .map_err(|e| AppError::Internal(e.to_string()))
+        })
+        .transpose()
 }
 
 pub async fn get_member_by_email(pool: &SqlitePool, email: &str) -> Result<Option<Member>> {

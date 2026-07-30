@@ -71,8 +71,12 @@ pub async fn login(
     // Get password hash from database
     let password_hash = auth::get_password_hash(&db_pool, &req.email).await?;
 
-    let password_hash = match password_hash {
-        Some(h) => h,
+    // The id rides along with the hash so the `bad_password` denial below
+    // can name the member — the member row isn't loaded until after the
+    // password verifies, and re-querying for it would add a round-trip to
+    // the path whose volume an attacker controls.
+    let (member_id, password_hash) = match password_hash {
+        Some(pair) => pair,
         None => {
             // User not found — burn Argon2 time to prevent timing-based enumeration.
             auth::AuthService::verify_dummy(&req.password).await;
@@ -93,7 +97,7 @@ pub async fn login(
         auth_log::denied(
             "auth.login",
             "bad_password",
-            None,
+            Some(member_id),
             Some(ip),
             Some(identifier),
             None,

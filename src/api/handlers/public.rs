@@ -568,7 +568,7 @@ async fn retry_pending_checkout(
         AuthService::verify_dummy(password).await;
         return Ok(None);
     }
-    let Some(hash) = crate::auth::get_password_hash(db_pool, email).await? else {
+    let Some((_, hash)) = crate::auth::get_password_hash(db_pool, email).await? else {
         AuthService::verify_dummy(password).await;
         return Ok(None);
     };

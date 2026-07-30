@@ -139,10 +139,13 @@ pub async fn login_handler(
 
     if let Some(member) = member {
         // Get password hash from database
+        // The member is already loaded on this surface, so the id the
+        // lookup returns alongside the hash is redundant here.
         let password_hash = crate::auth::get_password_hash(&db_pool, &member.email)
             .await
             .ok()
-            .flatten();
+            .flatten()
+            .map(|(_, hash)| hash);
 
         // Verify password
         let password_valid = if let Some(hash) = password_hash {

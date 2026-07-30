@@ -311,7 +311,8 @@ pub async fn update_password(
     let password_hash = crate::auth::get_password_hash(&db_pool, &current_user.member.email)
         .await
         .ok()
-        .flatten();
+        .flatten()
+        .map(|(_, hash)| hash);
 
     let password_valid = if let Some(hash) = password_hash {
         crate::auth::AuthService::verify_password(&form.current_password, &hash)
