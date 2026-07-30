@@ -173,6 +173,13 @@ pub struct AppState {
     pub settings: Arc<Settings>,
     /// Rate limiter for login endpoints (5 attempts per 15 minutes per IP).
     pub login_limiter: RateLimiter,
+    /// Rate limiter for password recovery (`POST /forgot-password`).
+    /// Same 5-per-15-minutes shape as `login_limiter` but a SEPARATE
+    /// bucket: a member who has just failed five logins is exactly the
+    /// member most likely to need a reset, and sharing the credential
+    /// budget locked them out of the one door built for them (incident
+    /// 2026-07-29). Recovery is still limited because it sends email.
+    pub recovery_limiter: RateLimiter,
     /// Rate limiter for money-moving endpoints (charge, donate, refund,
     /// auto-renew toggle). 10 attempts/min per IP — well above any
     /// legitimate workflow but tight enough to box in scripted abuse,
@@ -218,6 +225,7 @@ impl AppState {
             billing_service,
             settings,
             login_limiter: RateLimiter::new(5, Duration::from_secs(15 * 60)),
+            recovery_limiter: RateLimiter::new(5, Duration::from_secs(15 * 60)),
             money_limiter: money_limiter.0,
             setup_lock: Arc::new(AsyncMutex::new(())),
             admin_exists_observed: Arc::new(AtomicBool::new(false)),
@@ -551,12 +559,17 @@ impl FromRef<AppState> for SqlitePool {
 
 // --- Rate limiters and locks ---
 //
-// RateLimiter appears twice on AppState (login_limiter, money_limiter), so
-// a bare `FromRef<AppState> for RateLimiter` would be ambiguous. Each
-// limiter gets a newtype wrapper.
+// RateLimiter appears three times on AppState (login_limiter,
+// recovery_limiter, money_limiter), so a bare `FromRef<AppState> for
+// RateLimiter` would be ambiguous. Each limiter gets a newtype wrapper.
 
 #[derive(Clone)]
 pub struct LoginLimiter(pub RateLimiter);
+
+/// Password-recovery budget. Deliberately NOT `LoginLimiter` — see the
+/// `recovery_limiter` field comment.
+#[derive(Clone)]
+pub struct RecoveryLimiter(pub RateLimiter);
 
 #[derive(Clone)]
 pub struct MoneyLimiter(pub RateLimiter);
@@ -564,6 +577,12 @@ pub struct MoneyLimiter(pub RateLimiter);
 impl FromRef<AppState> for LoginLimiter {
     fn from_ref(state: &AppState) -> Self {
         LoginLimiter(state.login_limiter.clone())
+    }
+}
+
+impl FromRef<AppState> for RecoveryLimiter {
+    fn from_ref(state: &AppState) -> Self {
+        RecoveryLimiter(state.recovery_limiter.clone())
     }
 }
 
