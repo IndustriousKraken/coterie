@@ -101,8 +101,25 @@ impl AuthService {
     /// prevent session-fixation), on privilege change (admin promotion /
     /// demotion), and on account status changes (suspend / expire) to
     /// force re-authentication with fresh permissions.
+    ///
+    /// The `auth.sessions_invalidated` event is emitted here rather than
+    /// at the call sites: every sweep — login, password change, reset,
+    /// admin status change — funnels through this method, so a caller
+    /// cannot add a sweep that goes unrecorded. The caller's IP isn't
+    /// known at this depth; the member id is what an operator needs to
+    /// answer "why was I logged out".
     pub async fn invalidate_all_sessions(&self, member_id: Uuid) -> Result<()> {
-        self.session_store.delete_by_member(member_id).await
+        let result = self.session_store.delete_by_member(member_id).await;
+        if result.is_ok() {
+            crate::util::auth_log::ok(
+                "auth.sessions_invalidated",
+                Some(member_id),
+                None,
+                None,
+                None,
+            );
+        }
+        result
     }
 
     pub async fn cleanup_expired_sessions(&self) -> Result<u64> {
@@ -129,26 +146,81 @@ impl AuthService {
     }
 }
 
+/// The password-policy rule a submitted password failed.
+///
+/// A named rule rather than a bare message so `auth.password_rejected`
+/// can carry a stable machine-filterable `reason` — deriving one by
+/// matching on the user-facing message would silently break the day
+/// someone rewords it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasswordRule {
+    TooShort,
+    TooLong,
+    NoUppercase,
+    NoLowercase,
+    NoDigit,
+}
+
+impl PasswordRule {
+    /// The message shown to the person who typed the password.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::TooShort => "Password must be at least 10 characters",
+            Self::TooLong => "Password must be at most 128 characters",
+            Self::NoUppercase => "Password must contain at least one uppercase letter",
+            Self::NoLowercase => "Password must contain at least one lowercase letter",
+            Self::NoDigit => "Password must contain at least one number",
+        }
+    }
+
+    /// The `reason` field value in the log.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::TooShort => "too_short",
+            Self::TooLong => "too_long",
+            Self::NoUppercase => "no_uppercase",
+            Self::NoLowercase => "no_lowercase",
+            Self::NoDigit => "no_digit",
+        }
+    }
+}
+
 /// Validate password complexity. Returns `Ok(())` if the password meets
-/// requirements, or `Err(message)` describing what's missing.
-pub fn validate_password(password: &str) -> std::result::Result<(), &'static str> {
+/// requirements, or the rule it failed.
+pub fn validate_password(password: &str) -> std::result::Result<(), PasswordRule> {
     if password.len() < 10 {
-        return Err("Password must be at least 10 characters");
+        return Err(PasswordRule::TooShort);
     }
     // Upper bound guards against Argon2 CPU-amplification DoS: the Blake2b
     // pre-hash cost scales with input length, so an unauthenticated caller
     // must not be able to force hashing of an oversized password.
     if password.len() > 128 {
-        return Err("Password must be at most 128 characters");
+        return Err(PasswordRule::TooLong);
     }
     if !password.chars().any(|c| c.is_ascii_uppercase()) {
-        return Err("Password must contain at least one uppercase letter");
+        return Err(PasswordRule::NoUppercase);
     }
     if !password.chars().any(|c| c.is_ascii_lowercase()) {
-        return Err("Password must contain at least one lowercase letter");
+        return Err(PasswordRule::NoLowercase);
     }
     if !password.chars().any(|c| c.is_ascii_digit()) {
-        return Err("Password must contain at least one number");
+        return Err(PasswordRule::NoDigit);
+    }
+    Ok(())
+}
+
+/// Validate a submitted password and emit `auth.password_rejected` on
+/// failure. Every `validate_password` call site on a request path goes
+/// through this so the rejection can't be silently dropped; the event is
+/// log-only (its volume is attacker-controlled, so no `audit_logs` row).
+pub fn validate_password_logged(
+    password: &str,
+    member_id: Option<Uuid>,
+    ip: Option<std::net::IpAddr>,
+) -> std::result::Result<(), PasswordRule> {
+    if let Err(rule) = validate_password(password) {
+        crate::util::auth_log::password_rejected(rule.slug(), password.len(), member_id, ip);
+        return Err(rule);
     }
     Ok(())
 }
@@ -172,7 +244,7 @@ pub async fn get_member_by_email(pool: &SqlitePool, email: &str) -> Result<Optio
 
 #[cfg(test)]
 mod tests {
-    use super::validate_password;
+    use super::{validate_password, PasswordRule};
 
     // A valid complexity prefix ("Aa1") padded with lowercase 'a' to `len`.
     fn valid_of_len(len: usize) -> String {
@@ -186,7 +258,7 @@ mod tests {
         assert!(validate_password(&valid_of_len(128)).is_ok());
         assert_eq!(
             validate_password(&valid_of_len(129)),
-            Err("Password must be at most 128 characters")
+            Err(PasswordRule::TooLong)
         );
     }
 
@@ -195,7 +267,39 @@ mod tests {
         // Argon2 DoS guard: an oversized input is rejected before hashing.
         assert_eq!(
             validate_password(&valid_of_len(10_000)),
-            Err("Password must be at most 128 characters")
+            Err(PasswordRule::TooLong)
+        );
+    }
+
+    #[test]
+    fn each_rule_has_a_distinct_log_slug_and_message() {
+        // The whole point of the enum: an operator filtering on `reason`
+        // can tell the five rejections apart.
+        let all = [
+            PasswordRule::TooShort,
+            PasswordRule::TooLong,
+            PasswordRule::NoUppercase,
+            PasswordRule::NoLowercase,
+            PasswordRule::NoDigit,
+        ];
+        let slugs: std::collections::HashSet<_> = all.iter().map(|r| r.slug()).collect();
+        assert_eq!(slugs.len(), all.len());
+
+        assert_eq!(
+            validate_password("Aa1").unwrap_err(),
+            PasswordRule::TooShort
+        );
+        assert_eq!(
+            validate_password("aa1aa1aa1aa1").unwrap_err(),
+            PasswordRule::NoUppercase
+        );
+        assert_eq!(
+            validate_password("AA1AA1AA1AA1").unwrap_err(),
+            PasswordRule::NoLowercase
+        );
+        assert_eq!(
+            validate_password("AaAaAaAaAaAa").unwrap_err(),
+            PasswordRule::NoDigit
         );
     }
 }

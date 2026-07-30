@@ -230,7 +230,7 @@ pub async fn signup(
     // verification-email amplification each signup triggers — the bot
     // challenge defaults to disabled, so this is the only remaining
     // control out of the box.
-    if !money_limiter.0.check_and_record(ip) {
+    if !money_limiter.0.check_and_record(ip, "public.signup") {
         return Err(AppError::TooManyRequests);
     }
 
@@ -272,8 +272,8 @@ pub async fn signup(
     }
 
     // Validate password strength
-    if let Err(msg) = crate::auth::validate_password(&request.password) {
-        return Err(AppError::BadRequest(msg.to_string()));
+    if let Err(rule) = crate::auth::validate_password_logged(&request.password, None, Some(ip)) {
+        return Err(AppError::BadRequest(rule.message().to_string()));
     }
 
     // Resolve the requested membership_type slug to an FK. Unknown
@@ -1248,7 +1248,7 @@ pub async fn donate(
     // 10 attempts per minute. Rate limit BEFORE the bot challenge so
     // a bursting IP can't burn through the provider's quota.
     let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
-    if !money_limiter.0.check_and_record(ip) {
+    if !money_limiter.0.check_and_record(ip, "public.donate") {
         return Err(AppError::TooManyRequests);
     }
 
@@ -1443,7 +1443,10 @@ pub async fn register_for_event(
     // Rate limit FIRST, before the bot-challenge provider is consulted:
     // a bursting IP must not be able to spend the org's provider quota.
     let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
-    if !money_limiter.0.check_and_record(ip) {
+    if !money_limiter
+        .0
+        .check_and_record(ip, "public.event_register")
+    {
         return Err(AppError::TooManyRequests);
     }
 
@@ -1576,7 +1579,7 @@ pub async fn enroll_in_class(
 
     // Rate limit FIRST, before the bot-challenge provider is consulted.
     let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
-    if !money_limiter.0.check_and_record(ip) {
+    if !money_limiter.0.check_and_record(ip, "public.class_enroll") {
         return Err(AppError::TooManyRequests);
     }
 

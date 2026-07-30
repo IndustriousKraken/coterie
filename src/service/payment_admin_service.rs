@@ -153,7 +153,7 @@ impl PaymentAdminService {
         // 1. Rate-limit. Money-moving actions are always per-IP capped;
         //    owning the check here means a caller can't accidentally
         //    skip it by going around the handler.
-        if !self.money_limiter.0.check_and_record(ip) {
+        if !self.money_limiter.0.check_and_record(ip, "admin.refund") {
             return Err(RefundError::RateLimited);
         }
         self.refund_claimed(actor_id, payment_id).await
@@ -176,7 +176,11 @@ impl PaymentAdminService {
         event_id: Uuid,
         ip: IpAddr,
     ) -> Result<usize, RefundError> {
-        if !self.money_limiter.0.check_and_record(ip) {
+        if !self
+            .money_limiter
+            .0
+            .check_and_record(ip, "admin.refund_event_fees")
+        {
             return Err(RefundError::RateLimited);
         }
 
@@ -223,7 +227,11 @@ impl PaymentAdminService {
         series_id: Uuid,
         ip: IpAddr,
     ) -> Result<usize, RefundError> {
-        if !self.money_limiter.0.check_and_record(ip) {
+        if !self
+            .money_limiter
+            .0
+            .check_and_record(ip, "admin.refund_series_passes")
+        {
             return Err(RefundError::RateLimited);
         }
 

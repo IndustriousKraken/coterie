@@ -133,7 +133,7 @@ pub async fn donate_api(
     Json(request): Json<DonateRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
     let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
-    if !money_limiter.0.check_and_record(ip) {
+    if !money_limiter.0.check_and_record(ip, "portal.donate") {
         return Err(AppError::TooManyRequests);
     }
 

@@ -106,7 +106,7 @@ pub async fn update_auto_renew_api(
     Json(request): Json<UpdateAutoRenewRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
-    if !money_limiter.0.check_and_record(ip) {
+    if !money_limiter.0.check_and_record(ip, "portal.saved_card") {
         return Err(AppError::TooManyRequests);
     }
 

@@ -124,6 +124,48 @@ sudo journalctl -u coterie --since "1 hour ago"
 sudo journalctl -u coterie -u caddy  # alongside reverse proxy
 ```
 
+### Authentication logs contain email addresses
+
+Every outcome on the authentication surface emits a structured event —
+`event=auth.login`, `auth.totp`, `auth.rate_limited`,
+`auth.password_reset_requested`, and so on — with `outcome`, `member_id`,
+`ip`, and a `reason` when denied. Filter on the fields rather than
+grepping prose:
+
+```bash
+sudo journalctl -u coterie | grep 'event=auth.login'          # every login attempt
+sudo journalctl -u coterie | grep 'reason=rate_limited'       # who hit the limiter
+```
+
+**These logs record the email address that was submitted**, including
+addresses that match no member. Passwords, reset tokens, session tokens,
+TOTP codes and recovery codes are never logged at any level, and an
+identifier that isn't a syntactically valid email is replaced with a
+placeholder (people type passwords into the email field).
+
+The attempted address is there because "why can't this member sign in"
+is not answerable without it — but it makes the log store personal data.
+It inherits whatever retention and access controls that store already
+has, which is worth checking **before** you ship logs off-box to a
+hosted aggregator: journald on the host is one trust boundary, a
+third-party log service is another. Set a retention window on the
+journal (`SystemMaxUse` / `MaxRetentionSec` in `journald.conf`) if your
+context calls for one.
+
+Two lines to check at every startup:
+
+- `Client IP: X-Forwarded-For / X-Real-Ip TRUSTED (…)` — how rate
+  limiting keys callers, and whether that came from config or from
+  inferring it off the base URL's scheme
+- `Secure cookies: true (…)` — same, for the session cookie's `Secure`
+  flag
+
+If you instead see a warning about a **SINGLE SHARED BUCKET**, forwarded
+headers are not trusted and every caller keys on `127.0.0.1`: a handful
+of failed logins anywhere locks out the whole organization. Behind a
+reverse proxy that sets `X-Forwarded-For`, set
+`COTERIE__SERVER__TRUST_FORWARDED_FOR=true`.
+
 Key log lines to watch for:
 
 - `Billing runner started` — background job is alive

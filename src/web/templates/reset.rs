@@ -30,7 +30,8 @@ use crate::{
         EmailSender,
     },
     repository::MemberRepository,
-    service::settings_service::SettingsService,
+    service::{audit_service::AuditService, settings_service::SettingsService},
+    util::auth_log,
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -69,13 +70,15 @@ pub async fn forgot_password_handler(
     // Rate-limit so the endpoint can't be used as a mass-email
     // generator or to probe for valid addresses.
     let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
-    if !login_limiter.0.check_and_record(ip) {
+    if !login_limiter.0.check_and_record(ip, "auth.password_reset") {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             "Too many requests. Please try again later.",
         )
             .into_response();
     }
+
+    let identifier = auth_log::safe_identifier(&form.email);
 
     // Look up the member. Whether or not we find one, return the same
     // response — leaking membership via this endpoint would undo the
@@ -121,16 +124,61 @@ pub async fn forgot_password_handler(
                     Ok(message) => {
                         if let Err(e) = email_sender.send(&message).await {
                             tracing::error!("Reset email send failed: {}", e);
+                            auth_log::denied(
+                                "auth.password_reset_requested",
+                                "email_send_failed",
+                                Some(member.id),
+                                Some(ip),
+                                Some(identifier),
+                                None,
+                            );
+                        } else {
+                            auth_log::ok(
+                                "auth.password_reset_requested",
+                                Some(member.id),
+                                Some(ip),
+                                Some(identifier),
+                                None,
+                            );
                         }
                     }
-                    Err(e) => tracing::error!("Reset email render failed: {}", e),
+                    Err(e) => {
+                        tracing::error!("Reset email render failed: {}", e);
+                        auth_log::denied(
+                            "auth.password_reset_requested",
+                            "email_render_failed",
+                            Some(member.id),
+                            Some(ip),
+                            Some(identifier),
+                            None,
+                        );
+                    }
                 }
             }
-            Err(e) => tracing::error!("Reset token create failed: {}", e),
+            Err(e) => {
+                tracing::error!("Reset token create failed: {}", e);
+                auth_log::denied(
+                    "auth.password_reset_requested",
+                    "token_create_failed",
+                    Some(member.id),
+                    Some(ip),
+                    Some(identifier),
+                    None,
+                );
+            }
         }
     } else {
-        // Not a member (or DB error). Don't tell the user either way.
-        tracing::debug!("Forgot-password request for unknown email");
+        // Not a member (or DB error). The response is identical either
+        // way — only the log knows the difference, which is the whole
+        // reason this event exists.
+        auth_log::denied(
+            "auth.password_reset_requested",
+            "unknown_email",
+            None,
+            Some(ip),
+            Some(identifier),
+            None,
+        );
     }
 
     HtmlTemplate(ForgotPasswordTemplate {
@@ -183,11 +231,24 @@ pub async fn reset_password_handler(
     State(db_pool): State<SqlitePool>,
     State(member_repo): State<Arc<dyn MemberRepository>>,
     State(auth_service): State<Arc<AuthService>>,
+    State(audit_service): State<Arc<AuditService>>,
+    State(settings): State<Arc<Settings>>,
+    headers: HeaderMap,
     Form(form): Form<ResetPasswordForm>,
 ) -> Response {
+    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
+
     // Client-side validation first (gives the form back with an error
     // message, without burning the one-shot token).
     if form.new_password != form.confirm_password {
+        auth_log::denied(
+            "auth.password_reset_completed",
+            "password_mismatch",
+            None,
+            Some(ip),
+            None,
+            None,
+        );
         return HtmlTemplate(ResetPasswordTemplate {
             base: BaseContext::for_anon(),
             token: form.token,
@@ -195,22 +256,35 @@ pub async fn reset_password_handler(
         })
         .into_response();
     }
-    if let Err(msg) = crate::auth::validate_password(&form.new_password) {
+    if let Err(rule) = crate::auth::validate_password_logged(&form.new_password, None, Some(ip)) {
         return HtmlTemplate(ResetPasswordTemplate {
             base: BaseContext::for_anon(),
             token: form.token,
-            error: Some(msg.to_string()),
+            error: Some(rule.message().to_string()),
         })
         .into_response();
     }
 
     // Consume the token atomically. Any further attempts with the same
     // token will return None.
-    let consumed =
-        match auth::email_tokens::consume_password_reset_token(&db_pool, &form.token).await {
-            Ok(Some(c)) => c,
-            Ok(None) => {
-                return HtmlTemplate(ResetPasswordResultTemplate {
+    let consumed = match auth::email_tokens::consume_password_reset_token(&db_pool, &form.token)
+        .await
+    {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            // The response can't say which of these it was; the log
+            // must, or "the reset link didn't work" stays unanswerable.
+            let denial =
+                auth::email_tokens::classify_password_reset_failure(&db_pool, &form.token).await;
+            auth_log::denied(
+                "auth.password_reset_completed",
+                denial.slug(),
+                None,
+                Some(ip),
+                None,
+                None,
+            );
+            return HtmlTemplate(ResetPasswordResultTemplate {
                 base: BaseContext::for_anon(),
                 success: false,
                 message:
@@ -218,23 +292,39 @@ pub async fn reset_password_handler(
                         .to_string(),
             })
             .into_response();
-            }
-            Err(e) => {
-                tracing::error!("Reset token consume failed: {}", e);
-                return HtmlTemplate(ResetPasswordResultTemplate {
-                    base: BaseContext::for_anon(),
-                    success: false,
-                    message: "Something went wrong. Please try again.".to_string(),
-                })
-                .into_response();
-            }
-        };
+        }
+        Err(e) => {
+            tracing::error!("Reset token consume failed: {}", e);
+            auth_log::denied(
+                "auth.password_reset_completed",
+                "token_lookup_failed",
+                None,
+                Some(ip),
+                None,
+                None,
+            );
+            return HtmlTemplate(ResetPasswordResultTemplate {
+                base: BaseContext::for_anon(),
+                success: false,
+                message: "Something went wrong. Please try again.".to_string(),
+            })
+            .into_response();
+        }
+    };
 
     // Hash the new password and persist it.
     let new_hash = match AuthService::hash_password(&form.new_password).await {
         Ok(h) => h,
         Err(e) => {
             tracing::error!("Password hash failed during reset: {}", e);
+            auth_log::denied(
+                "auth.password_reset_completed",
+                "hash_failed",
+                Some(consumed.member_id),
+                Some(ip),
+                None,
+                None,
+            );
             return HtmlTemplate(ResetPasswordResultTemplate {
                 base: BaseContext::for_anon(),
                 success: false,
@@ -249,6 +339,14 @@ pub async fn reset_password_handler(
         .await
     {
         tracing::error!("Password update failed: {}", e);
+        auth_log::denied(
+            "auth.password_reset_completed",
+            "update_failed",
+            Some(consumed.member_id),
+            Some(ip),
+            None,
+            None,
+        );
         return HtmlTemplate(ResetPasswordResultTemplate {
             base: BaseContext::for_anon(),
             success: false,
@@ -286,6 +384,28 @@ pub async fn reset_password_handler(
             e
         );
     }
+
+    // A completed reset is reviewable account history, not just runtime
+    // telemetry — so it gets an audit row as well as the log event. The
+    // row carries no part of the new credential.
+    audit_service
+        .log(
+            Some(consumed.member_id),
+            "password_reset",
+            "member",
+            &consumed.member_id.to_string(),
+            None,
+            Some("via reset link"),
+            Some(&ip.to_string()),
+        )
+        .await;
+    auth_log::ok(
+        "auth.password_reset_completed",
+        Some(consumed.member_id),
+        Some(ip),
+        None,
+        None,
+    );
 
     HtmlTemplate(ResetPasswordResultTemplate {
         base: BaseContext::for_anon(),

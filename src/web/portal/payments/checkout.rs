@@ -117,7 +117,7 @@ pub async fn charge_saved_card_api(
     Json(request): Json<ChargeSavedCardRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
     let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
-    if !money_limiter.0.check_and_record(ip) {
+    if !money_limiter.0.check_and_record(ip, "portal.checkout") {
         return Err(AppError::TooManyRequests);
     }
 

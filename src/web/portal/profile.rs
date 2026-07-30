@@ -270,11 +270,23 @@ pub async fn update_password(
     State(settings): State<Arc<Settings>>,
     State(audit_service): State<Arc<AuditService>>,
     Extension(current_user): Extension<CurrentUser>,
+    headers: axum::http::HeaderMap,
     jar: CookieJar,
     axum::Form(form): axum::Form<UpdatePasswordRequest>,
 ) -> Response {
+    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
+    let member_id = current_user.member.id;
+
     // Validate passwords match
     if form.new_password != form.confirm_password {
+        crate::util::auth_log::denied(
+            "auth.password_changed",
+            "password_mismatch",
+            Some(member_id),
+            Some(ip),
+            None,
+            None,
+        );
         return axum::response::Html(
             r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">
                 New passwords do not match
@@ -285,10 +297,12 @@ pub async fn update_password(
     }
 
     // Validate password complexity
-    if let Err(msg) = crate::auth::validate_password(&form.new_password) {
+    if let Err(rule) =
+        crate::auth::validate_password_logged(&form.new_password, Some(member_id), Some(ip))
+    {
         return axum::response::Html(format!(
             r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">{}</div>"#,
-            crate::web::escape_html(msg)
+            crate::web::escape_html(rule.message())
         ))
         .into_response();
     }
@@ -308,6 +322,14 @@ pub async fn update_password(
     };
 
     if !password_valid {
+        crate::util::auth_log::denied(
+            "auth.password_changed",
+            "bad_password",
+            Some(member_id),
+            Some(ip),
+            None,
+            Some("current_password"),
+        );
         return axum::response::Html(
             r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">
                 Current password is incorrect
@@ -394,15 +416,22 @@ pub async fn update_password(
 
     audit_service
         .log(
-            Some(current_user.member.id),
+            Some(member_id),
             "password_change",
             "member",
-            &current_user.member.id.to_string(),
+            &member_id.to_string(),
             None,
             Some("via portal"),
-            None,
+            Some(&ip.to_string()),
         )
         .await;
+    crate::util::auth_log::ok(
+        "auth.password_changed",
+        Some(member_id),
+        Some(ip),
+        None,
+        None,
+    );
 
     (
         new_jar,

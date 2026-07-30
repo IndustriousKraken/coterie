@@ -6,7 +6,7 @@
 //! The plaintext token only exists in the emailed URL and briefly
 //! in memory during request handling — never written to disk.
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -164,6 +164,60 @@ pub async fn consume_password_reset_token(
     token: &str,
 ) -> Result<Option<ConsumedToken>> {
     consume_token(pool, "password_reset_tokens", token).await
+}
+
+/// Why a reset-token consume attempt failed.
+///
+/// `consume_token` collapses every failure into `None` — correct for the
+/// response (the member is told the same thing either way) but useless to
+/// an operator, because "I never got in via the reset link" has several
+/// distinct causes. Computed only on the failure path, so a successful
+/// reset still costs one round-trip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetTokenDenial {
+    Expired,
+    AlreadyUsed,
+    /// No such token — never issued, mistyped, or already superseded and
+    /// pruned.
+    Unknown,
+}
+
+impl ResetTokenDenial {
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Expired => "token_expired",
+            Self::AlreadyUsed => "token_already_used",
+            Self::Unknown => "token_unknown",
+        }
+    }
+}
+
+/// Classify a failed `consume_password_reset_token`. Any DB error here is
+/// reported as `Unknown` rather than surfaced: this runs purely to make a
+/// log line specific, and must never turn a reset failure into a 500.
+pub async fn classify_password_reset_failure(pool: &SqlitePool, token: &str) -> ResetTokenDenial {
+    let token_hash = hash_token(token);
+    let row: Option<(Option<NaiveDateTime>, NaiveDateTime)> = sqlx::query_as(
+        "SELECT consumed_at, expires_at FROM password_reset_tokens WHERE token_hash = ?",
+    )
+    .bind(&token_hash)
+    .fetch_optional(pool)
+    .await
+    .unwrap_or(None);
+
+    match row {
+        None => ResetTokenDenial::Unknown,
+        // Expiry is checked FIRST because it is unambiguous. `consumed_at`
+        // is also set by the sweep that a later successful reset runs over
+        // every outstanding token for the member, so a stale-and-swept
+        // token would otherwise be reported as "you already used this"
+        // when the member never clicked it at all.
+        Some((_, expires_at)) if expires_at <= Utc::now().naive_utc() => ResetTokenDenial::Expired,
+        Some((Some(_), _)) => ResetTokenDenial::AlreadyUsed,
+        // Unconsumed and unexpired, yet the consume failed — a racing
+        // request took it between the two queries.
+        Some(_) => ResetTokenDenial::AlreadyUsed,
+    }
 }
 
 pub async fn invalidate_password_reset_tokens_for_member(
