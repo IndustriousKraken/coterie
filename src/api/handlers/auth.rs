@@ -17,6 +17,7 @@ use crate::{
     config::Settings,
     error::{AppError, Result},
     service::audit_service::AuditService,
+    util::auth_log,
 };
 
 #[derive(Debug, Deserialize)]
@@ -58,31 +59,67 @@ pub async fn login(
 ) -> Result<Response> {
     // Rate-limit login attempts per IP
     let ip = state::client_ip(&headers, settings.server.trust_forwarded_for());
-    if !login_limiter.0.check_and_record(ip) {
+    if !login_limiter.0.check_and_record(ip, "auth.login") {
         return Err(AppError::TooManyRequests);
     }
+
+    // The log distinguishes the denial reasons the response deliberately
+    // does not. Every `Err` below stays exactly as enumeration-safe as it
+    // was; only the log gets more specific.
+    let identifier = auth_log::safe_identifier(&req.email);
 
     // Get password hash from database
     let password_hash = auth::get_password_hash(&db_pool, &req.email).await?;
 
-    let password_hash = match password_hash {
-        Some(h) => h,
+    // The id rides along with the hash so the `bad_password` denial below
+    // can name the member — the member row isn't loaded until after the
+    // password verifies, and re-querying for it would add a round-trip to
+    // the path whose volume an attacker controls.
+    let (member_id, password_hash) = match password_hash {
+        Some(pair) => pair,
         None => {
             // User not found — burn Argon2 time to prevent timing-based enumeration.
             auth::AuthService::verify_dummy(&req.password).await;
+            auth_log::denied(
+                "auth.login",
+                "unknown_email",
+                None,
+                Some(ip),
+                Some(identifier),
+                None,
+            );
             return Err(AppError::Unauthorized);
         }
     };
 
     // Verify password
     if !auth::AuthService::verify_password(&req.password, &password_hash).await? {
+        auth_log::denied(
+            "auth.login",
+            "bad_password",
+            Some(member_id),
+            Some(ip),
+            Some(identifier),
+            None,
+        );
         return Err(AppError::Unauthorized);
     }
 
     // Get member
-    let member = auth::get_member_by_email(&db_pool, &req.email)
-        .await?
-        .ok_or(AppError::Unauthorized)?;
+    let member = match auth::get_member_by_email(&db_pool, &req.email).await? {
+        Some(m) => m,
+        None => {
+            auth_log::denied(
+                "auth.login",
+                "unknown_email",
+                None,
+                Some(ip),
+                Some(identifier),
+                None,
+            );
+            return Err(AppError::Unauthorized);
+        }
+    };
 
     // Reject login for Pending/Suspended. Expired is allowed through so
     // the member can reach the restoration flow and update payment.
@@ -90,6 +127,14 @@ pub async fn login(
     match member.status {
         MemberStatus::Active | MemberStatus::Honorary | MemberStatus::Expired => {}
         MemberStatus::Pending | MemberStatus::Suspended => {
+            auth_log::denied(
+                "auth.login",
+                "inactive_status",
+                Some(member.id),
+                Some(ip),
+                Some(identifier),
+                None,
+            );
             return Err(AppError::Forbidden);
         }
     }
@@ -108,6 +153,15 @@ pub async fn login(
         .context("failed to query TOTP enrollment status")
         .map_err(|e| AppError::Internal(format!("{e:#}")))?;
     if totp_enabled {
+        // First factor passed but this is not yet a login — the outcome
+        // of interest is that we handed off to /auth/login/totp.
+        auth_log::ok(
+            "auth.login",
+            Some(member.id),
+            Some(ip),
+            None,
+            Some("2fa_required"),
+        );
         let pending_token = pending_login_service.create(member.id, false).await?;
         let pending_cookie = crate::auth::pending_login::create_cookie(
             &pending_token,
@@ -134,6 +188,8 @@ pub async fn login(
     // Create cookie with the actual token. The Secure flag tracks whether
     // the deployment is TLS-terminated; see ServerConfig::cookies_are_secure.
     let cookie = auth_service.create_session_cookie(&token, settings.server.cookies_are_secure());
+
+    auth_log::ok("auth.login", Some(member.id), Some(ip), None, None);
 
     Ok((
         jar.add(cookie),
@@ -167,7 +223,7 @@ pub async fn login_totp(
     // stolen password can't switch surfaces to get a fresh allowance
     // when brute-forcing the 6-digit TOTP code.
     let ip = state::client_ip(&headers, settings.server.trust_forwarded_for());
-    if !login_limiter.0.check_and_record(ip) {
+    if !login_limiter.0.check_and_record(ip, "auth.totp") {
         return Err(AppError::TooManyRequests);
     }
 
@@ -179,6 +235,14 @@ pub async fn login_totp(
     let token = match token {
         Some(t) if !t.is_empty() => t,
         _ => {
+            auth_log::denied(
+                "auth.totp",
+                "totp_expired_pending",
+                None,
+                Some(ip),
+                None,
+                Some("no_pending_token"),
+            );
             let jar = jar.add(crate::auth::pending_login::create_clear_cookie());
             return Ok((
                 StatusCode::UNAUTHORIZED,
@@ -194,6 +258,16 @@ pub async fn login_totp(
     let pending = match pending_login_service.find(&token).await? {
         Some(p) => p,
         None => {
+            // The pending_login row is gone: aged out, already consumed,
+            // or never existed. All three read the same from here.
+            auth_log::denied(
+                "auth.totp",
+                "totp_expired_pending",
+                None,
+                Some(ip),
+                None,
+                None,
+            );
             let jar = jar.add(crate::auth::pending_login::create_clear_cookie());
             return Ok((
                 StatusCode::UNAUTHORIZED,
@@ -211,7 +285,17 @@ pub async fn login_totp(
         let repo = SqliteMemberRepository::new(db_pool.clone());
         match repo.find_by_id(pending.member_id).await? {
             Some(m) => m,
-            None => return Err(AppError::Unauthorized),
+            None => {
+                auth_log::denied(
+                    "auth.totp",
+                    "unknown_member",
+                    Some(pending.member_id),
+                    Some(ip),
+                    None,
+                    None,
+                );
+                return Err(AppError::Unauthorized);
+            }
         }
     };
 
@@ -232,6 +316,14 @@ pub async fn login_totp(
             .unwrap_or(false)
     };
     if !totp_ok && !used_recovery {
+        auth_log::denied(
+            "auth.totp",
+            "totp_invalid",
+            Some(member.id),
+            Some(ip),
+            None,
+            None,
+        );
         return Err(AppError::Unauthorized);
     }
 
@@ -242,6 +334,14 @@ pub async fn login_totp(
     if consumed.is_none() {
         // Lost a race with another window or with expiry — make the
         // client retry from /auth/login.
+        auth_log::denied(
+            "auth.totp",
+            "totp_expired_pending",
+            Some(member.id),
+            Some(ip),
+            None,
+            Some("consume_race"),
+        );
         let jar = jar.add(crate::auth::pending_login::create_clear_cookie());
         return Ok((
             StatusCode::UNAUTHORIZED,
@@ -274,6 +374,18 @@ pub async fn login_totp(
         );
     }
 
+    auth_log::ok(
+        "auth.totp",
+        Some(member.id),
+        Some(ip),
+        None,
+        Some(if used_recovery {
+            "recovery_code"
+        } else {
+            "totp"
+        }),
+    );
+
     let jar = jar.add(session_cookie).add(clear_pending);
     Ok((
         jar,
@@ -291,8 +403,11 @@ pub async fn logout(
     State(auth_service): State<Arc<AuthService>>,
     State(csrf_service): State<Arc<auth::CsrfService>>,
     State(audit_service): State<Arc<AuditService>>,
+    State(settings): State<Arc<Settings>>,
+    headers: HeaderMap,
     jar: CookieJar,
 ) -> Result<(CookieJar, StatusCode)> {
+    let ip = state::client_ip(&headers, settings.server.trust_forwarded_for());
     if let Some(session_cookie) = jar.get("session") {
         if let Ok(Some(session)) = auth_service.validate_session(session_cookie.value()).await {
             let _ = csrf_service.delete_token(&session.id).await;
@@ -307,6 +422,7 @@ pub async fn logout(
                     None,
                 )
                 .await;
+            auth_log::ok("auth.logout", Some(session.member_id), Some(ip), None, None);
         }
         let _ = auth_service
             .invalidate_session(session_cookie.value())

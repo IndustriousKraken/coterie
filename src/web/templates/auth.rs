@@ -17,6 +17,7 @@ use crate::{
     config::Settings,
     repository::MemberRepository,
     service::audit_service::AuditService,
+    util::auth_log,
     web::templates::{BaseContext, HtmlTemplate},
 };
 
@@ -103,7 +104,7 @@ pub async fn login_handler(
 ) -> Response {
     // Rate-limit login attempts per IP
     let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
-    if !login_limiter.0.check_and_record(ip) {
+    if !login_limiter.0.check_and_record(ip, "auth.login") {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(LoginResponse {
@@ -114,6 +115,10 @@ pub async fn login_handler(
         )
             .into_response();
     }
+
+    // The log distinguishes the denial reasons the single "Invalid
+    // username or password" response deliberately collapses.
+    let identifier = auth_log::safe_identifier(&credentials.username);
 
     // Find member by username or email
     let member = member_repo
@@ -134,10 +139,13 @@ pub async fn login_handler(
 
     if let Some(member) = member {
         // Get password hash from database
+        // The member is already loaded on this surface, so the id the
+        // lookup returns alongside the hash is redundant here.
         let password_hash = crate::auth::get_password_hash(&db_pool, &member.email)
             .await
             .ok()
-            .flatten();
+            .flatten()
+            .map(|(_, hash)| hash);
 
         // Verify password
         let password_valid = if let Some(hash) = password_hash {
@@ -156,6 +164,14 @@ pub async fn login_handler(
             match member.status {
                 MemberStatus::Active | MemberStatus::Honorary | MemberStatus::Expired => {}
                 MemberStatus::Pending => {
+                    auth_log::denied(
+                        "auth.login",
+                        "inactive_status",
+                        Some(member.id),
+                        Some(ip),
+                        Some(identifier),
+                        Some("pending"),
+                    );
                     return (
                         StatusCode::FORBIDDEN,
                         Json(LoginResponse {
@@ -167,6 +183,14 @@ pub async fn login_handler(
                         .into_response();
                 }
                 MemberStatus::Suspended => {
+                    auth_log::denied(
+                        "auth.login",
+                        "inactive_status",
+                        Some(member.id),
+                        Some(ip),
+                        Some(identifier),
+                        Some("suspended"),
+                    );
                     return (
                         StatusCode::FORBIDDEN,
                         Json(LoginResponse {
@@ -212,6 +236,15 @@ pub async fn login_handler(
             };
 
             if totp_enabled {
+                // First factor passed; this is a hand-off to /login/totp,
+                // not yet a login.
+                auth_log::ok(
+                    "auth.login",
+                    Some(member.id),
+                    Some(ip),
+                    None,
+                    Some("2fa_required"),
+                );
                 let pending_token = match pending_login_service
                     .create(member.id, credentials.remember_me.is_some())
                     .await
@@ -376,6 +409,8 @@ pub async fn login_handler(
             headers.insert(header::SET_COOKIE, cookie_header);
             headers.insert("HX-Redirect", redirect_header);
 
+            auth_log::ok("auth.login", Some(member.id), Some(ip), None, None);
+
             return (
                 StatusCode::OK,
                 headers,
@@ -387,10 +422,26 @@ pub async fn login_handler(
             )
                 .into_response();
         }
+        auth_log::denied(
+            "auth.login",
+            "bad_password",
+            Some(member.id),
+            Some(ip),
+            Some(identifier),
+            None,
+        );
     } else {
         // User not found — run Argon2 against a dummy hash so the response
         // latency is indistinguishable from a wrong-password attempt.
         crate::auth::AuthService::verify_dummy(&credentials.password).await;
+        auth_log::denied(
+            "auth.login",
+            "unknown_email",
+            None,
+            Some(ip),
+            Some(identifier),
+            None,
+        );
     }
 
     // Invalid credentials
@@ -416,8 +467,11 @@ pub async fn logout_handler(
     State(auth_service): State<Arc<AuthService>>,
     State(csrf_service): State<Arc<CsrfService>>,
     State(audit_service): State<Arc<AuditService>>,
+    State(settings): State<Arc<Settings>>,
+    headers: HeaderMap,
     jar: CookieJar,
 ) -> impl IntoResponse {
+    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
     if let Some(session_cookie) = jar.get("session") {
         if let Ok(Some(session)) = auth_service.validate_session(session_cookie.value()).await {
             let _ = csrf_service.delete_token(&session.id).await;
@@ -432,6 +486,7 @@ pub async fn logout_handler(
                     None,
                 )
                 .await;
+            auth_log::ok("auth.logout", Some(session.member_id), Some(ip), None, None);
         }
         let _ = auth_service
             .invalidate_session(session_cookie.value())
@@ -557,7 +612,7 @@ pub async fn login_totp_handler(
     // stolen password can't switch surfaces to get a fresh allowance
     // when brute-forcing the 6-digit TOTP code.
     let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
-    if !login_limiter.0.check_and_record(ip) {
+    if !login_limiter.0.check_and_record(ip, "auth.totp") {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(LoginResponse {
@@ -572,6 +627,14 @@ pub async fn login_totp_handler(
     let pending_token = match jar.get(crate::auth::pending_login::COOKIE_NAME) {
         Some(c) => c.value().to_string(),
         None => {
+            auth_log::denied(
+                "auth.totp",
+                "totp_expired_pending",
+                None,
+                Some(ip),
+                None,
+                Some("no_pending_cookie"),
+            );
             let mut headers = HeaderMap::new();
             headers.insert("HX-Redirect", "/login".parse().unwrap());
             return (
@@ -590,6 +653,17 @@ pub async fn login_totp_handler(
     let pending = match pending_login_service.find(&pending_token).await {
         Ok(Some(p)) => p,
         _ => {
+            // Cookie present but the row is gone: aged out, consumed, or
+            // never existed. The member can't tell these apart either —
+            // hence a distinct reason in the log.
+            auth_log::denied(
+                "auth.totp",
+                "totp_expired_pending",
+                None,
+                Some(ip),
+                None,
+                None,
+            );
             let mut headers = HeaderMap::new();
             let clear = crate::auth::pending_login::create_clear_cookie();
             if let Ok(v) = clear.to_string().parse() {
@@ -612,6 +686,14 @@ pub async fn login_totp_handler(
     let member = match member_repo.find_by_id(pending.member_id).await {
         Ok(Some(m)) => m,
         _ => {
+            auth_log::denied(
+                "auth.totp",
+                "unknown_member",
+                Some(pending.member_id),
+                Some(ip),
+                None,
+                None,
+            );
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(LoginResponse {
@@ -644,6 +726,14 @@ pub async fn login_totp_handler(
     };
 
     if !totp_ok && !used_recovery {
+        auth_log::denied(
+            "auth.totp",
+            "totp_invalid",
+            Some(member.id),
+            Some(ip),
+            None,
+            None,
+        );
         return (
             StatusCode::UNAUTHORIZED,
             Json(LoginResponse {
@@ -664,6 +754,14 @@ pub async fn login_totp_handler(
         .flatten();
     if consumed.is_none() {
         // Lost a race with another window or expiry — make them retry.
+        auth_log::denied(
+            "auth.totp",
+            "totp_expired_pending",
+            Some(member.id),
+            Some(ip),
+            None,
+            Some("consume_race"),
+        );
         let mut headers = HeaderMap::new();
         headers.insert("HX-Redirect", "/login".parse().unwrap());
         return (
@@ -718,6 +816,18 @@ pub async fn login_totp_handler(
             remaining,
         );
     }
+
+    auth_log::ok(
+        "auth.totp",
+        Some(member.id),
+        Some(ip),
+        None,
+        Some(if used_recovery {
+            "recovery_code"
+        } else {
+            "totp"
+        }),
+    );
 
     let max_age_secs = if pending.remember_me {
         60 * 60 * 24 * 30

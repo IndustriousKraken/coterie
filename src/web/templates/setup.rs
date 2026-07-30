@@ -118,13 +118,17 @@ pub async fn setup_handler(
             .into_response();
     }
 
-    if let Err(msg) = crate::auth::validate_password(&request.password) {
+    // ponytail: no caller IP here — the first-boot wizard runs once, before
+    // any proxy-trust config is even meaningful, and pulling `Settings` in
+    // just to resolve it would be plumbing for a field nobody queries.
+    // Add it if setup ever becomes a repeatable, remotely-reachable flow.
+    if let Err(rule) = crate::auth::validate_password_logged(&request.password, None, None) {
         return (
             StatusCode::BAD_REQUEST,
             Json(SetupResponse {
                 success: false,
                 redirect: None,
-                error: Some(msg.to_string()),
+                error: Some(rule.message().to_string()),
             }),
         )
             .into_response();

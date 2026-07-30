@@ -57,6 +57,11 @@ async fn main() -> anyhow::Result<()> {
         settings.server.port
     );
 
+    // Both of these are inferred from the base URL when unset, and both
+    // are otherwise invisible at runtime — including the case where the
+    // effective mode collapses per-IP rate limiting to one shared bucket.
+    settings.server.log_resolved_modes();
+
     // Initialize database (resolves path relative to data_dir if needed)
     let database_url = settings.database_url();
     tracing::info!("Using database: {}", database_url);

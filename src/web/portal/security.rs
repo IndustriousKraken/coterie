@@ -207,15 +207,22 @@ pub struct EnrollConfirmRequest {
     pub csrf_token: String,
 }
 
+// Granular extractors per D1: TOTP verify, CSRF re-mint, audit, the pool
+// for recovery-code issuance, and settings + headers for the caller IP on
+// the `auth.totp_enrolled` event.
+#[allow(clippy::too_many_arguments)]
 pub async fn enroll_confirm(
     State(totp_service): State<Arc<TotpService>>,
     State(csrf_service): State<Arc<CsrfService>>,
     State(audit_service): State<Arc<AuditService>>,
     State(db_pool): State<SqlitePool>,
+    State(settings): State<Arc<crate::config::Settings>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
+    headers: axum::http::HeaderMap,
     axum::Form(form): axum::Form<EnrollConfirmRequest>,
 ) -> Response {
+    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
     let ok = match totp_service
         .confirm_enrollment(
             current_user.member.id,
@@ -238,6 +245,14 @@ pub async fn enroll_confirm(
         .unwrap_or_else(|_| String::new());
 
     if !ok {
+        crate::util::auth_log::denied(
+            "auth.totp_enrolled",
+            "totp_invalid",
+            Some(current_user.member.id),
+            Some(ip),
+            None,
+            None,
+        );
         // Re-render the enroll form with an error so the user can retry
         // without losing the QR / typed-in secret.
         return HtmlTemplate(EnrollQrTemplate {
@@ -273,9 +288,16 @@ pub async fn enroll_confirm(
             &current_user.member.id.to_string(),
             None,
             None,
-            None,
+            Some(&ip.to_string()),
         )
         .await;
+    crate::util::auth_log::ok(
+        "auth.totp_enrolled",
+        Some(current_user.member.id),
+        Some(ip),
+        None,
+        None,
+    );
 
     HtmlTemplate(RecoveryCodesTemplate {
         codes,
@@ -305,9 +327,12 @@ pub async fn disable(
     State(totp_service): State<Arc<TotpService>>,
     State(audit_service): State<Arc<AuditService>>,
     State(db_pool): State<SqlitePool>,
+    State(settings): State<Arc<crate::config::Settings>>,
     Extension(current_user): Extension<CurrentUser>,
+    headers: axum::http::HeaderMap,
     axum::Form(form): axum::Form<DisableRequest>,
 ) -> Response {
+    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
     let totp_ok = totp_service
         .verify_for_member(
             current_user.member.id,
@@ -324,11 +349,27 @@ pub async fn disable(
             .unwrap_or(false)
     };
     if !totp_ok && !recovery_ok {
+        crate::util::auth_log::denied(
+            "auth.totp_disabled",
+            "totp_invalid",
+            Some(current_user.member.id),
+            Some(ip),
+            None,
+            None,
+        );
         return error_html("Code didn't match. 2FA is still enabled.");
     }
 
     if let Err(e) = totp_service.disable(current_user.member.id).await {
         tracing::error!("totp disable failed: {}", e);
+        crate::util::auth_log::denied(
+            "auth.totp_disabled",
+            "disable_failed",
+            Some(current_user.member.id),
+            Some(ip),
+            None,
+            None,
+        );
         return error_html("Couldn't disable 2FA. Please try again.");
     }
 
@@ -340,9 +381,18 @@ pub async fn disable(
             &current_user.member.id.to_string(),
             None,
             None,
-            None,
+            Some(&ip.to_string()),
         )
         .await;
+    // Second-factor protection just came off the account. An operator
+    // reviewing a compromise needs to see this and when it happened.
+    crate::util::auth_log::ok(
+        "auth.totp_disabled",
+        Some(current_user.member.id),
+        Some(ip),
+        None,
+        None,
+    );
 
     // Tell HTMX to reload the page so the buttons / status flip back.
     let mut headers = axum::http::HeaderMap::new();
@@ -367,9 +417,13 @@ pub async fn regenerate_recovery_codes(
     State(totp_service): State<Arc<TotpService>>,
     State(audit_service): State<Arc<AuditService>>,
     State(db_pool): State<SqlitePool>,
+    State(settings): State<Arc<crate::config::Settings>>,
     Extension(current_user): Extension<CurrentUser>,
+    headers: axum::http::HeaderMap,
     axum::Form(form): axum::Form<RegenerateRequest>,
 ) -> Response {
+    let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
+
     // Must already be enrolled — regenerate is meaningless otherwise.
     let enabled = totp_service
         .is_enabled(current_user.member.id)
@@ -395,6 +449,14 @@ pub async fn regenerate_recovery_codes(
             .unwrap_or(false)
     };
     if !totp_ok && !recovery_ok {
+        crate::util::auth_log::denied(
+            "auth.recovery_codes_regenerated",
+            "totp_invalid",
+            Some(current_user.member.id),
+            Some(ip),
+            None,
+            None,
+        );
         return error_html("Code didn't match. Recovery codes were not regenerated.");
     }
 
@@ -416,9 +478,16 @@ pub async fn regenerate_recovery_codes(
             &current_user.member.id.to_string(),
             None,
             None,
-            None,
+            Some(&ip.to_string()),
         )
         .await;
+    crate::util::auth_log::ok(
+        "auth.recovery_codes_regenerated",
+        Some(current_user.member.id),
+        Some(ip),
+        None,
+        None,
+    );
 
     HtmlTemplate(RecoveryCodesTemplate {
         codes,

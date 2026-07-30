@@ -69,6 +69,51 @@ impl ServerConfig {
         self.trust_forwarded_for
             .unwrap_or_else(|| self.cookies_are_secure())
     }
+
+    /// Log, once at startup, how forwarded headers and the session-cookie
+    /// `Secure` flag actually resolved — and *how* each was resolved.
+    ///
+    /// Both values are inferred from the base URL's scheme when unset.
+    /// That is a reasonable default and a silent coupling: changing the
+    /// scheme, or terminating TLS differently, flips rate limiting from
+    /// per-IP to global with nothing else visibly changing. Reporting the
+    /// provenance ("inferred" vs "explicitly configured") is what makes
+    /// that coupling auditable before it moves.
+    pub fn log_resolved_modes(&self) {
+        // `provenance` reads off which `Option` was set, so it stays
+        // truthful if the inference rule itself is ever changed.
+        let provenance = |explicit: Option<bool>| match explicit {
+            Some(_) => "explicitly configured",
+            None => "inferred from base URL scheme",
+        };
+
+        let trust = self.trust_forwarded_for();
+        tracing::info!(
+            "Client IP: X-Forwarded-For / X-Real-Ip {} ({})",
+            if trust { "TRUSTED" } else { "ignored" },
+            provenance(self.trust_forwarded_for),
+        );
+        tracing::info!(
+            "Secure cookies: {} ({})",
+            self.cookies_are_secure(),
+            provenance(self.secure_cookies),
+        );
+
+        // We don't read ConnectInfo, so with forwarded headers untrusted
+        // every caller resolves to the 127.0.0.1 placeholder. The symptom
+        // is indistinguishable from correct behaviour — scattered "too
+        // many requests" reports from members who barely tried — so say
+        // it out loud rather than leaving it to be inferred.
+        if !trust {
+            tracing::warn!(
+                "Per-IP rate limiting has collapsed to a SINGLE SHARED BUCKET: forwarded \
+                 headers are not trusted and no peer address is available, so every caller \
+                 keys on 127.0.0.1. A handful of failed logins anywhere will lock out \
+                 everyone. Set COTERIE__SERVER__TRUST_FORWARDED_FOR=true if a trusted \
+                 reverse proxy sets X-Forwarded-For."
+            );
+        }
+    }
 }
 
 fn default_data_dir() -> String {

@@ -96,7 +96,14 @@ impl RateLimiter {
 
     /// Returns `true` if the request is allowed, `false` if rate-limited.
     /// Automatically records the attempt when allowed.
-    pub fn check_and_record(&self, ip: IpAddr) -> bool {
+    ///
+    /// `endpoint` names the endpoint class for the `auth.rate_limited`
+    /// event emitted on rejection. It is a parameter rather than a
+    /// per-call-site log line so a new limiter call site cannot forget
+    /// it — 174 rejections went unlogged in production before this.
+    /// Rejections are log-only: their volume is attacker-controlled, so
+    /// an `audit_logs` row per trip would be a write-amplification lever.
+    pub fn check_and_record(&self, ip: IpAddr, endpoint: &str) -> bool {
         // Recover from a poisoned mutex rather than propagating the
         // panic. A poisoned state means some prior call panicked while
         // holding the lock — the data may be slightly stale but the
@@ -116,6 +123,14 @@ impl RateLimiter {
         timestamps.retain(|t| *t > cutoff);
 
         if timestamps.len() >= self.max_attempts {
+            crate::util::auth_log::denied(
+                "auth.rate_limited",
+                "rate_limited",
+                None,
+                Some(ip),
+                None,
+                Some(endpoint),
+            );
             return false;
         }
 

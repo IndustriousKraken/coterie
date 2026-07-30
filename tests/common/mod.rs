@@ -370,3 +370,27 @@ pub async fn make_member_with_email(pool: &SqlitePool) -> (Uuid, String) {
     let email = member.email.clone();
     (member.id, email)
 }
+
+/// Assemble the final router the way `main.rs` does: merge, then the
+/// setup gate, then CSRF, then request tracing OUTERMOST.
+///
+/// The order is load-bearing and has regressed once already — in axum
+/// 0.7 a layer applied before `Router::merge` does not reach the merged
+/// routes, which is how the entire portal surface (`/login`,
+/// `/forgot-password`, every `/portal/*`) ran for twenty days with no
+/// request log at all. Any test that cares about a top-level layer
+/// reaching the portal must build the app through here rather than
+/// through `create_web_routes` alone.
+pub fn merged_router(app_state: AppState) -> axum::Router {
+    coterie::api::create_app(app_state.clone())
+        .merge(coterie::web::create_web_routes(app_state.clone()))
+        .layer(axum::middleware::from_fn_with_state(
+            app_state.clone(),
+            coterie::api::middleware::setup::require_setup,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            app_state,
+            coterie::api::middleware::security::csrf_protect_unless_exempt,
+        ))
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+}
