@@ -302,7 +302,7 @@ pub async fn update_password(
     {
         return axum::response::Html(format!(
             r#"<div class="p-3 bg-red-50 text-red-800 rounded-md text-sm">{}</div>"#,
-            crate::web::escape_html(rule.message())
+            crate::web::escape_html(&rule.message())
         ))
         .into_response();
     }

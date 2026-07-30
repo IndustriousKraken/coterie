@@ -260,7 +260,7 @@ pub async fn reset_password_handler(
         return HtmlTemplate(ResetPasswordTemplate {
             base: BaseContext::for_anon(),
             token: form.token,
-            error: Some(rule.message().to_string()),
+            error: Some(rule.message()),
         })
         .into_response();
     }

@@ -154,30 +154,57 @@ impl AuthService {
 /// someone rewords it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasswordRule {
-    TooShort,
-    TooLong,
+    /// Carries the submitted UTF-8 byte length so the message can report
+    /// it. The length lives on the variant rather than being passed to
+    /// `message()` because two of the four call sites have more than one
+    /// password in scope, and a caller measuring the wrong one would
+    /// reproduce exactly the "the number doesn't match what I typed"
+    /// confusion this rule exists to remove.
+    TooShort {
+        bytes: usize,
+    },
+    TooLong {
+        bytes: usize,
+    },
     NoUppercase,
     NoLowercase,
     NoDigit,
 }
 
+/// The password bounds, in UTF-8 bytes. Bytes, not characters: the upper
+/// bound exists to cap what Argon2's Blake2b pre-hash chews through, and
+/// that cost scales with bytes. Named so the check and the message it
+/// produces cannot drift apart — describing this byte bound as a
+/// character bound is the defect a46 fixes.
+pub const MIN_PASSWORD_BYTES: usize = 10;
+pub const MAX_PASSWORD_BYTES: usize = 128;
+
 impl PasswordRule {
     /// The message shown to the person who typed the password.
-    pub fn message(self) -> &'static str {
+    ///
+    /// A length failure states the bound AND what was submitted: a
+    /// 60-emoji password is 240 bytes, and being told only "at most 128"
+    /// leaves the user guessing which of their 60 characters were the
+    /// expensive ones.
+    pub fn message(self) -> String {
         match self {
-            Self::TooShort => "Password must be at least 10 characters",
-            Self::TooLong => "Password must be at most 128 characters",
-            Self::NoUppercase => "Password must contain at least one uppercase letter",
-            Self::NoLowercase => "Password must contain at least one lowercase letter",
-            Self::NoDigit => "Password must contain at least one number",
+            Self::TooShort { bytes } => {
+                format!("Password must be at least {MIN_PASSWORD_BYTES} bytes (yours is {bytes})")
+            }
+            Self::TooLong { bytes } => {
+                format!("Password must be at most {MAX_PASSWORD_BYTES} bytes (yours is {bytes})")
+            }
+            Self::NoUppercase => "Password must contain at least one uppercase letter".to_string(),
+            Self::NoLowercase => "Password must contain at least one lowercase letter".to_string(),
+            Self::NoDigit => "Password must contain at least one number".to_string(),
         }
     }
 
     /// The `reason` field value in the log.
     pub fn slug(self) -> &'static str {
         match self {
-            Self::TooShort => "too_short",
-            Self::TooLong => "too_long",
+            Self::TooShort { .. } => "too_short",
+            Self::TooLong { .. } => "too_long",
             Self::NoUppercase => "no_uppercase",
             Self::NoLowercase => "no_lowercase",
             Self::NoDigit => "no_digit",
@@ -188,14 +215,20 @@ impl PasswordRule {
 /// Validate password complexity. Returns `Ok(())` if the password meets
 /// requirements, or the rule it failed.
 pub fn validate_password(password: &str) -> std::result::Result<(), PasswordRule> {
-    if password.len() < 10 {
-        return Err(PasswordRule::TooShort);
+    // `str::len()` is the UTF-8 byte length, which is the quantity both
+    // bounds are denominated in. Do not swap it for `chars().count()`.
+    let bytes = password.len();
+    if bytes < MIN_PASSWORD_BYTES {
+        return Err(PasswordRule::TooShort { bytes });
     }
     // Upper bound guards against Argon2 CPU-amplification DoS: the Blake2b
     // pre-hash cost scales with input length, so an unauthenticated caller
-    // must not be able to force hashing of an oversized password.
-    if password.len() > 128 {
-        return Err(PasswordRule::TooLong);
+    // must not be able to force hashing of an oversized password. The
+    // oversized value is refused outright, never truncated to fit — a
+    // stored prefix of what the user typed is an account they can't log
+    // into and can't diagnose.
+    if bytes > MAX_PASSWORD_BYTES {
+        return Err(PasswordRule::TooLong { bytes });
     }
     if !password.chars().any(|c| c.is_ascii_uppercase()) {
         return Err(PasswordRule::NoUppercase);
@@ -273,7 +306,7 @@ mod tests {
         assert!(validate_password(&valid_of_len(128)).is_ok());
         assert_eq!(
             validate_password(&valid_of_len(129)),
-            Err(PasswordRule::TooLong)
+            Err(PasswordRule::TooLong { bytes: 129 })
         );
     }
 
@@ -282,8 +315,41 @@ mod tests {
         // Argon2 DoS guard: an oversized input is rejected before hashing.
         assert_eq!(
             validate_password(&valid_of_len(10_000)),
-            Err(PasswordRule::TooLong)
+            Err(PasswordRule::TooLong { bytes: 10_000 })
         );
+    }
+
+    #[test]
+    fn a_multi_byte_password_is_measured_and_described_in_bytes() {
+        // 60 emoji = 240 UTF-8 bytes. The old message told this user they
+        // had exceeded "128 characters" when they typed 60, which reads as
+        // the system malfunctioning.
+        let emoji = format!("Aa1{}", "\u{1F600}".repeat(60));
+        assert_eq!(emoji.chars().count(), 63);
+        assert_eq!(emoji.len(), 243);
+
+        let err = validate_password(&emoji).unwrap_err();
+        assert_eq!(err, PasswordRule::TooLong { bytes: 243 });
+
+        let message = err.message();
+        assert!(message.contains("128 bytes"), "{message}");
+        assert!(message.contains("243"), "{message}");
+        assert!(
+            !message.contains("characters"),
+            "the bound is bytes; saying characters is the defect: {message}"
+        );
+    }
+
+    #[test]
+    fn length_messages_state_the_bound_and_the_submission() {
+        let short = validate_password("Aa1").unwrap_err().message();
+        assert!(short.contains("10 bytes"), "{short}");
+        assert!(short.contains('3'), "{short}");
+        assert!(!short.contains("characters"), "{short}");
+
+        let long = validate_password(&valid_of_len(200)).unwrap_err().message();
+        assert!(long.contains("128 bytes"), "{long}");
+        assert!(long.contains("200"), "{long}");
     }
 
     #[test]
@@ -291,8 +357,8 @@ mod tests {
         // The whole point of the enum: an operator filtering on `reason`
         // can tell the five rejections apart.
         let all = [
-            PasswordRule::TooShort,
-            PasswordRule::TooLong,
+            PasswordRule::TooShort { bytes: 3 },
+            PasswordRule::TooLong { bytes: 300 },
             PasswordRule::NoUppercase,
             PasswordRule::NoLowercase,
             PasswordRule::NoDigit,
@@ -302,7 +368,7 @@ mod tests {
 
         assert_eq!(
             validate_password("Aa1").unwrap_err(),
-            PasswordRule::TooShort
+            PasswordRule::TooShort { bytes: 3 }
         );
         assert_eq!(
             validate_password("aa1aa1aa1aa1").unwrap_err(),

@@ -224,6 +224,13 @@
                            class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
                 </div>
 
+                <!-- The hint below mirrors `validate_password` in src/auth/mod.rs
+                     (10-128 bytes). It is a convenience so the ceiling is discoverable
+                     before submission; the server check is the enforcement. Deliberately
+                     no `maxlength`: it silently clips a pasted password-manager value on
+                     a masked field, and it counts UTF-16 code units rather than the bytes
+                     the server measures. `data-max-bytes` opts the field into the
+                     non-destructive TextEncoder warning in layouts/base.html. -->
                 <div>
                     <label for="new_password" class="block text-sm font-medium text-gray-700">New Password</label>
                     <input type="password"
@@ -231,7 +238,12 @@
                            name="new_password"
                            required
                            minlength="10"
+                           data-max-bytes="128"
                            class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                    <p class="mt-1 text-xs text-gray-500">
+                        10-128 bytes. Most characters are one byte; accented letters and
+                        emoji use more.
+                    </p>
                 </div>
 
                 <div>
@@ -241,7 +253,9 @@
                            name="confirm_password"
                            required
                            minlength="10"
+                           data-max-bytes="128"
                            class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                    <p class="mt-1 text-xs text-gray-500">10-128 bytes, matching the field above.</p>
                 </div>
 
                 <div id="password-message"></div>
@@ -308,6 +322,32 @@
             }, 5000);
         }
         
+        // Password length warning. Opt-in per field via `data-max-bytes`;
+        // a no-op on every page without one.
+        //
+        // Warns, never alters: no `maxlength`, no clipping, no blocking of
+        // submit. A browser clips a pasted value to `maxlength` with no
+        // notice, and on a masked field the user cannot see it happen —
+        // they would store a truncated password-manager paste and be locked
+        // out of a credential they never chose. `maxlength` also counts
+        // UTF-16 code units, not the UTF-8 bytes the server measures, so it
+        // could not express the bound anyway. `TextEncoder` counts the same
+        // bytes as `validate_password`, so this agrees with the server's
+        // message instead of contradicting it.
+        const passwordBytes = new TextEncoder();
+        document.querySelectorAll('input[type="password"][data-max-bytes]').forEach((input) => {
+            const max = Number(input.dataset.maxBytes);
+            const warning = document.createElement('p');
+            warning.className = 'mt-1 text-xs text-red-600 hidden';
+            input.insertAdjacentElement('afterend', warning);
+            input.addEventListener('input', () => {
+                const size = passwordBytes.encode(input.value).length;
+                warning.textContent =
+                    `Too long: ${size} bytes (maximum ${max}). The server will reject this.`;
+                warning.classList.toggle('hidden', size <= max);
+            });
+        });
+
         // Listen for server-sent events for notifications
         document.body.addEventListener('htmx:afterSwap', (event) => {
             if (event.detail.xhr.getResponseHeader('X-Toast')) {

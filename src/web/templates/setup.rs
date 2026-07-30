@@ -128,7 +128,7 @@ pub async fn setup_handler(
             Json(SetupResponse {
                 success: false,
                 redirect: None,
-                error: Some(rule.message().to_string()),
+                error: Some(rule.message()),
             }),
         )
             .into_response();
