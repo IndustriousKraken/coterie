@@ -117,7 +117,7 @@ The events SHALL be, at minimum:
 - `auth.logout` — session ended by the user
 - `auth.rate_limited` — a credential or money endpoint rejected a caller at the limit
 - `auth.password_reset_requested` — a reset was asked for
-- `auth.password_reset_completed` — a reset token was consumed and a new password set
+- `auth.password_reset_completed` — a reset token was consumed, with outcome distinguishing success, expiry, invalidity, or already-used
 - `auth.password_changed` — a logged-in member changed their own password
 - `auth.password_rejected` — a submitted password failed the policy
 - `auth.totp_enrolled` / `auth.totp_disabled` / `auth.recovery_codes_regenerated`
@@ -244,9 +244,10 @@ read, and the log stream SHALL carry the things a machine generates.
 
 ### Requirement: Password-reset flow logs each stage distinctly
 
-The password-reset flow SHALL emit a distinct event at each stage — request,
-token consumption, and completion — so an operator can locate exactly where a
-member's reset failed.
+The password-reset flow SHALL emit a distinct event at each stage — request
+[`auth.password_reset_requested`] and token consumption/completion
+[`auth.password_reset_completed`, with outcome distinguishing denial and
+success] — so an operator can locate exactly where a member's reset failed.
 
 Token consumption SHALL record whether the token was valid, already used, or
 expired. A reset requested for an address that matches no member SHALL be logged
