@@ -12,7 +12,14 @@ An over-length rejection SHALL state both the ceiling and the size of what was s
 
 The password SHALL NOT be silently truncated to fit. Truncation would leave the account with a credential that is a prefix of what the user believes they set — indistinguishable, from the user's side, from the account being broken.
 
-Password inputs SHALL carry a `maxlength` attribute matching the bound and a visible hint stating it, so the ceiling is discoverable before submission rather than only by tripping it. These client-side attributes are a convenience only: the server-side check remains authoritative and SHALL NOT be weakened or skipped on the assumption that the browser enforced it.
+Password inputs SHALL carry a visible hint stating the ceiling, so it is discoverable before submission rather than only by tripping it. The hint is a convenience only: the server-side check remains authoritative and SHALL NOT be weakened or skipped on the assumption that the browser enforced it.
+
+Password inputs SHALL NOT carry a `maxlength` attribute. Two independent reasons:
+
+1. **It silently truncates.** A browser clips pasted input to `maxlength` without notifying the user. Someone pasting a 200-character password from a password manager would have 128 characters accepted and stored, believe they set the longer one, and be unable to sign in afterwards — reintroducing at the client exactly the silent-truncation failure this requirement forbids at the server. For a field whose contents are masked, the user cannot even see that it happened.
+2. **The units do not match.** `maxlength` counts UTF-16 code units, while the bound is bytes. `maxlength="128"` would admit 128 characters, which can be several hundred bytes, so it cannot express the server's rule even approximately for non-ASCII input.
+
+Client-side feedback, where provided, SHALL be non-destructive: it MAY warn that the entered value exceeds the ceiling — measuring UTF-8 byte length, e.g. via `TextEncoder`, to match the server — but SHALL NOT alter, clip, or reject the user's input. The server's rejection message is what tells the user authoritatively.
 
 #### Scenario: Weak password rejected at change
 
@@ -42,4 +49,14 @@ Password inputs SHALL carry a `maxlength` attribute matching the bound and a vis
 #### Scenario: The ceiling is discoverable before submission
 
 - **WHEN** a user focuses a password field on any set-password form
-- **THEN** the field SHALL carry a `maxlength` matching the bound and a visible hint stating it, so the limit is known before the form is submitted
+- **THEN** a visible hint SHALL state the ceiling, so the limit is known before the form is submitted
+
+#### Scenario: A pasted over-length password is not silently clipped
+
+- **WHEN** a user pastes a 200-character password into any password field
+- **THEN** the full value SHALL remain in the field and be submitted as typed; no `maxlength` SHALL clip it to the bound, because a masked field gives the user no way to notice the loss and they would be locked out by a credential they never chose
+
+#### Scenario: Client-side feedback measures the same unit as the server
+
+- **WHEN** a client-side warning about length is shown
+- **THEN** it SHALL measure UTF-8 byte length so it agrees with the server's rule, and SHALL NOT modify the entered value

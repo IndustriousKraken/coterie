@@ -42,10 +42,17 @@ with the rest of the auth logging in `a45-auth-security-logging`.
 - **The message states the ceiling and what was submitted**, so a user who trips
   it can act on it instead of guessing which of their 200 characters were too
   many.
-- **Password inputs gain a `maxlength`** matching the bound, plus a visible hint,
-  so the ceiling is discoverable before submission rather than after. Client-side
-  attributes are a convenience, never the enforcement — the server check remains
-  authoritative and unchanged in strength.
+- **Password inputs gain a visible hint** stating the ceiling, so it is
+  discoverable before submission rather than after. The hint is a convenience,
+  never the enforcement — the server check remains authoritative and unchanged in
+  strength.
+- **Deliberately no `maxlength`.** It was in an earlier draft and is wrong twice
+  over: it silently clips pasted input on a masked field, which would store a
+  truncated password-manager paste with no visible sign and lock the user out of a
+  credential they never chose — reintroducing at the client precisely the silent
+  truncation this change rules out at the server. It also counts UTF-16 code
+  units rather than bytes, so it cannot express the bound for non-ASCII input
+  anyway. Any client-side length feedback must warn without altering the value.
 - **The minimum-length message gets the same treatment** for consistency, since it
   has the same byte-vs-character ambiguity.
 

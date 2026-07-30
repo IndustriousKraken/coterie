@@ -19,22 +19,38 @@ redundant — the hint is a convenience, the check is the control.
 
 ## 2. Forms
 
-- [ ] 2.1 Add `maxlength="128"` and a visible hint to every password input on the
-  four set-password surfaces: setup wizard, in-portal change
+- [ ] 2.1 Add a visible hint stating the 128-byte ceiling to every password input
+  on the four set-password surfaces: setup wizard, in-portal change
   (`templates/portal/profile*`), reset (`templates/auth/reset*`), and any signup
   form Coterie itself renders.
-- [ ] 2.2 `theneontemple.com`: same on the join form's password field, which today
-  carries `minlength="10"` and no upper bound. Keep the comment convention already
-  there noting that the attribute mirrors Coterie's validator.
-- [ ] 2.3 Note in each template that the attribute mirrors the server rule and is
-  not the enforcement.
+- [ ] 2.2 Do NOT add `maxlength`. It silently clips pasted input on a masked
+  field — a password-manager paste would be stored truncated with no visible sign,
+  locking the user out of a credential they never chose — and it counts UTF-16
+  code units, not bytes, so it cannot express the bound anyway.
+- [ ] 2.3 Optional non-destructive client feedback: warn when the entered value
+  exceeds 128 bytes, measured with `TextEncoder` so it agrees with the server.
+  It must never alter or block the input.
+- [ ] 2.4 Note in each template that the hint mirrors the server rule and is not
+  the enforcement.
 
 ## 3. Verification
 
-- [ ] 3.1 Manually confirm the message renders on all four paths — the incident
-  that prompted this change included a report of no visible warning, and the code
-  reading says one is returned on every path. Confirm empirically rather than by
-  inspection.
+- [ ] 3.1 Add integration tests that POST an over-length password to each of the
+  four set-password handlers (public signup, in-portal change, reset, setup) and
+  assert the byte-denominated message appears in the response body. The incident
+  that prompted this change included a report of no visible warning while the code
+  reading says one is returned on every path — so the point is empirical
+  confirmation on all four, not inspection.
 - [ ] 3.2 Pair with `a45`: an over-length rejection should now also appear in the
   log as `auth.password_rejected`, so the next such report is answerable from the
   operator side too.
+
+## 4. Companion (marketing repo, not this spec)
+
+- [ ] 4.1 `theneontemple.com` join form
+  (`themes/terminal/layouts/_default/join.html`): add a visible hint stating the
+  128-byte ceiling next to the password input, and extend the adjacent comment to
+  say the hint mirrors Coterie's `validate_password` bounds (10 and 128 bytes) and
+  is a convenience rather than the enforcement. Do NOT add `maxlength` — it clips
+  pasted input silently on a masked field and counts UTF-16 code units rather than
+  bytes. The existing `minlength="10"` is unaffected; it does not truncate.
