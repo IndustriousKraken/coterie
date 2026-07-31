@@ -96,10 +96,18 @@ Coterie scaffolding is in place. Remaining steps:
        sudo systemctl enable --now coterie
        sudo journalctl -u coterie -f
 
-  5. (Optional) Install daily backups:
+  5. Install daily backups (the provisioning wizard does this for you;
+     do it by hand here). Each run bundles the database AND both
+     upload roots — see docs/deploy/RESTORE.md:
        sudo cp deploy/coterie-backup.service /etc/systemd/system/
        sudo cp deploy/coterie-backup.timer   /etc/systemd/system/
+       sudo systemctl daemon-reload
        sudo systemctl enable --now coterie-backup.timer
+       systemctl list-timers coterie-backup.timer   # confirm
+
+     Backups land in $DATA_DIR/backups — the same disk as the data.
+     If this host has a second volume, set COTERIE_BACKUP_DIR in
+     /etc/default/coterie-backup to point at it.
 
   6. (Optional) Reverse proxy with Caddy. See deploy/Caddyfile.example.
 

@@ -443,6 +443,12 @@ Configure the rest from the admin UI:
 
 ## 12. Schedule backups
 
+The provisioning wizard (`coterie-provision install`) already installs
+and enables the backup timer. If you provisioned with it, this section
+is verification only — `systemctl list-timers coterie-backup.timer`
+should already show a schedule. The manual steps below are for a
+hand-built host, or for a deployment made before the wizard did this.
+
 ```bash
 # (Optional) configure offsite push to DO Spaces.
 # Create a Space first via the DO web console: Spaces → Create → name
@@ -473,11 +479,16 @@ systemctl list-timers coterie-backup.timer
 systemctl start coterie-backup.service
 journalctl -u coterie-backup -n 50
 ls -lh /var/lib/coterie/backups/daily/
-# coterie-2026-04-27.db.gz
+# coterie-2026-04-27.tar.gz   (database + uploads + private-uploads)
 aws --endpoint-url https://nyc3.digitaloceanspaces.com \
     s3 ls s3://my-coterie-backups/prod/daily/
-# coterie-2026-04-27.db.gz
+# coterie-2026-04-27.tar.gz
 ```
+
+If this droplet has a second volume attached, add
+`COTERIE_BACKUP_DIR=/mnt/<volume>/coterie-backups` to
+`/etc/default/coterie-backup`. The default keeps the backups on the
+same disk as the data they protect, so one disk failure takes both.
 
 You now have a daily local + offsite backup. **Once a quarter, do a
 test restore** (see `RESTORE.md`) on a throwaway droplet — the only

@@ -40,6 +40,14 @@ pub(super) const CADDYFILE_EXAMPLE_PATH: &str = "/opt/coterie/deploy/Caddyfile.e
 pub(super) const CADDY_LOG_DIR: &str = "/var/log/caddy";
 pub(super) const RELEASE_DEPLOY_PATH: &str = "/usr/local/bin/coterie-release-deploy";
 
+/// Backup units, shipped in the release tarball's `deploy/` directory
+/// and installed by the wizard so a provisioned host has scheduled
+/// backups without a separate operator action.
+pub(super) const BACKUP_SERVICE_SRC: &str = "/opt/coterie/deploy/coterie-backup.service";
+pub(super) const BACKUP_SERVICE_DST: &str = "/etc/systemd/system/coterie-backup.service";
+pub(super) const BACKUP_TIMER_SRC: &str = "/opt/coterie/deploy/coterie-backup.timer";
+pub(super) const BACKUP_TIMER_DST: &str = "/etc/systemd/system/coterie-backup.timer";
+
 /// Production per-iteration sleep between `/health` polls.
 pub(crate) const SMOKE_TEST_INTERVAL: Duration = Duration::from_secs(1);
 /// Production total budget for the `/health` poll loop.
@@ -210,6 +218,7 @@ pub fn run<S: SystemCommand, F: FileSystem, P: Prompter, O: Output>(
         exec.write_caddyfile(&inputs)?;
     }
     exec.enable_and_start_service()?;
+    exec.install_backup_timer(output)?;
     exec.smoke_test()?;
 
     // Test-mode wizard prints the verification checklist before the
@@ -301,6 +310,10 @@ fn print_exit_summary(inputs: &ResolvedInputs) {
         println!("     See https://github.com/IndustriousKraken/coterie/blob/master/docs/deploy/STRIPE-SETUP.md for events to subscribe to.");
     }
     println!("  3. Log in at {portal_url}/login");
+    println!();
+    println!("Backups run daily at 03:30. Confirm with:");
+    println!("  systemctl list-timers coterie-backup.timer");
+    println!("Restore with: sudo bash /opt/coterie/deploy/restore.sh <bundle>");
     println!("============================================================");
 }
 

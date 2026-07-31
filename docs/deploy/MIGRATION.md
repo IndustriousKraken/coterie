@@ -21,13 +21,25 @@ just call out provider-specific commands.
 
 ## 1. What moves
 
-Everything Coterie needs lives in **three places**:
+Everything Coterie needs lives in **two things**: a backup bundle and
+the `.env`.
 
 | Where             | What                                       | How to move           |
 | ----------------- | ------------------------------------------ | --------------------- |
-| DB file           | `/var/lib/coterie/coterie.db`         | `VACUUM INTO` snapshot |
-| Uploads           | `/var/lib/coterie/uploads/` **and** `/var/lib/coterie/private-uploads/` | rsync / tar |
+| Backup bundle     | `coterie.db` + `uploads/` + `private-uploads/` | `deploy/backup.sh` → one `.tar.gz` |
 | `.env`            | `/opt/coterie/.env`                        | scp                   |
+
+The bundle is the migration artifact. `deploy/backup.sh` already
+produces exactly the thing this runbook used to assemble by hand —
+a `VACUUM INTO` snapshot plus **both** upload roots (`private-uploads/`
+holds submission attachments; naming only `uploads` is how a migration
+silently loses them). Use the script rather than the pieces: the
+recovery path and the migration path are then one code path, which is
+the one that gets exercised.
+
+The `.env` moves separately and on purpose — it is host configuration,
+not data, and it holds the `session_secret` you must NOT rotate during
+a move.
 
 **Not in scope** — none of these need to move:
 
@@ -56,20 +68,17 @@ empty database — that's fine, you'll overwrite it shortly.
 sudo systemctl stop coterie
 ```
 
-### 2b. Take the migration snapshot on the old host
+### 2b. Take the migration bundle on the old host
 
 ```bash
 # On the old (DigitalOcean) host
 sudo systemctl stop coterie
 
-# Take a clean snapshot
-sudo -u coterie sqlite3 /var/lib/coterie/coterie.db \
-    "VACUUM INTO '/tmp/coterie-migrate.db'"
-
-# Tar up BOTH upload roots alongside. `private-uploads/` holds
-# submission attachments — it is never served publicly, and naming
-# only `uploads` here is how it would silently fail to migrate.
-sudo tar czf /tmp/coterie-uploads.tar.gz -C /var/lib/coterie uploads private-uploads
+# One bundle: vacuumed database + both upload roots. Same script the
+# nightly timer runs, so this path is exercised daily rather than only
+# during migrations.
+sudo -u coterie bash /opt/coterie/deploy/backup.sh
+ls -la /var/lib/coterie/backups/daily/
 
 # Grab the .env (you'll edit it on the new host before bringing it up)
 sudo cp /opt/coterie/.env /tmp/coterie.env
@@ -78,21 +87,20 @@ sudo cp /opt/coterie/.env /tmp/coterie.env
 sudo systemctl start coterie
 ```
 
-If the old host has a recent backup in `/var/lib/coterie/backups/`
-that will work too — but a fresh `VACUUM INTO` taken right before
-cutover gives you the smallest gap.
+Last night's bundle from `/var/lib/coterie/backups/daily/` works too —
+but a fresh run right before cutover gives you the smallest gap.
 
 ### 2c. Ship the files to the new host
 
 ```bash
-# From your laptop:
-scp root@old-do-host:/tmp/coterie-migrate.db    /tmp/
-scp root@old-do-host:/tmp/coterie-uploads.tar.gz /tmp/
-scp root@old-do-host:/tmp/coterie.env            /tmp/
+BUNDLE=coterie-2026-07-31.tar.gz
 
-scp /tmp/coterie-migrate.db    ubuntu@new-aws-host:/tmp/
-scp /tmp/coterie-uploads.tar.gz ubuntu@new-aws-host:/tmp/
-scp /tmp/coterie.env            ubuntu@new-aws-host:/tmp/
+# From your laptop:
+scp root@old-do-host:/var/lib/coterie/backups/daily/$BUNDLE /tmp/
+scp root@old-do-host:/tmp/coterie.env                       /tmp/
+
+scp /tmp/$BUNDLE        ubuntu@new-aws-host:/tmp/
+scp /tmp/coterie.env    ubuntu@new-aws-host:/tmp/
 ```
 
 (`scp` directly host-to-host works too if you have the keys forwarded
@@ -105,20 +113,12 @@ straightforward path.)
 # On the new (AWS) host:
 sudo -i
 
-# 1. Database
-mv /tmp/coterie-migrate.db /var/lib/coterie/coterie.db
-chown coterie:coterie /var/lib/coterie/coterie.db
-chmod 0640 /var/lib/coterie/coterie.db
+# 1. Database + uploads, in one step. restore.sh verifies the bundle,
+#    puts all three components in place, fixes ownership, runs
+#    PRAGMA integrity_check, and starts the service.
+bash /opt/coterie/deploy/restore.sh /tmp/coterie-2026-07-31.tar.gz
 
-# Sanity-check
-sudo -u coterie sqlite3 /var/lib/coterie/coterie.db 'PRAGMA integrity_check;'
-# Expect: ok
-
-# 2. Uploads
-tar xzf /tmp/coterie-uploads.tar.gz -C /var/lib/coterie
-chown -R coterie:coterie /var/lib/coterie/uploads /var/lib/coterie/private-uploads
-
-# 3. .env
+# 2. .env
 # IMPORTANT: keep the OLD session_secret. Rotating it during a
 # migration breaks the encrypted SMTP password and forces re-entry.
 # But UPDATE base_url if the URL is changing as part of the move.
@@ -131,8 +131,9 @@ nano /opt/coterie/.env
 # - COTERIE__SERVER__DATA_DIR is /var/lib/coterie on both hosts (no change)
 # - COTERIE__SERVER__BASE_URL stays the same (DNS will flip)
 
-# 4. Bring it up
-systemctl start coterie
+# 3. restore.sh already started the service; restart it so it picks up
+#    the .env you just put in place.
+systemctl restart coterie
 journalctl -u coterie -f
 ```
 
@@ -191,14 +192,13 @@ reminder cycle if it falls in the window):
 ```bash
 # Old DO host
 sudo systemctl stop coterie
-# Take a final cold backup before deleting
-sudo -u coterie sqlite3 /var/lib/coterie/coterie.db \
-    "VACUUM INTO '/tmp/coterie-final-snapshot.db'"
-scp root@old-do-host:/tmp/coterie-final-snapshot.db .  # to your laptop, archive somewhere
+# Take a final cold bundle before deleting
+sudo -u coterie bash /opt/coterie/deploy/backup.sh
+scp root@old-do-host:/var/lib/coterie/backups/daily/*.tar.gz .  # archive somewhere
 ```
 
 Then in the DO console: destroy droplet, detach + destroy volume.
-Keep the final snapshot for at least a quarter — if some edge-case
+Keep the final bundle for at least a quarter — if some edge-case
 data corruption surfaces later, this is your last-resort recovery
 point.
 
@@ -222,13 +222,12 @@ Print this. Tick it off during the migration.
 
 - [ ] DNS TTL lowered to 60–300 at least 1h before cutover
 - [ ] Old host: `systemctl stop coterie`
-- [ ] Old host: `VACUUM INTO` snapshot taken
-- [ ] Old host: `uploads/` **and** `private-uploads/` tar'd
+- [ ] Old host: `backup.sh` run, bundle listed in `backups/daily/`
 - [ ] Old host: .env copied
-- [ ] New host: snapshot, uploads, .env transferred
-- [ ] New host: file ownership/permissions correct (`coterie:coterie`, 0640)
-- [ ] New host: `PRAGMA integrity_check` returns `ok`
-- [ ] New host: `systemctl start coterie` succeeded
+- [ ] New host: bundle + .env transferred
+- [ ] New host: `restore.sh <bundle>` succeeded (it verifies the bundle,
+      fixes ownership, and runs `PRAGMA integrity_check` for you)
+- [ ] New host: `systemctl restart coterie` after dropping in .env
 - [ ] New host: `/health` responds via `curl --resolve`
 - [ ] DNS flipped at registrar / Route 53
 - [ ] DNS propagation verified (`dig +short` from external machine)
@@ -281,14 +280,15 @@ rotate later (and re-enter the SMTP password through the admin UI).
 
 **Skipping `PRAGMA integrity_check` after the file transfer.** A
 truncated transfer can produce a file SQLite opens but reads garbage
-from. Always run `integrity_check` before starting the service on
-the new host.
+from. `restore.sh` runs the check for you and refuses to start the
+service if it fails; if you move the pieces by hand, run it yourself.
 
-**Forgetting the uploads directories.** Members' profile photos,
-event banners, etc. live in `uploads/`; submission attachments live in
-`private-uploads/`. The DB only stores filenames. Skip the tarball and
-the portal renders broken images; tar only `uploads/` and every
-submission attachment is left on the old host.
+**Assembling the artifact by hand.** Members' profile photos and event
+banners live in `uploads/`; submission attachments live in
+`private-uploads/`. The DB only stores filenames, so a hand-rolled tar
+that names only `uploads` leaves every attachment behind and nothing
+errors. Use `backup.sh` — getting this wrong is exactly the mistake it
+was changed to make impossible.
 
 **Not stopping the old service first.** Snapshotting a live SQLite
 file via `VACUUM INTO` is safe (that's the point of the command) —

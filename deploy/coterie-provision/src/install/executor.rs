@@ -15,10 +15,12 @@ use std::time::{Duration, Instant};
 use crate::caddyfile;
 use crate::env_template::{self, DatabaseUrl, EnvConfig};
 use crate::fs_ops::FileSystem;
+use crate::output::Output;
 use crate::system::SystemCommand;
 
 use super::{
-    ResolvedInputs, StripeMode, CADDYFILE_EXAMPLE_PATH, CADDYFILE_PATH, CADDY_LOG_DIR, DATA_DIR,
+    ResolvedInputs, StripeMode, BACKUP_SERVICE_DST, BACKUP_SERVICE_SRC, BACKUP_TIMER_DST,
+    BACKUP_TIMER_SRC, CADDYFILE_EXAMPLE_PATH, CADDYFILE_PATH, CADDY_LOG_DIR, DATA_DIR,
     ENV_EXAMPLE_PATH, ENV_LIVE_PATH, ENV_PATH, INSTALL_DIR, RELEASE_DEPLOY_PATH,
 };
 
@@ -31,9 +33,13 @@ pub(super) struct Executor<'a, S: SystemCommand, F: FileSystem> {
 }
 
 impl<'a, S: SystemCommand, F: FileSystem> Executor<'a, S, F> {
-    pub(super) fn announce(&self, what: &str) {
+    fn step_line(&self, what: &str) -> String {
         let tag = if self.dry_run { "DRY-RUN" } else { "STEP" };
-        println!("[{tag}] {what}");
+        format!("[{tag}] {what}")
+    }
+
+    pub(super) fn announce(&self, what: &str) {
+        println!("{}", self.step_line(what));
     }
 
     pub(super) fn run(&self, cmd: &str, args: &[&str], description: &str) -> Result<()> {
@@ -398,6 +404,58 @@ impl<'a, S: SystemCommand, F: FileSystem> Executor<'a, S, F> {
             "systemctl",
             &["enable", "--now", "coterie"],
             "systemctl enable --now coterie",
+        )
+    }
+
+    /// Install `coterie-backup.service` + `coterie-backup.timer` and
+    /// enable the timer, so a provisioned host has scheduled backups
+    /// without the operator having to know to do it by hand. Shipping a
+    /// backup script that nothing schedules is not delivering backups:
+    /// the gap is invisible until a restore is needed, which is how a
+    /// production instance ran three weeks with none.
+    ///
+    /// Idempotent — a re-run that finds BOTH units already in place
+    /// leaves them alone rather than installing a second copy. A host
+    /// that has only one of them is repaired rather than skipped: a
+    /// timer whose service unit is missing is enabled and scheduled but
+    /// fails every time it fires, which looks exactly like working
+    /// backups until someone reads the journal.
+    ///
+    /// Announces through `Output` (rather than the `println!`-based
+    /// `announce`) so `--dry-run` can be asserted on in tests without
+    /// scraping process stdout.
+    pub(super) fn install_backup_timer<O: Output>(&self, output: &O) -> Result<()> {
+        let missing: Vec<(&str, &str)> = [
+            (BACKUP_SERVICE_SRC, BACKUP_SERVICE_DST),
+            (BACKUP_TIMER_SRC, BACKUP_TIMER_DST),
+        ]
+        .into_iter()
+        .filter(|(_, dst)| !self.fs.is_file(Path::new(dst)))
+        .collect();
+
+        if missing.is_empty() {
+            output.println(&self.step_line(
+                "scheduled backups: units already installed — leaving the existing schedule alone",
+            ));
+            return Ok(());
+        }
+        let installing: Vec<&str> = missing.iter().map(|(_, dst)| *dst).collect();
+        output.println(&self.step_line(&format!(
+            "scheduled backups: install {}, then enable the timer",
+            installing.join(" + ")
+        )));
+        if !self.dry_run {
+            for (src, dst) in &missing {
+                self.fs
+                    .copy_file(Path::new(src), Path::new(dst))
+                    .with_context(|| format!("installing {dst}"))?;
+            }
+        }
+        self.run("systemctl", &["daemon-reload"], "systemctl daemon-reload")?;
+        self.run(
+            "systemctl",
+            &["enable", "--now", "coterie-backup.timer"],
+            "systemctl enable --now coterie-backup.timer",
         )
     }
 

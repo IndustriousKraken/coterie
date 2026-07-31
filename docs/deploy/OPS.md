@@ -85,31 +85,41 @@ It's used as the key-derivation input for three things:
 
 ---
 
-## Database backups
+## Backups
 
 Coterie ships a backup script + systemd timer (`deploy/backup.sh`,
 `coterie-backup.{service,timer}`) that:
 
-- Runs `VACUUM INTO` daily at 03:30 (consistent live snapshot, no WAL)
+- Runs daily at 03:30, producing **one bundle** per run: a `VACUUM INTO`
+  database snapshot plus `uploads/` and `private-uploads/`
 - Maintains 7 daily + 4 weekly + 12 monthly retention
-- Optionally pushes each daily snapshot to S3-compatible storage
+- Optionally pushes each daily bundle to S3-compatible storage
   (DO Spaces, AWS S3, Backblaze B2, Cloudflare R2, Wasabi)
 
-Install it from a deploy guide (`DEPLOY-*.md` section "Schedule
-backups"). For ad-hoc snapshots:
+The wizard installs and enables the timer. On a deployment that
+predates that, install it retroactively — see `RESTORE.md` §6. Check
+which case you are in:
 
 ```bash
-sudo -u coterie sqlite3 /var/lib/coterie/coterie.db \
-    "VACUUM INTO '/var/lib/coterie/backups/manual-$(date +%F).db'"
+systemctl list-timers coterie-backup.timer
 ```
 
-`VACUUM INTO` produces a single self-contained file — no need to copy
-the WAL/SHM siblings. Restore procedure: see `RESTORE.md`.
+For an ad-hoc bundle (before an upgrade, say) run the same script:
+
+```bash
+sudo -u coterie bash /opt/coterie/deploy/backup.sh
+```
+
+Set `COTERIE_BACKUP_DIR` in `/etc/default/coterie-backup` to a
+**separate volume** where the host has one — the default puts the
+backups on the same disk as the data they protect. Restore procedure:
+see `RESTORE.md` (`deploy/restore.sh <bundle>`).
 
 **Test your backups.** A backup that's never been restored is a wish,
-not a backup. Once a quarter, restore the latest snapshot onto a
-throwaway droplet and click through the portal. Instructions in
-`RESTORE.md`.
+not a backup. Once a quarter, restore the latest bundle onto a
+throwaway droplet and click through the portal — including an image and
+a submission attachment, which is what a database-only backup would
+have silently lost. Instructions in `RESTORE.md`.
 
 ---
 

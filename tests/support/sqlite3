@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+"""Stand-in for the sqlite3 CLI: `sqlite3 <db> <sql>`.
+
+deploy/backup.sh and deploy/restore.sh shell out to sqlite3 for
+`VACUUM INTO` and `PRAGMA integrity_check`. Hosts that carry python3 but
+not the sqlite3 CLI (build sandboxes, slim images) can still run the
+script tests through this — the SQL is executed by the same libsqlite3
+either way.
+
+Committed rather than written at test time on purpose: a test that
+writes a script and immediately execs it races with every other test
+thread's fork/exec and fails with ETXTBSY.
+"""
+import sqlite3
+import sys
+
+con = sqlite3.connect(sys.argv[1])
+for row in con.execute(sys.argv[2]):
+    print("|".join(str(c) for c in row))
+con.commit()
