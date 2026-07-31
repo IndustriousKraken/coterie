@@ -108,6 +108,16 @@ async fn main() -> anyhow::Result<()> {
     // Run migrations
     sqlx::migrate!("./migrations").run(&db_pool).await?;
 
+    // Create the private uploads root and move any attachment still
+    // sitting in the publicly served one into it. Runs before the server
+    // binds, so no request can observe the half-moved state. Idempotent.
+    web::uploads::migrate_attachments_to_private_root(
+        &db_pool,
+        &settings.server.uploads_path(),
+        &settings.server.private_uploads_path(),
+    )
+    .await?;
+
     // Initialize auth service
     let auth_service = Arc::new(auth::AuthService::new(
         db_pool.clone(),

@@ -296,7 +296,9 @@ async fn attachment_authorization_is_enforced() {
     let pool = fresh_pool().await;
     let state = build_app_state(pool).await;
     enable_submissions(&state).await;
-    let uploads_dir = state.settings.server.uploads_path();
+    // Attachments live in the private root — the public `/uploads` route is
+    // not mounted on it, so this is the only place the gated route looks.
+    let uploads_dir = state.settings.server.private_uploads_path();
 
     // A private (members) submission owned by B with a real PDF on disk.
     let private_path = coterie::web::uploads::save_uploaded_document(&uploads_dir, b"%PDF-1.4 hi")

@@ -66,14 +66,45 @@ fn detect_document_format(data: &[u8]) -> Option<&'static str> {
     None
 }
 
-/// Save an uploaded document (PDF only) to the uploads directory,
+/// URL/stored-path prefix for the public root, served by
+/// `GET /uploads/:filename`.
+const PUBLIC_PREFIX: &str = "uploads/";
+
+/// Stored-path prefix for the private root
+/// (`ServerConfig::private_uploads_path()`). It is NOT a URL — nothing is
+/// mounted on it; only authorization-gated handlers read from that root.
+/// Stored paths carry it so a path alone says which root it lives in.
+const PRIVATE_PREFIX: &str = "private-uploads/";
+
+/// Strip either upload prefix off a stored path and return the bare
+/// filename, or `None` if the path isn't one of ours or is doing path
+/// trickery. Callers pick the root to join it onto.
+pub fn upload_filename(stored_path: &str) -> Option<&str> {
+    let filename = stored_path
+        .strip_prefix(PUBLIC_PREFIX)
+        .or_else(|| stored_path.strip_prefix(PRIVATE_PREFIX))?;
+    if filename.is_empty()
+        || filename.contains('/')
+        || filename.contains('\\')
+        || filename.contains("..")
+    {
+        return None;
+    }
+    Some(filename)
+}
+
+/// Save an uploaded document (PDF only) into the **private** uploads root,
 /// reusing the generated-name + size-cap behavior of
 /// [`save_uploaded_file`]. The content is confirmed by magic-byte sniff;
 /// the client-supplied filename/extension never influences acceptance or
-/// the storage path. Returns the relative path (e.g. `uploads/abc123.pdf`).
+/// the storage path. Returns the relative path
+/// (e.g. `private-uploads/abc123.pdf`) — the prefix records which root the
+/// file lives in, and the public route is not mounted on that root.
 pub async fn save_uploaded_document(uploads_dir: &str, data: &[u8]) -> Result<String> {
     if data.len() > MAX_FILE_SIZE {
-        return Err(AppError::Validation("File too large (max 10 MB)".to_string()));
+        return Err(AppError::Validation(
+            "File too large (max 10 MB)".to_string(),
+        ));
     }
 
     // Authoritative sniff — SVG and every non-PDF type stay rejected.
@@ -100,7 +131,7 @@ pub async fn save_uploaded_document(uploads_dir: &str, data: &[u8]) -> Result<St
         .await
         .map_err(|e| AppError::Internal(format!("Failed to write file: {}", e)))?;
 
-    Ok(format!("uploads/{}", new_filename))
+    Ok(format!("{}{}", PRIVATE_PREFIX, new_filename))
 }
 
 /// Save an uploaded file to the uploads directory.
@@ -174,31 +205,23 @@ pub async fn save_uploaded_file(uploads_dir: &str, filename: &str, data: &[u8]) 
         .map_err(|e| AppError::Internal(format!("Failed to write file: {}", e)))?;
 
     // Return relative path for storing in database
-    Ok(format!("uploads/{}", new_filename))
+    Ok(format!("{}{}", PUBLIC_PREFIX, new_filename))
 }
 
-/// Delete an uploaded file by its URL path (e.g., "uploads/abc123.jpg").
-/// No-op if the path doesn't match our upload convention, the filename
-/// is empty, or the file simply doesn't exist.
+/// Delete an uploaded file by its stored path (e.g. "uploads/abc123.jpg"
+/// or "private-uploads/abc123.pdf"). No-op if the path doesn't match our
+/// upload convention, the filename is empty, or the file simply doesn't
+/// exist.
 ///
-/// `uploads_dir` is the configured filesystem root (from
-/// `ServerConfig::uploads_path()`); we join the filename onto it to
-/// find the actual file. Path traversal is blocked — any "." or ".."
-/// segments or absolute paths make this no-op.
+/// `uploads_dir` is the configured filesystem root the caller owns
+/// (`ServerConfig::uploads_path()` or `private_uploads_path()`); we join
+/// the filename onto it to find the actual file. Path traversal is
+/// blocked — any "." or ".." segments or absolute paths make this no-op.
 pub async fn delete_uploaded_file(uploads_dir: &str, url_path: &str) -> Result<()> {
-    // Strip the "uploads/" URL prefix. Anything else isn't one of ours.
-    let filename = match url_path.strip_prefix("uploads/") {
+    let filename = match upload_filename(url_path) {
         Some(f) => f,
         None => return Ok(()),
     };
-    // Defense: refuse any kind of path trickery.
-    if filename.is_empty()
-        || filename.contains('/')
-        || filename.contains('\\')
-        || filename.contains("..")
-    {
-        return Ok(());
-    }
 
     let path = PathBuf::from(uploads_dir).join(filename);
     if path.exists() {
@@ -220,62 +243,169 @@ pub async fn delete_if_upload(uploads_dir: &str, url: Option<&str>) {
     }
 }
 
-/// Check if an image requires authentication (used by private event/announcement)
-async fn is_private_image(db_pool: &SqlitePool, image_path: &str) -> bool {
-    let full_path = format!("uploads/{}", image_path);
+/// Move every stored submission attachment out of the public root and
+/// into the private one, rewriting `submissions.attachment_path` to the
+/// private prefix. Run once at startup, before the server accepts traffic.
+///
+/// Order is load-bearing: move the file first, rewrite the row second, so
+/// an interrupted run leaves rows pointing at files that still exist.
+/// Idempotent — a second run finds no `uploads/%` attachment paths and
+/// does nothing.
+///
+/// Unreferenced files in the public root are left alone. Telling an
+/// already-orphaned attachment apart from a legitimately public upload
+/// after the fact is guesswork, so we only report the count and let the
+/// operator decide whether this deployment warrants an audit.
+pub async fn migrate_attachments_to_private_root(
+    db_pool: &SqlitePool,
+    public_dir: &str,
+    private_dir: &str,
+) -> Result<()> {
+    fs::create_dir_all(private_dir).await.map_err(|e| {
+        AppError::Internal(format!("Failed to create private uploads directory: {}", e))
+    })?;
 
-    // Check if used by a private event
-    let event_private: Option<(i32,)> = sqlx::query_as(
-        r#"
-        SELECT 1 FROM events
-        WHERE image_url = ? AND visibility != 'Public'
-        LIMIT 1
-        "#,
+    let stale: Vec<(String,)> = sqlx::query_as(
+        "SELECT attachment_path FROM submissions WHERE attachment_path LIKE 'uploads/%'",
     )
-    .bind(&full_path)
-    .fetch_optional(db_pool)
-    .await
-    .ok()
-    .flatten();
+    .fetch_all(db_pool)
+    .await?;
 
-    if event_private.is_some() {
-        return true;
+    let mut moved = 0usize;
+    for (stored,) in &stale {
+        let Some(filename) = upload_filename(stored) else {
+            continue;
+        };
+        let from = PathBuf::from(public_dir).join(filename);
+        let to = PathBuf::from(private_dir).join(filename);
+        if from.exists() && !move_file(&from, &to).await {
+            // Leave the row alone: it still names a file that exists.
+            continue;
+        }
+        sqlx::query("UPDATE submissions SET attachment_path = ? WHERE attachment_path = ?")
+            .bind(format!("{}{}", PRIVATE_PREFIX, filename))
+            .bind(stored)
+            .execute(db_pool)
+            .await?;
+        moved += 1;
+    }
+    if moved > 0 {
+        tracing::info!(
+            "Moved {} submission attachment(s) to {}",
+            moved,
+            private_dir
+        );
     }
 
-    // Check if used by a private announcement
-    let announcement_private: Option<(i32,)> = sqlx::query_as(
+    report_unreferenced(db_pool, public_dir).await;
+    Ok(())
+}
+
+/// Rename, falling back to copy+remove when the two roots are on
+/// different filesystems (`uploads_dir` can be overridden onto its own
+/// volume). Returns whether the file ended up at `to`.
+async fn move_file(from: &std::path::Path, to: &std::path::Path) -> bool {
+    if fs::rename(from, to).await.is_ok() {
+        return true;
+    }
+    if let Err(e) = fs::copy(from, to).await {
+        tracing::warn!("Failed to move {}: {}", from.display(), e);
+        return false;
+    }
+    if let Err(e) = fs::remove_file(from).await {
+        // The copy landed, so the row can safely be rewritten; the stale
+        // public copy is the operator's to sweep.
+        tracing::warn!(
+            "Copied {} to the private root but could not remove the public copy: {}",
+            from.display(),
+            e
+        );
+    }
+    true
+}
+
+/// Log how many files in the public root no row names, so the operator
+/// learns whether a manual audit is warranted. Counting only — see the
+/// doc comment on [`migrate_attachments_to_private_root`].
+async fn report_unreferenced(db_pool: &SqlitePool, public_dir: &str) {
+    let referenced: Vec<(String,)> = match sqlx::query_as(
         r#"
-        SELECT 1 FROM announcements
-        WHERE image_url = ? AND is_public = 0
+        SELECT image_url FROM events WHERE image_url IS NOT NULL
+        UNION
+        SELECT image_url FROM announcements WHERE image_url IS NOT NULL
+        UNION
+        SELECT attachment_path FROM submissions WHERE attachment_path IS NOT NULL
+        "#,
+    )
+    .fetch_all(db_pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!("Could not audit the uploads directory: {}", e);
+            return;
+        }
+    };
+    let known: std::collections::HashSet<&str> = referenced
+        .iter()
+        .filter_map(|(p,)| upload_filename(p))
+        .collect();
+
+    let Ok(mut entries) = fs::read_dir(public_dir).await else {
+        return;
+    };
+    let mut unreferenced = 0usize;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| !known.contains(n))
+        {
+            unreferenced += 1;
+        }
+    }
+    if unreferenced > 0 {
+        tracing::info!(
+            "{} file(s) in {} are named by no row and are left in place. Anonymous callers \
+             can no longer fetch them (nothing affirms they are public), but any \
+             authenticated member still can — so an attachment orphaned before this \
+             release is worth a manual audit.",
+            unreferenced,
+            public_dir
+        );
+    }
+}
+
+/// Whether `filename` is affirmatively known to be a **public** upload:
+/// the image of a `Public` event or of a public announcement.
+///
+/// Phrased positively on purpose. The inverse ("is this private?") makes
+/// disclosure the default for every file the query fails to recognise —
+/// and a query stops recognising a file for reasons that have nothing to
+/// do with intent: the row was deleted, cascaded away with its owner,
+/// repointed at a different file, or not committed yet. Both phrasings
+/// cost the same query; one fails toward a broken image and the other
+/// toward publication.
+///
+/// A DB error also answers "not public", so an outage denies rather than
+/// publishes.
+///
+/// This is the complete allow-list of public-root writers: event images
+/// (`admin/events/single.rs`) and announcement images
+/// (`admin/announcements.rs`). A new upload category must be registered
+/// here — forgetting shows up as a broken asset, not as a silent leak.
+async fn is_public_image(db_pool: &SqlitePool, filename: &str) -> bool {
+    let full_path = format!("{}{}", PUBLIC_PREFIX, filename);
+
+    let hit: Option<(i32,)> = sqlx::query_as(
+        r#"
+        SELECT 1 FROM events WHERE image_url = ? AND visibility = 'Public'
+        UNION ALL
+        SELECT 1 FROM announcements WHERE image_url = ? AND is_public = 1
         LIMIT 1
         "#,
     )
     .bind(&full_path)
-    .fetch_optional(db_pool)
-    .await
-    .ok()
-    .flatten();
-
-    announcement_private.is_some()
-}
-
-/// Whether `filename` is a submission attachment. Submission attachments are
-/// served ONLY through their authorization-gated route
-/// (`/portal/.../submissions/:id/attachment`), which enforces owner/admin/
-/// accepted-public access and safe download headers (`Content-Disposition:
-/// attachment`, `nosniff`). This public route must therefore refuse them —
-/// otherwise the stored PDF would be reachable by its filename alone, bypassing
-/// that authorization gate (relying on the UUID being unguessable is not access
-/// control).
-async fn is_submission_attachment(db_pool: &SqlitePool, filename: &str) -> bool {
-    let full_path = format!("uploads/{}", filename);
-    let hit: Option<(i32,)> = sqlx::query_as(
-        r#"
-        SELECT 1 FROM submissions
-        WHERE attachment_path = ?
-        LIMIT 1
-        "#,
-    )
     .bind(&full_path)
     .fetch_optional(db_pool)
     .await
@@ -285,7 +415,13 @@ async fn is_submission_attachment(db_pool: &SqlitePool, filename: &str) -> bool 
     hit.is_some()
 }
 
-/// Serve uploaded files with authentication check for private content
+/// Serve uploaded files from the PUBLIC root only.
+///
+/// Submission attachments are not reachable here at all — they live in
+/// the private root, which this handler never joins onto — so there is no
+/// attachment allow-or-deny decision left to make and no `submissions`
+/// lookup. Anything the public-image allow-list cannot affirm requires an
+/// authenticated session.
 pub async fn serve_upload(
     State(settings): State<Arc<Settings>>,
     State(db_pool): State<SqlitePool>,
@@ -298,17 +434,10 @@ pub async fn serve_upload(
         return StatusCode::BAD_REQUEST.into_response();
     }
 
-    // Submission attachments are served ONLY via their authorization-gated route
-    // (/portal/.../submissions/:id/attachment), which enforces owner/admin/
-    // accepted-public access and safe download headers. Refuse them here so this
-    // public route cannot be used to bypass that gate. Deny without disclosure.
-    if is_submission_attachment(&db_pool, &filename).await {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-
-    // Check if this is a private image
-    if is_private_image(&db_pool, &filename).await {
-        // Require authentication
+    // Allow-list: serve outright only what the database affirms is public.
+    // Everything else — a members-only image, an image whose row is gone,
+    // a file nothing claims — requires a session.
+    if !is_public_image(&db_pool, &filename).await {
         let is_authenticated = if let Some(session_cookie) = jar.get("session") {
             auth_service
                 .validate_session(session_cookie.value())
@@ -325,7 +454,7 @@ pub async fn serve_upload(
         }
     }
 
-    // Build file path
+    // The PUBLIC root, always — the private root is never joined here.
     let uploads_dir = settings.server.uploads_path();
     let file_path = PathBuf::from(&uploads_dir).join(&filename);
 

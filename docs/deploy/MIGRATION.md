@@ -26,7 +26,7 @@ Everything Coterie needs lives in **three places**:
 | Where             | What                                       | How to move           |
 | ----------------- | ------------------------------------------ | --------------------- |
 | DB file           | `/var/lib/coterie/coterie.db`         | `VACUUM INTO` snapshot |
-| Uploads           | `/var/lib/coterie/uploads/`           | rsync / tar           |
+| Uploads           | `/var/lib/coterie/uploads/` **and** `/var/lib/coterie/private-uploads/` | rsync / tar |
 | `.env`            | `/opt/coterie/.env`                        | scp                   |
 
 **Not in scope** — none of these need to move:
@@ -66,8 +66,10 @@ sudo systemctl stop coterie
 sudo -u coterie sqlite3 /var/lib/coterie/coterie.db \
     "VACUUM INTO '/tmp/coterie-migrate.db'"
 
-# Tar up the uploads directory alongside
-sudo tar czf /tmp/coterie-uploads.tar.gz -C /var/lib/coterie uploads
+# Tar up BOTH upload roots alongside. `private-uploads/` holds
+# submission attachments — it is never served publicly, and naming
+# only `uploads` here is how it would silently fail to migrate.
+sudo tar czf /tmp/coterie-uploads.tar.gz -C /var/lib/coterie uploads private-uploads
 
 # Grab the .env (you'll edit it on the new host before bringing it up)
 sudo cp /opt/coterie/.env /tmp/coterie.env
@@ -114,7 +116,7 @@ sudo -u coterie sqlite3 /var/lib/coterie/coterie.db 'PRAGMA integrity_check;'
 
 # 2. Uploads
 tar xzf /tmp/coterie-uploads.tar.gz -C /var/lib/coterie
-chown -R coterie:coterie /var/lib/coterie/uploads
+chown -R coterie:coterie /var/lib/coterie/uploads /var/lib/coterie/private-uploads
 
 # 3. .env
 # IMPORTANT: keep the OLD session_secret. Rotating it during a
@@ -221,7 +223,7 @@ Print this. Tick it off during the migration.
 - [ ] DNS TTL lowered to 60–300 at least 1h before cutover
 - [ ] Old host: `systemctl stop coterie`
 - [ ] Old host: `VACUUM INTO` snapshot taken
-- [ ] Old host: uploads tar'd
+- [ ] Old host: `uploads/` **and** `private-uploads/` tar'd
 - [ ] Old host: .env copied
 - [ ] New host: snapshot, uploads, .env transferred
 - [ ] New host: file ownership/permissions correct (`coterie:coterie`, 0640)
@@ -282,9 +284,11 @@ truncated transfer can produce a file SQLite opens but reads garbage
 from. Always run `integrity_check` before starting the service on
 the new host.
 
-**Forgetting the uploads directory.** Members' profile photos,
-event banners, etc. live there — the DB only stores filenames. If
-you skip the uploads tarball, the portal renders broken images.
+**Forgetting the uploads directories.** Members' profile photos,
+event banners, etc. live in `uploads/`; submission attachments live in
+`private-uploads/`. The DB only stores filenames. Skip the tarball and
+the portal renders broken images; tar only `uploads/` and every
+submission attachment is left on the old host.
 
 **Not stopping the old service first.** Snapshotting a live SQLite
 file via `VACUUM INTO` is safe (that's the point of the command) —

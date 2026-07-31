@@ -159,7 +159,8 @@ async fn non_owner_cannot_edit_or_withdraw() {
         new_attachment_path: None,
     };
     assert!(matches!(
-        svc.update_owned(other, created.id, update).await,
+        svc.update_owned(other, created.id, update, "/nonexistent")
+            .await,
         Err(AppError::NotFound(_))
     ));
     assert!(matches!(
@@ -192,7 +193,8 @@ async fn edit_after_review_started_is_refused() {
         new_attachment_path: None,
     };
     assert!(matches!(
-        svc.update_owned(owner, created.id, update).await,
+        svc.update_owned(owner, created.id, update, "/nonexistent")
+            .await,
         Err(AppError::Validation(_))
     ));
 }
@@ -296,15 +298,21 @@ async fn cannot_decide_a_terminal_submission() {
 
 /// A throwaway uploads dir under the system temp holding one file that
 /// stands in for a submission attachment. Returns (uploads_dir, rel_path,
-/// on_disk_path); `rel_path` is the `uploads/<name>` form persisted on the
-/// submission.
+/// on_disk_path); `rel_path` is the `private-uploads/<name>` form persisted
+/// on the submission.
 fn temp_uploads_with_file() -> (std::path::PathBuf, String, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!("coterie-sub-test-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
+    let (rel, on_disk) = add_file(&dir);
+    (dir, rel, on_disk)
+}
+
+/// Drop another stand-in attachment into an existing dir.
+fn add_file(dir: &std::path::Path) -> (String, std::path::PathBuf) {
     let name = format!("{}.pdf", Uuid::new_v4());
     let on_disk = dir.join(&name);
     std::fs::write(&on_disk, b"%PDF-1.4 test").unwrap();
-    (dir, format!("uploads/{}", name), on_disk)
+    (format!("private-uploads/{}", name), on_disk)
 }
 
 #[tokio::test]
@@ -333,6 +341,60 @@ async fn owner_deletes_withdrawn_removes_row_and_attachment() {
     std::fs::remove_dir_all(&uploads_dir).ok();
 }
 
+/// 3b.6 — replacing an attachment reclaims the old file's disk instead of
+/// leaving it behind. Editing without a new upload keeps the current one.
+#[tokio::test]
+async fn replacing_an_attachment_leaves_exactly_one_file() {
+    let pool = fresh_pool().await;
+    let svc = make_service(pool.clone());
+    let owner = make_member(&pool).await;
+
+    let (dir, first_rel, first_on_disk) = temp_uploads_with_file();
+    let mut input = create_input();
+    input.attachment_path = Some(first_rel);
+    let created = svc.create(owner, input).await.unwrap();
+
+    let edit = |new_attachment_path| UpdateSubmissionInput {
+        title: "My Talk".to_string(),
+        abstract_text: "A talk about things".to_string(),
+        visibility_requested: SubmissionVisibility::Public,
+        preferred_start: None,
+        timezone: "UTC".to_string(),
+        duration_minutes: None,
+        new_attachment_path,
+    };
+
+    // An edit with no new upload keeps the existing attachment.
+    svc.update_owned(owner, created.id, edit(None), dir.to_str().unwrap())
+        .await
+        .unwrap();
+    assert!(
+        first_on_disk.exists(),
+        "an edit with no new upload must not delete the attachment"
+    );
+
+    // Replacing it: the row names the new file and the old one is gone.
+    let (second_rel, second_on_disk) = add_file(&dir);
+    let edited = svc
+        .update_owned(
+            owner,
+            created.id,
+            edit(Some(second_rel.clone())),
+            dir.to_str().unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(edited.attachment_path, Some(second_rel));
+    assert!(second_on_disk.exists());
+    assert!(
+        !first_on_disk.exists(),
+        "the replaced attachment must not be left on disk"
+    );
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[tokio::test]
 async fn owner_deletes_declined_removes_row() {
     let pool = fresh_pool().await;
@@ -346,9 +408,7 @@ async fn owner_deletes_declined_removes_row() {
         .await
         .unwrap();
 
-    svc.delete(owner, created.id, "/nonexistent")
-        .await
-        .unwrap();
+    svc.delete(owner, created.id, "/nonexistent").await.unwrap();
     assert!(repo.find_by_id(created.id).await.unwrap().is_none());
 }
 
@@ -441,7 +501,10 @@ async fn owner_reopens_withdrawn_and_it_becomes_editable() {
         duration_minutes: None,
         new_attachment_path: None,
     };
-    let edited = svc.update_owned(owner, created.id, update).await.unwrap();
+    let edited = svc
+        .update_owned(owner, created.id, update, "/nonexistent")
+        .await
+        .unwrap();
     assert_eq!(edited.title, "Revised");
 
     // Re-open of a non-withdrawn (now submitted) → refused.

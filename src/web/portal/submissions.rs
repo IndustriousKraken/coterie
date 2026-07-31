@@ -212,7 +212,10 @@ pub async fn submissions_page(
 ) -> Response {
     // Surface a DB failure as a 500 rather than an empty list — silently
     // showing "no submissions" would hide a real outage from the member.
-    let rows = match submission_repo.list_for_member(current_user.member.id).await {
+    let rows = match submission_repo
+        .list_for_member(current_user.member.id)
+        .await
+    {
         Ok(rows) => rows,
         Err(e) => return e.into_response(),
     };
@@ -249,7 +252,7 @@ pub async fn create_submission(
     Extension(current_user): Extension<CurrentUser>,
     mut multipart: Multipart,
 ) -> Response {
-    let uploads_dir = settings.server.uploads_path();
+    let uploads_dir = settings.server.private_uploads_path();
     let form = parse_submission_form(&uploads_dir, &mut multipart).await;
     if let Some(err) = form.upload_error {
         return (StatusCode::UNPROCESSABLE_ENTITY, err).into_response();
@@ -318,7 +321,7 @@ pub async fn update_submission(
         Ok(id) => id,
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
-    let uploads_dir = settings.server.uploads_path();
+    let uploads_dir = settings.server.private_uploads_path();
     let form = parse_submission_form(&uploads_dir, &mut multipart).await;
     if let Some(err) = form.upload_error {
         return (StatusCode::UNPROCESSABLE_ENTITY, err).into_response();
@@ -336,7 +339,7 @@ pub async fn update_submission(
     };
 
     match submission_service
-        .update_owned(current_user.member.id, id, input)
+        .update_owned(current_user.member.id, id, input, &uploads_dir)
         .await
     {
         Ok(_) => Redirect::to(&format!("/portal/submissions/{}", id)).into_response(),
@@ -380,7 +383,11 @@ pub async fn delete_submission(
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
     match submission_service
-        .delete(current_user.member.id, id, &settings.server.uploads_path())
+        .delete(
+            current_user.member.id,
+            id,
+            &settings.server.private_uploads_path(),
+        )
         .await
     {
         Ok(_) => Redirect::to("/portal/submissions").into_response(),
@@ -398,10 +405,7 @@ pub async fn reopen_submission(
         Ok(id) => id,
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
-    match submission_service
-        .reopen(current_user.member.id, id)
-        .await
-    {
+    match submission_service.reopen(current_user.member.id, id).await {
         Ok(_) => Redirect::to(&format!("/portal/submissions/{}", id)).into_response(),
         Err(e) => e.into_response(),
     }
@@ -411,8 +415,9 @@ pub async fn reopen_submission(
 /// admin — OR anyone, if the submission was accepted with `public`
 /// visibility. Always served `Content-Disposition: attachment` +
 /// `X-Content-Type-Options: nosniff` so a PDF never renders inline in the
-/// viewer's origin. Non-public attachments are NEVER served via the
-/// public `/uploads/:filename` route.
+/// viewer's origin. Attachments live in the private uploads root, which
+/// the public `/uploads/:filename` route is not mounted on — this is the
+/// only route that can reach them at all.
 pub async fn download_attachment(
     State(settings): State<Arc<Settings>>,
     State(submission_repo): State<Arc<dyn SubmissionRepository>>,
@@ -443,19 +448,13 @@ pub async fn download_attachment(
     let Some(stored) = submission.attachment_path else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    // Stored path is `uploads/<name>`; anything else isn't ours.
-    let Some(filename) = stored.strip_prefix("uploads/") else {
+    let Some(filename) = crate::web::uploads::upload_filename(&stored) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    if filename.is_empty()
-        || filename.contains('/')
-        || filename.contains('\\')
-        || filename.contains("..")
-    {
-        return StatusCode::NOT_FOUND.into_response();
-    }
 
-    let path = PathBuf::from(settings.server.uploads_path()).join(filename);
+    // Always the private root: attachments live there, and a row still
+    // carrying a pre-migration `uploads/` path simply resolves to nothing.
+    let path = PathBuf::from(settings.server.private_uploads_path()).join(filename);
     let file = match fs::File::open(&path).await {
         Ok(f) => f,
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
