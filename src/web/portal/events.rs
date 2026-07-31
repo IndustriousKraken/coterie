@@ -84,10 +84,16 @@ pub async fn events_list_api(
         }
     });
 
-    // Filter events by type.
+    // Filter events by visibility, then by type.
     let filtered_events: Vec<_> = events
         .into_iter()
         .filter(|e| {
+            // An AdminOnly event is content a non-admin member must not
+            // even learn exists — the repo methods don't filter on
+            // visibility (the admin surfaces share them), so it happens here.
+            if !e.visible_to_member(&current_user.member) {
+                return false;
+            }
             // Filter by type
             if let Some(ref event_type) = query.event_type {
                 if !event_type.is_empty() && format!("{:?}", e.event_type) != *event_type {
@@ -417,8 +423,12 @@ pub async fn rsvp_event(
     Path(event_id): Path<Uuid>,
 ) -> Response {
     let event = match event_repo.find_by_id(event_id).await {
-        Ok(Some(e)) => e,
-        Ok(None) => {
+        // An event the member may not see answers exactly as an unknown
+        // id does — a distinguishable refusal would let a member probe
+        // for admin-only event ids, which is the disclosure the level exists
+        // to prevent.
+        Ok(Some(e)) if e.visible_to_member(&current_user.member) => e,
+        Ok(_) => {
             return axum::response::Html(render_rsvp_error(
                 &event_id.to_string(),
                 None,
@@ -552,13 +562,20 @@ pub async fn cancel_rsvp_event(
     Path(event_id): Path<Uuid>,
 ) -> Response {
     let member_id = current_user.member.id;
-    let price = event_repo
-        .find_by_id(event_id)
-        .await
-        .ok()
-        .flatten()
-        .map(|e| e.member_price_cents)
-        .unwrap_or(0);
+    let event = event_repo.find_by_id(event_id).await.ok().flatten();
+
+    // Same non-disclosing answer an unknown id gets (the plain RSVP
+    // button, price 0), so a member can't tell an admin-only event id
+    // from a nonexistent one. See `rsvp_event`.
+    if event
+        .as_ref()
+        .is_some_and(|e| !e.visible_to_member(&current_user.member))
+    {
+        return axum::response::Html(render_rsvp_button(&event_id.to_string(), None, 0))
+            .into_response();
+    }
+
+    let price = event.map(|e| e.member_price_cents).unwrap_or(0);
 
     // Self-service cancel on a paid event would surrender the seat while
     // the charge stood. Releasing the money is an operator action
@@ -635,6 +652,24 @@ mod tests {
     impl axum::extract::FromRef<ListState> for Arc<dyn SeriesEnrollmentRepository> {
         fn from_ref(s: &ListState) -> Self {
             s.enrollment_repo.clone()
+        }
+    }
+
+    /// What `rsvp_event` extracts.
+    #[derive(Clone)]
+    struct RsvpState {
+        event_repo: Arc<dyn EventRepository>,
+        registration: Arc<EventRegistrationService>,
+    }
+
+    impl axum::extract::FromRef<RsvpState> for Arc<dyn EventRepository> {
+        fn from_ref(s: &RsvpState) -> Self {
+            s.event_repo.clone()
+        }
+    }
+    impl axum::extract::FromRef<RsvpState> for Arc<EventRegistrationService> {
+        fn from_ref(s: &RsvpState) -> Self {
+            s.registration.clone()
         }
     }
 
@@ -737,6 +772,205 @@ mod tests {
         assert!(
             body.contains("Upcoming Meetup"),
             "list fragment should render the upcoming event, got: {body}"
+        );
+    }
+
+    async fn seed_member(pool: &sqlx::SqlitePool) -> Member {
+        let member_repo: Arc<dyn MemberRepository> =
+            Arc::new(SqliteMemberRepository::new(pool.clone()));
+        member_repo
+            .create(CreateMemberRequest {
+                email: "member@example.com".to_string(),
+                username: "member".to_string(),
+                full_name: "Member".to_string(),
+                password: "p4ssword_long_enough".to_string(),
+                membership_type_id: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+    }
+
+    async fn seed_event(
+        event_repo: &Arc<dyn EventRepository>,
+        title: &str,
+        visibility: EventVisibility,
+        created_by: Uuid,
+    ) -> Uuid {
+        let now = Utc::now();
+        let id = Uuid::new_v4();
+        event_repo
+            .create(Event {
+                id,
+                title: title.to_string(),
+                description: "Body".to_string(),
+                event_type: EventType::Meeting,
+                event_type_id: None,
+                visibility,
+                start_time: now + chrono::Duration::days(7),
+                end_time: None,
+                timezone: "UTC".to_string(),
+                location: None,
+                max_attendees: None,
+                rsvp_required: false,
+                member_price_cents: 0,
+                guest_price_cents: 0,
+                guest_registration_enabled: false,
+                image_url: None,
+                created_by,
+                created_at: now,
+                updated_at: now,
+                series_id: None,
+                occurrence_index: None,
+            })
+            .await
+            .unwrap();
+        id
+    }
+
+    /// Body of `GET /portal/api/events/list` as `member`.
+    async fn list_body(
+        pool: &sqlx::SqlitePool,
+        event_repo: Arc<dyn EventRepository>,
+        member: Member,
+    ) -> String {
+        let app = Router::new()
+            .route("/portal/api/events/list", get(events_list_api))
+            .layer(Extension(CurrentUser { member }))
+            .with_state(ListState {
+                event_repo,
+                series_repo: Arc::new(crate::repository::SqliteEventSeriesRepository::new(
+                    pool.clone(),
+                )),
+                enrollment_repo: Arc::new(
+                    crate::repository::SqliteSeriesEnrollmentRepository::new(pool.clone()),
+                ),
+            });
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/portal/api/events/list")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    // An AdminOnly event is content the membership is not meant to know
+    // about: its title must not reach a non-admin's events fragment,
+    // while an admin keeps seeing it alongside everything else.
+    #[tokio::test]
+    async fn admin_only_event_absent_from_member_events_list() {
+        let pool = migrated_pool().await;
+        let member = seed_member(&pool).await;
+        let event_repo: Arc<dyn EventRepository> =
+            Arc::new(SqliteEventRepository::new(pool.clone()));
+
+        seed_event(
+            &event_repo,
+            "Open Social",
+            EventVisibility::Public,
+            member.id,
+        )
+        .await;
+        seed_event(
+            &event_repo,
+            "Board Revocation Hearing",
+            EventVisibility::AdminOnly,
+            member.id,
+        )
+        .await;
+
+        let body = list_body(&pool, event_repo.clone(), member.clone()).await;
+        assert!(body.contains("Open Social"), "got: {body}");
+        assert!(
+            !body.contains("Board Revocation Hearing"),
+            "admin-only event leaked to a non-admin member: {body}"
+        );
+
+        let admin = Member {
+            is_admin: true,
+            ..member
+        };
+        let body = list_body(&pool, event_repo, admin).await;
+        assert!(body.contains("Open Social"), "got: {body}");
+        assert!(
+            body.contains("Board Revocation Hearing"),
+            "an admin must still see admin-only events: {body}"
+        );
+    }
+
+    // A refused RSVP must be indistinguishable from an unknown id, and
+    // must not seat the member.
+    #[tokio::test]
+    async fn rsvp_to_admin_only_event_is_refused() {
+        let pool = migrated_pool().await;
+        let member = seed_member(&pool).await;
+        let event_repo: Arc<dyn EventRepository> =
+            Arc::new(SqliteEventRepository::new(pool.clone()));
+        let event_id = seed_event(
+            &event_repo,
+            "Board Revocation Hearing",
+            EventVisibility::AdminOnly,
+            member.id,
+        )
+        .await;
+        let member_id = member.id;
+
+        let registration = Arc::new(EventRegistrationService::new(
+            event_repo.clone(),
+            Arc::new(crate::repository::SqlitePaymentRepository::new(
+                pool.clone(),
+            )),
+            Arc::new(crate::payments::StripeHandle::preloaded(None, None)),
+            "http://localhost:3000".to_string(),
+        ));
+
+        let app = Router::new()
+            .route(
+                "/portal/api/events/:id/rsvp",
+                axum::routing::post(rsvp_event),
+            )
+            .layer(Extension(CurrentUser { member }))
+            .with_state(RsvpState {
+                event_repo: event_repo.clone(),
+                registration,
+            });
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/portal/api/events/{event_id}/rsvp"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(
+            body.contains("Event not found"),
+            "refusal must read exactly as an unknown id, got: {body}"
+        );
+        assert_eq!(
+            event_repo
+                .attendance_status(event_id, &Attendee::Member(member_id))
+                .await
+                .unwrap(),
+            None,
+            "no seat may be written for an event the member can't see"
         );
     }
 

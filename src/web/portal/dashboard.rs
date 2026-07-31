@@ -141,9 +141,18 @@ pub async fn upcoming_events(
     Extension(current_user): Extension<CurrentUser>,
 ) -> impl IntoResponse {
     // Authenticated members see both public and members-only events;
-    // visibility filtering is per-event inside the template, not at
-    // the repo layer.
-    let events = event_repo.list_upcoming(5).await.unwrap_or_default();
+    // AdminOnly ones are dropped here for non-admins (the repo methods
+    // don't filter — the admin surfaces share them). Over-fetch and
+    // take(5) after the filter so a hidden event near the top doesn't
+    // shrink a member's widget.
+    let events: Vec<_> = event_repo
+        .list_upcoming(25)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e.visible_to_member(&current_user.member))
+        .take(5)
+        .collect();
 
     // Transform to our summary format, checking attendance for each event
     let member_id = current_user.member.id;
@@ -345,6 +354,104 @@ mod tests {
         assert!(
             !body.contains("Attending</span>"),
             "attending state must not be a dead <span>Attending</span>, got: {body}"
+        );
+    }
+
+    /// Body of `GET /portal/api/events/upcoming` as `member`.
+    async fn upcoming_body(event_repo: Arc<dyn EventRepository>, member: Member) -> String {
+        let app = Router::new()
+            .route("/portal/api/events/upcoming", get(upcoming_events))
+            .layer(Extension(CurrentUser { member }))
+            .with_state(event_repo);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/portal/api/events/upcoming")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    // The dashboard widget is a member surface like any other: an
+    // AdminOnly event's title must not reach a non-admin, and an admin
+    // must still see it.
+    #[tokio::test]
+    async fn admin_only_event_absent_from_dashboard_upcoming() {
+        let pool = migrated_pool().await;
+
+        let member_repo: Arc<dyn MemberRepository> =
+            Arc::new(SqliteMemberRepository::new(pool.clone()));
+        let member: Member = member_repo
+            .create(CreateMemberRequest {
+                email: "member@example.com".to_string(),
+                username: "member".to_string(),
+                full_name: "Member".to_string(),
+                password: "p4ssword_long_enough".to_string(),
+                membership_type_id: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let event_repo: Arc<dyn EventRepository> =
+            Arc::new(SqliteEventRepository::new(pool.clone()));
+        let now = Utc::now();
+        for (title, visibility) in [
+            ("Open Social", EventVisibility::Public),
+            ("Board Revocation Hearing", EventVisibility::AdminOnly),
+        ] {
+            event_repo
+                .create(Event {
+                    id: Uuid::new_v4(),
+                    title: title.to_string(),
+                    description: "Body".to_string(),
+                    event_type: EventType::Social,
+                    event_type_id: None,
+                    visibility,
+                    start_time: now + chrono::Duration::days(7),
+                    end_time: None,
+                    timezone: "UTC".to_string(),
+                    location: None,
+                    max_attendees: None,
+                    rsvp_required: false,
+                    member_price_cents: 0,
+                    guest_price_cents: 0,
+                    guest_registration_enabled: false,
+                    image_url: None,
+                    created_by: member.id,
+                    created_at: now,
+                    updated_at: now,
+                    series_id: None,
+                    occurrence_index: None,
+                })
+                .await
+                .unwrap();
+        }
+
+        let body = upcoming_body(event_repo.clone(), member.clone()).await;
+        assert!(body.contains("Open Social"), "got: {body}");
+        assert!(
+            !body.contains("Board Revocation Hearing"),
+            "admin-only event leaked to a non-admin member: {body}"
+        );
+
+        let admin = Member {
+            is_admin: true,
+            ..member
+        };
+        let body = upcoming_body(event_repo, admin).await;
+        assert!(body.contains("Open Social"), "got: {body}");
+        assert!(
+            body.contains("Board Revocation Hearing"),
+            "an admin must still see admin-only events: {body}"
         );
     }
 }
