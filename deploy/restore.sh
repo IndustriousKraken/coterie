@@ -118,6 +118,25 @@ for root in uploads private-uploads; do
         || die "bundle has no $root/ member. A database-only artifact is not a complete
        backup: its rows reference attachment and image files it does not carry."
 done
+
+# Every member must land under the staging directory. This extracts as
+# root, and the bundle is input from a trust boundary — it may have come
+# back from offsite storage, or off a host someone else has had. GNU and
+# BusyBox tar both refuse `..` members themselves, but they refuse them
+# *during extraction*, which is after the service is stopped and the
+# existing data displaced. Checking here fails while the instance is
+# still up, and does not depend on which tar the host has.
+while IFS= read -r member; do
+    case "$member" in
+        /*|..|../*|*/..|*/../*)
+            die "bundle contains a member that would write outside the restore
+       directory: $member
+       This is not an artifact deploy/backup.sh produces. Treat the bundle
+       as tampered with and restore from another copy."
+            ;;
+    esac
+done <<<"$MEMBERS"
+
 log "Bundle looks complete (database + uploads + private-uploads)"
 
 # --- 2. stage, then stop the service ----------------------------------
@@ -187,9 +206,20 @@ CHECK_OUT=$("$SQLITE3" "$DB" 'PRAGMA integrity_check;' 2>&1 || echo "integrity_c
 CHECK="${CHECK_OUT%%$'\n'*}"
 CHECK="${CHECK//[[:space:]]/}"
 if [[ "$CHECK" != "ok" ]]; then
-    die "integrity_check on the restored database said: $CHECK
-       $SERVICE has NOT been started. The data this restore displaced is
+    # Only point at the displaced data when there is some: on a
+    # fresh-host restore nothing was displaced and pre-restore-* was
+    # never created, so naming it would send an operator who is already
+    # having a bad day looking for a directory that does not exist.
+    if [[ "$DISPLACED_ANY" -eq 1 ]]; then
+        RECOVERY="The data this restore displaced is
        intact at $DISPLACED — move it back to undo, or try an older bundle."
+    else
+        RECOVERY="Nothing was displaced (the data dir was empty before
+       this restore), so there is nothing to move back — re-copy the bundle
+       in case the transfer was bad, or try an older one."
+    fi
+    die "integrity_check on the restored database said: $CHECK
+       $SERVICE has NOT been started. $RECOVERY"
 fi
 log "integrity_check: ok"
 

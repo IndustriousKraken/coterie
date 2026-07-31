@@ -550,14 +550,18 @@ fn install_copies_and_enables_the_backup_timer() {
     );
 }
 
-/// Idempotency: a re-run on a host that already has the timer leaves the
-/// existing schedule alone rather than reinstalling it.
+/// Idempotency: a re-run on a host that already has both units leaves
+/// the existing schedule alone rather than reinstalling it.
 #[test]
 fn rerun_leaves_an_existing_backup_timer_alone() {
     let args = test_mode_args();
     let sys = FakeSystem::new();
     let fs = FakeFs::new();
     stage_fake_install_state(&fs);
+    fs.put(
+        Path::new("/etc/systemd/system/coterie-backup.service"),
+        b"[Service]\nExecStart=/opt/coterie/deploy/backup.sh\n",
+    );
     fs.put(
         Path::new("/etc/systemd/system/coterie-backup.timer"),
         b"[Timer]\n# operator-tuned schedule\nOnCalendar=*-*-* 05:00:00\n",
@@ -583,6 +587,44 @@ fn rerun_leaves_an_existing_backup_timer_alone() {
         out.contains("already installed"),
         "the skip should be visible to the operator; lines: {:?}",
         out.lines.borrow()
+    );
+}
+
+/// Half-installed is not installed: a host carrying the timer but not
+/// the service unit has a schedule that fails every time it fires. A
+/// re-run repairs the missing half — and still enables the timer,
+/// because that timer was pointing at nothing.
+#[test]
+fn rerun_repairs_a_half_installed_backup_timer() {
+    let args = test_mode_args();
+    let sys = FakeSystem::new();
+    let fs = FakeFs::new();
+    stage_fake_install_state(&fs);
+    fs.put(
+        Path::new("/etc/systemd/system/coterie-backup.timer"),
+        b"[Timer]\n# operator-tuned schedule\nOnCalendar=*-*-* 05:00:00\n",
+    );
+    let prompts = MockPrompter::new();
+    install::run(args, &sys, &fs, &prompts, &CaptureOutput::new()).expect("install succeeds");
+
+    assert!(
+        fs.get(Path::new("/etc/systemd/system/coterie-backup.service"))
+            .is_some(),
+        "the missing service unit must be installed, not skipped because the timer exists"
+    );
+    let timer = String::from_utf8(
+        fs.get(Path::new("/etc/systemd/system/coterie-backup.timer"))
+            .expect("timer still present"),
+    )
+    .unwrap();
+    assert!(
+        timer.contains("operator-tuned"),
+        "the half that IS installed must still be left alone; got:\n{timer}"
+    );
+    assert!(
+        sys.called_with("systemctl", &["daemon-reload"])
+            && sys.called_with("systemctl", &["enable", "--now", "coterie-backup.timer"]),
+        "a repaired install must reload and enable, or the new service unit is never picked up"
     );
 }
 

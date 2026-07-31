@@ -169,9 +169,16 @@ It is the same steps the script takes, by hand.
 BUNDLE=/var/lib/coterie/backups/daily/coterie-2026-07-31.tar.gz
 
 # 1. Verify BEFORE touching anything. This must list coterie.db,
-#    uploads/ and private-uploads/. If it errors, the bundle is bad —
-#    stop here, with the service still up.
+#    uploads/ and private-uploads/ — and NOTHING else. If it errors,
+#    the bundle is bad — stop here, with the service still up.
 tar -tzf "$BUNDLE"
+
+#    Read that listing before extracting. Step 4 runs tar as root, so a
+#    member starting with `/` or containing a `..` component would write
+#    outside the data dir. No bundle from backup.sh has one; a bundle
+#    that does has been tampered with — use another copy. restore.sh
+#    refuses such a bundle outright, which is one reason to prefer it.
+tar -tzf "$BUNDLE" | grep -E '^/|(^|/)\.\.(/|$)' && echo "UNSAFE — do not extract"
 
 # 2. Stop the service. Swapping the SQLite file under a running
 #    process corrupts WAL state.

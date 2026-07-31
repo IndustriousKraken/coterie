@@ -414,29 +414,42 @@ impl<'a, S: SystemCommand, F: FileSystem> Executor<'a, S, F> {
     /// the gap is invisible until a restore is needed, which is how a
     /// production instance ran three weeks with none.
     ///
-    /// Idempotent — a re-run that finds the timer unit already in place
-    /// leaves it alone rather than installing a second copy.
+    /// Idempotent — a re-run that finds BOTH units already in place
+    /// leaves them alone rather than installing a second copy. A host
+    /// that has only one of them is repaired rather than skipped: a
+    /// timer whose service unit is missing is enabled and scheduled but
+    /// fails every time it fires, which looks exactly like working
+    /// backups until someone reads the journal.
     ///
     /// Announces through `Output` (rather than the `println!`-based
     /// `announce`) so `--dry-run` can be asserted on in tests without
     /// scraping process stdout.
     pub(super) fn install_backup_timer<O: Output>(&self, output: &O) -> Result<()> {
-        if self.fs.is_file(Path::new(BACKUP_TIMER_DST)) {
+        let missing: Vec<(&str, &str)> = [
+            (BACKUP_SERVICE_SRC, BACKUP_SERVICE_DST),
+            (BACKUP_TIMER_SRC, BACKUP_TIMER_DST),
+        ]
+        .into_iter()
+        .filter(|(_, dst)| !self.fs.is_file(Path::new(dst)))
+        .collect();
+
+        if missing.is_empty() {
             output.println(&self.step_line(
-                "scheduled backups: timer already installed — leaving the existing schedule alone",
+                "scheduled backups: units already installed — leaving the existing schedule alone",
             ));
             return Ok(());
         }
+        let installing: Vec<&str> = missing.iter().map(|(_, dst)| *dst).collect();
         output.println(&self.step_line(&format!(
-            "scheduled backups: install {BACKUP_SERVICE_DST} + {BACKUP_TIMER_DST}, then enable the timer"
+            "scheduled backups: install {}, then enable the timer",
+            installing.join(" + ")
         )));
         if !self.dry_run {
-            self.fs
-                .copy_file(Path::new(BACKUP_SERVICE_SRC), Path::new(BACKUP_SERVICE_DST))
-                .with_context(|| format!("installing {BACKUP_SERVICE_DST}"))?;
-            self.fs
-                .copy_file(Path::new(BACKUP_TIMER_SRC), Path::new(BACKUP_TIMER_DST))
-                .with_context(|| format!("installing {BACKUP_TIMER_DST}"))?;
+            for (src, dst) in &missing {
+                self.fs
+                    .copy_file(Path::new(src), Path::new(dst))
+                    .with_context(|| format!("installing {dst}"))?;
+            }
         }
         self.run("systemctl", &["daemon-reload"], "systemctl daemon-reload")?;
         self.run(

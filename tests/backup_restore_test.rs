@@ -792,3 +792,108 @@ fn a_corrupt_database_stops_the_restore_before_the_service_starts() {
         stdout_of(&out)
     );
 }
+
+/// A bundle is input from a trust boundary — it may have come back from
+/// offsite storage, or off a host someone else has had — and restore.sh
+/// extracts it as root. A member that would write outside the restore
+/// directory is refused during verification, while the instance is
+/// still up, rather than by whichever tar the host happens to ship
+/// midway through the restore.
+#[test]
+fn a_bundle_with_a_traversal_member_is_refused() {
+    let tmp = TempDir::new("traversal");
+    let sqlite3 = sqlite3_or_skip!();
+    let systemctl = systemctl_shim(tmp.path());
+    let log = systemctl.1.clone();
+    let data = tmp.path().join("data");
+    fs::create_dir_all(&data).unwrap();
+    seed_data_dir(&sqlite3, &data, "original");
+
+    // An otherwise-valid bundle carrying one booby-trapped member.
+    // `-P` is what stops tar sanitising the name as it writes it.
+    let stage = tmp.path().join("stage");
+    fs::create_dir_all(stage.join("uploads")).unwrap();
+    fs::create_dir_all(stage.join("private-uploads")).unwrap();
+    fs::copy(data.join("coterie.db"), stage.join("coterie.db")).unwrap();
+    fs::write(tmp.path().join("evil"), "pwned").unwrap();
+    let booby_trapped = tmp.path().join("evil.tar.gz");
+    let tar = Command::new("tar")
+        .arg("-czPf")
+        .arg(&booby_trapped)
+        .arg("-C")
+        .arg(&stage)
+        .args(["coterie.db", "uploads", "private-uploads", "../evil"])
+        .output()
+        .expect("tar");
+    assert!(tar.status.success(), "tar: {}", stdout_of(&tar));
+    if !bundle_members(&booby_trapped)
+        .lines()
+        .any(|l| l.contains(".."))
+    {
+        eprintln!("skipping: this host's tar sanitises `..` at create time");
+        return;
+    }
+
+    let out = run_restore(&sqlite3, &systemctl, &data, &booby_trapped);
+    assert!(
+        !out.status.success(),
+        "a member that escapes the restore directory must be refused: {}",
+        stdout_of(&out)
+    );
+    assert_eq!(
+        systemctl_calls(&log),
+        "",
+        "the refusal must come before the service is stopped"
+    );
+    assert_eq!(
+        sql(&sqlite3, &data.join("coterie.db"), "SELECT v FROM marker"),
+        "original",
+        "the existing database must be untouched"
+    );
+    assert!(
+        !tmp.path().join("evil").is_dir()
+            && fs::read_to_string(tmp.path().join("evil")).unwrap() == "pwned",
+        "nothing should have been written through the traversal member"
+    );
+}
+
+/// A failed integrity check on a fresh host must not send the operator
+/// looking for a pre-restore-* directory: nothing was displaced, so it
+/// was never created.
+#[test]
+fn a_failed_integrity_check_names_no_displaced_data_when_there_is_none() {
+    let tmp = TempDir::new("freshfail");
+    let sqlite3 = sqlite3_or_skip!();
+    let systemctl = systemctl_shim(tmp.path());
+    let data = tmp.path().join("data"); // never created: the fresh-host case
+
+    let stage = tmp.path().join("stage");
+    fs::create_dir_all(stage.join("uploads")).unwrap();
+    fs::create_dir_all(stage.join("private-uploads")).unwrap();
+    fs::write(stage.join("coterie.db"), vec![0x7f; 4096]).unwrap();
+    let bad = tmp.path().join("bad.tar.gz");
+    let tar = Command::new("tar")
+        .arg("-czf")
+        .arg(&bad)
+        .arg("-C")
+        .arg(&stage)
+        .args(["coterie.db", "uploads", "private-uploads"])
+        .output()
+        .expect("tar");
+    assert!(tar.status.success());
+
+    let out = run_restore(&sqlite3, &systemctl, &data, &bad);
+    assert!(
+        !out.status.success(),
+        "a bad database must fail the restore"
+    );
+    let said = stdout_of(&out);
+    assert!(
+        !said.contains("pre-restore"),
+        "nothing was displaced, so the failure must not point at a pre-restore dir: {said}"
+    );
+    assert!(
+        said.contains("Nothing was displaced"),
+        "the failure should say so plainly instead: {said}"
+    );
+}
