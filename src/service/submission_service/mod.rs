@@ -175,11 +175,19 @@ impl SubmissionService {
     /// Owner edit, permitted ONLY while the submission is still
     /// `submitted`. Ownership is enforced (admins do not edit member
     /// content through this path).
+    ///
+    /// When the edit replaces the attachment, the previous file is
+    /// deleted best-effort from `uploads_dir` to reclaim the disk it
+    /// occupies — nothing else references it once the row is rewritten.
+    /// Best-effort is fine: attachments live in the private root, so a
+    /// file that survives an unlink failure is wasted space, not a
+    /// disclosure.
     pub async fn update_owned(
         &self,
         actor_id: Uuid,
         id: Uuid,
         input: UpdateSubmissionInput,
+        uploads_dir: &str,
     ) -> Result<Submission> {
         let mut submission = self.load_owned(actor_id, id).await?;
         if submission.status != SubmissionStatus::Submitted {
@@ -197,10 +205,21 @@ impl SubmissionService {
         submission.preferred_start = input.preferred_start;
         submission.timezone = input.timezone;
         submission.duration_minutes = input.duration_minutes;
+        // Captured before the overwrite. The old file is garbage only once
+        // a different one has taken its place in the row.
+        let previous = submission.attachment_path.clone();
         if let Some(path) = input.new_attachment_path {
             submission.attachment_path = Some(path);
         }
-        self.submission_repo.update(submission).await
+        let replaced =
+            previous.filter(|old| Some(old.as_str()) != submission.attachment_path.as_deref());
+        // Delete AFTER the update commits: if it fails, the old file is
+        // still the referenced one and must survive.
+        let saved = self.submission_repo.update(submission).await?;
+        if let Some(old) = replaced {
+            let _ = crate::web::uploads::delete_uploaded_file(uploads_dir, &old).await;
+        }
+        Ok(saved)
     }
 
     /// Owner withdraws their own open submission → terminal `withdrawn`.

@@ -57,6 +57,21 @@ impl ServerConfig {
             .unwrap_or_else(|| format!("{}/uploads", self.data_dir))
     }
 
+    /// Root for uploads that must NEVER be reachable by the public
+    /// `GET /uploads/:filename` route (today: submission attachments).
+    /// No static or public route is mounted here, so the public handler
+    /// is structurally incapable of reading these files rather than
+    /// merely instructed not to.
+    ///
+    /// Data-dir-relative on purpose — it rides along with the same
+    /// backup/restore rule as the database, with no separate step to
+    /// forget.
+    // ponytail: no `private_uploads_dir` override. Add one only if an
+    // operator actually needs it on a separate volume.
+    pub fn private_uploads_path(&self) -> String {
+        format!("{}/private-uploads", self.data_dir)
+    }
+
     pub fn cookies_are_secure(&self) -> bool {
         self.secure_cookies
             .unwrap_or_else(|| self.base_url.starts_with("https://"))
