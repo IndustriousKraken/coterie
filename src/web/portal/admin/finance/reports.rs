@@ -29,7 +29,10 @@ use crate::{
         expense_category_service::ExpenseCategoryService,
     },
     web::{
-        portal::admin::{csv::push_csv, partials},
+        portal::admin::{
+            csv::{push_csv, push_csv_user},
+            partials,
+        },
         templates::{BaseContext, HtmlTemplate},
     },
 };
@@ -327,19 +330,26 @@ pub async fn tax_prep_csv(
     let mut out = String::with_capacity(16 * 1024);
     out.push_str("date,type,amount,description,counterparty,category,account,reference\n");
     for r in &rows {
+        // Server-controlled columns (date, type, amount, reference) stay
+        // on plain `push_csv` — in particular a refund's negative amount
+        // must keep its leading `-`. The externally-influenced free-text
+        // columns (description, counterparty, category, account) go
+        // through `push_csv_user` so a leading formula trigger is
+        // neutralized (CWE-1236); counterparty/description can carry a
+        // donor name straight from the anonymous donate endpoint.
         push_csv(&mut out, &r.date.format("%Y-%m-%d").to_string());
         out.push(',');
         push_csv(&mut out, r.type_str);
         out.push(',');
         push_csv(&mut out, &format!("{:.2}", r.amount_cents as f64 / 100.0));
         out.push(',');
-        push_csv(&mut out, &r.description);
+        push_csv_user(&mut out, &r.description);
         out.push(',');
-        push_csv(&mut out, &r.counterparty);
+        push_csv_user(&mut out, &r.counterparty);
         out.push(',');
-        push_csv(&mut out, &r.category);
+        push_csv_user(&mut out, &r.category);
         out.push(',');
-        push_csv(&mut out, &r.account);
+        push_csv_user(&mut out, &r.account);
         out.push(',');
         push_csv(&mut out, &r.reference);
         out.push('\n');
