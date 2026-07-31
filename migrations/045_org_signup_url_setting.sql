@@ -14,4 +14,4 @@
 -- install.
 INSERT INTO app_settings (key, value, value_type, category, description, is_sensitive) VALUES
     ('org.signup_url', '', 'string', 'organization',
-     'Public signup page members are sent to from the login screen. Leave empty to show no create-account link.', 0);
+     'Public signup page members are sent to from the login screen. Must start with http:// or https://; leave empty to show no create-account link.', 0);

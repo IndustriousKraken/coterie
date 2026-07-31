@@ -109,6 +109,27 @@ async fn a_blank_signup_url_is_treated_as_unset() {
     assert!(!body.contains("create a new account"));
 }
 
+/// The setting is admin-written but rendered to anonymous visitors, and
+/// HTML-escaping does nothing to a URL *scheme*. A non-http(s) value reads
+/// as unset, so `javascript:` can never become a click-to-execute link.
+#[tokio::test]
+async fn a_non_http_signup_url_renders_no_link() {
+    for value in ["javascript:alert(1)", "data:text/html,<b>x", "example.com"] {
+        let (pool, app) = harness().await;
+        set_signup_url(&pool, value).await;
+
+        let body = login_page(&app).await;
+        assert!(
+            !body.contains("create a new account"),
+            "{value} must render no link at all; body was: {body}"
+        );
+        assert!(
+            !body.contains(value),
+            "{value} must not reach the page in any form; body was: {body}"
+        );
+    }
+}
+
 /// The actual defect class: any template linking a browser at the POST-only
 /// signup API. A grep-style assertion stops it returning by a different route.
 #[test]

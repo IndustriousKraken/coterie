@@ -85,15 +85,26 @@ pub async fn login_page(
         }
     }
 
+    // This value lands in an `href` on the most public page in the app.
+    // Askama escapes it, so an attribute can't be broken out of — but
+    // escaping does nothing to a *scheme*, and a `javascript:` value would
+    // render a click-to-execute link for every anonymous visitor. Only
+    // http(s) is a signup page; anything else reads as unset, i.e. no link.
+    let configured = settings_service
+        .get_value(org_keys::SIGNUP_URL)
+        .await
+        .unwrap_or_default();
+    let configured = configured.trim();
+    let signup_url = if configured.starts_with("http://") || configured.starts_with("https://") {
+        configured.to_string()
+    } else {
+        String::new()
+    };
+
     let template = LoginTemplate {
         base: BaseContext::for_anon(),
         redirect_url: query.redirect,
-        signup_url: settings_service
-            .get_value(org_keys::SIGNUP_URL)
-            .await
-            .unwrap_or_default()
-            .trim()
-            .to_string(),
+        signup_url,
     };
     HtmlTemplate(template).into_response()
 }
