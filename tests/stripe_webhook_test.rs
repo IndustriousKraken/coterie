@@ -42,7 +42,10 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 mod common;
-use common::fresh_pool;
+use common::{
+    build_charge, build_checkout_session, build_invoice, build_payment_intent, build_subscription,
+    fresh_pool,
+};
 
 // ---------------------------------------------------------------------
 // RecordingIntegration — test-only Integration impl that captures every
@@ -320,122 +323,6 @@ async fn member_subscription_id(pool: &SqlitePool, member_id: Uuid) -> Option<St
 // JSON builders for stripe-rs types
 // ---------------------------------------------------------------------
 
-fn build_payment_intent(
-    id: &str,
-    amount: i64,
-    metadata: serde_json::Value,
-) -> stripe::PaymentIntent {
-    let body = json!({
-        "id": id,
-        "object": "payment_intent",
-        "amount": amount,
-        "amount_received": amount,
-        "amount_capturable": 0,
-        "currency": "usd",
-        "status": "succeeded",
-        "livemode": false,
-        "created": Utc::now().timestamp(),
-        "metadata": metadata,
-        "capture_method": "automatic",
-        "confirmation_method": "automatic",
-        "payment_method_types": ["card"],
-    });
-    serde_json::from_value(body).expect("PaymentIntent from JSON")
-}
-
-fn build_charge(
-    id: &str,
-    amount: i64,
-    amount_refunded: i64,
-    payment_intent: Option<&str>,
-) -> stripe::Charge {
-    let body = json!({
-        "id": id,
-        "object": "charge",
-        "amount": amount,
-        "amount_captured": amount,
-        "amount_refunded": amount_refunded,
-        "billing_details": {
-            "address": null,
-            "email": null,
-            "name": null,
-            "phone": null,
-        },
-        "currency": "usd",
-        "captured": true,
-        "created": Utc::now().timestamp(),
-        "disputed": false,
-        "livemode": false,
-        "paid": true,
-        "refunded": amount_refunded >= amount,
-        "status": "succeeded",
-        "payment_intent": payment_intent,
-        "metadata": {},
-    });
-    serde_json::from_value(body).expect("Charge from JSON")
-}
-
-fn build_subscription(id: &str, customer_id: &str) -> stripe::Subscription {
-    let body = json!({
-        "id": id,
-        "object": "subscription",
-        "customer": customer_id,
-        "status": "canceled",
-        "created": Utc::now().timestamp(),
-        "current_period_start": Utc::now().timestamp(),
-        "current_period_end": Utc::now().timestamp() + 86400,
-        "start_date": Utc::now().timestamp(),
-        "livemode": false,
-        "cancel_at_period_end": false,
-        "collection_method": "charge_automatically",
-        "automatic_tax": { "enabled": false, "liability": null },
-        "billing_cycle_anchor": Utc::now().timestamp(),
-        "currency": "usd",
-        "metadata": {},
-        "items": {
-            "object": "list",
-            "data": [],
-            "has_more": false,
-            "total_count": 0,
-            "url": "/v1/subscription_items"
-        },
-    });
-    serde_json::from_value(body).expect("Subscription from JSON")
-}
-
-fn build_checkout_session(
-    id: &str,
-    payment_intent_id: Option<&str>,
-    metadata: serde_json::Value,
-) -> stripe::CheckoutSession {
-    let body = json!({
-        "id": id,
-        "object": "checkout.session",
-        "livemode": false,
-        "mode": "payment",
-        "status": "complete",
-        "payment_status": "paid",
-        "created": Utc::now().timestamp(),
-        "expires_at": Utc::now().timestamp() + 86400,
-        "currency": "usd",
-        "amount_total": 5000,
-        "amount_subtotal": 5000,
-        "metadata": metadata,
-        "payment_intent": payment_intent_id,
-        "automatic_tax": { "enabled": false, "liability": null, "status": null },
-        "custom_fields": [],
-        "custom_text": {
-            "after_submit": null,
-            "shipping_address": null,
-            "submit": null,
-            "terms_of_service_acceptance": null
-        },
-        "payment_method_types": ["card"],
-        "shipping_options": [],
-    });
-    serde_json::from_value(body).expect("CheckoutSession from JSON")
-}
-
 // ---------------------------------------------------------------------
 // 1. dues-extension idempotency on payment_intent.succeeded retry
 // ---------------------------------------------------------------------
@@ -710,6 +597,7 @@ async fn public_donation_checkout_completion_marks_payment_completed() {
             "public_donation": "1",
             "donor_email": "donor@example.com",
         }),
+        5000,
     );
 
     h.dispatcher
@@ -783,6 +671,7 @@ async fn checkout_completed_leaves_payment_pending_when_dues_extend_fails() {
             "payment_type": "membership",
             "membership_type_slug": slug,
         }),
+        5000,
     );
 
     // First dispatch: the slug doesn't resolve, so extend_member_dues_by_slug
@@ -990,6 +879,7 @@ async fn checkout_membership_completion_is_idempotent_under_retry() {
             "payment_type": "membership",
             "membership_type_slug": "member",
         }),
+        5000,
     );
 
     h.dispatcher
@@ -1083,37 +973,6 @@ async fn webhook_handlers_do_not_call_gateway_unnecessarily() {
 /// subscription, currency, amount_paid/amount_due/amount_remaining,
 /// status, attempt_count, next_payment_attempt. The rest defaults to
 /// None and the handler treats them as missing.
-fn build_invoice(
-    id: &str,
-    customer_id: &str,
-    subscription_id: &str,
-    amount_paid: i64,
-    status: &str,
-    attempt_count: u64,
-    next_payment_attempt: Option<i64>,
-) -> stripe::Invoice {
-    let mut body = json!({
-        "id": id,
-        "object": "invoice",
-        "customer": customer_id,
-        "subscription": subscription_id,
-        "amount_paid": amount_paid,
-        "amount_due": amount_paid,
-        "amount_remaining": 0,
-        "currency": "usd",
-        "status": status,
-        "attempt_count": attempt_count,
-        "livemode": false,
-        "created": Utc::now().timestamp(),
-        "period_start": Utc::now().timestamp(),
-        "period_end": Utc::now().timestamp() + 86400 * 60,
-    });
-    if let Some(ts) = next_payment_attempt {
-        body["next_payment_attempt"] = json!(ts);
-    }
-    serde_json::from_value(body).expect("Invoice from JSON")
-}
-
 /// Seed `dues_paid_until` and `stripe_subscription_id` on a member.
 /// The webhook handlers look up members by stripe_customer_id (set via
 /// insert_member), but the integration tests want to confirm that the
@@ -1556,7 +1415,7 @@ async fn expired_session_flips_pending_payment_to_failed() {
     )
     .await;
 
-    let session = build_checkout_session(cs_id, None, json!({}));
+    let session = build_checkout_session(cs_id, None, json!({}), 5000);
     h.dispatcher
         .dispatch_expired_session(session)
         .await
@@ -1591,7 +1450,7 @@ async fn expired_session_for_unknown_session_is_noop() {
     )
     .await;
 
-    let session = build_checkout_session("cs_does_not_exist", None, json!({}));
+    let session = build_checkout_session("cs_does_not_exist", None, json!({}), 5000);
     h.dispatcher
         .dispatch_expired_session(session)
         .await
@@ -1719,6 +1578,7 @@ async fn save_card_checkout_completion_enrolls_auto_renew() {
             "membership_type_slug": "member",
             "save_card": "true",
         }),
+        5000,
     );
     session.customer = Some(stripe::Expandable::Id(
         "cus_enroll".parse().expect("customer id"),
@@ -1796,6 +1656,7 @@ async fn save_card_without_customer_soft_fails_payment_stands() {
             "membership_type_slug": "member",
             "save_card": "true",
         }),
+        5000,
     );
 
     h.dispatcher

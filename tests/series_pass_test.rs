@@ -51,7 +51,7 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 mod common;
-use common::fresh_pool;
+use common::{build_charge, build_checkout_session, fresh_pool};
 
 // ---------------------------------------------------------------------
 // Harness
@@ -407,57 +407,15 @@ fn series_pass_session(
     series_id: Uuid,
     payment_intent: Option<&str>,
 ) -> stripe::CheckoutSession {
-    let body = json!({
-        "id": id,
-        "object": "checkout.session",
-        "livemode": false,
-        "mode": "payment",
-        "status": "complete",
-        "payment_status": "paid",
-        "created": Utc::now().timestamp(),
-        "expires_at": Utc::now().timestamp() + 3600,
-        "currency": "usd",
-        "amount_total": 12000,
-        "amount_subtotal": 12000,
-        "metadata": {
+    build_checkout_session(
+        id,
+        payment_intent,
+        json!({
             "payment_type": "series_pass",
             "series_id": series_id.to_string(),
-        },
-        "payment_intent": payment_intent,
-        "automatic_tax": { "enabled": false, "liability": null, "status": null },
-        "custom_fields": [],
-        "custom_text": {
-            "after_submit": null,
-            "shipping_address": null,
-            "submit": null,
-            "terms_of_service_acceptance": null
-        },
-        "payment_method_types": ["card"],
-        "shipping_options": [],
-    });
-    serde_json::from_value(body).expect("CheckoutSession from JSON")
-}
-
-fn charge(id: &str, amount: i64, payment_intent: &str) -> stripe::Charge {
-    let body = json!({
-        "id": id,
-        "object": "charge",
-        "amount": amount,
-        "amount_captured": amount,
-        "amount_refunded": amount,
-        "billing_details": { "address": null, "email": null, "name": null, "phone": null },
-        "currency": "usd",
-        "captured": true,
-        "created": Utc::now().timestamp(),
-        "disputed": false,
-        "livemode": false,
-        "paid": true,
-        "refunded": true,
-        "status": "succeeded",
-        "payment_intent": payment_intent,
-        "metadata": {},
-    });
-    serde_json::from_value(body).expect("Charge from JSON")
+        }),
+        12000,
+    )
 }
 
 fn paid(member_cents: i64) -> SeriesPassPricing {
@@ -1013,7 +971,7 @@ async fn out_of_band_refund_webhook_cancels_the_enrollment() {
     let payment = h.enroll_and_pay(&m, &series).await;
     let pi = payment.external_id.as_ref().unwrap().as_str().to_string();
     h.dispatcher
-        .dispatch_charge_refunded(charge("ch_1", 12_000, &pi))
+        .dispatch_charge_refunded(build_charge("ch_1", 12_000, 12_000, Some(&pi)))
         .await
         .unwrap();
 

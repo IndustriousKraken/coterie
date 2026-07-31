@@ -394,3 +394,198 @@ pub fn merged_router(app_state: AppState) -> axum::Router {
         ))
         .layer(tower_http::trace::TraceLayer::new_for_http())
 }
+
+// ---------------------------------------------------------------------
+// Stripe JSON fixtures
+//
+// The `stripe` crate's types deserialize from the real webhook wire
+// shape, so every one of these carries filler the crate requires but no
+// handler reads (`automatic_tax`, `custom_text`, `shipping_options`,
+// `billing_details`, …). Keeping that filler in ONE place is the point:
+// a crate upgrade that adds a required field is a single edit here, and
+// the copies can't drift into disagreeing about what a refunded charge
+// or a completed session looks like.
+//
+// Callers pass the parts they actually vary (ids, amounts, metadata);
+// per-test wrappers that bind test-specific metadata stay in their own
+// files.
+// ---------------------------------------------------------------------
+
+/// The `checkout.session` body as raw JSON, for callers that need to
+/// embed it in a larger payload (a signed `stripe::Event`, say) rather
+/// than deserialize it straight into a `CheckoutSession`.
+pub fn checkout_session_json(
+    id: &str,
+    payment_intent_id: Option<&str>,
+    metadata: serde_json::Value,
+    amount_total: i64,
+) -> serde_json::Value {
+    let now = chrono::Utc::now().timestamp();
+    serde_json::json!({
+        "id": id,
+        "object": "checkout.session",
+        "livemode": false,
+        "mode": "payment",
+        "status": "complete",
+        "payment_status": "paid",
+        "created": now,
+        "expires_at": now + 86400,
+        "currency": "usd",
+        "amount_total": amount_total,
+        "amount_subtotal": amount_total,
+        "metadata": metadata,
+        "payment_intent": payment_intent_id,
+        "automatic_tax": { "enabled": false, "liability": null, "status": null },
+        "custom_fields": [],
+        "custom_text": {
+            "after_submit": null,
+            "shipping_address": null,
+            "submit": null,
+            "terms_of_service_acceptance": null
+        },
+        "payment_method_types": ["card"],
+        "shipping_options": [],
+    })
+}
+
+/// A completed `checkout.session`. Only `id`, `metadata`,
+/// `payment_intent` and `amount_total` are ever read by a handler; the
+/// rest is the crate's required shape.
+pub fn build_checkout_session(
+    id: &str,
+    payment_intent_id: Option<&str>,
+    metadata: serde_json::Value,
+    amount_total: i64,
+) -> stripe::CheckoutSession {
+    serde_json::from_value(checkout_session_json(
+        id,
+        payment_intent_id,
+        metadata,
+        amount_total,
+    ))
+    .expect("CheckoutSession from JSON")
+}
+
+/// A `charge`. `refunded` is derived from the two amounts so a fully
+/// refunded charge can't be built with the flag disagreeing.
+pub fn build_charge(
+    id: &str,
+    amount: i64,
+    amount_refunded: i64,
+    payment_intent: Option<&str>,
+) -> stripe::Charge {
+    let body = serde_json::json!({
+        "id": id,
+        "object": "charge",
+        "amount": amount,
+        "amount_captured": amount,
+        "amount_refunded": amount_refunded,
+        "billing_details": {
+            "address": null,
+            "email": null,
+            "name": null,
+            "phone": null,
+        },
+        "currency": "usd",
+        "captured": true,
+        "created": chrono::Utc::now().timestamp(),
+        "disputed": false,
+        "livemode": false,
+        "paid": true,
+        "refunded": amount_refunded >= amount,
+        "status": "succeeded",
+        "payment_intent": payment_intent,
+        "metadata": {},
+    });
+    serde_json::from_value(body).expect("Charge from JSON")
+}
+
+/// A succeeded `payment_intent`.
+pub fn build_payment_intent(
+    id: &str,
+    amount: i64,
+    metadata: serde_json::Value,
+) -> stripe::PaymentIntent {
+    let body = serde_json::json!({
+        "id": id,
+        "object": "payment_intent",
+        "amount": amount,
+        "amount_received": amount,
+        "amount_capturable": 0,
+        "currency": "usd",
+        "status": "succeeded",
+        "livemode": false,
+        "created": chrono::Utc::now().timestamp(),
+        "metadata": metadata,
+        "capture_method": "automatic",
+        "confirmation_method": "automatic",
+        "payment_method_types": ["card"],
+    });
+    serde_json::from_value(body).expect("PaymentIntent from JSON")
+}
+
+/// A canceled `subscription` — the shape `customer.subscription.deleted`
+/// carries.
+pub fn build_subscription(id: &str, customer_id: &str) -> stripe::Subscription {
+    let now = chrono::Utc::now().timestamp();
+    let body = serde_json::json!({
+        "id": id,
+        "object": "subscription",
+        "customer": customer_id,
+        "status": "canceled",
+        "created": now,
+        "current_period_start": now,
+        "current_period_end": now + 86400,
+        "start_date": now,
+        "livemode": false,
+        "cancel_at_period_end": false,
+        "collection_method": "charge_automatically",
+        "automatic_tax": { "enabled": false, "liability": null },
+        "billing_cycle_anchor": now,
+        "currency": "usd",
+        "metadata": {},
+        "items": {
+            "object": "list",
+            "data": [],
+            "has_more": false,
+            "total_count": 0,
+            "url": "/v1/subscription_items"
+        },
+    });
+    serde_json::from_value(body).expect("Subscription from JSON")
+}
+
+/// An `invoice`. `next_payment_attempt` is only set when supplied — its
+/// absence is what tells the dues path a dunning cycle is over.
+#[allow(clippy::too_many_arguments)]
+pub fn build_invoice(
+    id: &str,
+    customer_id: &str,
+    subscription_id: &str,
+    amount_paid: i64,
+    status: &str,
+    attempt_count: u64,
+    next_payment_attempt: Option<i64>,
+) -> stripe::Invoice {
+    let now = chrono::Utc::now().timestamp();
+    let mut body = serde_json::json!({
+        "id": id,
+        "object": "invoice",
+        "customer": customer_id,
+        "subscription": subscription_id,
+        "amount_paid": amount_paid,
+        "amount_due": amount_paid,
+        "amount_remaining": 0,
+        "currency": "usd",
+        "status": status,
+        "attempt_count": attempt_count,
+        "livemode": false,
+        "created": now,
+        "period_start": now,
+        "period_end": now + 86400 * 60,
+    });
+    if let Some(ts) = next_payment_attempt {
+        body["next_payment_attempt"] = serde_json::json!(ts);
+    }
+    serde_json::from_value(body).expect("Invoice from JSON")
+}

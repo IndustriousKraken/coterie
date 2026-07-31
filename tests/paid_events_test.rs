@@ -72,7 +72,7 @@ impl coterie::email::EmailSender for RecordingSender {
 }
 
 mod common;
-use common::fresh_pool;
+use common::{build_charge, build_checkout_session, fresh_pool};
 
 // ---------------------------------------------------------------------
 // Harness
@@ -329,83 +329,21 @@ fn event_fee_session(
     event_id: Uuid,
     payment_intent: Option<&str>,
 ) -> stripe::CheckoutSession {
-    let body = json!({
-        "id": id,
-        "object": "checkout.session",
-        "livemode": false,
-        "mode": "payment",
-        "status": "complete",
-        "payment_status": "paid",
-        "created": Utc::now().timestamp(),
-        "expires_at": Utc::now().timestamp() + 3600,
-        "currency": "usd",
-        "amount_total": 3000,
-        "amount_subtotal": 3000,
-        "metadata": {
+    build_checkout_session(
+        id,
+        payment_intent,
+        json!({
             "payment_type": "event_fee",
             "event_id": event_id.to_string(),
-        },
-        "payment_intent": payment_intent,
-        "automatic_tax": { "enabled": false, "liability": null, "status": null },
-        "custom_fields": [],
-        "custom_text": {
-            "after_submit": null,
-            "shipping_address": null,
-            "submit": null,
-            "terms_of_service_acceptance": null
-        },
-        "payment_method_types": ["card"],
-        "shipping_options": [],
-    });
-    serde_json::from_value(body).expect("CheckoutSession from JSON")
+        }),
+        3000,
+    )
 }
 
+/// The same session as an abandoned one: only its id is read, and
+/// flipping the Pending row to Failed is keyed off that.
 fn expired_session(id: &str) -> stripe::CheckoutSession {
-    let body = json!({
-        "id": id,
-        "object": "checkout.session",
-        "livemode": false,
-        "mode": "payment",
-        "status": "expired",
-        "payment_status": "unpaid",
-        "created": Utc::now().timestamp(),
-        "expires_at": Utc::now().timestamp(),
-        "currency": "usd",
-        "metadata": { "payment_type": "event_fee" },
-        "automatic_tax": { "enabled": false, "liability": null, "status": null },
-        "custom_fields": [],
-        "custom_text": {
-            "after_submit": null,
-            "shipping_address": null,
-            "submit": null,
-            "terms_of_service_acceptance": null
-        },
-        "payment_method_types": ["card"],
-        "shipping_options": [],
-    });
-    serde_json::from_value(body).expect("CheckoutSession from JSON")
-}
-
-fn charge(id: &str, amount: i64, payment_intent: &str) -> stripe::Charge {
-    let body = json!({
-        "id": id,
-        "object": "charge",
-        "amount": amount,
-        "amount_captured": amount,
-        "amount_refunded": amount,
-        "billing_details": { "address": null, "email": null, "name": null, "phone": null },
-        "currency": "usd",
-        "captured": true,
-        "created": Utc::now().timestamp(),
-        "disputed": false,
-        "livemode": false,
-        "paid": true,
-        "refunded": true,
-        "status": "succeeded",
-        "payment_intent": payment_intent,
-        "metadata": {},
-    });
-    serde_json::from_value(body).expect("Charge from JSON")
+    build_checkout_session(id, None, json!({ "payment_type": "event_fee" }), 3000)
 }
 
 // ---------------------------------------------------------------------
@@ -764,7 +702,7 @@ async fn out_of_band_charge_refunded_cancels_the_seat() {
         .unwrap();
 
     h.dispatcher
-        .dispatch_charge_refunded(charge("ch_oob", 3000, "pi_oob"))
+        .dispatch_charge_refunded(build_charge("ch_oob", 3000, 3000, Some("pi_oob")))
         .await
         .unwrap();
 
