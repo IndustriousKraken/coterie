@@ -43,8 +43,10 @@ target/
 tmp/
 temp/
 
-# Uploaded files (local testing)
+# Uploaded files (local testing). Both roots — `uploads/` does NOT match
+# `private-uploads/`, which is how test attachments got committed once.
 uploads/
+private-uploads/
 
 # Tailwind standalone CLI binary (platform-specific, download per SETUP.md)
 /tailwindcss
