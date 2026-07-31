@@ -384,6 +384,10 @@ COTERIE_BACKUP_S3_URI=s3://my-coterie-backups-prod/prod/
 AWS_ACCESS_KEY_ID=<from create-access-key>
 AWS_SECRET_ACCESS_KEY=<from create-access-key>
 AWS_DEFAULT_REGION=us-east-1
+# The data dir's EBS volume also holds the backups by default, so one
+# volume failure takes both. Point this at a second volume if you have
+# one mounted.
+# COTERIE_BACKUP_DIR=/mnt/backups/coterie
 EOF
 sudo chmod 0600 /etc/default/coterie-backup
 

@@ -239,7 +239,11 @@ day-to-day operations:
 - [`MIGRATION.md`](docs/deploy/MIGRATION.md) — moving between hosts
 - [`RESTORE.md`](docs/deploy/RESTORE.md) — restoring from a backup
 
-A multi-stage [`Dockerfile`](Dockerfile) is provided for container deploys; the
-daily backup script and systemd timer ([`deploy/backup.sh`](deploy/backup.sh),
-[`coterie-backup.timer`](deploy/coterie-backup.timer)) handle SQLite snapshots
-and optional S3-compatible offsite copies.
+A multi-stage [`Dockerfile`](Dockerfile) is provided for container deploys. The
+provisioning wizard installs and enables the daily backup timer
+([`deploy/backup.sh`](deploy/backup.sh),
+[`coterie-backup.timer`](deploy/coterie-backup.timer)): each run bundles the
+database snapshot **and** both upload roots into one archive, with optional
+S3-compatible offsite copies. [`deploy/restore.sh`](deploy/restore.sh) puts a
+bundle back — the same artifact is the migration artifact. A deployment made
+before the wizard did this needs the timer installed once; see `RESTORE.md` §6.

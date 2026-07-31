@@ -254,8 +254,22 @@ setup page appears, create your first admin.
 
 Alpine uses BusyBox `crond` (already installed and running by
 default). The Coterie backup script (`deploy/backup.sh`) is portable
-across BusyBox and GNU userlands — both `date -Iseconds` and
-`stat -c%s` are supported on Alpine.
+across BusyBox and GNU userlands — `date -Iseconds`, `stat -c%s`, and
+the `tar -h` / `--exclude` flags the bundle needs are all supported on
+Alpine. If your BusyBox build was compiled without them, `apk add tar`
+puts GNU tar first on PATH.
+
+Each run produces one bundle (`coterie-YYYY-MM-DD.tar.gz`) holding the
+database snapshot plus both upload roots. Restore it with
+`deploy/restore.sh` — OpenRC takes its service argument in the other
+order than systemd, so stop and start the service yourself and neuter
+the script's service handling with `COTERIE_SYSTEMCTL=true`:
+
+```sh
+rc-service coterie stop
+COTERIE_SYSTEMCTL=true sh /opt/coterie/deploy/restore.sh <bundle>
+rc-service coterie start
+```
 
 ```sh
 # (Optional) configure offsite push to S3-compatible storage.

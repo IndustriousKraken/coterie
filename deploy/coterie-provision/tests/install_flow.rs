@@ -174,6 +174,16 @@ fn stage_fake_install_state(fs: &FakeFs) {
         Path::new("/opt/coterie/.env.example"),
         include_str!("fixtures/env_example.txt").as_bytes(),
     );
+    // release-deploy.sh drops the repo's deploy/ directory here; the
+    // backup units are copied out of it into /etc/systemd/system.
+    fs.put(
+        Path::new("/opt/coterie/deploy/coterie-backup.service"),
+        b"[Unit]\nDescription=Coterie backup\n",
+    );
+    fs.put(
+        Path::new("/opt/coterie/deploy/coterie-backup.timer"),
+        b"[Timer]\nOnCalendar=*-*-* 03:30:00\n",
+    );
 }
 
 fn test_mode_args() -> InstallArgs {
@@ -500,5 +510,106 @@ fn smoke_test_fails_after_budget_with_last_error() {
     assert!(
         msg.contains("smoke test failed"),
         "error message must say smoke test failed; got: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------
+// a50: the wizard installs and enables the backup timer
+// ---------------------------------------------------------------------
+
+/// A provisioned host must end up with scheduled backups. This is the
+/// non-interactive path (`no_prompt`), which is the one CI and scripted
+/// installs take — there is no prompt to opt out of, deliberately: the
+/// failure mode being fixed here is precisely "nobody remembered to
+/// turn it on".
+#[test]
+fn install_copies_and_enables_the_backup_timer() {
+    let args = test_mode_args();
+    let sys = FakeSystem::new();
+    let fs = FakeFs::new();
+    stage_fake_install_state(&fs);
+    let prompts = MockPrompter::new();
+    install::run(args, &sys, &fs, &prompts, &CaptureOutput::new()).expect("install succeeds");
+
+    for unit in [
+        "/etc/systemd/system/coterie-backup.service",
+        "/etc/systemd/system/coterie-backup.timer",
+    ] {
+        assert!(
+            fs.get(Path::new(unit)).is_some(),
+            "{unit} should have been installed"
+        );
+    }
+    assert!(
+        sys.called_with("systemctl", &["daemon-reload"]),
+        "systemd must be reloaded after dropping in the units"
+    );
+    assert!(
+        sys.called_with("systemctl", &["enable", "--now", "coterie-backup.timer"]),
+        "the timer must be enabled, not merely copied into place"
+    );
+}
+
+/// Idempotency: a re-run on a host that already has the timer leaves the
+/// existing schedule alone rather than reinstalling it.
+#[test]
+fn rerun_leaves_an_existing_backup_timer_alone() {
+    let args = test_mode_args();
+    let sys = FakeSystem::new();
+    let fs = FakeFs::new();
+    stage_fake_install_state(&fs);
+    fs.put(
+        Path::new("/etc/systemd/system/coterie-backup.timer"),
+        b"[Timer]\n# operator-tuned schedule\nOnCalendar=*-*-* 05:00:00\n",
+    );
+    let prompts = MockPrompter::new();
+    let out = CaptureOutput::new();
+    install::run(args, &sys, &fs, &prompts, &out).expect("install succeeds");
+
+    let timer = String::from_utf8(
+        fs.get(Path::new("/etc/systemd/system/coterie-backup.timer"))
+            .expect("timer still present"),
+    )
+    .unwrap();
+    assert!(
+        timer.contains("operator-tuned"),
+        "an existing timer must not be overwritten; got:\n{timer}"
+    );
+    assert!(
+        !sys.called_with("systemctl", &["enable", "--now", "coterie-backup.timer"]),
+        "an already-installed timer should not be re-enabled"
+    );
+    assert!(
+        out.contains("already installed"),
+        "the skip should be visible to the operator; lines: {:?}",
+        out.lines.borrow()
+    );
+}
+
+/// `--dry-run` shows the backup step like any other step, and performs
+/// none of it.
+#[test]
+fn dry_run_shows_the_backup_step_without_doing_it() {
+    let args = base_args(); // dry_run = true
+    let sys = FakeSystem::new();
+    let fs = FakeFs::new();
+    let prompts = MockPrompter::new();
+    let out = CaptureOutput::new();
+    install::run(args, &sys, &fs, &prompts, &out).expect("dry run succeeds");
+
+    assert!(
+        out.contains("DRY-RUN") && out.contains("scheduled backups"),
+        "dry-run must print the backup-install step; lines: {:?}",
+        out.lines.borrow()
+    );
+    assert!(
+        fs.get(Path::new("/etc/systemd/system/coterie-backup.timer"))
+            .is_none(),
+        "dry-run must not install the timer"
+    );
+    assert_eq!(
+        sys.calls.borrow().len(),
+        0,
+        "dry-run must not invoke any commands"
     );
 }

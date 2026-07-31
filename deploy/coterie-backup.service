@@ -1,5 +1,5 @@
 [Unit]
-Description=Coterie database backup
+Description=Coterie backup (database + uploads)
 Documentation=man:sqlite3(1)
 # Order after coterie.service if both happen to start together (boot).
 # We do NOT Requires= it — VACUUM INTO works against a stopped DB
@@ -13,7 +13,9 @@ User=coterie
 Group=coterie
 
 # The script reads env from /etc/default/coterie-backup if present.
-# Operators typically set COTERIE_BACKUP_S3_URI and AWS credentials there.
+# Operators typically set COTERIE_BACKUP_S3_URI and AWS credentials there,
+# and COTERIE_BACKUP_DIR when the backups belong on a separate volume —
+# in which case add that path to ReadWritePaths below too.
 EnvironmentFile=-/etc/default/coterie-backup
 
 ExecStart=/opt/coterie/deploy/backup.sh

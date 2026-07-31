@@ -1,0 +1,7 @@
+#!/bin/sh
+# Stand-in for systemctl: appends each invocation to
+# $COTERIE_TEST_SYSTEMCTL_LOG so a test can assert what deploy/restore.sh
+# asked of the service manager ("the service was never stopped" is not
+# otherwise observable in a sandbox).
+echo "$@" >> "$COTERIE_TEST_SYSTEMCTL_LOG"
+exit 0
