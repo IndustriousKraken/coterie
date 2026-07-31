@@ -32,7 +32,7 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 mod common;
-use common::fresh_pool;
+use common::{checkout_session_json, fresh_pool};
 
 fn settings_service(pool: &SqlitePool) -> Arc<SettingsService> {
     let crypto = Arc::new(SecretCrypto::new("test-secret-please-ignore"));
@@ -102,35 +102,10 @@ fn event_payload(event_id: &str) -> String {
         "livemode": false,
         "pending_webhooks": 0,
         // A full checkout.session object (the field set proven to
-        // deserialize in stripe_webhook_test). The event type is "ping"
-        // (Unknown) so the object is never inspected — it just has to
-        // parse so `construct_event` reaches the `_` dispatch arm.
-        "data": {
-            "object": {
-                "id": "cs_probe",
-                "object": "checkout.session",
-                "livemode": false,
-                "mode": "payment",
-                "status": "complete",
-                "payment_status": "paid",
-                "created": ts,
-                "expires_at": ts + 86400,
-                "currency": "usd",
-                "amount_total": 5000,
-                "amount_subtotal": 5000,
-                "metadata": {},
-                "automatic_tax": { "enabled": false, "liability": null, "status": null },
-                "custom_fields": [],
-                "custom_text": {
-                    "after_submit": null,
-                    "shipping_address": null,
-                    "submit": null,
-                    "terms_of_service_acceptance": null
-                },
-                "payment_method_types": ["card"],
-                "shipping_options": [],
-            }
-        }
+        // deserialize, from the shared fixture builder). The event type
+        // is "ping" (Unknown) so the object is never inspected — it just
+        // has to parse so `construct_event` reaches the `_` dispatch arm.
+        "data": { "object": checkout_session_json("cs_probe", None, serde_json::json!({}), 5000) }
     })
     .to_string()
 }

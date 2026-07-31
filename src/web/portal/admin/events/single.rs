@@ -3,7 +3,7 @@ use std::sync::Arc;
 use askama::Template;
 use axum::{
     extract::{Multipart, Path, Query, State},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     Extension,
 };
 use serde::Deserialize;
@@ -15,6 +15,7 @@ use crate::{
     },
     auth::CsrfService,
     config::Settings,
+    domain::{EventType, EventVisibility},
     repository::{EventRepository, PaymentRepository},
     service::event_admin_service::{CreateEventInput, EventAdminService, UpdateEventInput},
     service::payment_admin_service::PaymentAdminService,
@@ -425,6 +426,258 @@ pub async fn admin_new_event_page(
     HtmlTemplate(AdminNewEventTemplate { base, event_types }).into_response()
 }
 
+/// Everything either admin event form can post, parsed once. The create
+/// form sends the recurrence/series-pass fields, the update form sends
+/// `edit_scope`/`remove_image`, and each handler simply ignores the
+/// fields its own form never sends — parsing a field a handler does not
+/// read changes nothing about what it does.
+struct EventForm {
+    title: String,
+    description: String,
+    event_type: EventType,
+    visibility: EventVisibility,
+    start_time: chrono::DateTime<chrono::Utc>,
+    end_time: Option<chrono::DateTime<chrono::Utc>>,
+    location: String,
+    max_attendees: Option<i32>,
+    rsvp_required: bool,
+    // Raw price text; parsed by the caller so a blank field and a typed
+    // "0" both land on 0 and only a real negative / over-cap value errors.
+    member_price_str: String,
+    guest_price_str: String,
+    guest_registration_enabled: bool,
+    image_url: Option<String>,
+    // Recurrence form fields (create only). `repeat_kind` defaults to
+    // "none" so an unchecked form behaves identically to the
+    // pre-recurrence flow.
+    repeat_kind: String,
+    repeat_interval: u32,
+    repeat_weekdays: Vec<String>,
+    repeat_day: Option<u32>,
+    repeat_weekday: String,
+    repeat_ordinal: i32,
+    repeat_until_str: String,
+    // Series-pass pricing (create only). Only meaningful when a
+    // recurrence was asked for; a one-off event has no series to price.
+    series_member_price_str: String,
+    series_guest_price_str: String,
+    series_capacity: Option<i32>,
+    series_guest_registration_enabled: bool,
+    // Update only. For series occurrences: "this" (default),
+    // "this_and_future". Ignored for one-off events.
+    edit_scope: String,
+    remove_image: bool,
+}
+
+impl EventForm {
+    /// Drain the multipart body into the parsed superset. `Err` carries
+    /// the rendered alert the handler returns as-is: an image upload
+    /// that failed, or a start time we could not parse.
+    async fn parse(
+        multipart: &mut Multipart,
+        uploads_dir: &str,
+    ) -> std::result::Result<EventForm, Response> {
+        let mut title = String::new();
+        let mut description = String::new();
+        let mut event_type_str = String::new();
+        let mut visibility_str = String::new();
+        let mut start_time_str = String::new();
+        let mut end_time_str = String::new();
+        let mut location = String::new();
+        let mut max_attendees: Option<i32> = None;
+        let mut rsvp_required = false;
+        let mut member_price_str = String::new();
+        let mut guest_price_str = String::new();
+        // An unchecked checkbox sends no field at all, so absence is
+        // `false` — the same shape `rsvp_required` uses.
+        let mut guest_registration_enabled = false;
+        let mut image_url: Option<String> = None;
+        let mut repeat_kind = String::from("none");
+        let mut repeat_interval: u32 = 1;
+        let mut repeat_weekdays: Vec<String> = Vec::new();
+        let mut repeat_day: Option<u32> = None;
+        let mut repeat_weekday = String::from("mon");
+        let mut repeat_ordinal: i32 = 1;
+        let mut repeat_until_str = String::new();
+        let mut series_member_price_str = String::new();
+        let mut series_guest_price_str = String::new();
+        let mut series_capacity: Option<i32> = None;
+        let mut series_guest_registration_enabled = false;
+        let mut edit_scope = String::from("this");
+        let mut remove_image = false;
+
+        while let Ok(Some(field)) = multipart.next_field().await {
+            let name = field.name().unwrap_or("").to_string();
+
+            match name.as_str() {
+                "csrf_token" => {
+                    let _ = field.text().await;
+                }
+                "title" => title = field.text().await.unwrap_or_default(),
+                "description" => description = field.text().await.unwrap_or_default(),
+                "event_type" => event_type_str = field.text().await.unwrap_or_default(),
+                "visibility" => visibility_str = field.text().await.unwrap_or_default(),
+                "start_time" => start_time_str = field.text().await.unwrap_or_default(),
+                "end_time" => end_time_str = field.text().await.unwrap_or_default(),
+                "location" => location = field.text().await.unwrap_or_default(),
+                "max_attendees" => {
+                    if let Ok(text) = field.text().await {
+                        max_attendees = text.parse().ok();
+                    }
+                }
+                "rsvp_required" => {
+                    rsvp_required = true;
+                    let _ = field.text().await;
+                }
+                "member_price" => member_price_str = field.text().await.unwrap_or_default(),
+                "guest_price" => guest_price_str = field.text().await.unwrap_or_default(),
+                "guest_registration_enabled" => {
+                    guest_registration_enabled = true;
+                    let _ = field.text().await;
+                }
+                "repeat_kind" => repeat_kind = field.text().await.unwrap_or_default(),
+                "repeat_interval" => {
+                    if let Ok(text) = field.text().await {
+                        if let Ok(n) = text.parse() {
+                            repeat_interval = n;
+                        }
+                    }
+                }
+                "repeat_weekdays" => {
+                    // Multipart sends one field per checked box; collect them.
+                    if let Ok(text) = field.text().await {
+                        repeat_weekdays.push(text);
+                    }
+                }
+                "repeat_day" => {
+                    if let Ok(text) = field.text().await {
+                        repeat_day = text.parse().ok();
+                    }
+                }
+                "repeat_weekday" => repeat_weekday = field.text().await.unwrap_or_default(),
+                "repeat_ordinal" => {
+                    if let Ok(text) = field.text().await {
+                        if let Ok(n) = text.parse() {
+                            repeat_ordinal = n;
+                        }
+                    }
+                }
+                "repeat_until" => repeat_until_str = field.text().await.unwrap_or_default(),
+                "series_member_price" => {
+                    series_member_price_str = field.text().await.unwrap_or_default()
+                }
+                "series_guest_price" => {
+                    series_guest_price_str = field.text().await.unwrap_or_default()
+                }
+                "series_capacity" => {
+                    if let Ok(text) = field.text().await {
+                        series_capacity = text.parse().ok();
+                    }
+                }
+                "series_guest_registration_enabled" => {
+                    series_guest_registration_enabled = true;
+                    let _ = field.text().await;
+                }
+                "edit_scope" => edit_scope = field.text().await.unwrap_or_default(),
+                "remove_image" => {
+                    remove_image = true;
+                    let _ = field.text().await;
+                }
+                "image" => {
+                    let filename = field.file_name().unwrap_or("").to_string();
+                    if !filename.is_empty() {
+                        if let Ok(data) = field.bytes().await {
+                            if !data.is_empty() {
+                                match save_uploaded_file(uploads_dir, &filename, &data).await {
+                                    Ok(path) => image_url = Some(path),
+                                    Err(e) => {
+                                        return Err(partials::admin_alert(
+                                            "error",
+                                            &format!("Error uploading image: {}", e),
+                                            false,
+                                        )
+                                        .into_response())
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    let _ = field.bytes().await;
+                }
+            }
+        }
+
+        let event_type = match event_type_str.as_str() {
+            "Meeting" => EventType::Meeting,
+            "Workshop" => EventType::Workshop,
+            "CTF" => EventType::CTF,
+            "Social" => EventType::Social,
+            "Training" => EventType::Training,
+            _ => EventType::Meeting,
+        };
+
+        let visibility = match visibility_str.as_str() {
+            "Public" => EventVisibility::Public,
+            "MembersOnly" => EventVisibility::MembersOnly,
+            "AdminOnly" => EventVisibility::AdminOnly,
+            _ => EventVisibility::MembersOnly,
+        };
+
+        // The `event-timezone` model stores the operator's naive local
+        // wall-clock in a UTC container; the event's zone is what the read
+        // paths use to derive the true instant. Do NOT turn this into a
+        // real timezone conversion.
+        let start_time =
+            match chrono::NaiveDateTime::parse_from_str(&start_time_str, "%Y-%m-%dT%H:%M") {
+                Ok(dt) => chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc),
+                Err(_) => {
+                    return Err(
+                        partials::admin_alert("error", "Invalid start time", false).into_response()
+                    )
+                }
+            };
+
+        let end_time = if end_time_str.is_empty() {
+            None
+        } else {
+            chrono::NaiveDateTime::parse_from_str(&end_time_str, "%Y-%m-%dT%H:%M")
+                .ok()
+                .map(|dt| chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc))
+        };
+
+        Ok(EventForm {
+            title,
+            description,
+            event_type,
+            visibility,
+            start_time,
+            end_time,
+            location,
+            max_attendees,
+            rsvp_required,
+            member_price_str,
+            guest_price_str,
+            guest_registration_enabled,
+            image_url,
+            repeat_kind,
+            repeat_interval,
+            repeat_weekdays,
+            repeat_day,
+            repeat_weekday,
+            repeat_ordinal,
+            repeat_until_str,
+            series_member_price_str,
+            series_guest_price_str,
+            series_capacity,
+            series_guest_registration_enabled,
+            edit_scope,
+            remove_image,
+        })
+    }
+}
+
 pub async fn admin_create_event(
     State(settings): State<Arc<Settings>>,
     State(settings_service): State<Arc<SettingsService>>,
@@ -432,186 +685,21 @@ pub async fn admin_create_event(
     Extension(current_user): Extension<CurrentUser>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    use crate::domain::{EventType, EventVisibility};
-
-    // Parse multipart form
-    let mut title = String::new();
-    let mut description = String::new();
-    let mut event_type_str = String::new();
-    let mut visibility_str = String::new();
-    let mut start_time_str = String::new();
-    let mut end_time_str = String::new();
-    let mut location_str = String::new();
-    let mut max_attendees: Option<i32> = None;
-    let mut rsvp_required = false;
-    // Raw price text; parsed after the loop so a blank field and a typed
-    // "0" both land on 0 and only a real negative / over-cap value errors.
-    let mut member_price_str = String::new();
-    let mut guest_price_str = String::new();
-    // An unchecked checkbox sends no field at all, so absence is `false`
-    // — the same shape `rsvp_required` uses.
-    let mut guest_registration_enabled = false;
-    let mut image_url: Option<String> = None;
-    // Recurrence form fields. `repeat_kind` defaults to "none" so an
-    // unchecked form behaves identically to the pre-recurrence flow.
-    let mut repeat_kind = String::from("none");
-    let mut repeat_interval: u32 = 1;
-    let mut repeat_weekdays: Vec<String> = Vec::new();
-    let mut repeat_day: Option<u32> = None;
-    let mut repeat_weekday = String::from("mon");
-    let mut repeat_ordinal: i32 = 1;
-    let mut repeat_until_str = String::new();
-    // Series-pass pricing. Only meaningful when a recurrence was asked
-    // for; a one-off event has no series to price.
-    let mut series_member_price_str = String::new();
-    let mut series_guest_price_str = String::new();
-    let mut series_capacity: Option<i32> = None;
-    let mut series_guest_registration_enabled = false;
-
-    while let Ok(Some(field)) = multipart.next_field().await {
-        let name = field.name().unwrap_or("").to_string();
-
-        match name.as_str() {
-            "csrf_token" => {
-                let _ = field.text().await;
-            }
-            "title" => title = field.text().await.unwrap_or_default(),
-            "description" => description = field.text().await.unwrap_or_default(),
-            "event_type" => event_type_str = field.text().await.unwrap_or_default(),
-            "visibility" => visibility_str = field.text().await.unwrap_or_default(),
-            "start_time" => start_time_str = field.text().await.unwrap_or_default(),
-            "end_time" => end_time_str = field.text().await.unwrap_or_default(),
-            "location" => location_str = field.text().await.unwrap_or_default(),
-            "max_attendees" => {
-                if let Ok(text) = field.text().await {
-                    max_attendees = text.parse().ok();
-                }
-            }
-            "rsvp_required" => {
-                rsvp_required = true;
-                let _ = field.text().await;
-            }
-            "member_price" => member_price_str = field.text().await.unwrap_or_default(),
-            "guest_price" => guest_price_str = field.text().await.unwrap_or_default(),
-            "guest_registration_enabled" => {
-                guest_registration_enabled = true;
-                let _ = field.text().await;
-            }
-            "repeat_kind" => repeat_kind = field.text().await.unwrap_or_default(),
-            "repeat_interval" => {
-                if let Ok(text) = field.text().await {
-                    if let Ok(n) = text.parse() {
-                        repeat_interval = n;
-                    }
-                }
-            }
-            "repeat_weekdays" => {
-                // Multipart sends one field per checked box; collect them.
-                if let Ok(text) = field.text().await {
-                    repeat_weekdays.push(text);
-                }
-            }
-            "repeat_day" => {
-                if let Ok(text) = field.text().await {
-                    repeat_day = text.parse().ok();
-                }
-            }
-            "repeat_weekday" => repeat_weekday = field.text().await.unwrap_or_default(),
-            "repeat_ordinal" => {
-                if let Ok(text) = field.text().await {
-                    if let Ok(n) = text.parse() {
-                        repeat_ordinal = n;
-                    }
-                }
-            }
-            "repeat_until" => repeat_until_str = field.text().await.unwrap_or_default(),
-            "series_member_price" => {
-                series_member_price_str = field.text().await.unwrap_or_default()
-            }
-            "series_guest_price" => series_guest_price_str = field.text().await.unwrap_or_default(),
-            "series_capacity" => {
-                if let Ok(text) = field.text().await {
-                    series_capacity = text.parse().ok();
-                }
-            }
-            "series_guest_registration_enabled" => {
-                series_guest_registration_enabled = true;
-                let _ = field.text().await;
-            }
-            "image" => {
-                let filename = field.file_name().unwrap_or("").to_string();
-                if !filename.is_empty() {
-                    if let Ok(data) = field.bytes().await {
-                        if !data.is_empty() {
-                            match save_uploaded_file(
-                                &settings.server.uploads_path(),
-                                &filename,
-                                &data,
-                            )
-                            .await
-                            {
-                                Ok(path) => image_url = Some(path),
-                                Err(e) => {
-                                    return partials::admin_alert(
-                                        "error",
-                                        &format!("Error uploading image: {}", e),
-                                        false,
-                                    )
-                                    .into_response()
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {
-                let _ = field.bytes().await;
-            }
-        }
-    }
-
-    let event_type = match event_type_str.as_str() {
-        "Meeting" => EventType::Meeting,
-        "Workshop" => EventType::Workshop,
-        "CTF" => EventType::CTF,
-        "Social" => EventType::Social,
-        "Training" => EventType::Training,
-        _ => EventType::Meeting,
-    };
-
-    let visibility = match visibility_str.as_str() {
-        "Public" => EventVisibility::Public,
-        "MembersOnly" => EventVisibility::MembersOnly,
-        "AdminOnly" => EventVisibility::AdminOnly,
-        _ => EventVisibility::MembersOnly,
-    };
-
-    let start_time = match chrono::NaiveDateTime::parse_from_str(&start_time_str, "%Y-%m-%dT%H:%M")
-    {
-        Ok(dt) => chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc),
-        Err(_) => {
-            return partials::admin_alert("error", "Invalid start time", false).into_response()
-        }
-    };
-
-    let end_time = if end_time_str.is_empty() {
-        None
-    } else {
-        chrono::NaiveDateTime::parse_from_str(&end_time_str, "%Y-%m-%dT%H:%M")
-            .ok()
-            .map(|dt| chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc))
+    let form = match EventForm::parse(&mut multipart, &settings.server.uploads_path()).await {
+        Ok(f) => f,
+        Err(r) => return r,
     };
 
     // Build the recurrence rule, if the admin asked for one. The
     // service decides series-vs-single by inspecting input.recurrence.
-    let recurrence = if repeat_kind != "none" && !repeat_kind.is_empty() {
+    let recurrence = if form.repeat_kind != "none" && !form.repeat_kind.is_empty() {
         match build_recurrence(
-            &repeat_kind,
-            repeat_interval,
-            &repeat_weekdays,
-            repeat_day,
-            &repeat_weekday,
-            repeat_ordinal,
+            &form.repeat_kind,
+            form.repeat_interval,
+            &form.repeat_weekdays,
+            form.repeat_day,
+            &form.repeat_weekday,
+            form.repeat_ordinal,
         ) {
             Ok(r) => Some(r),
             Err(msg) => {
@@ -627,7 +715,7 @@ pub async fn admin_create_event(
         None
     };
     let recurrence_until = if recurrence.is_some() {
-        parse_until(&repeat_until_str)
+        parse_until(&form.repeat_until_str)
     } else {
         None
     };
@@ -637,14 +725,14 @@ pub async fn admin_create_event(
     // the public/iCal read path derive the correct instant.
     let timezone = settings_service.org_timezone().await.name().to_string();
 
-    let member_price_cents = match parse_price(&member_price_str) {
+    let member_price_cents = match parse_price(&form.member_price_str) {
         Ok(cents) => cents,
         Err(msg) => return partials::admin_alert("error", msg, false).into_response(),
     };
     // Guest registration at a zero price is a valid, supported
     // combination (the free workshop) — the flag and the price are not
     // cross-validated against each other on purpose.
-    let guest_price_cents = match parse_price(&guest_price_str) {
+    let guest_price_cents = match parse_price(&form.guest_price_str) {
         Ok(cents) => cents,
         Err(msg) => return partials::admin_alert("error", msg, false).into_response(),
     };
@@ -654,10 +742,10 @@ pub async fn admin_create_event(
     // one would be a charge nobody could ever be enrolled against.
     let series_pricing = if recurrence.is_some() {
         match parse_series_pricing(
-            &series_member_price_str,
-            &series_guest_price_str,
-            series_capacity,
-            series_guest_registration_enabled,
+            &form.series_member_price_str,
+            &form.series_guest_price_str,
+            form.series_capacity,
+            form.series_guest_registration_enabled,
         ) {
             Ok(p) => p,
             Err(msg) => return partials::admin_alert("error", msg, false).into_response(),
@@ -667,25 +755,25 @@ pub async fn admin_create_event(
     };
 
     let input = CreateEventInput {
-        title,
-        description,
-        event_type,
+        title: form.title,
+        description: form.description,
+        event_type: form.event_type,
         event_type_id: None,
-        visibility,
-        start_time,
-        end_time,
+        visibility: form.visibility,
+        start_time: form.start_time,
+        end_time: form.end_time,
         timezone,
-        location: if location_str.is_empty() {
+        location: if form.location.is_empty() {
             None
         } else {
-            Some(location_str)
+            Some(form.location)
         },
-        max_attendees,
-        rsvp_required,
+        max_attendees: form.max_attendees,
+        rsvp_required: form.rsvp_required,
         member_price_cents,
         guest_price_cents,
-        guest_registration_enabled,
-        image_url,
+        guest_registration_enabled: form.guest_registration_enabled,
+        image_url: form.image_url,
         recurrence,
         recurrence_until,
         series_pricing,
@@ -825,8 +913,6 @@ pub async fn admin_update_event(
     Path(event_id): Path<String>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    use crate::domain::{EventType, EventVisibility};
-
     let id = match uuid::Uuid::parse_str(&event_id) {
         Ok(id) => id,
         Err(_) => return partials::admin_alert("error", "Invalid event ID", false).into_response(),
@@ -842,126 +928,17 @@ pub async fn admin_update_event(
         }
     };
 
-    // Parse multipart form
-    let mut title = String::new();
-    let mut description = String::new();
-    let mut event_type_str = String::new();
-    let mut visibility_str = String::new();
-    let mut start_time_str = String::new();
-    let mut end_time_str = String::new();
-    let mut location_str = String::new();
-    let mut max_attendees: Option<i32> = None;
-    let mut rsvp_required = false;
-    let mut member_price_str = String::new();
-    let mut guest_price_str = String::new();
-    let mut guest_registration_enabled = false;
-    let mut new_image_url: Option<String> = None;
-    let mut remove_image = false;
-    // For series occurrences: "this" (default), "this_and_future".
-    // Ignored for one-off events.
-    let mut edit_scope = String::from("this");
-
-    while let Ok(Some(field)) = multipart.next_field().await {
-        let name = field.name().unwrap_or("").to_string();
-
-        match name.as_str() {
-            "csrf_token" => {
-                let _ = field.text().await;
-            }
-            "title" => title = field.text().await.unwrap_or_default(),
-            "description" => description = field.text().await.unwrap_or_default(),
-            "event_type" => event_type_str = field.text().await.unwrap_or_default(),
-            "visibility" => visibility_str = field.text().await.unwrap_or_default(),
-            "start_time" => start_time_str = field.text().await.unwrap_or_default(),
-            "end_time" => end_time_str = field.text().await.unwrap_or_default(),
-            "location" => location_str = field.text().await.unwrap_or_default(),
-            "max_attendees" => {
-                if let Ok(text) = field.text().await {
-                    max_attendees = text.parse().ok();
-                }
-            }
-            "rsvp_required" => {
-                rsvp_required = true;
-                let _ = field.text().await;
-            }
-            "member_price" => member_price_str = field.text().await.unwrap_or_default(),
-            "guest_price" => guest_price_str = field.text().await.unwrap_or_default(),
-            "guest_registration_enabled" => {
-                guest_registration_enabled = true;
-                let _ = field.text().await;
-            }
-            "edit_scope" => edit_scope = field.text().await.unwrap_or_default(),
-            "remove_image" => {
-                remove_image = true;
-                let _ = field.text().await;
-            }
-            "image" => {
-                let filename = field.file_name().unwrap_or("").to_string();
-                if !filename.is_empty() {
-                    if let Ok(data) = field.bytes().await {
-                        if !data.is_empty() {
-                            match save_uploaded_file(
-                                &settings.server.uploads_path(),
-                                &filename,
-                                &data,
-                            )
-                            .await
-                            {
-                                Ok(path) => new_image_url = Some(path),
-                                Err(e) => {
-                                    return partials::admin_alert(
-                                        "error",
-                                        &format!("Error uploading image: {}", e),
-                                        false,
-                                    )
-                                    .into_response()
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {
-                let _ = field.bytes().await;
-            }
-        }
-    }
-
-    let event_type = match event_type_str.as_str() {
-        "Meeting" => EventType::Meeting,
-        "Workshop" => EventType::Workshop,
-        "CTF" => EventType::CTF,
-        "Social" => EventType::Social,
-        "Training" => EventType::Training,
-        _ => EventType::Meeting,
-    };
-
-    let visibility = match visibility_str.as_str() {
-        "Public" => EventVisibility::Public,
-        "MembersOnly" => EventVisibility::MembersOnly,
-        "AdminOnly" => EventVisibility::AdminOnly,
-        _ => EventVisibility::MembersOnly,
-    };
-
-    let start_time = match chrono::NaiveDateTime::parse_from_str(&start_time_str, "%Y-%m-%dT%H:%M") {
-        Ok(dt) => chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc),
-        Err(_) => return axum::response::Html(r#"<div class="px-4 py-3 bg-red-100 text-red-800 rounded-md text-sm">Invalid start time</div>"#.to_string()).into_response(),
-    };
-
-    let end_time = if end_time_str.is_empty() {
-        None
-    } else {
-        chrono::NaiveDateTime::parse_from_str(&end_time_str, "%Y-%m-%dT%H:%M")
-            .ok()
-            .map(|dt| chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc))
+    let form = match EventForm::parse(&mut multipart, &settings.server.uploads_path()).await {
+        Ok(f) => f,
+        Err(r) => return r,
     };
 
     // Determine final image_url: new upload > remove > keep existing.
     // Also capture what (if anything) we need to delete from disk.
     let old_image = existing.image_url.clone();
-    let image_url = if new_image_url.is_some() {
-        new_image_url
-    } else if remove_image {
+    let image_url = if form.image_url.is_some() {
+        form.image_url
+    } else if form.remove_image {
         None
     } else {
         old_image.clone()
@@ -975,33 +952,33 @@ pub async fn admin_update_event(
 
     // Changing the price never re-bills an existing attendee — their
     // recorded payment is a separate, already-settled row.
-    let member_price_cents = match parse_price(&member_price_str) {
+    let member_price_cents = match parse_price(&form.member_price_str) {
         Ok(cents) => cents,
         Err(msg) => return partials::admin_alert("error", msg, false).into_response(),
     };
-    let guest_price_cents = match parse_price(&guest_price_str) {
+    let guest_price_cents = match parse_price(&form.guest_price_str) {
         Ok(cents) => cents,
         Err(msg) => return partials::admin_alert("error", msg, false).into_response(),
     };
 
     let input = UpdateEventInput {
-        title,
-        description,
-        event_type,
+        title: form.title,
+        description: form.description,
+        event_type: form.event_type,
         event_type_id: existing.event_type_id,
-        visibility,
-        start_time,
-        end_time,
-        location: if location_str.is_empty() {
+        visibility: form.visibility,
+        start_time: form.start_time,
+        end_time: form.end_time,
+        location: if form.location.is_empty() {
             None
         } else {
-            Some(location_str)
+            Some(form.location)
         },
-        max_attendees,
-        rsvp_required,
+        max_attendees: form.max_attendees,
+        rsvp_required: form.rsvp_required,
         member_price_cents,
         guest_price_cents,
-        guest_registration_enabled,
+        guest_registration_enabled: form.guest_registration_enabled,
         image_url,
     };
 
@@ -1027,7 +1004,7 @@ pub async fn admin_update_event(
     // Series-aware "edit this and all future" path: apply the same
     // mutable subset to every later occurrence in the series.
     let mut future_count = 0u64;
-    if edit_scope == "this_and_future" {
+    if form.edit_scope == "this_and_future" {
         if let Some(series_id) = existing.series_id {
             match event_admin_service
                 .update_series_from(current_user.member.id, series_id, updated.start_time, input)
@@ -1039,7 +1016,7 @@ pub async fn admin_update_event(
         }
     }
 
-    let msg = if edit_scope == "this_and_future" {
+    let msg = if form.edit_scope == "this_and_future" {
         format!(
             "Event updated. {} future occurrences also updated.",
             future_count.saturating_sub(1)
