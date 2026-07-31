@@ -43,6 +43,8 @@ The button label SHALL reflect which path applies, so a member can tell before c
 
 Both handlers SHALL refuse an event the requesting member may not see — an `AdminOnly` event requested by a non-admin — and SHALL answer with the same "event not found" response an unknown id produces. A distinguishable rejection would let a member confirm which admin-only event ids exist, which is the disclosure the level exists to prevent.
 
+The member class-enrollment endpoint `POST /portal/api/series/:id/enroll` SHALL apply the same refusal at series scope. Because a series row carries no visibility of its own, the endpoint SHALL resolve the visibility decision against one of the series' occurrences using the same domain rule the event handlers use, and SHALL treat a series with no occurrences as not visible. A refused enrollment SHALL answer with the same "class not found" response an unknown series id produces, and SHALL create no `series_enrollment` row, no `event_attendance` row, no payment, and no Checkout session — in particular the class's title SHALL NOT be disclosed, whether in the response or as a Stripe Checkout line item.
+
 #### Scenario: RSVP is CSRF-protected
 
 - **WHEN** an HTMX RSVP request arrives without `X-CSRF-Token`
@@ -62,4 +64,14 @@ Both handlers SHALL refuse an event the requesting member may not see — an `Ad
 
 - **WHEN** a non-admin Active member posts `POST /portal/api/events/:id/rsvp` with the id of an `AdminOnly` event
 - **THEN** the handler SHALL return the same "event not found" response an unknown id returns, no `event_attendance` row SHALL be created, and no payment or Checkout session SHALL be created
+
+#### Scenario: Enrolling in an admin-only class is refused
+
+- **WHEN** a non-admin Active member posts `POST /portal/api/series/:id/enroll` with the id of a series whose occurrences are `AdminOnly`
+- **THEN** the handler SHALL return the same "class not found" response an unknown series id returns, the class title SHALL NOT appear in the response, and no `series_enrollment` row, no `event_attendance` row, no payment, and no Checkout session SHALL be created
+
+#### Scenario: An admin can still enroll in an admin-only class
+
+- **WHEN** a member with `is_admin` posts `POST /portal/api/series/:id/enroll` for the same `AdminOnly` series
+- **THEN** the enrollment SHALL proceed exactly as it does for a members-only class, per the `paid-events` capability
 

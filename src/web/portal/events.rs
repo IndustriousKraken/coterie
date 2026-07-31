@@ -487,6 +487,30 @@ pub async fn rsvp_event(
     }
 }
 
+/// Whether `member` may see the class `series_id` names.
+///
+/// A series row carries no visibility of its own — its occurrences do —
+/// so the rule is read against an occurrence, exactly as
+/// [`crate::web::templates::class_register::load_enrollable`] does for
+/// the public class page. Same single home for the `AdminOnly` rule:
+/// [`crate::domain::Event::visible_to_member`], never a second predicate
+/// on `EventSeries`.
+///
+/// A series with no occurrences is not visible — there is nothing to read
+/// the rule against, and nothing to enroll in either.
+async fn series_visible_to_member(
+    event_repo: &dyn EventRepository,
+    series_id: Uuid,
+    member: &crate::domain::Member,
+) -> bool {
+    event_repo
+        .list_series_occurrences(series_id)
+        .await
+        .unwrap_or_default()
+        .first()
+        .is_some_and(|e| e.visible_to_member(member))
+}
+
 /// Enroll the current member in a paid class.
 ///
 /// The series-scope sibling of [`rsvp_event`], and the same contract: a
@@ -512,6 +536,16 @@ pub async fn enroll_in_series(
                 .into_response()
         }
     };
+    // A class the member may not see answers exactly as an unknown id
+    // does — see `rsvp_event`. This runs BEFORE `class_title` (which
+    // would read the hidden title) and before `enroll` (which would write
+    // an enrollment, seat the member on every AdminOnly occurrence, and
+    // mint a Checkout session naming the class).
+    if !series_visible_to_member(&*event_repo, series_id, &current_user.member).await {
+        return axum::response::Html(render_class_error(&sid, 0, false, "Class not found"))
+            .into_response();
+    }
+
     let price = series.member_price_cents;
     // The series row has no title; the class is named by its occurrences.
     let title =
