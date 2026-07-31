@@ -9,12 +9,18 @@
             <h2 class="mt-6 text-center text-3xl font-extrabold text-gray-900">
                 Sign in to your account
             </h2>
+            {# Rendered only when the org configured a public signup page.
+               Coterie hosts none of its own, so an empty setting means no
+               link — never a link to /public/signup, which is a POST-only
+               JSON API that 405s at a browser. #}
+            {% if !signup_url.is_empty() %}
             <p class="mt-2 text-center text-sm text-gray-600">
                 Or
-                <a href="/public/signup" class="font-medium text-blue-600 hover:text-blue-500">
+                <a href="{{ signup_url }}" class="font-medium text-blue-600 hover:text-blue-500">
                     create a new account
                 </a>
             </p>
+            {% endif %}
         </div>
         
         <form class="mt-8 space-y-6"

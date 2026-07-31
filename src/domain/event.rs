@@ -83,6 +83,19 @@ impl Event {
         self.visibility == EventVisibility::Public && self.guest_registration_enabled
     }
 
+    /// Whether `member` may see this event on the member surfaces (the
+    /// events list, the dashboard's upcoming widget, RSVP).
+    ///
+    /// `AdminOnly` is the level an org uses for events the membership is
+    /// not meant to know about, so a non-admin gets neither the row nor
+    /// any of its content; an admin keeps seeing everything, since the
+    /// same content is already theirs to read in the admin surface.
+    /// One home for the rule so the decision isn't re-derived (and
+    /// re-broken) per call site — mirrors [`Event::publicly_registerable`].
+    pub fn visible_to_member(&self, member: &crate::domain::Member) -> bool {
+        member.is_admin || self.visibility != EventVisibility::AdminOnly
+    }
+
     /// The absolute URL of the Coterie-hosted public registration page,
     /// or `None` when the event is not publicly registerable.
     ///
@@ -558,6 +571,50 @@ mod tz_tests {
             e.start_time <= now,
             "raw wall-clock (19:00Z) mis-reads as past against 19:30Z now"
         );
+    }
+
+    fn member(is_admin: bool) -> crate::domain::Member {
+        crate::domain::Member {
+            id: Uuid::new_v4(),
+            email: "m@example.com".into(),
+            username: "m".into(),
+            full_name: "M".into(),
+            status: crate::domain::MemberStatus::Active,
+            membership_type_id: Uuid::new_v4(),
+            joined_at: Utc::now(),
+            expires_at: None,
+            dues_paid_until: None,
+            bypass_dues: false,
+            is_admin,
+            notes: None,
+            stripe_customer_id: None,
+            stripe_subscription_id: None,
+            billing_mode: Default::default(),
+            email_verified_at: None,
+            dues_reminder_sent_at: None,
+            discord_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    // AdminOnly is the level for events the membership is not meant to
+    // know about: a non-admin must not see the row at all, while an
+    // admin keeps seeing it. Public/MembersOnly stay visible to everyone.
+    #[test]
+    fn admin_only_event_is_hidden_from_non_admin() {
+        let mut e = event_at(wall(2026, 7, 23, 19, 0), "UTC");
+        e.visibility = EventVisibility::AdminOnly;
+        assert!(!e.visible_to_member(&member(false)));
+        assert!(e.visible_to_member(&member(true)));
+
+        for v in [EventVisibility::Public, EventVisibility::MembersOnly] {
+            e.visibility = v.clone();
+            assert!(
+                e.visible_to_member(&member(false)),
+                "{v:?} must stay visible"
+            );
+        }
     }
 
     // DST overlap (fall-back): 01:30 on 2026-11-01 happens twice in
