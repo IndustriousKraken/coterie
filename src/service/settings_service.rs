@@ -38,6 +38,9 @@ pub fn set_submissions_enabled_cached(enabled: bool) {
 pub mod org_keys {
     /// IANA timezone name events are scheduled in (default `UTC`).
     pub const TIMEZONE: &str = "org.timezone";
+    /// The org's public account-signup page. Empty (the default) means the
+    /// login page advertises no create-account link at all.
+    pub const SIGNUP_URL: &str = "org.signup_url";
 }
 
 /// Keys used for email configuration. One source of truth so the

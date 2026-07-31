@@ -16,7 +16,10 @@ use crate::{
     auth::{AuthService, CsrfService, PendingLoginService, TotpService},
     config::Settings,
     repository::MemberRepository,
-    service::audit_service::AuditService,
+    service::{
+        audit_service::AuditService,
+        settings_service::{org_keys, SettingsService},
+    },
     util::auth_log,
     web::templates::{BaseContext, HtmlTemplate},
 };
@@ -26,6 +29,10 @@ use crate::{
 pub struct LoginTemplate {
     pub base: BaseContext,
     pub redirect_url: Option<String>,
+    /// The org's public signup page. Empty means the create-account link
+    /// is not rendered — Coterie hosts no signup page of its own, so an
+    /// unconfigured deployment has nowhere honest to send anyone.
+    pub signup_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -54,6 +61,7 @@ pub struct LoginResponse {
 pub async fn login_page(
     State(auth_service): State<Arc<AuthService>>,
     State(member_repo): State<Arc<dyn MemberRepository>>,
+    State(settings_service): State<Arc<SettingsService>>,
     jar: CookieJar,
     Query(query): Query<LoginQuery>,
 ) -> Response {
@@ -80,6 +88,12 @@ pub async fn login_page(
     let template = LoginTemplate {
         base: BaseContext::for_anon(),
         redirect_url: query.redirect,
+        signup_url: settings_service
+            .get_value(org_keys::SIGNUP_URL)
+            .await
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
     };
     HtmlTemplate(template).into_response()
 }

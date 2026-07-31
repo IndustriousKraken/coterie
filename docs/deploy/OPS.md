@@ -204,6 +204,13 @@ To upgrade in place:
 3. Migrations run during startup. If startup fails, the service stays
    down and the DB is left in its prior state. Check
    `journalctl -u coterie -n 100`.
+4. New settings arrive with safe defaults, so nothing here blocks the
+   upgrade — but a few want an operator value afterwards. Currently:
+   `org.signup_url` (Settings → Organization). It holds the absolute URL
+   of your public join page and gates the login screen's "create a new
+   account" link; empty (the default) renders no link at all. Coterie
+   hosts no signup page of its own — `/public/signup` is the POST-only
+   API your public site submits to, not a page a browser can open.
 
 Rollback isn't automated. If a release introduces problems:
 
