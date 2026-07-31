@@ -61,16 +61,3 @@ redundant — the hint is a convenience, the check is the control.
   (`tests/auth_logging_test.rs`:
   `an_over_length_password_is_logged_as_too_long_with_its_byte_count` — asserts
   `reason=too_long` and `length=243`, the same byte count the user is shown.)
-
-## 4. Companion (marketing repo, not this spec)
-
-- [ ] 4.1 `theneontemple.com` join form
-  (`themes/terminal/layouts/_default/join.html`): add a visible hint stating the
-  128-byte ceiling next to the password input, and extend the adjacent comment to
-  say the hint mirrors Coterie's `validate_password` bounds (10 and 128 bytes) and
-  is a convenience rather than the enforcement. Do NOT add `maxlength` — it clips
-  pasted input silently on a masked field and counts UTF-16 code units rather than
-  bytes. The existing `minlength="10"` is unaffected; it does not truncate.
-
-  Left unchecked: a different repository, outside this change's tree, matching how
-  prior "Companion (marketing repo)" sections were archived.

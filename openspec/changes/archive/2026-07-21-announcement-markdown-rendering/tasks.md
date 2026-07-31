@@ -55,10 +55,3 @@ the "no raw HTML" render mode are the security controls; call them out in review
 - [x] 6.1 `openspec validate announcement-markdown-rendering --strict` passes.
 - [x] 6.2 `cargo test` green (new + existing announcement/public-feed suites);
   `cargo clippy` clean on touched files.
-
-## 7. Companion change (separate repo, after Coterie ships `content_html`)
-
-- [ ] 7.1 `theneontemple.com` `main.js`: announcement modal renders
-  `content_html` via `innerHTML` (server-sanitized) instead of `content` via
-  `textContent`; card previews stay plain-text (truncate raw `content`,
-  `escapeHtml`). Add a test mirroring the existing `main.test.js` encoding tests.

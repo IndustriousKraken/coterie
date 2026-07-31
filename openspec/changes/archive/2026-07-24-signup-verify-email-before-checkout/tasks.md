@@ -47,8 +47,3 @@ ONLY for an email-verified member.
 
 - [x] 5.1 `openspec validate signup-verify-email-before-checkout --strict` passes.
 - [x] 5.2 `cargo test` (signup / webhook / verify suites) green; `cargo clippy` clean.
-
-## 6. Companion (marketing repo, not this spec)
-
-- [ ] 6.1 `theneontemple.com` join-form success copy: "check your email to
-  continue" instead of "redirecting to payment".

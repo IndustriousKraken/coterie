@@ -27,14 +27,3 @@
 - [x] 3.2 Configured setting renders a link to that URL.
 - [x] 3.3 Assert no template in the repo references `/public/signup` as an `href`.
   This is the actual defect class; a grep-style assertion stops it returning.
-
-## 4. Deployment note
-
-- [ ] 4.1 For The Neon Temple, set the value to `https://theneontemple.com/join/`
-  after deploy. Until then the link is simply absent, which is the intended
-  upgrade behavior.
-- NOT DONE, and not doable from the implementation sandbox: this is a write to
-  the live deployment's `app_settings`, performed by an operator on the admin
-  settings page after the release ships. The in-repo half is discharged —
-  `docs/deploy/OPS.md` "Upgrading" now lists `org.signup_url` as a post-upgrade
-  operator value, with what an empty value means.
