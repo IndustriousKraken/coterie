@@ -34,6 +34,53 @@ Added / Changed / Deprecated / Removed / Fixed / Security.
 
 ### Fixed
 
+## [v1.0.20] — 2026-07-31
+
+### Added
+
+- Adds a backup that actually protects a deployment — a run now bundles the vacuumed database together with both upload roots into one timestamped archive, a new `deploy/restore.sh` verifies a bundle and restores it (stopping the service, moving current state aside rather than deleting it, fixing ownership, and integrity-checking the database), and provisioning installs and enables the backup timer so a fresh install is protected by default. Existing deployments still need the units installed once; the deploy docs and `RESTORE.md` — which now covers uploads — carry the step.
+
+### Changed
+
+- Splits four oversized source units — the public API handlers, the duplicated event create/update multipart parsing, the Stripe JSON test fixtures, and `coterie-provision`'s installer — with no change to any route, the OpenAPI document, the CLI surface, or a test assertion. The single visible effect: the admin event-edit form now reports an invalid start time with the same alert the create form uses.
+
+### Security
+
+- Refuses member class enrollment on an `AdminOnly` class. `POST /portal/api/series/:id/enroll` was the one member registration endpoint the previous `AdminOnly` fix missed, so posting a series id directly seated the member on every future admin-only occurrence and, on a priced class, disclosed its title to them on a Stripe checkout page; it now answers with the same "Class not found" fragment an unknown id produces. An org that expects members to enroll in a recurring class should set that series to `MembersOnly`.
+
+## [v1.0.19] — 2026-07-31
+
+### Security
+
+- Stores private submission attachments under a separate uploads root that no public route is mounted on, so `GET /uploads/:filename` cannot reach an attachment regardless of what the database says. The previous denylist failed open — an attachment became public whenever its row went away (replaced on edit, submitter deleted, a failed cleanup, or the window between writing the file and committing the row). Existing attachments are migrated, and member-only event images now fail closed too: the route asks whether a file is known public rather than whether it is known private.
+- Neutralizes spreadsheet formula injection in the finance tax-prep CSV export. Its description, counterparty, category, and account columns carry attacker-supplied text — a public donor's name and email, or any member's profile name — and are now written with the same formula-neutralizing writer the member roster and audit-log exports already use.
+
+## [v1.0.18] — 2026-07-31
+
+### Added
+
+- Adds security logging across the authentication surface — failed and successful logins, TOTP outcomes, password-reset requests and completions, password-policy rejections, and rate-limit trips now emit structured log events, so "why couldn't this member log in?" is answerable. Account-state changes (password changed or reset, TOTP enabled or disabled, recovery codes regenerated) also write audit-log rows. The log distinguishes unknown email from wrong password from inactive account; the HTTP response does not. Passwords, reset tokens, session tokens, and TOTP codes are never logged.
+- Adds an optional `org.signup_url` org setting. The portal login page's "create account" link now renders only when it is set, and points at the organization's own join page; previously it pointed at a POST-only JSON API, so following it downloaded a 405 error body as a file.
+
+### Changed
+
+- States the maximum password length in bytes rather than characters, and reports what was submitted — a non-ASCII password was previously refused for exceeding a character count it had not exceeded. The enforced ceiling is unchanged; password fields now show it before submission rather than after.
+
+### Fixed
+
+- Fixes failed logins locking a member out of password recovery. `/forgot-password` now has its own rate-limit budget instead of sharing the login budget, so five wrong passwords no longer block the reset that fixes them. The TOTP second factor still shares the credential budget.
+- Fixes `POST /reset-password` returning `200` for a rejected reset — a bad, expired, or already-used token, or a password failing policy — which made a refused reset indistinguishable from a successful one in logs and monitoring. The rendered page is unchanged.
+- Fixes the portal surface producing no request logs at all: the tracing layer was applied before the API and web routers were merged, so portal requests, including every rate-limit rejection, were invisible to the application.
+- Fixes a series-wide delete stranding guests' paid registration fees. A series that was free for members but priced for guests passed the refund-before-delete guard, so the delete kept the guests' money and cascaded away the roster recording who was owed it; the refusal is now driven by outstanding completed event-fee payments rather than by the member price column.
+- Refuses to sell a class pass when no session of the series remains — the sale previously charged the full pass price and seated the buyer on nothing. Flat pricing is otherwise unchanged, and the admin at-the-door and comp path is deliberately exempt.
+- Fixes a horizon-window flake in the recurring-series tests that failed CI only on certain weekdays, and requires horizon-extension tests to derive their bounds from the materializer horizon rather than the wall clock.
+
+### Security
+
+- Makes the first-run setup gate fail closed. The unauthenticated, CSRF-exempt `POST /setup` read a database error on its "has an admin already been created?" check as "this is a fresh install", so anyone who could make that one query fail — by exhausting the connection pool, or during any write-lock contention — could mint a second full administrator on a live instance. An errored check now refuses, as does a process that has already observed an admin.
+- Hides `AdminOnly` events from the member portal. Every member could previously see admin-only events in full on the events list and dashboard, and RSVP to them; those surfaces and the RSVP/cancel endpoints now apply the visibility level, and admins still see everything. An org using `AdminOnly` as a scheduling marker will find those events disappear from members' lists; attendance rows already written against them survive on the admin roster.
+- Bounds `full_name` on the member profile-update endpoint at 200 characters, trimmed and non-empty, matching public signup. An authenticated member could otherwise store a megabyte-long or blank name, which then rendered on the admin member list, every event and class roster, the member CSV export, and outbound email.
+
 ## [v1.0.17] — 2026-07-27
 
 ### Added
