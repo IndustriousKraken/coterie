@@ -15,7 +15,7 @@ use crate::{
     },
     auth::CsrfService,
     config::Settings,
-    domain::{EventType, EventVisibility},
+    domain::{Event, EventType, EventVisibility},
     repository::{EventRepository, PaymentRepository},
     service::event_admin_service::{CreateEventInput, EventAdminService, UpdateEventInput},
     service::payment_admin_service::PaymentAdminService,
@@ -75,6 +75,18 @@ pub struct AdminEventInfo {
     pub max_attendees: Option<i32>,
     pub rsvp_required: bool,
     pub is_past: bool,
+}
+
+/// The admin list's time-filter arms, in one function because they must
+/// stay exact complements. Derived separately they would drift, and an
+/// event in progress — now upcoming until it ends — would list under
+/// BOTH `upcoming` and `past`.
+fn matches_time_filter(filter: &str, event: &Event, now: chrono::DateTime<chrono::Utc>) -> bool {
+    match filter {
+        "upcoming" => event.is_upcoming(now),
+        "past" => !event.is_upcoming(now),
+        _ => true,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,11 +151,7 @@ pub async fn admin_events_page(
             if !visibility_filter.is_empty() && format!("{:?}", e.visibility) != visibility_filter {
                 return false;
             }
-            match time_filter.as_str() {
-                "upcoming" => e.start_utc() > now,
-                "past" => e.start_utc() <= now,
-                _ => true,
-            }
+            matches_time_filter(&time_filter, e, now)
         })
         .collect();
 
@@ -171,7 +179,9 @@ pub async fn admin_events_page(
         .take(per_page as usize)
     {
         let attendee_count = event_repo.get_attendee_count(e.id).await.unwrap_or(0);
-        let is_past = e.start_utc() <= now;
+        // Same predicate as the filter above, negated — a row shown under
+        // `upcoming` must not also be badged "past".
+        let is_past = !e.is_upcoming(now);
 
         paginated_events.push(AdminEventInfo {
             id: e.id.to_string(),
@@ -315,7 +325,7 @@ pub async fn admin_event_detail_page(
         .collect();
 
     let now = chrono::Utc::now();
-    let is_past = event.start_utc() <= now;
+    let is_past = !event.is_upcoming(now);
     let member_price_cents = event.member_price_cents;
     let guest_price_cents = event.guest_price_cents;
     // One home for the registerability rule (`Event::publicly_registerable`),
@@ -1293,6 +1303,76 @@ mod tests {
     fn garbage_is_rejected_rather_than_silently_zeroed() {
         assert!(parse_price("free").is_err());
         assert!(parse_price("1o").is_err());
+    }
+
+    // 3.9 — `upcoming` and `past` must partition the list: every event
+    // lands under exactly one of them, including one in progress. Two
+    // separately-derived arms would list an in-progress event under both.
+    mod time_filter {
+        use super::super::matches_time_filter;
+        use crate::domain::{Event, EventType, EventVisibility};
+        use chrono::{DateTime, Duration, Utc};
+        use uuid::Uuid;
+
+        fn event(offset_from_now: Duration, duration: Option<Duration>) -> Event {
+            let start = Utc::now() + offset_from_now;
+            Event {
+                id: Uuid::new_v4(),
+                title: "T".into(),
+                description: String::new(),
+                event_type: EventType::Meeting,
+                event_type_id: None,
+                visibility: EventVisibility::Public,
+                // `timezone` is UTC, so the stored wall-clock container
+                // and the derived instant coincide.
+                start_time: start,
+                end_time: duration.map(|d| start + d),
+                timezone: "UTC".into(),
+                location: None,
+                max_attendees: None,
+                rsvp_required: false,
+                member_price_cents: 0,
+                guest_price_cents: 0,
+                guest_registration_enabled: false,
+                image_url: None,
+                created_by: Uuid::new_v4(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                series_id: None,
+                occurrence_index: None,
+            }
+        }
+
+        #[test]
+        fn upcoming_and_past_partition_every_event() {
+            let h = Duration::hours(1);
+            let fixture = [
+                ("future", event(h * 24, Some(h))),
+                ("in progress", event(-h, Some(h * 2))),
+                ("ended", event(-h * 3, Some(h))),
+                ("no end, inside grace", event(-Duration::minutes(30), None)),
+                ("no end, past grace", event(-h * 3, None)),
+            ];
+            let now: DateTime<Utc> = Utc::now();
+
+            for (label, e) in &fixture {
+                let up = matches_time_filter("upcoming", e, now);
+                let past = matches_time_filter("past", e, now);
+                assert_ne!(up, past, "`{label}` must land under exactly one filter");
+                // An unrecognized filter is the unfiltered list.
+                assert!(matches_time_filter("", e, now), "`{label}` unfiltered");
+            }
+
+            // ...and the arms are on the right side of the boundary.
+            let expected_upcoming = ["future", "in progress", "no end, inside grace"];
+            for (label, e) in &fixture {
+                assert_eq!(
+                    matches_time_filter("upcoming", e, now),
+                    expected_upcoming.contains(label),
+                    "`{label}` is on the wrong side of upcoming",
+                );
+            }
+        }
     }
 }
 

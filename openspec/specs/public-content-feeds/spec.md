@@ -38,7 +38,7 @@ Members-only events SHALL additionally be sanitized so that no private data leak
 - `location` SHALL be set to `None`.
 - `image_url` SHALL be set to `None`.
 
-The real `start_time`/`end_time` pass through for both public and members-only events. **By default** — and always for the iCal format — the result SHALL be filtered to upcoming events (derived UTC instant after `now()`), sorted ascending by start time, and truncated to the configured `limit` (default 50). **When both `from` and `to` query parameters are supplied as valid RFC 3339 instants**, spanning no more than a bounded maximum window, the JSON result SHALL instead include every event whose derived UTC instant falls within `[from, to)` — **including past events** — sorted ascending by start time, still projected, members-only sanitized, AdminOnly excluded, and `limit`-bounded. A missing, malformed, or over-wide range SHALL fall back to the default upcoming-only behavior rather than erroring.
+The real `start_time`/`end_time` pass through for both public and members-only events. **By default** — and always for the iCal format — the result SHALL be filtered to upcoming events, sorted ascending by start time, and truncated to the configured `limit` (default 50). Upcoming SHALL mean what the `event-timezone` capability defines it to mean — the event has not yet ended — so an event in progress remains in the default response and in the iCal feed instead of disappearing from the marketing site and from every subscribed calendar client at the moment it begins. **When both `from` and `to` query parameters are supplied as valid RFC 3339 instants**, spanning no more than a bounded maximum window, the JSON result SHALL instead include every event whose derived UTC instant falls within `[from, to)` — **including past events** — sorted ascending by start time, still projected, members-only sanitized, AdminOnly excluded, and `limit`-bounded. A missing, malformed, or over-wide range SHALL fall back to the default upcoming-only behavior rather than erroring.
 
 #### Scenario: Members-only event title is sanitized
 
@@ -47,8 +47,13 @@ The real `start_time`/`end_time` pass through for both public and members-only e
 
 #### Scenario: Past events are excluded by default
 
-- **WHEN** an event's derived instant is in the past AND no `from`/`to` range is supplied
+- **WHEN** an event has ended AND no `from`/`to` range is supplied
 - **THEN** the event SHALL NOT appear in `/public/events` regardless of public/members-only
+
+#### Scenario: An event in progress is still listed by default
+
+- **WHEN** an event has started but not yet ended AND no `from`/`to` range is supplied
+- **THEN** the event SHALL appear in `/public/events`, and in the iCal response for the same request
 
 #### Scenario: A date range returns past events
 

@@ -76,7 +76,7 @@ pub async fn events_list_api(
     // correct for non-UTC orgs.
     events.sort_by(|a, b| {
         let (au, bu) = (a.start_utc(), b.start_utc());
-        match (au > now, bu > now) {
+        match (a.is_upcoming(now), b.is_upcoming(now)) {
             (true, true) => au.cmp(&bu),
             (false, false) => bu.cmp(&au),
             (true, false) => std::cmp::Ordering::Less,
@@ -122,7 +122,7 @@ pub async fn events_list_api(
         std::collections::HashMap::new();
 
     for event in filtered_events {
-        let is_past = event.start_utc() <= now;
+        let is_past = !event.is_upcoming(now);
         // Label the wall-clock with the event's zone so a remote member
         // knows which local time it is (server-rendered — no browser
         // conversion like the public JSON/iCal path gets).

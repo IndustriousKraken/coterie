@@ -146,6 +146,60 @@ impl Event {
         self.end_time
             .map(|e| wall_clock_to_utc(e.naive_utc(), self.tz()))
     }
+
+    /// Whether this event is still upcoming at `now` — convenience
+    /// wrapper over [`is_upcoming`] for callers holding an event whose
+    /// fields still carry the STORED wall-clock.
+    ///
+    /// A surface that has already replaced those fields with derived
+    /// instants (the public feed's `derive_utc_instants`) must call the
+    /// free function directly: this one derives, and deriving an
+    /// already-derived instant shifts it a second time by the org's
+    /// offset.
+    pub fn is_upcoming(&self, now: DateTime<Utc>) -> bool {
+        is_upcoming(self.start_utc(), self.end_utc(), now)
+    }
+}
+
+/// How long an event with no recorded `end_time` stays upcoming past its
+/// start.
+///
+/// A missing end time means the end is UNKNOWN, not that the event ends
+/// the instant it begins — treating the absent value as a zero-length
+/// event would drop the listing at exactly the moment the event is
+/// happening, for precisely the events least likely to have an end
+/// recorded.
+///
+/// Deliberately a constant and not a setting: the field that answers
+/// "how long does this run" is `end_time`, and the fix for a bad guess is
+/// to record one. Two hours is what this org's own recurring evenings
+/// actually run (19:00–21:00).
+pub const UNKNOWN_END_GRACE_HOURS: i64 = 2;
+
+/// The grace period as a [`Duration`]. See [`UNKNOWN_END_GRACE_HOURS`].
+pub fn unknown_end_grace() -> Duration {
+    Duration::hours(UNKNOWN_END_GRACE_HOURS)
+}
+
+/// Whether an event is still upcoming at `now`: it is, until it ends.
+///
+/// The single home for the rule — every surface that lists or counts
+/// upcoming events reads this instead of writing `start > now`, which is
+/// how three copies of the comparison drifted apart before.
+///
+/// Takes already-derived UTC **instants** rather than an `&Event` on
+/// purpose: `Event::start_time`/`end_time` normally hold a wall-clock,
+/// but the public feed overwrites them in place with derived instants
+/// before filtering, so a predicate that re-derived would apply the zone
+/// offset twice on exactly the surface where an in-progress event is most
+/// visible. `now` is a parameter rather than a clock read for the same
+/// reason: a clock-reading predicate can't be tested at its boundary.
+pub fn is_upcoming(
+    start_utc: DateTime<Utc>,
+    end_utc: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> bool {
+    end_utc.unwrap_or(start_utc + unknown_end_grace()) > now
 }
 
 /// Resolve a naive local wall-clock in `tz` to a UTC instant, handling
@@ -615,6 +669,73 @@ mod tz_tests {
                 "{v:?} must stay visible"
             );
         }
+    }
+
+    // 3.1 — the predicate flips at the END instant, not the start. An
+    // event in progress is still upcoming; one a second past its end is
+    // not. Bounds are derived from the event under test rather than
+    // hardcoded, so this can't become a day-of-week flake.
+    #[test]
+    fn is_upcoming_flips_at_the_end_instant() {
+        for zone in ["UTC", "America/New_York", "Australia/Sydney"] {
+            let e = event_at(wall(2026, 7, 23, 19, 0), zone);
+            let end = e.end_utc().expect("fixture records an end");
+            assert!(
+                e.is_upcoming(end - Duration::seconds(1)),
+                "{zone}: one second before the end is still upcoming"
+            );
+            assert!(
+                !e.is_upcoming(end + Duration::seconds(1)),
+                "{zone}: one second after the end is not"
+            );
+            // The whole point: started, not ended.
+            assert!(
+                e.is_upcoming(e.start_utc() + Duration::minutes(30)),
+                "{zone}: an event in progress stays upcoming"
+            );
+        }
+    }
+
+    // 3.1 — a missing end time means the end is UNKNOWN, so the grace
+    // period decides, and it is two hours.
+    #[test]
+    fn is_upcoming_uses_the_grace_period_when_no_end_is_recorded() {
+        assert_eq!(UNKNOWN_END_GRACE_HOURS, 2, "the grace period is two hours");
+        for zone in ["UTC", "America/New_York"] {
+            let mut e = event_at(wall(2026, 7, 23, 19, 0), zone);
+            e.end_time = None;
+            let start = e.start_utc();
+            assert!(
+                e.is_upcoming(start + Duration::minutes(30)),
+                "{zone}: 30 minutes in, well inside the grace period"
+            );
+            assert!(
+                e.is_upcoming(start + unknown_end_grace() - Duration::seconds(1)),
+                "{zone}: one second before the grace expires"
+            );
+            assert!(
+                !e.is_upcoming(start + unknown_end_grace() + Duration::seconds(1)),
+                "{zone}: one second after"
+            );
+        }
+    }
+
+    // 3.1 — a naive wall-clock comparison answers by the org's offset.
+    // At a `now` past the RAW stored end but hours before the derived
+    // one, the event must still read as upcoming.
+    #[test]
+    fn is_upcoming_resolves_the_zone_not_the_raw_wallclock() {
+        // 19:00–20:00 on Jan 23 in New York (EST, UTC-5) → 00:00Z–01:00Z
+        // on the 24th.
+        let e = event_at(wall(2026, 1, 23, 19, 0), "America/New_York");
+        let raw_end = e.end_time.expect("fixture records an end");
+        let now = raw_end + Duration::hours(1);
+        assert!(now > raw_end, "now is past the raw wall-clock end (20:00Z)");
+        assert!(
+            e.is_upcoming(now),
+            "but four hours before the derived end (01:00Z) — still upcoming"
+        );
+        assert!(!e.is_upcoming(e.end_utc().unwrap() + Duration::seconds(1)));
     }
 
     // DST overlap (fall-back): 01:30 on 2026-11-01 happens twice in
