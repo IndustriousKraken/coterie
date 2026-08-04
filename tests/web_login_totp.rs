@@ -278,3 +278,105 @@ async fn web_login_totp_returns_429_after_budget_exhausted() {
         "no session may be created across the budget-exhausted run"
     );
 }
+
+// ---------------------------------------------------------------------
+// a51 — the post-authentication destination allow-list
+//
+// The predicate lives in ONE function used by `login_handler`, the TOTP
+// completion handler, and `login_page`. Both handlers are exercised here
+// because the filter used to be written out twice, and two copies drift.
+// ---------------------------------------------------------------------
+
+/// The shareable registration paths a member may have been standing on,
+/// and the off-site destinations that must never be honored.
+fn destination_cases() -> Vec<(String, Option<String>)> {
+    let event = format!("/events/{}/register", Uuid::new_v4());
+    let class = format!("/classes/{}/register", Uuid::new_v4());
+    vec![
+        (event.clone(), Some(event)),
+        (class.clone(), Some(class)),
+        ("https://evil.example/".to_string(), None),
+        ("//evil.example".to_string(), None),
+        ("/portal/../events/x/register".to_string(), None),
+    ]
+}
+
+fn hx_redirect(headers: &axum::http::HeaderMap) -> String {
+    headers
+        .get("HX-Redirect")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[tokio::test]
+async fn login_honors_the_registration_pages_and_refuses_off_site_destinations() {
+    let pool = fresh_pool().await;
+    let state = build_app_state(pool.clone()).await;
+    let (_member_id, _email, username) = make_member(&state).await;
+    let app = build_app(state);
+
+    for (requested, expected) in destination_cases() {
+        let resp = app
+            .clone()
+            .oneshot(post_json(
+                "/login",
+                serde_json::json!({
+                    "username": username,
+                    "password": PASSWORD,
+                    "redirect_url": requested,
+                }),
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "requested {requested}");
+        assert_eq!(
+            hx_redirect(resp.headers()),
+            expected.unwrap_or_else(|| "/portal/dashboard".to_string()),
+            "destination for {requested}",
+        );
+    }
+}
+
+#[tokio::test]
+async fn totp_completion_applies_the_same_destination_allow_list() {
+    let pool = fresh_pool().await;
+    let state = build_app_state(pool.clone()).await;
+    let (member_id, email, _username) = make_member(&state).await;
+    let totp = enroll_totp(
+        state.service_context.totp_service.as_ref(),
+        member_id,
+        &email,
+    )
+    .await;
+    let app = build_app(state.clone());
+
+    for (requested, expected) in destination_cases() {
+        // Each completion consumes the pending row, so mint a fresh one.
+        let pending = state
+            .service_context
+            .pending_login_service
+            .create(member_id, false)
+            .await
+            .expect("create pending");
+        let resp = app
+            .clone()
+            .oneshot(post_json(
+                "/login/totp",
+                serde_json::json!({
+                    "code": totp.generate_current().expect("code"),
+                    "redirect_url": requested,
+                }),
+                &[format!("pending_login={}", pending)],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "requested {requested}");
+        assert_eq!(
+            hx_redirect(resp.headers()),
+            expected.unwrap_or_else(|| "/portal/dashboard".to_string()),
+            "destination for {requested}",
+        );
+    }
+}

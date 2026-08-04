@@ -8,8 +8,10 @@ use axum_extra::extract::CookieJar;
 
 use crate::{
     api::state::AppState,
+    auth::AuthService,
     domain::{Member, MemberStatus},
     error::AppError,
+    repository::MemberRepository,
 };
 
 #[derive(Clone)]
@@ -51,29 +53,89 @@ enum RejectReason {
     AdminTotpMissing,
 }
 
+/// The session lookup every caller shares: cookie → session → member →
+/// status check. Both the rejecting middleware below and the fail-open
+/// [`optional_member`] go through here, so the cookie name and the
+/// status predicate have exactly one home.
+async fn lookup_session(
+    auth_service: &AuthService,
+    member_repo: &dyn MemberRepository,
+    jar: &CookieJar,
+    allowed_statuses: &[MemberStatus],
+) -> Result<Authenticated, RejectReason> {
+    let cookie = jar.get("session").ok_or(RejectReason::NoCookie)?;
+    let session = auth_service
+        .validate_session(cookie.value())
+        .await
+        .map_err(|_| RejectReason::InvalidSession)?
+        .ok_or(RejectReason::InvalidSession)?;
+    let member = member_repo
+        .find_by_id(session.member_id)
+        .await
+        .map_err(|_| RejectReason::MemberNotFound)?
+        .ok_or(RejectReason::MemberNotFound)?;
+    if !allowed_statuses.contains(&member.status) {
+        return Err(RejectReason::StatusBlocked(member.status));
+    }
+    Ok(Authenticated {
+        member,
+        session_id: session.id,
+    })
+}
+
+/// Resolve a request's session WITHOUT rejecting anything.
+///
+/// `None` for every failure mode — no cookie, an unparseable one, a
+/// session that no longer validates, a missing member, a repository
+/// error, or a status the portal would block — so a caller can fall back
+/// to its anonymous rendering instead of surfacing an error.
+///
+/// Called directly by the two shareable registration pages rather than
+/// added as a router layer: those routes live on the anonymous web
+/// surface, and a layer there would change the tier `auth-middleware-tiers`
+/// fixes for every other anonymous route.
+///
+/// A blocked status reading as `None` is deliberate: the member action
+/// those pages offer posts to `/portal/api/events/:id/rsvp`, which is
+/// gated to `POLICY_REQUIRE_AUTH`. Offering it to an Expired member
+/// would render a button that redirects instead of registering — they
+/// get the guest form, which works.
+pub async fn optional_member(
+    auth_service: &AuthService,
+    member_repo: &dyn MemberRepository,
+    jar: &CookieJar,
+) -> Option<(CurrentUser, SessionInfo)> {
+    let auth = lookup_session(
+        auth_service,
+        member_repo,
+        jar,
+        POLICY_REQUIRE_AUTH.allowed_statuses,
+    )
+    .await
+    .ok()?;
+    Some((
+        CurrentUser {
+            member: auth.member,
+        },
+        SessionInfo {
+            session_id: auth.session_id,
+        },
+    ))
+}
+
 async fn authenticate(
     state: &AppState,
     jar: &CookieJar,
     policy: &AccessPolicy,
 ) -> Result<Authenticated, RejectReason> {
-    let cookie = jar.get("session").ok_or(RejectReason::NoCookie)?;
-    let session = state
-        .service_context
-        .auth_service
-        .validate_session(cookie.value())
-        .await
-        .map_err(|_| RejectReason::InvalidSession)?
-        .ok_or(RejectReason::InvalidSession)?;
-    let member = state
-        .service_context
-        .member_repo
-        .find_by_id(session.member_id)
-        .await
-        .map_err(|_| RejectReason::MemberNotFound)?
-        .ok_or(RejectReason::MemberNotFound)?;
-    if !policy.allowed_statuses.contains(&member.status) {
-        return Err(RejectReason::StatusBlocked(member.status.clone()));
-    }
+    let authed = lookup_session(
+        &state.service_context.auth_service,
+        &*state.service_context.member_repo,
+        jar,
+        policy.allowed_statuses,
+    )
+    .await?;
+    let member = authed.member;
     if policy.require_admin && !member.is_admin {
         return Err(RejectReason::NotAdmin);
     }
@@ -101,7 +163,7 @@ async fn authenticate(
     }
     Ok(Authenticated {
         member,
-        session_id: session.id,
+        session_id: authed.session_id,
     })
 }
 
