@@ -69,7 +69,10 @@ pub struct EventRegisterTemplate {
     pub base: BaseContext,
     pub event_id: String,
     pub title: String,
-    pub description: String,
+    /// The description as sanitized safe-subset HTML from the shared
+    /// Markdown pipeline. The raw Markdown is deliberately NOT on the
+    /// template: `|safe` may only ever meet rendered output.
+    pub description_html: String,
     /// Wall-clock in the event's own zone, labeled with the zone
     /// abbreviation — the guest may be anywhere.
     pub when: String,
@@ -182,7 +185,7 @@ pub async fn event_register_page(
         base,
         event_id: event.id.to_string(),
         title: event.title.clone(),
-        description: event.description.clone(),
+        description_html: crate::util::markdown::render_markdown(&event.description),
         when: format!(
             "{} {}",
             event.start_time.format("%A, %B %-d, %Y at %-I:%M %p"),

@@ -61,11 +61,19 @@ pub struct PublicMembershipType {
 /// `event_type_id`, `series_id`, and `occurrence_index`. Members-only
 /// sanitization (nulling title/description/location/image_url) is applied
 /// to the source `Event` before projection, so it carries through.
+///
+/// Alongside the raw Markdown `description` it carries a server-rendered
+/// sanitized `description_html`, exactly as `PublicAnnouncement` carries
+/// `content_html`, so a consumer can render formatted content without
+/// running its own Markdown parser or making a sanitization decision.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PublicEvent {
     pub id: Uuid,
     pub title: String,
+    /// Raw Markdown source — the placeholder text for a members-only event.
     pub description: String,
+    /// Server-rendered sanitized safe-subset HTML of `description`.
+    pub description_html: String,
     pub event_type: EventType,
     pub visibility: EventVisibility,
     pub start_time: DateTime<Utc>,
@@ -97,12 +105,21 @@ impl PublicEvent {
     /// registration URL server-side; the two guest fields are populated
     /// together from `Event::registration_url` or not at all, so they
     /// can't disagree about registerability.
+    ///
+    /// `description_html` is rendered from `e.description` HERE, after the
+    /// caller has already run `sanitize_members_only` — so a members-only
+    /// event renders its placeholder, never the withheld real description.
+    /// Rendering earlier (or from a pre-sanitization copy of the row) would
+    /// make this projection a path around that. The ordering is pinned by
+    /// `members_only_description_html_derives_from_the_placeholder` in
+    /// `tests/event_description_markdown_test.rs`.
     fn from_event(e: Event, base_url: &str) -> Self {
         let registration_url = e.registration_url(base_url);
         let guest_price_cents = registration_url.as_ref().map(|_| e.guest_price_cents);
         PublicEvent {
             id: e.id,
             title: e.title,
+            description_html: crate::util::markdown::render_markdown(&e.description),
             description: e.description,
             event_type: e.event_type,
             visibility: e.visibility,
@@ -166,8 +183,9 @@ fn parse_range(
     tag = "public",
     params(PublicEventsQuery),
     responses(
-        (status = 200, description = "Upcoming public + sanitized members-only events", body = [PublicEvent],
-            content_type = "application/json"),
+        (status = 200, description = "Upcoming public + sanitized members-only events, each with a \
+            server-rendered sanitized `description_html` alongside the raw Markdown `description`",
+            body = [PublicEvent], content_type = "application/json"),
         (status = 200, description = "iCal feed (when format=ical)", content_type = "text/calendar"),
     ),
 )]
@@ -276,7 +294,7 @@ pub struct PublicAnnouncement {
 impl From<Announcement> for PublicAnnouncement {
     fn from(a: Announcement) -> Self {
         PublicAnnouncement {
-            content_html: crate::util::markdown::render_announcement_markdown(&a.content),
+            content_html: crate::util::markdown::render_markdown(&a.content),
             id: a.id,
             title: a.title,
             content: a.content,
@@ -476,7 +494,7 @@ mod announcement_markdown_tests {
     //! Public-feed rendering: `/public/announcements` carries a sanitized
     //! `content_html`, and the RSS item description carries the same
     //! sanitized rendered HTML. Both flow through the shared pipeline
-    //! (`crate::util::markdown::render_announcement_markdown`).
+    //! (`crate::util::markdown::render_markdown`).
 
     use super::feeds::generate_rss_feed;
     use super::*;

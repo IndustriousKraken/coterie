@@ -112,8 +112,7 @@ pub(super) fn generate_rss_feed(announcements: &[Announcement]) -> String {
             // Description carries the sanitized rendered HTML (Markdown →
             // safe subset), CDATA-wrapped — valid RSS 2.0. escape_cdata
             // still guards any `]]>` the rendered HTML might contain.
-            let content_html =
-                crate::util::markdown::render_announcement_markdown(&announcement.content);
+            let content_html = crate::util::markdown::render_markdown(&announcement.content);
             rss.push_str(&format!(
                 "        <description><![CDATA[{}]]></description>\n",
                 escape_cdata(&content_html)

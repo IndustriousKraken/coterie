@@ -65,6 +65,10 @@ pub mod test_support {
         pub responses: RefCell<HashMap<CommandKey, CommandOutput>>,
         pub sequenced_responses: RefCell<HashMap<CommandKey, VecDeque<CommandOutput>>>,
         pub responses_by_cmd: RefCell<HashMap<String, CommandOutput>>,
+        /// Commands whose invocation SHALL return Err — the command could
+        /// not be run at all (binary absent, spawn failure), as opposed to
+        /// running and exiting non-zero.
+        pub fail_cmds: RefCell<HashSet<String>>,
         pub default_response: CommandOutput,
     }
 
@@ -75,6 +79,7 @@ pub mod test_support {
                 responses: RefCell::new(HashMap::new()),
                 sequenced_responses: RefCell::new(HashMap::new()),
                 responses_by_cmd: RefCell::new(HashMap::new()),
+                fail_cmds: RefCell::new(HashSet::new()),
                 default_response: CommandOutput {
                     status: 0,
                     stdout: String::new(),
@@ -105,6 +110,22 @@ pub mod test_support {
             self.responses_by_cmd
                 .borrow_mut()
                 .insert(cmd.to_string(), out);
+        }
+
+        /// Configure every invocation of `cmd` to return Err, modeling a
+        /// command that cannot be run on this host at all.
+        pub fn fail_cmd(&self, cmd: &str) {
+            self.fail_cmds.borrow_mut().insert(cmd.to_string());
+        }
+
+        fn respond(&self, key: CommandKey) -> Result<CommandOutput> {
+            if self.fail_cmds.borrow().contains(&key.cmd) {
+                return Err(anyhow!(
+                    "FakeSystem: `{}` configured to fail to run",
+                    key.cmd
+                ));
+            }
+            Ok(self.lookup_response(&key))
         }
 
         fn lookup_response(&self, key: &CommandKey) -> CommandOutput {
@@ -147,7 +168,7 @@ pub mod test_support {
                 stdin: None,
                 interactive: false,
             });
-            Ok(self.lookup_response(&CommandKey::new(cmd, args)))
+            self.respond(CommandKey::new(cmd, args))
         }
 
         fn run_with_stdin(
@@ -162,7 +183,7 @@ pub mod test_support {
                 stdin: Some(stdin_bytes.to_vec()),
                 interactive: false,
             });
-            Ok(self.lookup_response(&CommandKey::new(cmd, args)))
+            self.respond(CommandKey::new(cmd, args))
         }
 
         fn run_interactive(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
@@ -172,7 +193,7 @@ pub mod test_support {
                 stdin: None,
                 interactive: true,
             });
-            Ok(self.lookup_response(&CommandKey::new(cmd, args)))
+            self.respond(CommandKey::new(cmd, args))
         }
     }
 

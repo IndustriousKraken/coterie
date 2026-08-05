@@ -38,7 +38,9 @@ pub struct ClassRegisterTemplate {
     pub base: BaseContext,
     pub series_id: String,
     pub title: String,
-    pub description: String,
+    /// Sanitized safe-subset HTML from the shared Markdown pipeline — the
+    /// raw Markdown never reaches the template. See `EventRegisterTemplate`.
+    pub description_html: String,
     /// Rendered "6 sessions, Tuesdays from …" line: how many sessions are
     /// still to come and when the first of them is. A guest buying a pass
     /// is buying those sessions, so that is what the page states.
@@ -145,7 +147,7 @@ pub async fn class_register_page(
         base,
         series_id: series.id.to_string(),
         title: prototype.title.clone(),
-        description: prototype.description.clone(),
+        description_html: crate::util::markdown::render_markdown(&prototype.description),
         schedule: match upcoming.first() {
             Some(first) => format!(
                 "{} session{} remaining, starting {} {}",

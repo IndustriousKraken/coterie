@@ -1,9 +1,11 @@
-//! Shared Markdown → sanitized-HTML rendering for announcement bodies.
+//! Shared Markdown → sanitized-HTML rendering for admin-authored bodies:
+//! announcement `content` and event `description`.
 //!
-//! Security-critical: announcement `content` is admin-authored text that
-//! becomes HTML on the member portal AND the public marketing surface, so
-//! this is the sole path from stored Markdown to displayed HTML. Two
-//! stages, both security-relevant:
+//! Security-critical: both are admin-authored text that becomes HTML on
+//! the member portal AND the public marketing surface, so this is the sole
+//! path from stored Markdown to displayed HTML — one safe subset, one
+//! scheme allow-list, one image exclusion, so a change to what is safe
+//! reaches every content type at once. Two stages, both security-relevant:
 //!
 //! 1. **comrak, raw-HTML passthrough OFF** (`render.unsafe_ = false`, the
 //!    default — do NOT enable it). An admin who types `<script>` gets
@@ -25,10 +27,10 @@ use std::collections::{HashMap, HashSet};
 
 use comrak::{markdown_to_html, Options};
 
-/// Render admin-authored announcement Markdown into a sanitized HTML
-/// safe-subset string. The input `md` is never mutated. See the module
-/// docs for the security model.
-pub fn render_announcement_markdown(md: &str) -> String {
+/// Render admin-authored Markdown (an announcement body, an event
+/// description) into a sanitized HTML safe-subset string. The input `md`
+/// is never mutated. See the module docs for the security model.
+pub fn render_markdown(md: &str) -> String {
     let mut options = Options::default();
     // GFM strikethrough (`~~x~~` → <del>) and autolink.
     options.extension.strikethrough = true;
@@ -90,7 +92,7 @@ mod tests {
 
     #[test]
     fn raw_script_becomes_literal_text_not_a_tag() {
-        let out = render_announcement_markdown("<script>alert(1)</script>");
+        let out = render_markdown("<script>alert(1)</script>");
         assert!(
             !out.contains("<script"),
             "raw <script> must not survive as a tag: {out}"
@@ -101,14 +103,14 @@ mod tests {
 
     #[test]
     fn italic_and_strikethrough_render_to_safe_html() {
-        let out = render_announcement_markdown("*italic* and ~~struck~~");
+        let out = render_markdown("*italic* and ~~struck~~");
         assert!(out.contains("<em>italic</em>"), "italic → <em>: {out}");
         assert!(out.contains("<del>struck</del>"), "strike → <del>: {out}");
     }
 
     #[test]
     fn bold_and_bulleted_list_render() {
-        let out = render_announcement_markdown("**bold**\n\n- one\n- two");
+        let out = render_markdown("**bold**\n\n- one\n- two");
         assert!(
             out.contains("<strong>bold</strong>"),
             "bold → <strong>: {out}"
@@ -119,7 +121,7 @@ mod tests {
 
     #[test]
     fn javascript_link_scheme_is_neutralized() {
-        let out = render_announcement_markdown("[click](javascript:alert(1))");
+        let out = render_markdown("[click](javascript:alert(1))");
         assert!(
             !out.contains("javascript:"),
             "javascript: scheme must be stripped: {out}"
@@ -128,7 +130,7 @@ mod tests {
 
     #[test]
     fn data_link_scheme_is_neutralized() {
-        let out = render_announcement_markdown("[x](data:text/html,<h1>hi</h1>)");
+        let out = render_markdown("[x](data:text/html,<h1>hi</h1>)");
         assert!(
             !out.contains("data:"),
             "data: scheme must be stripped: {out}"
@@ -138,7 +140,7 @@ mod tests {
     #[test]
     fn img_and_event_handlers_are_stripped() {
         // Markdown image syntax → comrak <img>; ammonia drops it (no live img).
-        let img = render_announcement_markdown("![alt](https://example.com/x.png)");
+        let img = render_markdown("![alt](https://example.com/x.png)");
         assert!(
             !img.contains("<img"),
             "Markdown <img> must be stripped: {img}"
@@ -147,7 +149,7 @@ mod tests {
         // Raw HTML with an event handler is escaped to inert text by comrak
         // (render.escape) and never reaches the DOM as a live attribute: the
         // anchor is shown as escaped text (`&lt;a …`), not a live `<a onclick>`.
-        let handler = render_announcement_markdown("<a href=\"#\" onclick=\"steal()\">x</a>");
+        let handler = render_markdown("<a href=\"#\" onclick=\"steal()\">x</a>");
         assert!(
             !handler.contains("<a "),
             "raw anchor must not become a live tag: {handler}"
@@ -160,7 +162,7 @@ mod tests {
 
     #[test]
     fn https_link_preserved_with_forced_rel() {
-        let out = render_announcement_markdown("[site](https://example.com)");
+        let out = render_markdown("[site](https://example.com)");
         assert!(
             out.contains("href=\"https://example.com\""),
             "https href preserved: {out}"
@@ -175,7 +177,7 @@ mod tests {
     fn input_is_not_mutated() {
         let src = String::from("# Heading\n\n*text* with <script>x</script>");
         let before = src.clone();
-        let _ = render_announcement_markdown(&src);
+        let _ = render_markdown(&src);
         assert_eq!(src, before, "stored source must be untouched by rendering");
     }
 }

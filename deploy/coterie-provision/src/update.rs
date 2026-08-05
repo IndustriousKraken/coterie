@@ -24,6 +24,10 @@
 //!    restore `coterie.prev`, restart, and exit non-zero with guidance
 //!    that the pre-update snapshot may need restoring if a migration
 //!    already ran.
+//! 7. Report — never resolve — host state the release expects but does
+//!    not find, chiefly a shipped unit the host has never enabled. The
+//!    report is advisory: it exits zero, and a conformant host sees
+//!    nothing at all.
 //!
 //! Every side effect routes through the `SystemCommand` / `FileSystem` /
 //! `ReleaseFetcher` / `Snapshotter` seams so the full flow — including
@@ -333,6 +337,10 @@ where
             output.println(&format!(
                 "Update complete. Coterie is now running {target_tag}."
             ));
+            // Advisory, and last: the update has already succeeded, so a
+            // host query that fails cannot change its outcome, and a
+            // discrepancy never changes the exit code.
+            report_host_conformance(sys, fs, &paths.install_dir, output);
             Ok(0)
         }
         Err(e) => {
@@ -651,6 +659,143 @@ fn refresh_deploy_scripts<F: FileSystem, O: Output>(
     Ok(())
 }
 
+// --------------------------------------------------------------------------
+// Host conformance
+// --------------------------------------------------------------------------
+
+/// Filename suffixes that make a file under `deploy/` a systemd unit.
+const UNIT_SUFFIXES: &[&str] = &[".service", ".timer", ".socket", ".path"];
+
+/// Where the installer places the units a release ships.
+const SYSTEMD_UNIT_DIR: &str = "/etc/systemd/system";
+
+/// Header for the conformance report. Only ever printed when there is
+/// something under it — the section's presence is the signal.
+const CONFORMANCE_HEADER: &str = "Host state this release expects but did not find:";
+
+/// One thing the installed release expects of the host that the host
+/// does not have, plus the command that resolves it.
+#[derive(Debug)]
+struct Finding {
+    message: String,
+    command: String,
+}
+
+/// A conformance check: one finding per discrepancy it can prove, and
+/// nothing otherwise — including when it cannot determine the host's
+/// state at all.
+///
+/// Shipping a new host-side expectation means adding an entry to
+/// [`CHECKS`]; the reporting below does not change.
+type Check = fn(&dyn SystemCommand, &dyn FileSystem, &Path) -> Vec<Finding>;
+
+const CHECKS: &[Check] = &[shipped_units_are_enabled];
+
+/// Is every systemd unit this release ships actually enabled on the host?
+///
+/// The unit list comes from the `deploy/` directory the update just
+/// refreshed, never from a hardcoded list — a unit added to a later
+/// release is checked with no code change here, which is precisely how
+/// `coterie-backup.timer` went unnoticed: it shipped, was never enabled
+/// on an instance provisioned before the wizard installed it, and no
+/// backup ran for months.
+fn shipped_units_are_enabled(
+    sys: &dyn SystemCommand,
+    fs: &dyn FileSystem,
+    install_dir: &Path,
+) -> Vec<Finding> {
+    let deploy = install_dir.join("deploy");
+    let Ok(entries) = fs.read_dir(&deploy) else {
+        // Nothing to compare against; a listing we cannot read proves no
+        // discrepancy.
+        return Vec::new();
+    };
+    let units: Vec<String> = entries
+        .iter()
+        .filter(|p| fs.is_file(p))
+        .filter_map(|p| p.file_name()?.to_str().map(str::to_string))
+        .filter(|n| UNIT_SUFFIXES.iter().any(|s| n.ends_with(s)))
+        .collect();
+
+    let mut findings = Vec::new();
+    for unit in &units {
+        // A timer-driven oneshot is started by its timer, not enabled on
+        // its own: `coterie-backup.service` reads "disabled" on a host
+        // whose backups are working perfectly.
+        // ponytail: matched on the stem, not the timer's `Unit=` key. A
+        // timer naming a differently-stemmed service would report that
+        // service; parse `Unit=` if one ever ships.
+        if let Some(stem) = unit.strip_suffix(".service") {
+            if units.iter().any(|u| u == &format!("{stem}.timer")) {
+                continue;
+            }
+        }
+        let Ok(state) = sys.run("systemctl", &["is-enabled", unit]) else {
+            // The query itself could not run (no systemd, no systemctl on
+            // PATH). Reporting "not enabled" from a failed query sends an
+            // operator to fix something that may not be broken.
+            continue;
+        };
+        if state.success() {
+            continue;
+        }
+        // A non-zero `is-enabled` covers both "installed but off" and
+        // "never installed"; only the latter needs the unit file placed
+        // first, and guessing wrong hands the operator a command that
+        // either fails or clobbers a unit they customized.
+        let command = if fs.is_file(&Path::new(SYSTEMD_UNIT_DIR).join(unit)) {
+            format!("sudo systemctl enable --now {unit}")
+        } else {
+            format!(
+                "sudo cp {} {SYSTEMD_UNIT_DIR}/ && sudo systemctl daemon-reload && sudo systemctl enable --now {unit}",
+                deploy.join(unit).display()
+            )
+        };
+        findings.push(Finding {
+            message: format!("{unit} ships with this release but is not enabled on this host."),
+            command,
+        });
+    }
+    findings
+}
+
+/// Run every check and name what the host is missing, with the command
+/// that fixes each one.
+///
+/// This REPORTS ONLY. It does not enable, start, reload, or install
+/// anything, and writes nothing at all. "It already knows what's wrong,
+/// why not just fix it" is the obvious next thought, and the answer is
+/// that an update which enables units can start a service an operator
+/// deliberately switched off, on a host whose intent it cannot see. The
+/// failure being addressed is that nobody knew, not that someone
+/// declined. `deployment-updates` draws that line for placement; this
+/// stays on the same side of it.
+///
+/// Silence is the contract: with nothing to report it prints nothing —
+/// no header, no all-clear — so the section appearing is itself the
+/// signal. Findings never affect the exit code.
+fn report_host_conformance<S, F, O>(sys: &S, fs: &F, install_dir: &Path, output: &O)
+where
+    S: SystemCommand,
+    F: FileSystem,
+    O: Output,
+{
+    let findings: Vec<Finding> = CHECKS
+        .iter()
+        .flat_map(|check| check(sys, fs, install_dir))
+        .collect();
+    if findings.is_empty() {
+        return;
+    }
+    output.println("");
+    output.println(CONFORMANCE_HEADER);
+    for finding in &findings {
+        output.println(&format!("  - {}", finding.message));
+        output.println(&format!("      {}", finding.command));
+    }
+    output.println("Reported only — this update enabled, started, and reloaded nothing.");
+}
+
 /// Restore the retained previous binary and restart. Best-effort: logs
 /// warnings rather than erroring, because the caller is already
 /// returning an error describing the failed update.
@@ -722,5 +867,184 @@ mod tests {
     fn installed_version_none_when_missing() {
         let fs = FakeFs::new();
         assert!(read_installed_version(&fs, Path::new("/opt/coterie/VERSION")).is_none());
+    }
+
+    // ----------------------------------------------------------------
+    // Host conformance
+    // ----------------------------------------------------------------
+
+    use crate::system::CommandOutput;
+    use crate::test_support::FakeSystem;
+
+    const INSTALL: &str = "/opt/coterie";
+
+    /// An install dir whose refreshed `deploy/` holds `names`.
+    fn deployed(names: &[&str]) -> FakeFs {
+        let fs = FakeFs::new();
+        fs.create_dir_all(Path::new("/opt/coterie/deploy")).unwrap();
+        for name in names {
+            fs.put(&Path::new("/opt/coterie/deploy").join(name), b"x");
+        }
+        fs
+    }
+
+    fn not_enabled() -> CommandOutput {
+        CommandOutput {
+            status: 1,
+            stdout: "disabled\n".to_string(),
+            stderr: String::new(),
+        }
+    }
+
+    fn findings(sys: &FakeSystem, fs: &FakeFs) -> Vec<Finding> {
+        shipped_units_are_enabled(sys, fs, Path::new(INSTALL))
+    }
+
+    #[test]
+    fn unenabled_shipped_unit_is_reported_with_its_enabling_command() {
+        let fs = deployed(&["backup.sh", "coterie.service", "coterie-backup.timer"]);
+        let sys = FakeSystem::new();
+        sys.respond_to(
+            "systemctl",
+            &["is-enabled", "coterie-backup.timer"],
+            not_enabled(),
+        );
+
+        let found = findings(&sys, &fs);
+        assert_eq!(
+            found.len(),
+            1,
+            "only the unenabled unit is named: {found:?}"
+        );
+        assert!(found[0].message.contains("coterie-backup.timer"));
+        assert!(
+            found[0]
+                .command
+                .contains("systemctl enable --now coterie-backup.timer"),
+            "the finding carries the resolving command; got {}",
+            found[0].command
+        );
+    }
+
+    #[test]
+    fn a_conformant_host_produces_no_findings() {
+        // FakeSystem defaults every command to exit 0 — every unit enabled.
+        let fs = deployed(&["coterie.service", "coterie-backup.timer"]);
+        assert!(findings(&FakeSystem::new(), &fs).is_empty());
+    }
+
+    #[test]
+    fn a_timer_driven_service_is_not_reported() {
+        let fs = deployed(&["coterie-backup.service", "coterie-backup.timer"]);
+        let sys = FakeSystem::new();
+        // Only the timer is enabled on a correctly-provisioned host; the
+        // oneshot it triggers reads "disabled" and is working fine.
+        sys.respond_to_cmd("systemctl", not_enabled());
+        sys.respond_to(
+            "systemctl",
+            &["is-enabled", "coterie-backup.timer"],
+            CommandOutput {
+                status: 0,
+                stdout: "enabled\n".to_string(),
+                stderr: String::new(),
+            },
+        );
+
+        assert!(
+            findings(&sys, &fs).is_empty(),
+            "a service its timer starts is not a discrepancy"
+        );
+        assert!(
+            !sys.called_with("systemctl", &["is-enabled", "coterie-backup.service"]),
+            "the timer-driven service is not even queried"
+        );
+    }
+
+    #[test]
+    fn the_check_only_queries_and_never_activates() {
+        let fs = deployed(&["coterie.service", "coterie-backup.timer"]);
+        let sys = FakeSystem::new();
+        sys.respond_to_cmd("systemctl", not_enabled());
+
+        assert_eq!(findings(&sys, &fs).len(), 2);
+        for call in sys.calls.borrow().iter() {
+            assert_eq!(call.cmd, "systemctl", "the check runs nothing else");
+            assert_eq!(
+                call.args.first().map(String::as_str),
+                Some("is-enabled"),
+                "the check may only query, never activate: systemctl {}",
+                call.args.join(" ")
+            );
+        }
+    }
+
+    #[test]
+    fn a_unit_new_to_the_release_is_checked_without_a_code_change() {
+        // Nothing below names this unit; the list comes off disk.
+        let fs = deployed(&["coterie-digest.timer"]);
+        let sys = FakeSystem::new();
+        sys.respond_to_cmd("systemctl", not_enabled());
+
+        let found = findings(&sys, &fs);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].message.contains("coterie-digest.timer"));
+    }
+
+    #[test]
+    fn non_unit_files_are_not_queried() {
+        let fs = deployed(&[
+            "backup.sh",
+            "Caddyfile.example",
+            "coterie.openrc",
+            "coterie.service.prev",
+        ]);
+        let sys = FakeSystem::new();
+        sys.respond_to_cmd("systemctl", not_enabled());
+
+        assert!(findings(&sys, &fs).is_empty());
+        assert_eq!(sys.call_count("systemctl"), 0);
+    }
+
+    #[test]
+    fn a_failed_host_query_yields_no_finding() {
+        let fs = deployed(&["coterie-backup.timer"]);
+        let sys = FakeSystem::new();
+        sys.fail_cmd("systemctl");
+
+        assert!(
+            findings(&sys, &fs).is_empty(),
+            "a query that could not run proves nothing"
+        );
+    }
+
+    #[test]
+    fn an_installed_but_disabled_unit_is_only_told_to_enable() {
+        let fs = deployed(&["coterie-backup.timer"]);
+        fs.put(
+            Path::new("/etc/systemd/system/coterie-backup.timer"),
+            b"unit",
+        );
+        let sys = FakeSystem::new();
+        sys.respond_to_cmd("systemctl", not_enabled());
+
+        assert_eq!(
+            findings(&sys, &fs)[0].command,
+            "sudo systemctl enable --now coterie-backup.timer",
+            "no cp — that would clobber a unit the operator may have edited"
+        );
+    }
+
+    #[test]
+    fn a_unit_the_host_never_installed_is_told_to_place_it_first() {
+        let fs = deployed(&["coterie-backup.timer"]);
+        let sys = FakeSystem::new();
+        sys.respond_to_cmd("systemctl", not_enabled());
+
+        let command = findings(&sys, &fs).swap_remove(0).command;
+        assert!(
+            command.contains("cp /opt/coterie/deploy/coterie-backup.timer /etc/systemd/system/")
+                && command.contains("daemon-reload"),
+            "an absent unit file has to be placed before enable can work; got {command}"
+        );
     }
 }
