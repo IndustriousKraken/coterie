@@ -278,6 +278,80 @@ specific item if a real org requests it.
 - Custom fields for members
 - Report builder
 
+### 4.x Separate the public event projection from the `Event` domain type
+
+**Status:** proposed 2026-08-04, not scheduled. Surfaced while specifying
+`a52-upcoming-events-persist-until-end`; not caused by it.
+
+**The problem.** `Event::start_time` and `Event::end_time` are documented
+as holding the organizer's naive **local wall-clock** in a `DateTime<Utc>`
+container — not a real instant. The true instant is derived at read time
+by `Event::start_utc()` / `end_utc()`, which resolve that wall-clock
+against the event's frozen IANA zone. That model is deliberate and
+correct: it is what keeps a 7 PM event at 7 PM across a government DST
+rule change, and it is why nothing lossy is ever written to the database.
+
+The `/public/events` handler breaks the invariant in memory. Before
+filtering and serializing, `derive_utc_instants` (`src/api/handlers/
+public/mod.rs`) **overwrites both fields in place** with the derived
+instant, so downstream JSON and iCal emit correct `…Z` timestamps
+without a per-call conversion. From that line onward the struct is still
+an `Event`, but its two time fields mean the opposite of what the type's
+own documentation says they mean.
+
+**Why it matters.** The type no longer answers one question. Any code
+holding an `Event` must know *where it came from* to know whether a time
+field is a wall-clock or an instant, and the compiler cannot help —
+both are `DateTime<Utc>`. Getting it wrong is silent and costs exactly
+one UTC offset: four or five hours for `America/New_York`, and **zero
+for a UTC-configured instance**, so the mistake ships green through any
+test suite whose fixtures use UTC.
+
+This is not hypothetical. Specifying a52's shared upcoming-ness
+predicate as a method on `Event` would have introduced precisely this
+double conversion at the `/public/events` filter, immediately below the
+`derive_utc_instants` call. It was caught in review and worked around:
+a52 defines the predicate over **instants** rather than over `&Event`,
+and its tasks explicitly forbid the `Event` wrapper at that one call
+site. That workaround is sound but it is a convention, and conventions
+are what the next contributor does not know about.
+
+**The proposed fix is smaller than it first appears.** The projection
+type already exists: `PublicEvent::from_event(e, base_url)` in the same
+module. What is missing is the *ordering*. Today the handler sanitizes
+`Event`s, derives instants onto them in place, filters and sorts them,
+and only then projects. The derivation happens early because
+`generate_ical_feed` takes `&[Event]` and needs real instants for
+`DTSTART`/`DTEND`.
+
+So the work is:
+
+- Move the wall-clock→instant derivation **into `PublicEvent::from_event`**,
+  where it happens exactly once per event and cannot be applied twice.
+- Project first, then filter and sort on `PublicEvent` (which already
+  carries `start_time`/`end_time`).
+- Change `generate_ical_feed` to consume `&[PublicEvent]` instead of
+  `&[Event]` — this is the actual load-bearing edit, and the reason the
+  current ordering exists.
+- Delete `derive_utc_instants` entirely.
+
+Then `Event` keeps one meaning for its whole lifetime, `start_utc()` is
+always the right way to get an instant from it, and the mistake a52 had
+to warn against becomes unrepresentable rather than documented.
+
+**Cost and risk.** Confined to `src/api/handlers/public/` plus the feed
+generators; no schema change, no canon change to
+`public-content-feeds`'s observable contract (the JSON and iCal output
+are byte-identical if done correctly, which is what makes it testable).
+The surface is exercised by the marketing site, by calendar subscribers,
+and by the event share/register links, so it wants integration coverage
+asserting output equivalence before and after. Not urgent — there is no
+live defect today, only a trap.
+
+**Promote when** someone next touches the public feed's serialization
+or adds a second consumer of the projected shape. Doing it as part of
+that work is much cheaper than doing it on its own.
+
 ---
 
 ## Cross-cutting notes
@@ -285,7 +359,8 @@ specific item if a real org requests it.
 - **Architecture refactors** flagged in the architecture review
   (BillingService split into Renewal/Dues/Notifier services,
   StripeClient → Gateway + WebhookDispatcher, Payment domain
-  illegal-states cleanup) are **deferred until Tier 3.5 lands**.
+  illegal-states cleanup, and the public event projection in 4.x)
+  are **deferred until Tier 3.5 lands**.
   Larger refactors without integration tests are riskier than
   the refactors are worth.
 - **Frontend e2e testing agent**: deferred. Prior art exists on
