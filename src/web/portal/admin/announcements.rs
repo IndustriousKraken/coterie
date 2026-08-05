@@ -371,7 +371,7 @@ pub async fn admin_announcement_detail_page(
         format!("{} {}", dt.format("%b %d, %Y %H:%M"), abbr)
     });
 
-    let content_html = crate::util::markdown::render_announcement_markdown(&announcement.content);
+    let content_html = crate::util::markdown::render_markdown(&announcement.content);
     let detail = AdminAnnouncementDetail {
         id: announcement.id.to_string(),
         title: announcement.title,

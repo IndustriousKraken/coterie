@@ -11,8 +11,10 @@
         <p class="text-sm text-gray-600">{{ loc }}</p>
         {% endif %}
 
-        {% if !description.is_empty() %}
-        <p class="text-sm text-gray-700 mt-4 whitespace-pre-line">{{ description }}</p>
+        {% if !description_html.is_empty() %}
+        {# Server-rendered, already-sanitized safe-subset HTML (see render_markdown).
+           Block markup replaces the old whitespace-pre-line paragraph. #}
+        <div class="text-sm text-gray-700 mt-4 space-y-2">{{ description_html|safe }}</div>
         {% endif %}
 
         <div class="mt-6 border-t pt-4">

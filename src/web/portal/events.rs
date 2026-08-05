@@ -204,7 +204,7 @@ pub async fn events_list_api(
                             {}
                         </div>
                         <h3 class="text-lg font-semibold text-gray-900">{}</h3>
-                        <p class="text-sm text-gray-600 mt-1">{}</p>
+                        <div class="text-sm text-gray-600 mt-1 space-y-2">{}</div>
                         <div class="mt-2 text-sm text-gray-500">
                             <p>{} at {}</p>
                             {}
@@ -224,7 +224,11 @@ pub async fn events_list_api(
                 ""
             },
             crate::web::escape_html(&event.title),
-            crate::web::escape_html(&event.description),
+            // Description is authored in Markdown; render to sanitized
+            // safe-subset HTML (already-safe, injected raw) exactly as the
+            // portal announcement list does. Block markup is why the
+            // wrapper above is a <div> and not a <p>.
+            crate::util::markdown::render_markdown(&event.description),
             event.start_time.format("%B %d, %Y"),
             format!("{} {}", event.start_time.format("%l:%M %p"), tz_abbr),
             event

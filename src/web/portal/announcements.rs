@@ -132,7 +132,7 @@ pub async fn announcements_list_api(
             // Body is authored in Markdown; render to sanitized safe-subset
             // HTML (already-safe, injected raw). Block markup replaces the
             // old whitespace-pre-wrap on the removed <p>.
-            crate::util::markdown::render_announcement_markdown(&announcement.content),
+            crate::util::markdown::render_markdown(&announcement.content),
             published_date,
         ));
     }
