@@ -222,6 +222,33 @@ To upgrade in place:
    hosts no signup page of its own — `/public/signup` is the POST-only
    API your public site submits to, not a page a browser can open.
 
+### `deploy/` tracks the installed release
+
+`coterie-provision update` refreshes `/opt/coterie/deploy/` from the
+release it installs, so the ops scripts beside the binary are the ones
+that shipped with it. It names every script it changed in its output.
+
+- **A locally-modified script is preserved.** Where update replaces a
+  script it first copies the current contents to `<name>.prev` beside it
+  — the same convention as `coterie.prev` for the binary. If you had
+  pinned a local edit to `backup.sh`, it is at `backup.sh.prev`; re-apply
+  it or restore it from there.
+- **A file you added that the release doesn't carry is left alone.**
+  Scripts are copied one by one, not by replacing the directory.
+- **A refreshed systemd unit is NOT activated.** Update writes inside
+  `/opt/coterie` only; it never touches `/etc/systemd/system` and never
+  runs `systemctl enable` or `daemon-reload`. A newer
+  `deploy/coterie-backup.timer` on disk changes nothing about what is
+  running. An instance provisioned before the backup timer existed still
+  installs it once by hand — see `RESTORE.md` §6 — and
+  `systemctl list-timers coterie-backup.timer` tells you which case you
+  are in.
+
+Before this, `deploy/` was only ever written on first install: an
+instance updated for months kept the scripts from the release that
+provisioned it, so `RESTORE.md` could name a `restore.sh` that was not on
+the box.
+
 Rollback isn't automated. If a release introduces problems:
 
 1. Restore the previous binary

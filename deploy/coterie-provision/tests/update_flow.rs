@@ -57,6 +57,12 @@ fn stage_world(fs: &FakeFs) {
     // Operator config + live data the update must NOT touch.
     fs.put(Path::new("/opt/coterie/.env"), b"SECRET=keep-me");
     fs.put(Path::new("/var/lib/coterie/coterie.db"), b"DBDATA");
+    // Installed deploy/ scripts: one stale, one byte-identical to the
+    // release, one operator-authored file the release does not carry.
+    fs.create_dir_all(Path::new("/opt/coterie/deploy")).unwrap();
+    fs.put(Path::new("/opt/coterie/deploy/backup.sh"), b"old-backup");
+    fs.put(Path::new("/opt/coterie/deploy/coterie.service"), b"unit");
+    fs.put(Path::new("/opt/coterie/deploy/local-only.sh"), b"operator");
 
     // Staged (post-extraction) release contents.
     fs.put(
@@ -88,6 +94,36 @@ fn stage_world(fs: &FakeFs) {
     fs.put(
         Path::new("/work/coterie-v1.1.0-x86_64-linux-musl/migrations/001.sql"),
         b"new-mig",
+    );
+    // The release's deploy/: backup.sh changed, restore.sh + the timer
+    // are new, coterie.service is byte-identical to the installed one.
+    // coterie-provision/ is the wizard's source tree, which ships in the
+    // tarball but is not an ops script.
+    fs.create_dir_all(Path::new("/work/coterie-v1.1.0-x86_64-linux-musl/deploy"))
+        .unwrap();
+    fs.put(
+        Path::new("/work/coterie-v1.1.0-x86_64-linux-musl/deploy/backup.sh"),
+        b"new-backup",
+    );
+    fs.put(
+        Path::new("/work/coterie-v1.1.0-x86_64-linux-musl/deploy/restore.sh"),
+        b"new-restore",
+    );
+    fs.put(
+        Path::new("/work/coterie-v1.1.0-x86_64-linux-musl/deploy/coterie-backup.timer"),
+        b"timer-unit",
+    );
+    fs.put(
+        Path::new("/work/coterie-v1.1.0-x86_64-linux-musl/deploy/coterie.service"),
+        b"unit",
+    );
+    fs.create_dir_all(Path::new(
+        "/work/coterie-v1.1.0-x86_64-linux-musl/deploy/coterie-provision",
+    ))
+    .unwrap();
+    fs.put(
+        Path::new("/work/coterie-v1.1.0-x86_64-linux-musl/deploy/coterie-provision/Cargo.toml"),
+        b"[package]",
     );
 
     // The "downloaded" checksum file (curl is faked, so we stage it).
@@ -298,6 +334,15 @@ fn unhealthy_after_restart_rolls_back_to_previous_binary() {
         sys.called_with("systemctl", &["restart", "coterie"]),
         "service restarted after rollback"
     );
+    // Rollback is a binary+VERSION operation: the refreshed scripts stay
+    // put, with the pre-update copy still beside them for an operator who
+    // wants the old one back.
+    assert_eq!(
+        fs.get(Path::new("/opt/coterie/deploy/backup.sh.prev"))
+            .as_deref(),
+        Some(&b"old-backup"[..]),
+        "the pre-update backup.sh remains recoverable after a rollback"
+    );
     // Operator guidance mentions the snapshot + migration caveat.
     let msg = format!("{err:#}");
     assert!(
@@ -340,6 +385,16 @@ fn already_on_target_is_a_no_op() {
         0,
         "no system commands (no stop/start/download) when already on target"
     );
+    // The early return wins over every placement step, scripts included.
+    assert_eq!(
+        fs.get(Path::new("/opt/coterie/deploy/backup.sh"))
+            .as_deref(),
+        Some(&b"old-backup"[..]),
+        "already-on-target refreshes no deploy script"
+    );
+    assert!(fs
+        .get(Path::new("/opt/coterie/deploy/restore.sh"))
+        .is_none());
     assert!(out.contains("Already on v1.1.0"));
 }
 
@@ -455,4 +510,195 @@ fn unknown_tag_errors_clearly() {
         .expect_err("an unknown tag must error");
     assert!(format!("{err:#}").contains("v9.9.9"));
     assert_eq!(snap.call_count(), 0);
+}
+
+// ---------------------------------------------------------------------
+// a53 — update refreshes the bundled deployment scripts
+// ---------------------------------------------------------------------
+
+/// Run a successful update over the standard staged world and hand back
+/// the fakes for assertion.
+fn updated_world() -> (FakeSystem, FakeFs, CaptureOutput) {
+    let sys = FakeSystem::new();
+    let fs = FakeFs::new();
+    let snap = FakeSnapshotter::new();
+    let fetch = FakeReleaseFetcher::new(releases_fixture());
+    let out = CaptureOutput::new();
+    stage_world(&fs);
+    checksum_matches(&sys);
+    // Staging the world uses the same seam, so drop its ops — the
+    // assertions below are about what the update itself did.
+    fs.ops.borrow_mut().clear();
+    update::run_with_paths(base_args(), &sys, &fs, &snap, &fetch, &out, &paths(), NOW)
+        .expect("update should succeed");
+    (sys, fs, out)
+}
+
+#[test]
+fn changed_script_is_refreshed_and_the_previous_one_retained() {
+    let (_sys, fs, out) = updated_world();
+
+    assert_eq!(
+        fs.get(Path::new("/opt/coterie/deploy/backup.sh"))
+            .as_deref(),
+        Some(&b"new-backup"[..]),
+        "deploy/backup.sh is the release's version after an update"
+    );
+    assert_eq!(
+        fs.get(Path::new("/opt/coterie/deploy/backup.sh.prev"))
+            .as_deref(),
+        Some(&b"old-backup"[..]),
+        "the replaced script is retained beside the new one"
+    );
+    assert!(
+        out.contains("deploy/backup.sh (previous kept as deploy/backup.sh.prev)"),
+        "the .prev is called out on that file's line; got:\n{}",
+        out.joined()
+    );
+}
+
+#[test]
+fn identical_script_is_not_rewritten_and_is_not_reported() {
+    let (_sys, fs, out) = updated_world();
+
+    assert!(
+        fs.get(Path::new("/opt/coterie/deploy/coterie.service.prev"))
+            .is_none(),
+        "a byte-identical script produces no .prev"
+    );
+    assert!(
+        !out.contains("coterie.service"),
+        "an unchanged script is not reported; got:\n{}",
+        out.joined()
+    );
+    // ...and it was never rewritten, so repeated updates do not churn.
+    use coterie_provision::test_support::FsOp;
+    let rewritten = fs.ops.borrow().iter().any(|op| {
+        matches!(op, FsOp::CopyFile(_, to) | FsOp::Write(to, _)
+            if to == Path::new("/opt/coterie/deploy/coterie.service"))
+    });
+    assert!(!rewritten, "an unchanged script is not rewritten");
+}
+
+#[test]
+fn script_new_to_the_release_is_created_and_reported() {
+    let (_sys, fs, out) = updated_world();
+
+    assert_eq!(
+        fs.get(Path::new("/opt/coterie/deploy/restore.sh"))
+            .as_deref(),
+        Some(&b"new-restore"[..]),
+        "a script the deployment lacks is created"
+    );
+    assert!(
+        fs.get(Path::new("/opt/coterie/deploy/restore.sh.prev"))
+            .is_none(),
+        "nothing was replaced, so no .prev"
+    );
+    assert!(
+        out.contains("deploy/restore.sh (new)"),
+        "the new script is named in the output; got:\n{}",
+        out.joined()
+    );
+}
+
+#[test]
+fn operator_authored_script_absent_from_the_release_survives() {
+    let (_sys, fs, _out) = updated_world();
+
+    assert_eq!(
+        fs.get(Path::new("/opt/coterie/deploy/local-only.sh"))
+            .as_deref(),
+        Some(&b"operator"[..]),
+        "a file only the operator has is left alone — this is what a \
+         wholesale directory replace would have deleted"
+    );
+    // The wizard's source tree ships in the tarball's deploy/ but is not
+    // an ops script; only top-level files are placed.
+    assert!(
+        fs.get(Path::new(
+            "/opt/coterie/deploy/coterie-provision/Cargo.toml"
+        ))
+        .is_none(),
+        "subdirectories of the release's deploy/ are not copied"
+    );
+}
+
+#[test]
+fn shell_scripts_keep_their_executable_bit() {
+    let (_sys, fs, _out) = updated_world();
+
+    use coterie_provision::test_support::FsOp;
+    let chmodded = |p: &str| {
+        fs.ops
+            .borrow()
+            .iter()
+            .any(|op| matches!(op, FsOp::Chmod(path, 0o755) if path == Path::new(p)))
+    };
+    assert!(
+        chmodded("/opt/coterie/deploy/backup.sh"),
+        "backup.sh is 0755"
+    );
+    assert!(
+        chmodded("/opt/coterie/deploy/restore.sh"),
+        "restore.sh is 0755"
+    );
+}
+
+#[test]
+fn update_never_activates_a_unit_or_writes_outside_the_install_dir() {
+    let (sys, fs, _out) = updated_world();
+
+    // The refreshed coterie-backup.timer landed inside the install dir...
+    assert_eq!(
+        fs.get(Path::new("/opt/coterie/deploy/coterie-backup.timer"))
+            .as_deref(),
+        Some(&b"timer-unit"[..])
+    );
+    // ...and nothing enabled, reloaded, or installed it. The only
+    // systemctl verbs an update may use are the service stop/start it
+    // already performs.
+    for call in sys.calls.borrow().iter() {
+        if call.cmd == "systemctl" {
+            assert!(
+                matches!(
+                    call.args.first().map(String::as_str),
+                    Some("stop") | Some("start") | Some("restart")
+                ),
+                "update must not run `systemctl {}`",
+                call.args.join(" ")
+            );
+        }
+        assert!(
+            !call.args.iter().any(|a| a.contains("/etc/systemd/system")),
+            "update must not touch /etc/systemd/system: {} {}",
+            call.cmd,
+            call.args.join(" ")
+        );
+    }
+
+    // Every filesystem mutation targets the install dir.
+    use coterie_provision::test_support::FsOp;
+    for op in fs.ops.borrow().iter() {
+        let dest = match op {
+            FsOp::Write(p, _)
+            | FsOp::Append(p, _)
+            | FsOp::CreateDirAll(p)
+            | FsOp::Chmod(p, _)
+            | FsOp::Chown(p, _, _)
+            | FsOp::RemoveFile(p)
+            | FsOp::RemoveDirAll(p) => Some(p.clone()),
+            FsOp::Rename(_, to) | FsOp::CopyFile(_, to) | FsOp::CopyDirAll(_, to) => {
+                Some(to.clone())
+            }
+            FsOp::Read(_) => None,
+        };
+        if let Some(dest) = dest {
+            assert!(
+                dest.starts_with(INSTALL),
+                "update wrote outside {INSTALL}: {}",
+                dest.display()
+            );
+        }
+    }
 }

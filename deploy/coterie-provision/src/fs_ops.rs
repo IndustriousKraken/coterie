@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub trait FileSystem {
@@ -24,6 +24,10 @@ pub trait FileSystem {
     /// Recursively copy a directory tree from `from` into `to`,
     /// creating `to` if needed.
     fn copy_dir_all(&self, from: &Path, to: &Path) -> Result<()>;
+    /// The immediate children of `path` as full paths, sorted. Callers
+    /// guard with [`is_dir`](Self::is_dir) — a missing or unreadable
+    /// directory is an error, not an empty listing.
+    fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>>;
 }
 
 pub struct RealFs;
@@ -136,5 +140,20 @@ impl FileSystem for RealFs {
         }
         copy_into(from, to)
             .with_context(|| format!("failed to copy dir {} -> {}", from.display(), to.display()))
+    }
+
+    fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
+        let mut out = Vec::new();
+        for entry in
+            std::fs::read_dir(path).with_context(|| format!("failed to list {}", path.display()))?
+        {
+            out.push(
+                entry
+                    .with_context(|| format!("failed to list {}", path.display()))?
+                    .path(),
+            );
+        }
+        out.sort();
+        Ok(out)
     }
 }

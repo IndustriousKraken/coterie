@@ -73,6 +73,9 @@ impl coterie_provision::fs_ops::FileSystem for NoopChownFs {
     fn copy_dir_all(&self, from: &std::path::Path, to: &std::path::Path) -> anyhow::Result<()> {
         self.0.copy_dir_all(from, to)
     }
+    fn read_dir(&self, path: &std::path::Path) -> anyhow::Result<Vec<std::path::PathBuf>> {
+        self.0.read_dir(path)
+    }
 }
 
 const SAMPLE_TEST_ENV: &str = "\

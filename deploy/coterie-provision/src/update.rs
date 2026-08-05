@@ -16,8 +16,10 @@
 //!    the service or swapping any file. Abort on snapshot failure.
 //! 5. Stop the service, place the new binaries (retaining the previous
 //!    `coterie` as `coterie.prev`), replace `static`/`migrations`
-//!    wholesale, refresh `.env.example`, and write the new `VERSION`.
-//!    Never writes `.env` or the live database.
+//!    wholesale, refresh `.env.example` and the bundled `deploy/` ops
+//!    scripts (each replaced file retained as `<name>.prev`), and write
+//!    the new `VERSION`. Never writes `.env` or the live database, and
+//!    never installs, enables, or reloads a systemd unit.
 //! 6. Start the service and run the `/health` smoke test. On failure,
 //!    restore `coterie.prev`, restart, and exit non-zero with guidance
 //!    that the pre-update snapshot may need restoring if a migration
@@ -465,8 +467,8 @@ fn run_checked<S: SystemCommand>(sys: &S, cmd: &str, args: &[&str], desc: &str) 
 
 /// Place the new binaries (retaining the prior `coterie` as
 /// `coterie.prev`), replace `static`/`migrations` wholesale, refresh
-/// `.env.example`, and record the new `VERSION`. Never writes `.env` or
-/// the live database file.
+/// `.env.example` and `deploy/`, and record the new `VERSION`. Never
+/// writes `.env` or the live database file.
 fn swap_binaries<F: FileSystem, O: Output>(
     fs: &F,
     stage_dir: &Path,
@@ -532,6 +534,11 @@ fn swap_binaries<F: FileSystem, O: Output>(
             .context("refreshing .env.example")?;
     }
 
+    // Refresh the bundled ops scripts so `deploy/` matches the release
+    // beside it. Before the VERSION write: a failure here leaves VERSION
+    // naming the old release rather than one the tree doesn't match.
+    refresh_deploy_scripts(fs, stage_dir, install_dir, output)?;
+
     // Record the new version (copy the tarball's VERSION when present so
     // the embedded commit SHA is preserved; otherwise write the tag).
     let version_src = stage_dir.join("VERSION");
@@ -551,6 +558,7 @@ fn swap_binaries<F: FileSystem, O: Output>(
         "seed",
         "static",
         "migrations",
+        "deploy",
         ".env.example",
         "VERSION",
     ] {
@@ -558,6 +566,86 @@ fn swap_binaries<F: FileSystem, O: Output>(
         if fs.exists(&p) {
             fs.chown(&p, "coterie", "coterie")
                 .with_context(|| format!("chown coterie:coterie {}", p.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Refresh `<install_dir>/deploy/` from the release's `deploy/` so the
+/// ops scripts beside a binary are the ones that shipped with it.
+///
+/// File-by-file, never wholesale: `deploy/` may hold operator-authored
+/// files that the tarball does not carry, and replacing the directory
+/// would delete them. Only top-level regular files are copied — the
+/// tarball's `deploy/` also carries the `coterie-provision` source tree,
+/// which is not an ops script.
+///
+/// A replaced file's previous contents are retained beside it as
+/// `<name>.prev`, matching the `coterie.prev` convention above: a local
+/// edit to these scripts is a supported operator action. A byte-identical
+/// file is not rewritten, so repeated updates do not churn.
+///
+/// Placing a systemd unit here does NOT install, enable, reload, or start
+/// it. This writes inside the install dir and nothing else.
+fn refresh_deploy_scripts<F: FileSystem, O: Output>(
+    fs: &F,
+    stage_dir: &Path,
+    install_dir: &Path,
+    output: &O,
+) -> Result<()> {
+    let src_dir = stage_dir.join("deploy");
+    if !fs.is_dir(&src_dir) {
+        return Ok(());
+    }
+    let dest_dir = install_dir.join("deploy");
+    fs.create_dir_all(&dest_dir)
+        .with_context(|| format!("creating {}", dest_dir.display()))?;
+
+    let mut refreshed: Vec<String> = Vec::new();
+    for src in fs
+        .read_dir(&src_dir)
+        .with_context(|| format!("listing {}", src_dir.display()))?
+    {
+        if !fs.is_file(&src) {
+            continue;
+        }
+        let Some(name) = src.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let dest = dest_dir.join(name);
+        let replaced = fs.is_file(&dest);
+        if replaced {
+            // ponytail: these are shell scripts and unit files — text.
+            // An unreadable one compares as "differs" and is refreshed.
+            let unchanged = matches!(
+                (fs.read_to_string(&src), fs.read_to_string(&dest)),
+                (Ok(incoming), Ok(current)) if incoming == current
+            );
+            if unchanged {
+                continue;
+            }
+            let prev = dest_dir.join(format!("{name}.prev"));
+            fs.copy_file(&dest, &prev)
+                .with_context(|| format!("retaining the previous {name} as {name}.prev"))?;
+        }
+        fs.copy_file(&src, &dest)
+            .with_context(|| format!("refreshing deploy/{name}"))?;
+        if name.ends_with(".sh") {
+            // backup.sh / restore.sh are invoked directly by the systemd
+            // unit and by operators, so the exec bit has to survive.
+            fs.chmod(&dest, 0o755)?;
+        }
+        refreshed.push(if replaced {
+            format!("  deploy/{name} (previous kept as deploy/{name}.prev)")
+        } else {
+            format!("  deploy/{name} (new)")
+        });
+    }
+
+    if !refreshed.is_empty() {
+        output.println("Refreshed deployment scripts:");
+        for line in &refreshed {
+            output.println(line);
         }
     }
     Ok(())
