@@ -6,7 +6,9 @@
 //! handler code becomes data assembly only.
 
 use askama::Template;
-use axum::response::Html;
+use axum::response::{Html, IntoResponse, Redirect, Response};
+
+use crate::integrations::public_site::PublicSiteOutcome;
 
 /// Result panel rendered after an admin HTMX action — the small
 /// green/red/yellow div that appears under a button. `kind` is one of
@@ -39,6 +41,45 @@ pub fn admin_alert(kind: &'static str, message: &str, autoreload: bool) -> Html<
             message
         )
     }))
+}
+
+/// Rendering shared by both per-item "resend to public site" controls.
+pub fn resend_result(outcome: PublicSiteOutcome) -> Html<String> {
+    match outcome {
+        PublicSiteOutcome::Sent => {
+            admin_alert("success", "Sent — the public site was updated.", false)
+        }
+        PublicSiteOutcome::Failed(e) => admin_alert(
+            "error",
+            &format!("The public site was NOT updated ({}). Try again.", e),
+            false,
+        ),
+        // The control is hidden when unconfigured, so this is only
+        // reachable if the endpoint was cleared mid-session.
+        PublicSiteOutcome::NotAttempted => admin_alert(
+            "warning",
+            "No public-site endpoint is configured, so nothing was sent.",
+            false,
+        ),
+    }
+}
+
+/// Response for a destructive admin action: the usual redirect, unless
+/// the companion public site could not be told — in which case the admin
+/// gets the warning instead of being bounced away from it. A silent
+/// failure here is exactly the defect the synchronous notification
+/// exists to prevent.
+///
+/// The item is deleted either way. What failed is telling the other
+/// system, and rolling the deletion back would make the two more
+/// inconsistent rather than less.
+pub fn redirect_or_warn(to: &str, outcome: &PublicSiteOutcome, deleted_message: &str) -> Response {
+    match outcome.admin_note_deleted() {
+        Some(note) if outcome.is_failed() => {
+            admin_alert("warning", &format!("{} {}", deleted_message, note), false).into_response()
+        }
+        _ => Redirect::to(to).into_response(),
+    }
 }
 
 // --------------------------------------------------------------------

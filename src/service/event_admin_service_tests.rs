@@ -1,12 +1,14 @@
 use super::*;
 use crate::{
+    auth::SecretCrypto,
     domain::{CreateMemberRequest, EventType, EventVisibility, Recurrence, WeekdayCode},
-    integrations::IntegrationManager,
+    integrations::{public_site::PublicSiteNotifier, IntegrationManager},
     repository::{
         MemberRepository, SqliteEventRepository, SqliteEventSeriesRepository,
         SqliteMemberRepository,
     },
     service::recurring_event_service::DEFAULT_HORIZON,
+    service::settings_service::SettingsService,
 };
 use chrono::{Datelike, Duration, Weekday};
 use sqlx::{Executor, SqlitePool};
@@ -73,8 +75,19 @@ fn make_service(pool: SqlitePool) -> EventAdminService {
     ));
     let audit = Arc::new(AuditService::new(pool.clone()));
     let integrations = Arc::new(IntegrationManager::new());
+    let public_site = Arc::new(PublicSiteNotifier::new(Arc::new(SettingsService::new(
+        pool.clone(),
+        Arc::new(SecretCrypto::new("test-secret-please-ignore")),
+    ))));
 
-    EventAdminService::new(event_repo, series_repo, recurring, audit, integrations)
+    EventAdminService::new(
+        event_repo,
+        series_repo,
+        recurring,
+        audit,
+        integrations,
+        public_site,
+    )
 }
 
 async fn make_actor(pool: &SqlitePool) -> Uuid {
@@ -272,7 +285,7 @@ async fn update_one_writes_audit() {
 
     let mut input = update_input_from(&event);
     input.title = "Renamed".to_string();
-    let result = svc.update_one(actor, event.id, input).await.unwrap();
+    let (result, _) = svc.update_one(actor, event.id, input).await.unwrap();
 
     assert_eq!(result.title, "Renamed");
     assert_eq!(
@@ -872,7 +885,7 @@ async fn override_event_occurrence_updates_row_and_writes_exception() {
         location: Some("Conference Room B".into()),
         ..Default::default()
     };
-    let updated = svc
+    let (updated, _) = svc
         .override_event_occurrence(actor, series_id, 5, ov, None)
         .await
         .unwrap();
@@ -985,7 +998,7 @@ async fn restore_cancelled_recreates_row() {
         .unwrap()
         .is_none());
 
-    let restored = svc
+    let (restored, _) = svc
         .restore_event_occurrence(actor, series_id, 6)
         .await
         .unwrap();
@@ -1030,7 +1043,7 @@ async fn restore_overridden_resets_to_template() {
         .unwrap();
     assert_eq!(after_override.title, "Special One-off");
 
-    let result = svc
+    let (result, _) = svc
         .restore_event_occurrence(actor, series_id, 4)
         .await
         .unwrap();
@@ -1121,7 +1134,7 @@ async fn audit_rows_emitted_for_each_action() {
         location: Some("Room Z".into()),
         ..Default::default()
     };
-    let updated = svc
+    let (updated, _) = svc
         .override_event_occurrence(actor, series_id, 8, ov, None)
         .await
         .unwrap();
@@ -1411,7 +1424,7 @@ async fn restore_event_occurrence_noop_when_no_exception_emits_audit() {
 
     // Occurrence 2 exists (materializer creates several) and has no
     // exception — restore must be a no-op but still audit.
-    let result = svc
+    let (result, _) = svc
         .restore_event_occurrence(actor, series_id, 2)
         .await
         .unwrap();

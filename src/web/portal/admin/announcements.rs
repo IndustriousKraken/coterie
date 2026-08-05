@@ -15,6 +15,7 @@ use crate::{
     },
     auth::CsrfService,
     config::Settings,
+    integrations::public_site::{self as public_site_kind, PublicSiteNotifier},
     repository::AnnouncementRepository,
     service::announcement_admin_service::{
         AnnouncementAdminService, CreateAnnouncementInput, UpdateAnnouncementInput,
@@ -299,6 +300,9 @@ pub struct AdminAnnouncementDetailTemplate {
     pub base: BaseContext,
     pub announcement: AdminAnnouncementDetail,
     pub announcement_types: Vec<TypeOption>,
+    /// Whether a companion public site is configured. Gates the resend
+    /// control entirely — see `AdminEventDetailTemplate`.
+    pub public_site_configured: bool,
 }
 
 pub struct AdminAnnouncementDetail {
@@ -328,6 +332,7 @@ pub async fn admin_announcement_detail_page(
     State(announcement_repo): State<Arc<dyn AnnouncementRepository>>,
     State(announcement_type_service): State<AnnouncementBasicTypeService>,
     State(csrf_service): State<Arc<CsrfService>>,
+    State(public_site): State<Arc<PublicSiteNotifier>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
     Path(announcement_id): Path<String>,
@@ -411,6 +416,7 @@ pub async fn admin_announcement_detail_page(
         base,
         announcement: detail,
         announcement_types,
+        public_site_configured: public_site.is_configured().await,
     })
     .into_response()
 }
@@ -715,13 +721,28 @@ pub async fn admin_update_announcement(
         .update(current_user.member.id, id, input)
         .await
     {
-        Ok(_) => {
+        Ok((_, public_site)) => {
             crate::web::uploads::delete_if_upload(
                 &settings.server.uploads_path(),
                 image_to_delete.as_deref(),
             )
             .await;
-            axum::response::Html(r#"<div class="px-4 py-3 bg-green-100 text-green-800 rounded-md text-sm">Announcement updated successfully</div>"#.to_string()).into_response()
+            // When the edit withdrew the announcement from the public
+            // API, the admin is told plainly whether the public site
+            // kept up, and where to retry when it did not.
+            match public_site.admin_note() {
+                Some(note) => partials::admin_alert(
+                    if public_site.is_failed() {
+                        "warning"
+                    } else {
+                        "success"
+                    },
+                    &format!("Announcement updated successfully. {}", note),
+                    false,
+                )
+                .into_response(),
+                None => axum::response::Html(r#"<div class="px-4 py-3 bg-green-100 text-green-800 rounded-md text-sm">Announcement updated successfully</div>"#.to_string()).into_response(),
+            }
         }
         Err(e) => partials::admin_alert(
             "error",
@@ -757,13 +778,17 @@ pub async fn admin_delete_announcement(
         .delete(current_user.member.id, id)
         .await
     {
-        Ok(_) => {
+        Ok(public_site) => {
             crate::web::uploads::delete_if_upload(
                 &settings.server.uploads_path(),
                 image_to_delete.as_deref(),
             )
             .await;
-            axum::response::Redirect::to("/portal/admin/announcements").into_response()
+            partials::redirect_or_warn(
+                "/portal/admin/announcements",
+                &public_site,
+                "Announcement deleted.",
+            )
         }
         Err(e) => partials::admin_alert(
             "error",
@@ -817,6 +842,18 @@ pub async fn admin_unpublish_announcement(
         .unpublish(current_user.member.id, id)
         .await
     {
+        // Unpublishing is the archetypal withdrawal: the admin gets a
+        // plain answer about whether the public site is up to date, and
+        // stays on a page that carries the resend control when it is not.
+        Ok((_, public_site)) if public_site.is_failed() => partials::admin_alert(
+            "warning",
+            &format!(
+                "Announcement unpublished. {}",
+                public_site.admin_note().unwrap_or_default()
+            ),
+            false,
+        )
+        .into_response(),
         Ok(_) => axum::response::Redirect::to(&format!("/portal/admin/announcements/{}", id))
             .into_response(),
         Err(e) => partials::admin_alert(
@@ -826,4 +863,21 @@ pub async fn admin_unpublish_announcement(
         )
         .into_response(),
     }
+}
+
+/// Resend this announcement's current state to the configured public
+/// site. Mirrors the event resend control — same purpose, same
+/// independence from the rest of the capability working.
+pub async fn admin_resend_announcement_to_public_site(
+    State(public_site): State<Arc<PublicSiteNotifier>>,
+    Path(announcement_id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(id) = uuid::Uuid::parse_str(&announcement_id) else {
+        return partials::admin_alert("error", "Invalid announcement ID", false);
+    };
+    partials::resend_result(
+        public_site
+            .resend(public_site_kind::KIND_ANNOUNCEMENT, id)
+            .await,
+    )
 }

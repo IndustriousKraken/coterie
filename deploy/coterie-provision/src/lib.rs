@@ -370,6 +370,20 @@ pub mod test_support {
             }
             Ok(())
         }
+
+        fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
+            let files = self.files.borrow();
+            let dirs = self.dirs.borrow();
+            let mut out: Vec<PathBuf> = files
+                .keys()
+                .chain(dirs.iter())
+                .filter(|p| p.parent() == Some(path))
+                .cloned()
+                .collect();
+            out.sort();
+            out.dedup();
+            Ok(out)
+        }
     }
 
     /// Scripted prompter that pops answers from VecDeques. Tests

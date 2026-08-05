@@ -23,7 +23,7 @@ use coterie::{
         CreateMemberRequest, EventType, EventVisibility, Recurrence, UpdateSettingRequest,
         WeekdayCode,
     },
-    integrations::IntegrationManager,
+    integrations::{public_site::PublicSiteNotifier, IntegrationManager},
     repository::{
         EventRepository, EventSeriesRepository, MemberRepository, SqliteEventRepository,
         SqliteEventSeriesRepository, SqliteMemberRepository,
@@ -78,7 +78,15 @@ fn make_event_admin(pool: &SqlitePool) -> EventAdminService {
     ));
     let audit = Arc::new(AuditService::new(pool.clone()));
     let integrations = Arc::new(IntegrationManager::new());
-    EventAdminService::new(event_repo, series_repo, recurring, audit, integrations)
+    let public_site = Arc::new(PublicSiteNotifier::new(Arc::new(settings(pool))));
+    EventAdminService::new(
+        event_repo,
+        series_repo,
+        recurring,
+        audit,
+        integrations,
+        public_site,
+    )
 }
 
 fn settings(pool: &SqlitePool) -> SettingsService {

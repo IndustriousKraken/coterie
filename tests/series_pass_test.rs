@@ -22,7 +22,7 @@ use coterie::{
         PaymentStatus, Recurrence, SeriesPassPricing, StripeRef, WeekdayCode,
     },
     error::AppError,
-    integrations::IntegrationManager,
+    integrations::{public_site::PublicSiteNotifier, IntegrationManager},
     payments::{
         fake_gateway::FakeStripeGateway, gateway::StripeGateway, StripeClient, StripeHandle,
         WebhookDispatcher,
@@ -169,6 +169,10 @@ async fn build_harness() -> Harness {
         recurring.clone(),
         audit_service,
         integrations,
+        Arc::new(PublicSiteNotifier::new(Arc::new(SettingsService::new(
+            pool.clone(),
+            Arc::new(SecretCrypto::new("test-secret-please-ignore")),
+        )))),
     );
 
     let enrollment = Arc::new(SeriesEnrollmentService::new(

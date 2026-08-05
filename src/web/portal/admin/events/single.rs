@@ -16,6 +16,7 @@ use crate::{
     auth::CsrfService,
     config::Settings,
     domain::{Event, EventType, EventVisibility},
+    integrations::public_site::{self as public_site_kind, PublicSiteNotifier, PublicSiteOutcome},
     repository::{EventRepository, PaymentRepository},
     service::event_admin_service::{CreateEventInput, EventAdminService, UpdateEventInput},
     service::payment_admin_service::PaymentAdminService,
@@ -244,6 +245,10 @@ pub struct AdminEventDetailTemplate {
     pub base: BaseContext,
     pub event: AdminEventDetail,
     pub event_types: Vec<TypeOption>,
+    /// Whether a companion public site is configured. Gates the resend
+    /// control entirely — with no endpoint there is nowhere to resend
+    /// to, and a button that cannot work is worse than no button.
+    pub public_site_configured: bool,
 }
 
 pub struct AdminEventDetail {
@@ -289,11 +294,15 @@ pub struct AdminEventDetail {
     pub series_id: Option<String>,
 }
 
+// Eight extractors, all of them state or request context — the count is
+// axum's calling convention, not a signature that wants splitting.
+#[allow(clippy::too_many_arguments)]
 pub async fn admin_event_detail_page(
     State(settings): State<Arc<Settings>>,
     State(event_repo): State<Arc<dyn EventRepository>>,
     State(event_type_service): State<EventBasicTypeService>,
     State(csrf_service): State<Arc<CsrfService>>,
+    State(public_site): State<Arc<PublicSiteNotifier>>,
     Extension(current_user): Extension<CurrentUser>,
     Extension(session_info): Extension<SessionInfo>,
     Path(event_id): Path<String>,
@@ -399,6 +408,7 @@ pub async fn admin_event_detail_page(
         base,
         event: detail,
         event_types,
+        public_site_configured: public_site.is_configured().await,
     })
     .into_response()
 }
@@ -995,7 +1005,7 @@ pub async fn admin_update_event(
     // Always update THIS row first — the radio defaults to "this" and
     // even the "this and future" path expects this row to reflect the
     // form values too.
-    let updated = match event_admin_service
+    let (updated, public_site) = match event_admin_service
         .update_one(current_user.member.id, id, input.clone())
         .await
     {
@@ -1026,7 +1036,7 @@ pub async fn admin_update_event(
         }
     }
 
-    let msg = if form.edit_scope == "this_and_future" {
+    let mut msg = if form.edit_scope == "this_and_future" {
         format!(
             "Event updated. {} future occurrences also updated.",
             future_count.saturating_sub(1)
@@ -1034,7 +1044,19 @@ pub async fn admin_update_event(
     } else {
         "Event updated successfully".to_string()
     };
-    partials::admin_alert("success", &msg, false).into_response()
+    // When the edit withdrew the event from the public API, say plainly
+    // whether the public site kept up — a silent failure there is the
+    // defect this reports on.
+    if let Some(note) = public_site.admin_note() {
+        msg.push(' ');
+        msg.push_str(&note);
+    }
+    let level = if matches!(public_site, PublicSiteOutcome::Failed(_)) {
+        "warning"
+    } else {
+        "success"
+    };
+    partials::admin_alert(level, &msg, false).into_response()
 }
 
 /// Does ANY occurrence of `series_id` still carry a `Completed` event
@@ -1236,17 +1258,36 @@ pub async fn admin_delete_event(
         .delete_one(current_user.member.id, id)
         .await
     {
-        Ok(_) => {
+        Ok(public_site) => {
             crate::web::uploads::delete_if_upload(
                 &settings.server.uploads_path(),
                 image_to_delete.as_deref(),
             )
             .await;
-            axum::response::Redirect::to("/portal/admin/events").into_response()
+            partials::redirect_or_warn("/portal/admin/events", &public_site, "Event deleted.")
         }
         Err(e) => partials::admin_alert("error", &format!("Error deleting event: {}", e), false)
             .into_response(),
     }
+}
+
+/// Resend this event's current state to the configured public site.
+///
+/// The retry path for a notification that failed, and the recovery path
+/// when the automatic one is broken for any reason — misconfiguration, a
+/// receiver that was down, an edit made before the endpoint was set. It
+/// deliberately depends on no other part of the capability working, and
+/// is available whether or not the event is currently public: resending
+/// a withdrawn item's state is exactly how a missed withdrawal is
+/// repaired.
+pub async fn admin_resend_event_to_public_site(
+    State(public_site): State<Arc<PublicSiteNotifier>>,
+    Path(event_id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(id) = uuid::Uuid::parse_str(&event_id) else {
+        return partials::admin_alert("error", "Invalid event ID", false);
+    };
+    partials::resend_result(public_site.resend(public_site_kind::KIND_EVENT, id).await)
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -1396,6 +1437,8 @@ mod series_delete_guard_tests {
     use uuid::Uuid;
 
     use super::{admin_delete_event, DeleteEventForm};
+    use crate::integrations::public_site::PublicSiteNotifier;
+    use crate::service::settings_service::SettingsService;
     use crate::{
         api::{
             middleware::auth::CurrentUser,
@@ -1464,12 +1507,17 @@ mod series_delete_guard_tests {
             pool.clone(),
         ));
 
+        let public_site = Arc::new(PublicSiteNotifier::new(Arc::new(SettingsService::new(
+            pool.clone(),
+            Arc::new(crate::auth::SecretCrypto::new("test-secret-please-ignore")),
+        ))));
         let event_admin = Arc::new(EventAdminService::new(
             event_repo.clone(),
             series_repo,
             recurring,
             audit.clone(),
             integrations.clone(),
+            public_site,
         ));
         // No Stripe client: nothing on these paths should reach a
         // gateway, and a refund that tried to would fail loudly.

@@ -288,6 +288,17 @@ async fn main() -> anyhow::Result<()> {
         db_pool.clone(),
     ));
 
+    // Companion public-site notifier. Registered on the fan-out so it
+    // hears creates and ordinary edits; withdrawals reach it directly
+    // from the admin action instead, so their outcome can be reported to
+    // the admin standing there. Built inside ServiceContext because both
+    // paths must share one object. Inert until an endpoint is set, so a
+    // deployment without a companion site sees no change at all.
+    service_context
+        .integration_manager
+        .register(service_context.public_site_notifier.clone())
+        .await;
+
     // Spawn background cleanup task (runs hourly) for expired sessions
     // and for pruning old audit-log entries based on the operator-set
     // retention window.

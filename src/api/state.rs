@@ -393,6 +393,12 @@ impl FromRef<AppState> for Arc<AuditService> {
     }
 }
 
+impl FromRef<AppState> for Arc<crate::integrations::public_site::PublicSiteNotifier> {
+    fn from_ref(state: &AppState) -> Self {
+        state.service_context.public_site_notifier.clone()
+    }
+}
+
 impl FromRef<AppState> for Arc<PaymentService> {
     fn from_ref(state: &AppState) -> Self {
         state.service_context.payment_service.clone()

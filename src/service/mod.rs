@@ -24,7 +24,7 @@ use crate::api::state::MoneyLimiter;
 use crate::auth::{AuthService, CsrfService, PendingLoginService, TotpService};
 use crate::domain::BasicTypeKind;
 use crate::email::EmailSender;
-use crate::integrations::IntegrationManager;
+use crate::integrations::{public_site::PublicSiteNotifier, IntegrationManager};
 use crate::payments::StripeHandle;
 use crate::repository::*;
 use announcement_admin_service::AnnouncementAdminService;
@@ -65,6 +65,10 @@ pub struct ServiceContext {
     pub expense_category_repo: Arc<dyn ExpenseCategoryRepository>,
     pub expense_account_repo: Arc<dyn ExpenseAccountRepository>,
     pub integration_manager: Arc<IntegrationManager>,
+    /// Companion public-site notifier. Registered on the fan-out for
+    /// ordinary changes AND called directly by the admin services for
+    /// withdrawals, so both paths share one configuration read.
+    pub public_site_notifier: Arc<PublicSiteNotifier>,
     pub auth_service: Arc<AuthService>,
     pub csrf_service: Arc<CsrfService>,
     pub totp_service: Arc<TotpService>,
@@ -184,6 +188,14 @@ impl ServiceContext {
             audit_service.clone(),
         ));
 
+        // Companion public-site notifier. Owned here (rather than built
+        // inside main.rs alongside the other integrations) because BOTH
+        // paths need the same object: the fan-out registration for
+        // ordinary changes, and the admin services for withdrawals,
+        // which are delivered synchronously so their outcome can be
+        // reported. Inert until an endpoint is configured.
+        let public_site_notifier = Arc::new(PublicSiteNotifier::new(settings_service.clone()));
+
         let payment_service = Arc::new(PaymentService::new(
             payment_repo.clone(),
             member_repo.clone(),
@@ -209,6 +221,7 @@ impl ServiceContext {
             recurring_event_service.clone(),
             audit_service.clone(),
             integration_manager.clone(),
+            public_site_notifier.clone(),
         ));
 
         let event_registration_service = Arc::new(EventRegistrationService::new(
@@ -230,6 +243,7 @@ impl ServiceContext {
             announcement_repo.clone(),
             audit_service.clone(),
             integration_manager.clone(),
+            public_site_notifier.clone(),
         ));
 
         let payment_admin_service = Arc::new(PaymentAdminService::new(
@@ -291,6 +305,7 @@ impl ServiceContext {
             membership_type_repo,
             processed_events_repo,
             integration_manager,
+            public_site_notifier,
             auth_service,
             csrf_service,
             totp_service,

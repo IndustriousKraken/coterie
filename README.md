@@ -186,7 +186,8 @@ with Argon2id + TOTP 2FA · single-binary deploy behind Caddy.
   per-IP rate limiting on auth and money-moving endpoints; full audit logging;
   optional admin-mandatory 2FA.
 - **Integrations** — Discord role sync by dues status (with email fallback);
-  UniFi Access API client wired up.
+  UniFi Access API client wired up; signed change notifications to a companion
+  public website (see [`PUBLIC-SITE.md`](docs/deploy/PUBLIC-SITE.md)).
 
 See [ROADMAP.md](docs/ROADMAP.md) and [TODO.md](docs/TODO.md) for what's planned next.
 
@@ -234,6 +235,8 @@ day-to-day operations:
 - [`DEPLOY-ALPINE.md`](docs/deploy/DEPLOY-ALPINE.md) — Alpine Linux + OpenRC (no
   Docker required)
 - [`STRIPE-SETUP.md`](docs/deploy/STRIPE-SETUP.md) — wiring Coterie to a Stripe account
+- [`PUBLIC-SITE.md`](docs/deploy/PUBLIC-SITE.md) — change notifications to a companion
+  public website (the receiver contract)
 - [`OPS.md`](docs/deploy/OPS.md) — operations reference (secret rotation, logs,
   upgrades, routine maintenance)
 - [`MIGRATION.md`](docs/deploy/MIGRATION.md) — moving between hosts

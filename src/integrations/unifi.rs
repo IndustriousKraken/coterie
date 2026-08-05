@@ -108,7 +108,17 @@ impl Integration for UnifiIntegration {
                     matches!(new.status, MemberStatus::Active | MemberStatus::Honorary);
                 self.update_access(&new.email, should_have_access).await?;
             }
-            _ => {}
+            // Door access follows membership, not content. Listed
+            // explicitly instead of a `_` arm so a new variant makes the
+            // compiler ask this integration what it wants to do about
+            // it, rather than dropping it silently.
+            IntegrationEvent::EventPublished(_)
+            | IntegrationEvent::EventUpdated(_)
+            | IntegrationEvent::EventDeleted(_)
+            | IntegrationEvent::AnnouncementPublished(_)
+            | IntegrationEvent::AnnouncementUpdated(_)
+            | IntegrationEvent::AnnouncementDeleted(_)
+            | IntegrationEvent::AdminAlert { .. } => {}
         }
         Ok(())
     }
