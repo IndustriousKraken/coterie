@@ -110,8 +110,9 @@ impl PublicEvent {
     /// caller has already run `sanitize_members_only` — so a members-only
     /// event renders its placeholder, never the withheld real description.
     /// Rendering earlier (or from a pre-sanitization copy of the row) would
-    /// make this projection a path around that. `public_events_markdown_test`
-    /// pins the ordering.
+    /// make this projection a path around that. The ordering is pinned by
+    /// `members_only_description_html_derives_from_the_placeholder` in
+    /// `tests/event_description_markdown_test.rs`.
     fn from_event(e: Event, base_url: &str) -> Self {
         let registration_url = e.registration_url(base_url);
         let guest_price_cents = registration_url.as_ref().map(|_| e.guest_price_cents);
