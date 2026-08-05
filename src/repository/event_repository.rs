@@ -495,11 +495,15 @@ impl EventRepository for SqliteEventRepository {
         // `start_time` is a naive wall-clock, so comparing it to UTC `now`
         // in SQL drops non-UTC-org events by the org's offset (a 7 PM EDT
         // event would fall out of "upcoming" at 3 PM). Widen the SQL bound
-        // by the widest IANA offset (~14h) as a coarse pre-filter, then do
-        // the exact `start_utc() > now` test in Rust and apply the limit
-        // there — the same pattern as `list_pending_reminders`.
+        // by the widest IANA offset (~14h) PLUS the unknown-end grace, so
+        // an event that has started but not ended can't be dropped by the
+        // coarse bound before the exact `is_upcoming` test runs. Then apply
+        // the limit — the same pattern as `list_pending_reminders`.
+        // ponytail: an event whose recorded end is more than the margin
+        // past its start (a multi-day conference) still falls out early;
+        // fix by pre-filtering on end_time in SQL if that case shows up.
         let now = Utc::now();
-        let margin = Duration::hours(15);
+        let margin = Duration::hours(15) + crate::domain::unknown_end_grace();
 
         let rows = sqlx::query_as::<_, EventRow>(
             r#"
@@ -523,7 +527,9 @@ impl EventRepository for SqliteEventRepository {
             .map(Self::row_to_event)
             .collect::<Result<Vec<_>>>()?;
         // Exact test + ordering on the derived instant, then the limit.
-        events.retain(|e| e.start_utc() > now);
+        // An event in progress sorts by its start like any other, which
+        // puts it at the head of the ascending list.
+        events.retain(|e| e.is_upcoming(now));
         events.sort_by(|a, b| a.start_utc().cmp(&b.start_utc()));
         events.truncate(limit as usize);
         Ok(events)
@@ -579,11 +585,12 @@ impl EventRepository for SqliteEventRepository {
         // Count on the derived UTC instant, not the raw wall-clock (which
         // would mis-count by the org's offset near evening events). SQLite
         // can't do the tz math, so fetch the widened candidate set and
-        // count those still upcoming by their true instant — same pattern
-        // as `list_upcoming`.
+        // count those still upcoming by their true instant — same margin,
+        // same predicate as `list_upcoming`, so the teaser count can't
+        // disagree with the list it teases.
         let visibility_str = Self::visibility_to_str(&EventVisibility::MembersOnly);
         let now = Utc::now();
-        let margin = Duration::hours(15);
+        let margin = Duration::hours(15) + crate::domain::unknown_end_grace();
 
         let rows = sqlx::query_as::<_, EventRow>(
             r#"
@@ -607,7 +614,7 @@ impl EventRepository for SqliteEventRepository {
             .map(Self::row_to_event)
             .collect::<Result<Vec<_>>>()?
             .iter()
-            .filter(|e| e.start_utc() > now)
+            .filter(|e| e.is_upcoming(now))
             .count();
         Ok(count as i64)
     }

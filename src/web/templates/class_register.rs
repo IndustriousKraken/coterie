@@ -15,12 +15,21 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use axum_extra::extract::CookieJar;
 use uuid::Uuid;
 
 use crate::{
-    repository::{EventRepository, EventSeriesRepository, SeriesEnrollmentRepository},
+    api::middleware::auth::optional_member,
+    auth::{AuthService, CsrfService},
+    domain::Attendee,
+    repository::{
+        EventRepository, EventSeriesRepository, MemberRepository, SeriesEnrollmentRepository,
+    },
     service::settings_service::{bot_challenge_keys, SettingsService},
-    web::templates::{event_register::RegisterPageQuery, BaseContext, HtmlTemplate},
+    web::templates::{
+        event_register::{holds_a_seat, RegisterPageQuery, SignedInMember},
+        BaseContext, HtmlTemplate,
+    },
 };
 
 #[derive(Template)]
@@ -51,13 +60,22 @@ pub struct ClassRegisterTemplate {
     pub is_over: bool,
     pub captcha_site_key: Option<String>,
     pub just_registered: bool,
+    /// The visitor's member session, when they have one — see
+    /// [`SignedInMember`]. `None` renders today's guest page.
+    pub signed_in: Option<SignedInMember>,
 }
 
+// Granular state, same as `event_register_page` — see the note there.
+#[allow(clippy::too_many_arguments)]
 pub async fn class_register_page(
     State(event_repo): State<Arc<dyn EventRepository>>,
     State(series_repo): State<Arc<dyn EventSeriesRepository>>,
     State(enrollment_repo): State<Arc<dyn SeriesEnrollmentRepository>>,
     State(settings_service): State<Arc<SettingsService>>,
+    State(auth_service): State<Arc<AuthService>>,
+    State(member_repo): State<Arc<dyn MemberRepository>>,
+    State(csrf_service): State<Arc<CsrfService>>,
+    jar: CookieJar,
     Path(series_id): Path<Uuid>,
     Query(query): Query<RegisterPageQuery>,
 ) -> Response {
@@ -96,8 +114,35 @@ pub async fn class_register_page(
             .filter(|k| !k.is_empty())
     };
 
+    // Resolved after the enrollability 404 and fail-open, exactly as the
+    // event page does it — see `event_register_page`.
+    let (base, signed_in) = match optional_member(&auth_service, &*member_repo, &jar).await {
+        Some((user, session)) => {
+            let already_registered = holds_a_seat(
+                enrollment_repo
+                    .find(series.id, &Attendee::Member(user.member.id))
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|e| e.status),
+            );
+            (
+                BaseContext::for_member(&csrf_service, &user, &session).await,
+                Some(SignedInMember {
+                    price_display: if series.is_paid_class() {
+                        format!("${:.2}", series.member_price_cents as f64 / 100.0)
+                    } else {
+                        "Free".to_string()
+                    },
+                    already_registered,
+                }),
+            )
+        }
+        None => (BaseContext::for_anon(), None),
+    };
+
     let template = ClassRegisterTemplate {
-        base: BaseContext::for_anon(),
+        base,
         series_id: series.id.to_string(),
         title: prototype.title.clone(),
         description: prototype.description.clone(),
@@ -140,6 +185,7 @@ pub async fn class_register_page(
         is_over: upcoming.is_empty(),
         captcha_site_key,
         just_registered: query.registered.is_some(),
+        signed_in,
     };
     HtmlTemplate(template).into_response()
 }

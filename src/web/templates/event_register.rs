@@ -17,11 +17,15 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{
-    repository::EventRepository,
+    api::middleware::auth::optional_member,
+    auth::{AuthService, CsrfService},
+    domain::{AttendanceStatus, Attendee},
+    repository::{EventRepository, MemberRepository},
     service::settings_service::{bot_challenge_keys, SettingsService},
     web::templates::{BaseContext, HtmlTemplate},
 };
@@ -32,6 +36,31 @@ pub struct RegisterPageQuery {
     /// returning from Stripe (or from a free registration) sees that it
     /// worked. Purely cosmetic — the seat's real state lives in the DB.
     pub registered: Option<String>,
+}
+
+/// What a shareable registration page knows about a signed-in member.
+///
+/// `None` on a template means the visitor is anonymous — the guest
+/// rendering, unchanged. Shared by the event page and the class page:
+/// they are the same page at two scopes.
+pub struct SignedInMember {
+    /// The member price for this event or class, rendered `"Free"` for a
+    /// zero price exactly as the guest price is.
+    pub price_display: String,
+    /// True when they already hold a seat (or a class pass), so the page
+    /// says so instead of offering an action that looks like a second
+    /// charge.
+    pub already_registered: bool,
+}
+
+/// True when this attendance state means "don't offer to sell them the
+/// seat again" — a confirmed seat OR one held in flight at Stripe.
+/// Mirrors the portal's own enrolled/registered test.
+pub(crate) fn holds_a_seat(status: Option<AttendanceStatus>) -> bool {
+    matches!(
+        status,
+        Some(AttendanceStatus::Registered) | Some(AttendanceStatus::PendingPayment)
+    )
 }
 
 #[derive(Template)]
@@ -61,11 +90,23 @@ pub struct EventRegisterTemplate {
     /// the token it produces) is only rendered when there is one.
     pub captcha_site_key: Option<String>,
     pub just_registered: bool,
+    /// The visitor's member session, when they have one. `None` renders
+    /// today's guest page; `Some` renders the member-priced authenticated
+    /// action instead of the guest form.
+    pub signed_in: Option<SignedInMember>,
 }
 
+// Granular state per the routing-architecture spec: the page reads five
+// unrelated dependencies (event, settings, session, member, CSRF) and
+// bundling them into one extractor would hide which it actually uses.
+#[allow(clippy::too_many_arguments)]
 pub async fn event_register_page(
     State(event_repo): State<Arc<dyn EventRepository>>,
     State(settings_service): State<Arc<SettingsService>>,
+    State(auth_service): State<Arc<AuthService>>,
+    State(member_repo): State<Arc<dyn MemberRepository>>,
+    State(csrf_service): State<Arc<CsrfService>>,
+    jar: CookieJar,
     Path(event_id): Path<Uuid>,
     Query(query): Query<RegisterPageQuery>,
 ) -> Response {
@@ -107,8 +148,38 @@ pub async fn event_register_page(
             .filter(|k| !k.is_empty())
     };
 
+    // Resolve the session AFTER the registerability 404, so a session
+    // never widens what is visible. Fails open: `optional_member`
+    // returns `None` for every failure mode, and `None` is exactly
+    // today's anonymous page.
+    let (base, signed_in) = match optional_member(&auth_service, &*member_repo, &jar).await {
+        Some((user, session)) => {
+            let already_registered = holds_a_seat(
+                event_repo
+                    .attendance_status(event.id, &Attendee::Member(user.member.id))
+                    .await
+                    .ok()
+                    .flatten(),
+            );
+            (
+                // `for_member`, not `for_anon`: the authenticated action
+                // is CSRF-protected and the token rides in the layout.
+                BaseContext::for_member(&csrf_service, &user, &session).await,
+                Some(SignedInMember {
+                    price_display: if event.is_paid_for_members() {
+                        format!("${:.2}", event.member_price_cents as f64 / 100.0)
+                    } else {
+                        "Free".to_string()
+                    },
+                    already_registered,
+                }),
+            )
+        }
+        None => (BaseContext::for_anon(), None),
+    };
+
     let template = EventRegisterTemplate {
-        base: BaseContext::for_anon(),
+        base,
         event_id: event.id.to_string(),
         title: event.title.clone(),
         description: event.description.clone(),
@@ -135,6 +206,7 @@ pub async fn event_register_page(
         is_full,
         captcha_site_key,
         just_registered: query.registered.is_some(),
+        signed_in,
     };
     HtmlTemplate(template).into_response()
 }

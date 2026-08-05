@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use crate::{
     config::Settings,
-    domain::{Announcement, AnnouncementType, Event, EventType, EventVisibility},
+    domain::{is_upcoming, Announcement, AnnouncementType, Event, EventType, EventVisibility},
     error::Result,
     repository::{AnnouncementRepository, EventRepository},
     service::membership_type_service::MembershipTypeService,
@@ -220,7 +220,12 @@ pub async fn list_events(
     };
     match range {
         Some((from, to)) => events.retain(|e| e.start_time >= from && e.start_time < to),
-        None => events.retain(|e| e.start_time > now),
+        // `is_upcoming` (the free function) and NOT `Event::is_upcoming`:
+        // `derive_utc_instants` above already replaced both fields with
+        // their derived instants, and the method would re-derive — adding
+        // the org's offset a second time and putting the marketing feed
+        // and every calendar subscription hours out.
+        None => events.retain(|e| is_upcoming(e.start_time, e.end_time, now)),
     }
 
     // Sort by start time
@@ -382,6 +387,94 @@ fn derive_utc_instants(events: &mut [Event]) {
         let end = e.end_utc();
         e.start_time = start;
         e.end_time = end;
+    }
+}
+
+#[cfg(test)]
+mod upcoming_derivation_tests {
+    //! 3.7 — the double-conversion guard. `derive_utc_instants` replaces
+    //! `start_time`/`end_time` with derived instants IN PLACE, so this
+    //! surface must call the free `is_upcoming` and never
+    //! `Event::is_upcoming`, which would derive a second time.
+
+    use super::*;
+    use chrono::TimeZone;
+
+    // 19:00–21:00 on Jan 23 in New York (EST, UTC-5) → 00:00Z–02:00Z on
+    // the 24th. A UTC fixture could not detect the bug: the offset it
+    // would add is zero.
+    fn ny_evening() -> Event {
+        let wall = |h: u32| {
+            DateTime::from_naive_utc_and_offset(
+                chrono::NaiveDate::from_ymd_opt(2026, 1, 23)
+                    .unwrap()
+                    .and_hms_opt(h, 0, 0)
+                    .unwrap(),
+                Utc,
+            )
+        };
+        Event {
+            id: Uuid::new_v4(),
+            title: "HTB Night".into(),
+            description: String::new(),
+            event_type: EventType::Meeting,
+            event_type_id: None,
+            visibility: EventVisibility::Public,
+            start_time: wall(19),
+            end_time: Some(wall(21)),
+            timezone: "America/New_York".into(),
+            location: None,
+            max_attendees: None,
+            rsvp_required: false,
+            member_price_cents: 0,
+            guest_price_cents: 0,
+            guest_registration_enabled: false,
+            image_url: None,
+            created_by: Uuid::new_v4(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            series_id: None,
+            occurrence_index: None,
+        }
+    }
+
+    #[test]
+    fn derived_instants_answer_the_same_as_the_undebased_event() {
+        // 04:00Z on the 24th: two hours past the true end (02:00Z), but
+        // still inside the window a second conversion would invent.
+        let now = Utc.with_ymd_and_hms(2026, 1, 24, 4, 0, 0).unwrap();
+        let mut events = vec![ny_evening()];
+
+        // Before derivation, the convenience method is the right call.
+        let before = events[0].is_upcoming(now);
+        assert!(!before, "the event ended at 02:00Z; 04:00Z is past it");
+
+        derive_utc_instants(&mut events);
+        let after = is_upcoming(events[0].start_time, events[0].end_time, now);
+        assert_eq!(
+            before, after,
+            "the derived surface must agree with the undebased one"
+        );
+
+        // And this is what taking the convenient path would have cost:
+        // the wrapper re-derives 02:00Z as a New York wall-clock (07:00Z)
+        // and keeps the event listed five hours past its end.
+        assert!(
+            events[0].is_upcoming(now),
+            "guard is only meaningful while double conversion actually shifts \
+             the answer — if this ever fails the fixture stopped testing anything"
+        );
+    }
+
+    // The in-progress case on the surface that matters most: 01:00Z is
+    // between the derived start (00:00Z) and end (02:00Z).
+    #[test]
+    fn an_event_in_progress_survives_derivation() {
+        let now = Utc.with_ymd_and_hms(2026, 1, 24, 1, 0, 0).unwrap();
+        let mut events = vec![ny_evening()];
+        assert!(events[0].is_upcoming(now));
+        derive_utc_instants(&mut events);
+        assert!(is_upcoming(events[0].start_time, events[0].end_time, now));
     }
 }
 

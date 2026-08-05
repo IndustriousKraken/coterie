@@ -40,6 +40,28 @@ pub struct LoginQuery {
     pub redirect: Option<String>,
 }
 
+/// The post-authentication destinations login honors: an allow-list of
+/// site-relative paths — the portal, plus the two shareable registration
+/// pages, so a member who followed a shared event link lands back on the
+/// event instead of the dashboard.
+///
+/// One function for all three call sites (password login, the TOTP
+/// second step, and `login_page`'s already-authenticated branch); the
+/// predicate used to be written out twice, which is how two copies
+/// drift. Everything else — an absolute URL, a protocol-relative
+/// `//host`, any path containing `..` — is discarded so the caller falls
+/// back to its default destination. Widening this to arbitrary
+/// caller-supplied values would turn the most public page in the
+/// application into an open redirect.
+fn allowed_destination(url: &str) -> bool {
+    if url.contains("..") {
+        return false;
+    }
+    url.starts_with("/portal/")
+        || ((url.starts_with("/events/") || url.starts_with("/classes/"))
+            && url.ends_with("/register"))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     pub username: String,
@@ -69,7 +91,10 @@ pub async fn login_page(
     if let Some(session_cookie) = jar.get("session") {
         if let Ok(Some(session)) = auth_service.validate_session(session_cookie.value()).await {
             // Already logged in — send Expired members to the restoration
-            // page directly, everyone else to the dashboard.
+            // page directly. Everyone else goes to the allow-listed
+            // destination they arrived with (a member opening a shared
+            // event link must not be bounced to the dashboard), or the
+            // dashboard when there isn't one.
             use crate::domain::MemberStatus;
             let dest = match member_repo
                 .find_by_id(session.member_id)
@@ -79,7 +104,11 @@ pub async fn login_page(
                 .map(|m| m.status)
             {
                 Some(MemberStatus::Expired) => "/portal/restore",
-                _ => "/portal/dashboard",
+                _ => query
+                    .redirect
+                    .as_deref()
+                    .filter(|url| allowed_destination(url))
+                    .unwrap_or("/portal/dashboard"),
             };
             return Redirect::to(dest).into_response();
         }
@@ -297,7 +326,7 @@ pub async fn login_handler(
                 let next_redirect = credentials
                     .redirect_url
                     .as_deref()
-                    .filter(|url| url.starts_with("/portal/") && !url.contains(".."))
+                    .filter(|url| allowed_destination(url))
                     .map(|url| format!("/login/totp?redirect={}", urlencoding::encode(url)))
                     .unwrap_or_else(|| "/login/totp".to_string());
 
@@ -394,7 +423,7 @@ pub async fn login_handler(
             };
             let redirect_url = credentials
                 .redirect_url
-                .filter(|url| url.starts_with("/portal/") && !url.contains(".."))
+                .filter(|url| allowed_destination(url))
                 .unwrap_or(default_destination);
 
             // Build response headers. Both values are server-controlled
@@ -878,7 +907,7 @@ pub async fn login_totp_handler(
     };
     let redirect_url = payload
         .redirect_url
-        .filter(|u| u.starts_with("/portal/") && !u.contains(".."))
+        .filter(|u| allowed_destination(u))
         .unwrap_or(default_destination);
 
     let mut headers = HeaderMap::new();

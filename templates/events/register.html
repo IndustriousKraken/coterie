@@ -16,13 +16,18 @@
         {% endif %}
 
         <div class="mt-6 border-t pt-4">
+            {% if let Some(member) = signed_in.as_ref() %}
+            <p class="text-lg font-semibold text-gray-900">{{ member.price_display }}</p>
+            <p class="text-sm text-gray-600 mt-1">Your member price.</p>
+            {% else %}
             <p class="text-lg font-semibold text-gray-900">{{ guest_price_display }}</p>
             {% if let Some(member_price) = member_price_display.as_ref() %}
             <p class="text-sm text-gray-600 mt-1">
                 Members pay {{ member_price }}.
-                <a href="/login" class="text-blue-600 hover:underline">Log in</a>
+                <a href="/login?redirect=%2Fevents%2F{{ event_id }}%2Fregister" class="text-blue-600 hover:underline">Log in</a>
                 to register at the member price instead.
             </p>
+            {% endif %}
             {% endif %}
             {% if let Some(remaining) = seats_remaining.as_ref() %}
             <p class="text-sm text-gray-500 mt-1">{{ remaining }}</p>
@@ -39,6 +44,29 @@
         <div class="mt-6 rounded-md bg-amber-50 border border-amber-200 p-4">
             <p class="text-sm text-amber-800">This event is full — no seats are available.</p>
         </div>
+        {% else %}
+        {% if let Some(member) = signed_in.as_ref() %}
+        {% if member.already_registered %}
+        <div class="mt-6 rounded-md bg-green-50 border border-green-200 p-4">
+            <p class="text-sm text-green-800">You're already registered for this event.</p>
+            <p class="text-xs text-green-700 mt-1">Need a refund or to cancel? Contact an organizer.</p>
+        </div>
+        {% else %}
+        <!-- Session-authenticated: the same action the portal offers, at
+             the member price. No name/email (we have them) and no bot
+             challenge (this is not an anonymous money endpoint) — the
+             CSRF token in the layout's meta tag is what guards it. -->
+        <div class="mt-6 space-y-4">
+            <button hx-post="/portal/api/events/{{ event_id }}/rsvp"
+                    hx-swap="outerHTML"
+                    class="w-full px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700">
+                {% if member.price_display == "Free" %}Register{% else %}Register — {{ member.price_display }}{% endif %}
+            </button>
+            <p class="text-xs text-gray-400">
+                You're signed in — we'll register you with your member account.{% if member.price_display != "Free" %} You'll be taken to our payment provider.{% endif %}
+            </p>
+        </div>
+        {% endif %}
         {% else %}
         <form method="post" action="/public/events/{{ event_id }}/register" class="mt-6 space-y-4">
             <div>
@@ -64,6 +92,7 @@
                 {% if guest_price_display == "Free" %}Your seat is confirmed right away.{% else %}You'll be taken to our payment provider. Your seat is held until you finish paying.{% endif %}
             </p>
         </form>
+        {% endif %}
         {% endif %}
     </div>
 </div>
