@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     domain::CreateMemberRequest,
-    integrations::IntegrationManager,
+    integrations::{public_site::PublicSiteNotifier, IntegrationManager},
     repository::{
         EventRepository, EventSeriesRepository, MemberRepository, SqliteEventRepository,
         SqliteEventSeriesRepository, SqliteMemberRepository, SqliteSubmissionRepository,
@@ -43,12 +43,19 @@ fn make_service(pool: SqlitePool) -> SubmissionService {
         event_series_repo.clone(),
         pool.clone(),
     ));
+    let public_site = Arc::new(PublicSiteNotifier::new(Arc::new(
+        crate::service::settings_service::SettingsService::new(
+            pool.clone(),
+            Arc::new(crate::auth::SecretCrypto::new("test-secret-please-ignore")),
+        ),
+    )));
     let event_admin = Arc::new(EventAdminService::new(
         event_repo,
         event_series_repo,
         recurring,
         audit.clone(),
         integrations,
+        public_site,
     ));
     SubmissionService::new(submission_repo, event_admin, audit)
 }

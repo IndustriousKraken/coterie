@@ -206,6 +206,14 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
             "/events/:id/delete",
             post(admin::events::admin_delete_event),
         )
+        // Per-item resend to the companion public site: the retry when a
+        // notification failed, and the recovery path when the automatic
+        // one is broken. Per item, not a global rebuild — an admin using
+        // it wants an answer about the one item in front of them.
+        .route(
+            "/events/:id/resend-public-site",
+            post(admin::events::admin_resend_event_to_public_site),
+        )
         // Paid-event roster actions. Admin-authed + CSRF-protected by
         // the layers on this router; each handler audits its own action.
         .route(
@@ -295,6 +303,10 @@ pub fn create_portal_routes(state: AppState) -> Router<AppState> {
         .route(
             "/announcements/:id/unpublish",
             post(admin::announcements::admin_unpublish_announcement),
+        )
+        .route(
+            "/announcements/:id/resend-public-site",
+            post(admin::announcements::admin_resend_announcement_to_public_site),
         )
         // Type management. Membership-type routes are registered first
         // with static `membership` segments so Axum's static-over-dynamic

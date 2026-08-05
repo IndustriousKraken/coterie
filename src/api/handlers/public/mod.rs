@@ -190,17 +190,10 @@ pub async fn list_events(
     let mut events: Vec<Event> = public_events
         .into_iter()
         .chain(private_events.into_iter().map(|mut e| {
-            // Sanitize private events. `guest_registration_enabled` is
-            // cleared alongside the other fields so a members-only event
-            // can never advertise a public registration URL — the
-            // projection derives that from the event, and this is where
-            // members-only events stop being registerable.
-            e.title = "Members-Only Event".to_string();
-            e.description =
-                "This event is for members only. Log in to the portal to see details.".to_string();
-            e.location = None;
-            e.image_url = None;
-            e.guest_registration_enabled = false;
+            // Sanitize private events. The rule lives on the domain type
+            // so the integration dispatch reduces a members-only payload
+            // with the SAME code this feed sanitizes with.
+            e.sanitize_members_only();
             e
         }))
         .collect();

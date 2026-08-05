@@ -11,10 +11,34 @@ TBD - created by archiving change document-existing-architecture. Update Purpose
 - `MemberExpired(Member)`
 - `MemberUpdated { old: Member, new: Member }`
 - `EventPublished(Event)`
+- `EventUpdated(Event)`
+- `EventDeleted(Event)`
 - `AnnouncementPublished(Announcement)`
+- `AnnouncementUpdated(Announcement)`
+- `AnnouncementDeleted(Announcement)`
 - `AdminAlert { subject: String, body: String }`
 
 Adding a new variant SHALL force every consumer match to be updated, preventing silently-dropped events.
+
+`EventPublished` fires when an event is created and is not `AdminOnly`. It SHALL
+NOT be read as "this event is now public": it does not fire when an existing
+event's visibility changes, and it does fire for members-only events. A consumer
+that needs to know whether something is publicly visible SHALL determine that
+from the visibility carried on the event, and SHALL learn of later changes from
+`EventUpdated`.
+
+The content update variants SHALL carry the post-update state only, and SHALL NOT
+carry a pre-update snapshot. `MemberUpdated { old, new }` carries both because a
+consumer must compute a delta from it — Discord derives role transitions that way
+— and no consumer of an event or announcement change needs one: what a consumer
+does is make its own copy match current state, which the new value alone
+describes. Carrying a prior snapshot no one reads would double the content in
+flight, and that content is the thing this capability most needs to keep small.
+
+A single update variant SHALL cover retraction, late publication, and ordinary
+content edits alike. Adding `Unpublished`, `Republished`, and `Rescheduled`
+variants would multiply the enum without telling a consumer anything the current
+state does not.
 
 #### Scenario: Adding a variant breaks consumer compilation
 
@@ -25,6 +49,11 @@ Adding a new variant SHALL force every consumer match to be updated, preventing 
 
 - **WHEN** any subsystem needs to surface an operational notification to admins without adding a dedicated variant
 - **THEN** it SHALL dispatch `IntegrationEvent::AdminAlert { subject, body }`; this is the documented seam
+
+#### Scenario: Becoming public arrives as an update, not a publish
+
+- **WHEN** an existing members-only event is changed to `Public`
+- **THEN** `EventUpdated` SHALL be dispatched and `EventPublished` SHALL NOT be
 
 ### Requirement: IntegrationManager fans events out to registered integrations
 
@@ -53,10 +82,38 @@ Adding a new variant SHALL force every consumer match to be updated, preventing 
 
 Variants like `MemberActivated(Member)` and `MemberUpdated { old, new }` SHALL carry full domain values so consumers do not need to re-query the database. `MemberUpdated` SHALL specifically carry both the pre-update and post-update snapshots so consumers can compute deltas (e.g., Discord role transitions).
 
+Event and announcement variants are the exception, and the rule for them is drawn
+by visibility rather than by variant. Such an event SHALL carry no more about an
+item than that item's own visibility already discloses: an item that is `Public`
+may carry its full public projection, one that is `MembersOnly` SHALL carry only
+what `/public/events` would return for it, and one that is `AdminOnly` SHALL carry
+only the identity and visibility a consumer needs to drop it.
+
+This SHALL be enforced at dispatch, not left to consumers. Sending private content
+outward and relying on each recipient to decline to publish it is a rule that
+holds only as long as every current and future consumer implements it correctly,
+and the failure is silent when one does not. Reducing the payload at the source
+makes the wrong outcome unreachable instead of merely discouraged.
+
+A consumer that needs more than this SHALL read it from a surface it is
+authorized against, rather than being handed it in the notification.
+
 #### Scenario: Discord role-change consumer reads old + new from event
 
 - **WHEN** a `MemberUpdated { old, new }` event reaches the Discord integration
 - **THEN** the integration SHALL compute role differences from the carried snapshots WITHOUT issuing additional DB reads
+
+#### Scenario: An event withdrawn to admin-only carries no content forward
+
+- **WHEN** an event changes from `Public` to `AdminOnly`
+- **THEN** the dispatched `EventUpdated` SHALL identify the event and its new
+  visibility without carrying its title, description, location, or image
+
+#### Scenario: A members-only item carries only what the public API would show
+
+- **WHEN** an event whose visibility is `MembersOnly` is updated
+- **THEN** the dispatched event SHALL carry no more than `/public/events` returns
+  for that item — the sanitized title, and no description, location, or image
 
 ### Requirement: Events for member operations are dispatched from MemberService
 
@@ -80,4 +137,51 @@ This change aligns with the CLAUDE.md "side-effects in services" rule — both m
 
 - **WHEN** the billing runner records the configured threshold of consecutive failures for a member
 - **THEN** `BillingService` (not the handler) SHALL dispatch `IntegrationEvent::AdminAlert` so the admin-alert email integration sends a notification
+
+### Requirement: Changes to public content are dispatched
+
+A mutation SHALL dispatch the corresponding `IntegrationEvent` whenever it can
+change what `/public/events` or `/public/announcements` returns for an item. This
+is stated as a rule about observable output rather than as a list of methods,
+because a list acquires gaps as new mutation paths are added and a gap here is
+silent.
+
+This SHALL include, at minimum: updating an event or announcement, deleting one,
+changing an item's visibility or publication state, and the per-occurrence
+exceptions that add or remove a materialized occurrence from the public feed.
+
+Dispatch SHALL come from the service layer, consistent with how member and
+announcement events are already dispatched, and SHALL happen after the repository
+write succeeds so no consumer is told about a change that did not persist.
+
+A mutation SHALL NOT dispatch when it changes nothing a public consumer could
+observe — an edit confined to fields the public projection omits, or a change to
+an item that was `AdminOnly` before and after.
+
+#### Scenario: Editing an event notifies consumers
+
+- **WHEN** an admin updates a public event's title or start time
+- **THEN** `EventUpdated` SHALL be dispatched after the write
+
+#### Scenario: Deleting an event notifies consumers
+
+- **WHEN** an admin deletes an event that was not `AdminOnly`
+- **THEN** `EventDeleted` SHALL be dispatched
+
+#### Scenario: Cancelling an occurrence notifies consumers
+
+- **WHEN** an admin cancels a single occurrence of a public recurring series, so
+  that occurrence stops appearing in the public feed
+- **THEN** a dispatch SHALL occur conveying that the occurrence is no longer
+  publicly present
+
+#### Scenario: A change with no public effect dispatches nothing
+
+- **WHEN** an event that is `AdminOnly` both before and after is edited
+- **THEN** no event or announcement variant SHALL be dispatched
+
+#### Scenario: A failed write dispatches nothing
+
+- **WHEN** a mutation fails at the repository layer
+- **THEN** no `IntegrationEvent` SHALL be dispatched for it
 

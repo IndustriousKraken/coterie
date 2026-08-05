@@ -83,6 +83,28 @@ impl Event {
         self.visibility == EventVisibility::Public && self.guest_registration_enabled
     }
 
+    /// Strip everything a `MembersOnly` event does not disclose to an
+    /// anonymous caller, leaving exactly what `/public/events` returns
+    /// for it: a placeholder title and description, no location, no
+    /// image, and no public registration door.
+    ///
+    /// The one implementation of "what may leave" for a members-only
+    /// event. Both the public feed and the integration dispatch call it,
+    /// so the two cannot drift into disagreeing about what is disclosed
+    /// — and a drift there would be silent.
+    pub fn sanitize_members_only(&mut self) {
+        self.title = "Members-Only Event".to_string();
+        self.description =
+            "This event is for members only. Log in to the portal to see details.".to_string();
+        self.location = None;
+        self.image_url = None;
+        // Cleared alongside the rest so a members-only event can never
+        // advertise a public registration URL — the projection derives
+        // that from the event, and this is where members-only events
+        // stop being registerable.
+        self.guest_registration_enabled = false;
+    }
+
     /// Whether `member` may see this event on the member surfaces (the
     /// events list, the dashboard's upcoming widget, RSVP).
     ///

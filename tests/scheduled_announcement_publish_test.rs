@@ -12,14 +12,20 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use coterie::{
+    auth::SecretCrypto,
     domain::{Announcement, AnnouncementType, CreateMemberRequest},
     error::Result as CoterieResult,
-    integrations::{Integration, IntegrationEvent, IntegrationManager},
+    integrations::{
+        public_site::PublicSiteNotifier, Integration, IntegrationEvent, IntegrationManager,
+    },
     repository::{
         AnnouncementRepository, MemberRepository, SqliteAnnouncementRepository,
         SqliteMemberRepository,
     },
-    service::{announcement_admin_service::AnnouncementAdminService, audit_service::AuditService},
+    service::{
+        announcement_admin_service::AnnouncementAdminService, audit_service::AuditService,
+        settings_service::SettingsService,
+    },
 };
 use sqlx::SqlitePool;
 use tokio::sync::Mutex;
@@ -93,7 +99,11 @@ async fn build() -> H {
     let fake = FakeIntegration::new();
     manager.register(fake.clone() as Arc<dyn Integration>).await;
 
-    let service = AnnouncementAdminService::new(repo.clone(), audit, manager);
+    let public_site = Arc::new(PublicSiteNotifier::new(Arc::new(SettingsService::new(
+        pool.clone(),
+        Arc::new(SecretCrypto::new("test-secret-please-ignore")),
+    ))));
+    let service = AnnouncementAdminService::new(repo.clone(), audit, manager, public_site);
 
     // Seed an actor (creator) — needed to satisfy the foreign key.
     let member_repo: Arc<dyn MemberRepository> =

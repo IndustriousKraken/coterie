@@ -20,7 +20,11 @@ use crate::{
         OccurrenceOverride, Recurrence, SeriesPassPricing,
     },
     error::{AppError, Result},
-    integrations::{IntegrationEvent, IntegrationManager},
+    integrations::{
+        event_change_is_public,
+        public_site::{announce, PublicSiteNotifier, PublicSiteOutcome},
+        redact_event_for_dispatch, IntegrationEvent, IntegrationManager,
+    },
     repository::{EventRepository, EventSeriesRepository},
     service::{audit_service::AuditService, recurring_event_service::RecurringEventService},
 };
@@ -97,6 +101,7 @@ pub struct EventAdminService {
     recurring_event_service: Arc<RecurringEventService>,
     audit_service: Arc<AuditService>,
     integration_manager: Arc<IntegrationManager>,
+    public_site: Arc<PublicSiteNotifier>,
 }
 
 impl EventAdminService {
@@ -106,6 +111,7 @@ impl EventAdminService {
         recurring_event_service: Arc<RecurringEventService>,
         audit_service: Arc<AuditService>,
         integration_manager: Arc<IntegrationManager>,
+        public_site: Arc<PublicSiteNotifier>,
     ) -> Self {
         Self {
             event_repo,
@@ -113,7 +119,43 @@ impl EventAdminService {
             recurring_event_service,
             audit_service,
             integration_manager,
+            public_site,
         }
+    }
+
+    /// Tell consumers an event changed, after the write succeeded, and
+    /// hand back what the public-site notifier managed to do about it.
+    ///
+    /// Silent when nothing a public consumer could observe changed — an
+    /// item `AdminOnly` on both sides, or an edit confined to fields the
+    /// public projection omits. The payload is reduced here, at the
+    /// dispatch site, rather than by asking every consumer to be careful
+    /// with what it was handed.
+    async fn announce_update(&self, before: &Event, after: &Event) -> PublicSiteOutcome {
+        if !event_change_is_public(before, after) {
+            return PublicSiteOutcome::NotAttempted;
+        }
+        announce(
+            &self.integration_manager,
+            &self.public_site,
+            IntegrationEvent::EventUpdated(redact_event_for_dispatch(after.clone())),
+        )
+        .await
+    }
+
+    /// [`Self::announce_update`] for a row that no longer exists. An
+    /// `AdminOnly` event was never in any public feed, so its removal
+    /// changes nothing a public consumer could observe.
+    async fn announce_delete(&self, deleted: &Event) -> PublicSiteOutcome {
+        if deleted.visibility == EventVisibility::AdminOnly {
+            return PublicSiteOutcome::NotAttempted;
+        }
+        announce(
+            &self.integration_manager,
+            &self.public_site,
+            IntegrationEvent::EventDeleted(redact_event_for_dispatch(deleted.clone())),
+        )
+        .await
     }
 
     /// Create an event. When `input.recurrence` is `Some`, materializes
@@ -204,14 +246,20 @@ impl EventAdminService {
         Ok(event)
     }
 
-    /// Update a single event row. Audits `update_event`. No
-    /// integration dispatch — updates are silent per existing design.
+    /// Update a single event row. Audits `update_event` and dispatches
+    /// `EventUpdated` after the write succeeds, using the pre-update row
+    /// already loaded here to decide whether anything publicly
+    /// observable changed.
+    ///
+    /// Returns the updated row alongside what the companion public site
+    /// was told, which is empty for everything except a withdrawal —
+    /// see [`crate::integrations::public_site::announce`].
     pub async fn update_one(
         &self,
         actor_id: Uuid,
         event_id: Uuid,
         input: UpdateEventInput,
-    ) -> Result<Event> {
+    ) -> Result<(Event, PublicSiteOutcome)> {
         let existing = self
             .event_repo
             .find_by_id(event_id)
@@ -228,7 +276,7 @@ impl EventAdminService {
             start_time: input.start_time,
             end_time: input.end_time,
             // Zone is frozen at creation; an edit never re-zones the event.
-            timezone: existing.timezone,
+            timezone: existing.timezone.clone(),
             location: input.location,
             max_attendees: input.max_attendees,
             rsvp_required: input.rsvp_required,
@@ -243,6 +291,8 @@ impl EventAdminService {
             occurrence_index: existing.occurrence_index,
         };
 
+        // A failed write dispatches nothing: `?` returns before the
+        // announce below ever runs.
         let result = self.event_repo.update(event_id, updated).await?;
 
         self.audit_service
@@ -257,7 +307,8 @@ impl EventAdminService {
             )
             .await;
 
-        Ok(result)
+        let outcome = self.announce_update(&existing, &result).await;
+        Ok((result, outcome))
     }
 
     /// Apply the editable subset of `input` to every occurrence in
@@ -304,6 +355,11 @@ impl EventAdminService {
             .update_series_occurrences_from(series_id, from, &template)
             .await?;
 
+        // No per-occurrence dispatch: one edit here rewrites up to a
+        // year of rows, and a notification carrying one id per row would
+        // be a burst the receiver gains nothing from. The companion
+        // site's reconciling sweep — which this capability deliberately
+        // does not replace — is what closes a bulk edit.
         self.audit_service
             .log(
                 Some(actor_id),
@@ -319,8 +375,14 @@ impl EventAdminService {
         Ok(count)
     }
 
-    /// Delete a single event row. Audits `delete_event`.
-    pub async fn delete_one(&self, actor_id: Uuid, event_id: Uuid) -> Result<()> {
+    /// Delete a single event row. Audits `delete_event` and dispatches
+    /// `EventDeleted` after the write. Returns what the companion public
+    /// site was told — a deletion is always a withdrawal, so this is the
+    /// acknowledged path whenever an endpoint is configured.
+    pub async fn delete_one(&self, actor_id: Uuid, event_id: Uuid) -> Result<PublicSiteOutcome> {
+        // Read the row before it goes so the dispatch can carry its last
+        // state (and so an AdminOnly delete stays silent).
+        let existing = self.event_repo.find_by_id(event_id).await?;
         self.event_repo.delete(event_id).await?;
         self.audit_service
             .log(
@@ -333,7 +395,10 @@ impl EventAdminService {
                 None,
             )
             .await;
-        Ok(())
+        Ok(match existing {
+            Some(event) => self.announce_delete(&event).await,
+            None => PublicSiteOutcome::NotAttempted,
+        })
     }
 
     /// End a series after `after`: hard-delete every later occurrence
@@ -404,13 +469,17 @@ impl EventAdminService {
     /// hard-deletes the existing `events` row if present. Idempotent —
     /// calling on an already-cancelled `(series, index)` succeeds and
     /// emits a fresh audit row.
+    ///
+    /// The occurrence stops appearing in the public feed, so this
+    /// dispatches `EventDeleted` and reports what the public site was
+    /// told, exactly like deleting a one-off event.
     pub async fn cancel_event_occurrence(
         &self,
         actor_id: Uuid,
         series_id: Uuid,
         occurrence_index: i32,
         reason: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<PublicSiteOutcome> {
         self.require_series_exists(series_id).await?;
         if occurrence_index < 1 {
             return Err(AppError::BadRequest(
@@ -442,9 +511,13 @@ impl EventAdminService {
             })
             .await?;
 
-        if let Some(event) = existing {
-            self.event_repo.delete(event.id).await?;
-        }
+        let removed = match existing {
+            Some(event) => {
+                self.event_repo.delete(event.id).await?;
+                Some(event)
+            }
+            None => None,
+        };
 
         self.audit_service
             .log(
@@ -457,13 +530,18 @@ impl EventAdminService {
                 None,
             )
             .await;
-        Ok(())
+        Ok(match removed {
+            Some(event) => self.announce_delete(&event).await,
+            None => PublicSiteOutcome::NotAttempted,
+        })
     }
 
     /// Override selected fields on a single occurrence. Records the
     /// exception row (so the materializer re-applies the overrides on
     /// future horizon-rolls) and updates the corresponding `events`
-    /// row in place. Returns the updated event.
+    /// row in place. Returns the updated event and what the public site
+    /// was told — an override can change (or withdraw) what the public
+    /// feed shows for that occurrence.
     pub async fn override_event_occurrence(
         &self,
         actor_id: Uuid,
@@ -471,7 +549,7 @@ impl EventAdminService {
         occurrence_index: i32,
         overrides: OccurrenceOverride,
         reason: Option<String>,
-    ) -> Result<Event> {
+    ) -> Result<(Event, PublicSiteOutcome)> {
         self.require_series_exists(series_id).await?;
         if occurrence_index < 1 {
             return Err(AppError::BadRequest(
@@ -505,6 +583,7 @@ impl EventAdminService {
                 ))
             })?;
         let event_id = event.id;
+        let before = event.clone();
         overrides.apply(&mut event);
         event.updated_at = Utc::now();
         let updated = self.event_repo.update(event_id, event).await?;
@@ -520,20 +599,22 @@ impl EventAdminService {
                 None,
             )
             .await;
-        Ok(updated)
+        let outcome = self.announce_update(&before, &updated).await;
+        Ok((updated, outcome))
     }
 
     /// Reverse an exception. For `Cancelled` the materializer re-creates
     /// the row from the series template (returns `Some(event)`). For
     /// `Overridden` the existing row is reset to the template (returns
     /// `None` — the event_id is unchanged). No-op + audit when no
-    /// exception exists.
+    /// exception exists. Either way the occurrence's public presence
+    /// changes, so both dispatch.
     pub async fn restore_event_occurrence(
         &self,
         actor_id: Uuid,
         series_id: Uuid,
         occurrence_index: i32,
-    ) -> Result<Option<Event>> {
+    ) -> Result<(Option<Event>, PublicSiteOutcome)> {
         let series = self
             .event_series_repo
             .find_by_id(series_id)
@@ -563,10 +644,10 @@ impl EventAdminService {
                     None,
                 )
                 .await;
-            return Ok(None);
+            return Ok((None, PublicSiteOutcome::NotAttempted));
         };
 
-        let result = match exception.kind {
+        let (result, outcome) = match exception.kind {
             OccurrenceExceptionKind::Cancelled => {
                 // Drop the exception FIRST so the materializer doesn't
                 // re-skip the index on the single-occurrence path.
@@ -577,7 +658,21 @@ impl EventAdminService {
                     .recurring_event_service
                     .materialize_single_occurrence(&series, occurrence_index)
                     .await?;
-                Some(event)
+                // The occurrence is publicly present again. There is no
+                // pre-state to compare against — it did not exist — so
+                // this dispatches on the same terms a delete is
+                // suppressed on: everything but AdminOnly.
+                let outcome = if event.visibility == EventVisibility::AdminOnly {
+                    PublicSiteOutcome::NotAttempted
+                } else {
+                    announce(
+                        &self.integration_manager,
+                        &self.public_site,
+                        IntegrationEvent::EventUpdated(redact_event_for_dispatch(event.clone())),
+                    )
+                    .await
+                };
+                (Some(event), outcome)
             }
             OccurrenceExceptionKind::Overridden => {
                 // Reset the events row by recomputing the would-be
@@ -585,9 +680,10 @@ impl EventAdminService {
                 self.event_series_repo
                     .delete_exception(series_id, occurrence_index)
                     .await?;
-                self.reset_overridden_occurrence(&series, occurrence_index)
+                let (before, after) = self
+                    .reset_overridden_occurrence(&series, occurrence_index)
                     .await?;
-                None
+                (None, self.announce_update(&before, &after).await)
             }
         };
 
@@ -602,7 +698,7 @@ impl EventAdminService {
                 None,
             )
             .await;
-        Ok(result)
+        Ok((result, outcome))
     }
 
     async fn require_series_exists(&self, series_id: Uuid) -> Result<()> {
@@ -623,12 +719,13 @@ impl EventAdminService {
     /// Reset an overridden occurrence's `events` row to match the
     /// series template (start_time + fields). The row's identity
     /// (event_id) is preserved so attendance and integration handles
-    /// remain valid.
+    /// remain valid. Returns `(before, after)` so the caller can decide
+    /// whether the reset changed anything publicly observable.
     async fn reset_overridden_occurrence(
         &self,
         series: &crate::domain::EventSeries,
         occurrence_index: i32,
-    ) -> Result<()> {
+    ) -> Result<(Event, Event)> {
         let existing = self
             .event_repo
             .find_by_series_and_index(series.id, occurrence_index)
@@ -687,8 +784,8 @@ impl EventAdminService {
             series_id: existing.series_id,
             occurrence_index: existing.occurrence_index,
         };
-        self.event_repo.update(existing.id, reset).await?;
-        Ok(())
+        let after = self.event_repo.update(existing.id, reset).await?;
+        Ok((existing, after))
     }
 }
 

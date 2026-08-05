@@ -17,7 +17,11 @@ use uuid::Uuid;
 use crate::{
     domain::{Announcement, AnnouncementType},
     error::{AppError, Result},
-    integrations::{IntegrationEvent, IntegrationManager},
+    integrations::{
+        announcement_change_is_public, announcement_is_public,
+        public_site::{announce, PublicSiteNotifier, PublicSiteOutcome},
+        redact_announcement_for_dispatch, IntegrationEvent, IntegrationManager,
+    },
     repository::AnnouncementRepository,
     service::audit_service::AuditService,
 };
@@ -71,6 +75,7 @@ pub struct AnnouncementAdminService {
     announcement_repo: Arc<dyn AnnouncementRepository>,
     audit_service: Arc<AuditService>,
     integration_manager: Arc<IntegrationManager>,
+    public_site: Arc<PublicSiteNotifier>,
 }
 
 impl AnnouncementAdminService {
@@ -78,12 +83,51 @@ impl AnnouncementAdminService {
         announcement_repo: Arc<dyn AnnouncementRepository>,
         audit_service: Arc<AuditService>,
         integration_manager: Arc<IntegrationManager>,
+        public_site: Arc<PublicSiteNotifier>,
     ) -> Self {
         Self {
             announcement_repo,
             audit_service,
             integration_manager,
+            public_site,
         }
+    }
+
+    /// Announcement twin of `EventAdminService::announce_update`: fires
+    /// after the write succeeded, stays silent when nothing a public
+    /// consumer could observe changed, and reduces the payload to what
+    /// the item's own visibility already discloses.
+    async fn announce_update(
+        &self,
+        before: &Announcement,
+        after: &Announcement,
+    ) -> PublicSiteOutcome {
+        if !announcement_change_is_public(before, after) {
+            return PublicSiteOutcome::NotAttempted;
+        }
+        announce(
+            &self.integration_manager,
+            &self.public_site,
+            IntegrationEvent::AnnouncementUpdated(redact_announcement_for_dispatch(after.clone())),
+        )
+        .await
+    }
+
+    /// [`Self::announce_update`] for a row that no longer exists. An
+    /// announcement the public API never served leaves no gap when it
+    /// goes.
+    async fn announce_delete(&self, deleted: &Announcement) -> PublicSiteOutcome {
+        if !announcement_is_public(deleted) {
+            return PublicSiteOutcome::NotAttempted;
+        }
+        announce(
+            &self.integration_manager,
+            &self.public_site,
+            IntegrationEvent::AnnouncementDeleted(redact_announcement_for_dispatch(
+                deleted.clone(),
+            )),
+        )
+        .await
     }
 
     /// Create an announcement. If `input.publish_now` is true, stamps
@@ -151,14 +195,15 @@ impl AnnouncementAdminService {
     }
 
     /// Update an announcement. Preserves `published_at`, `created_by`,
-    /// and `created_at` from the existing row. Audits `update_announcement`.
-    /// No integration dispatch — updates are silent.
+    /// and `created_at` from the existing row. Audits
+    /// `update_announcement` and dispatches `AnnouncementUpdated` when
+    /// the edit changed what `/public/announcements` returns.
     pub async fn update(
         &self,
         actor_id: Uuid,
         announcement_id: Uuid,
         input: UpdateAnnouncementInput,
-    ) -> Result<Announcement> {
+    ) -> Result<(Announcement, PublicSiteOutcome)> {
         let existing = self
             .announcement_repo
             .find_by_id(announcement_id)
@@ -199,15 +244,17 @@ impl AnnouncementAdminService {
             )
             .await;
 
-        Ok(result)
+        let outcome = self.announce_update(&existing, &result).await;
+        Ok((result, outcome))
     }
 
-    /// Delete an announcement. Audits `delete_announcement`. Returns
-    /// `AppError::NotFound` (without writing audit) if the id does not
-    /// exist, so a concurrent-delete from another tab surfaces as a
-    /// 4xx and does not produce a phantom audit row.
-    pub async fn delete(&self, actor_id: Uuid, announcement_id: Uuid) -> Result<()> {
-        let _existing = self
+    /// Delete an announcement. Audits `delete_announcement` and
+    /// dispatches `AnnouncementDeleted`. Returns `AppError::NotFound`
+    /// (without writing audit) if the id does not exist, so a
+    /// concurrent-delete from another tab surfaces as a 4xx and does not
+    /// produce a phantom audit row.
+    pub async fn delete(&self, actor_id: Uuid, announcement_id: Uuid) -> Result<PublicSiteOutcome> {
+        let existing = self
             .announcement_repo
             .find_by_id(announcement_id)
             .await?
@@ -224,7 +271,7 @@ impl AnnouncementAdminService {
                 None,
             )
             .await;
-        Ok(())
+        Ok(self.announce_delete(&existing).await)
     }
 
     /// Publish a Draft announcement. Idempotent: re-publishing an
@@ -339,16 +386,28 @@ impl AnnouncementAdminService {
     }
 
     /// Unpublish a Published announcement (back to Draft). Audits
-    /// `unpublish_announcement`. No integration dispatch — unpublish
-    /// is silent on the integration channel.
-    pub async fn unpublish(&self, actor_id: Uuid, announcement_id: Uuid) -> Result<Announcement> {
+    /// `unpublish_announcement` and dispatches `AnnouncementUpdated`
+    /// carrying the status change — NOT `AnnouncementPublished`, which
+    /// would be a lie about what happened.
+    ///
+    /// This used to be silent, which was right while the only consumer
+    /// was Discord (a post cannot be recalled, so a withdrawal is not
+    /// actionable there). It is wrong once a consumer renders Coterie's
+    /// public content on its own surface: for that consumer a missed
+    /// addition is stale content, while a missed withdrawal is content
+    /// that stays public after the org decided it should not be.
+    pub async fn unpublish(
+        &self,
+        actor_id: Uuid,
+        announcement_id: Uuid,
+    ) -> Result<(Announcement, PublicSiteOutcome)> {
         let existing = self
             .announcement_repo
             .find_by_id(announcement_id)
             .await?
             .ok_or_else(|| AppError::NotFound("Announcement not found".to_string()))?;
 
-        let mut updated = existing;
+        let mut updated = existing.clone();
         updated.published_at = None;
         updated.updated_at = Utc::now();
 
@@ -369,7 +428,8 @@ impl AnnouncementAdminService {
             )
             .await;
 
-        Ok(saved)
+        let outcome = self.announce_update(&existing, &saved).await;
+        Ok((saved, outcome))
     }
 }
 
@@ -380,6 +440,7 @@ mod tests {
         domain::CreateMemberRequest,
         integrations::IntegrationManager,
         repository::{MemberRepository, SqliteAnnouncementRepository, SqliteMemberRepository},
+        service::settings_service::SettingsService,
     };
     use sqlx::{Executor, SqlitePool};
 
@@ -408,7 +469,12 @@ mod tests {
         let audit = Arc::new(AuditService::new(pool.clone()));
         let integrations = Arc::new(IntegrationManager::new());
 
-        AnnouncementAdminService::new(announcement_repo, audit, integrations)
+        let public_site = Arc::new(PublicSiteNotifier::new(Arc::new(SettingsService::new(
+            pool.clone(),
+            Arc::new(crate::auth::SecretCrypto::new("test-secret-please-ignore")),
+        ))));
+
+        AnnouncementAdminService::new(announcement_repo, audit, integrations, public_site)
     }
 
     async fn make_actor(pool: &SqlitePool) -> Uuid {
@@ -537,7 +603,7 @@ mod tests {
             scheduled_publish_timezone: "UTC".to_string(),
         };
 
-        let result = svc.update(actor, announcement.id, input).await.unwrap();
+        let (result, _) = svc.update(actor, announcement.id, input).await.unwrap();
 
         assert_eq!(result.title, "Renamed");
         assert_eq!(result.content, "New body");
@@ -627,7 +693,7 @@ mod tests {
         let announcement = svc.create(actor, create_input(true)).await.unwrap();
         assert!(announcement.published_at.is_some());
 
-        let result = svc.unpublish(actor, announcement.id).await.unwrap();
+        let (result, _) = svc.unpublish(actor, announcement.id).await.unwrap();
         assert!(
             result.published_at.is_none(),
             "unpublish should clear published_at"

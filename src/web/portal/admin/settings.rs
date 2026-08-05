@@ -299,6 +299,11 @@ async fn fetch_settings_by_category(
             "Bot Challenge",
             "Captcha on public signup/donate. Set provider to turnstile and add the secret key to enable.",
         ),
+        (
+            "public_site",
+            "Public Site",
+            "Companion website that renders your public events and announcements. Coterie POSTs a signed, content-free change notification to the endpoint so the site can re-read what changed. Leave the endpoint empty to send nothing. This does not replace the site's own periodic polling.",
+        ),
     ];
 
     let mut result = Vec::new();
@@ -409,5 +414,44 @@ fn setting_to_info(setting: &AppSetting) -> SettingInfo {
         signup_mode_options,
         is_bot_challenge_provider,
         bot_challenge_provider_options,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::SettingType;
+
+    fn setting(key: &str, value: &str, is_sensitive: bool) -> AppSetting {
+        AppSetting {
+            key: key.to_string(),
+            value: value.to_string(),
+            value_type: SettingType::String,
+            category: "public_site".to_string(),
+            description: None,
+            is_sensitive,
+            updated_by: None,
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    /// A sensitive setting's value never reaches the page. The
+    /// public-site shared secret is the case that matters: the receiving
+    /// site publishes and withdraws content on the strength of it, so an
+    /// admin session that leaks it hands over that control.
+    #[test]
+    fn sensitive_settings_render_blank() {
+        let info = setting_to_info(&setting("public_site.secret", "top-secret-value", true));
+        assert_eq!(info.value, "", "sensitive values are never rendered back");
+        assert!(info.is_sensitive);
+
+        // Non-sensitive siblings still render, or the page is useless.
+        let endpoint = setting_to_info(&setting(
+            "public_site.endpoint_url",
+            "https://example.org/hook",
+            false,
+        ));
+        assert_eq!(endpoint.value, "https://example.org/hook");
+        assert_eq!(endpoint.display_name, "Endpoint Url");
     }
 }

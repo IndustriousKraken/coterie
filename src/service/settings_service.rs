@@ -239,6 +239,35 @@ pub mod bot_challenge_keys {
     pub const TIMEOUT_MS: &str = "bot_challenge.timeout_ms";
 }
 
+/// Keys for the companion public-site notifier. DB-backed like every
+/// other integration credential so an admin can point Coterie at a new
+/// receiver, or turn the whole thing off, without a restart.
+pub mod public_site_keys {
+    /// Endpoint change notifications are POSTed to. Empty (the default)
+    /// makes the capability entirely inert.
+    pub const ENDPOINT_URL: &str = "public_site.endpoint_url";
+    /// Shared secret the request body is signed with. Sensitive.
+    pub const SECRET: &str = "public_site.secret";
+}
+
+/// Companion public-site configuration. The shared secret is decrypted
+/// into plaintext for signing — it only lives in memory, never leaves
+/// the process, and is never logged.
+#[derive(Debug, Clone, Default)]
+pub struct DbPublicSiteConfig {
+    pub endpoint_url: String,
+    pub secret: String,
+}
+
+/// Whether `value` is an http(s) URL, or empty. The same scheme check
+/// `org.signup_url` gets before it reaches an `href` — a notification
+/// endpoint with any other scheme is a misconfiguration we would
+/// otherwise only discover when a retraction failed to deliver.
+pub fn is_http_url_or_empty(value: &str) -> bool {
+    let value = value.trim();
+    value.is_empty() || value.starts_with("http://") || value.starts_with("https://")
+}
+
 /// Bot-challenge configuration loaded from settings. The secret key is
 /// decrypted into plaintext for the siteverify call — it only lives in
 /// memory, never leaves the process, and is never logged.
@@ -371,6 +400,14 @@ impl SettingsService {
             return Err(AppError::BadRequest(format!(
                 "'{}' is not a recognized IANA timezone name",
                 request.value
+            )));
+        }
+        // Scheme-check the notification endpoint on write, the same way
+        // `org.signup_url` is checked before it reaches an `href`.
+        if key == public_site_keys::ENDPOINT_URL && !is_http_url_or_empty(&request.value) {
+            return Err(AppError::BadRequest(format!(
+                "'{}' must start with http:// or https:// (or be empty)",
+                key
             )));
         }
 
@@ -1078,6 +1115,27 @@ impl SettingsService {
         self.set_value_raw(email_keys::LAST_TEST_ERROR, error, updated_by)
             .await?;
         Ok(())
+    }
+
+    /// Load the companion public-site configuration, decrypting the
+    /// shared secret for signing. A decrypt failure (e.g.
+    /// `session_secret` was rotated) surfaces as `Err`; the notifier
+    /// treats that as unconfigured rather than sending unsigned.
+    pub async fn get_public_site_config(&self) -> Result<DbPublicSiteConfig> {
+        let endpoint_url = self
+            .get_value(public_site_keys::ENDPOINT_URL)
+            .await
+            .unwrap_or_default();
+        let encrypted_secret = self
+            .get_value(public_site_keys::SECRET)
+            .await
+            .unwrap_or_default();
+        let secret = self.crypto.decrypt(&encrypted_secret)?;
+
+        Ok(DbPublicSiteConfig {
+            endpoint_url,
+            secret,
+        })
     }
 
     /// Load the bot-challenge configuration. The secret key is decrypted

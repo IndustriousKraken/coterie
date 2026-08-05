@@ -402,6 +402,24 @@ impl Integration for DiscordIntegration {
                 Ok(())
             }
 
+            // Content changes are deliberately silent on Discord.
+            //
+            // The useful Discord signal is "something new exists"; an
+            // edit is not that, and posting one would be edit-spam
+            // nobody asked for. A withdrawal is genuinely not actionable
+            // here either — a Discord post cannot be recalled, and
+            // announcing that something was retracted draws more
+            // attention to it than the retraction removes.
+            //
+            // Handled explicitly rather than by a default arm so this
+            // reads as a decision. A consumer that renders Coterie's
+            // public content on its own surface makes the opposite
+            // decision — see `integrations::public_site`.
+            IntegrationEvent::EventUpdated(_)
+            | IntegrationEvent::EventDeleted(_)
+            | IntegrationEvent::AnnouncementUpdated(_)
+            | IntegrationEvent::AnnouncementDeleted(_) => Ok(()),
+
             IntegrationEvent::AdminAlert { subject, body } => {
                 let Some((cfg, _)) = self.load().await else {
                     return Ok(());

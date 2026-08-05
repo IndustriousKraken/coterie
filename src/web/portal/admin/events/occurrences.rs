@@ -176,7 +176,21 @@ pub async fn admin_cancel_event_occurrence(
         .cancel_event_occurrence(current_user.member.id, series_uuid, idx, reason.clone())
         .await
     {
-        Ok(()) => {
+        // Cancelling withdraws the occurrence from the public feed, so a
+        // failure to tell the public site takes priority over the row
+        // swap: the occurrence is cancelled here either way, and the
+        // admin has to know the other system still shows it. Autoreload
+        // brings the row up to date once they've read it.
+        Ok(public_site) if public_site.is_failed() => partials::admin_alert(
+            "warning",
+            &format!(
+                "Occurrence cancelled. {}",
+                public_site.admin_note_deleted().unwrap_or_default()
+            ),
+            true,
+        )
+        .into_response(),
+        Ok(_) => {
             let token = csrf_service
                 .generate_token(&session_info.session_id)
                 .await
@@ -262,7 +276,16 @@ pub async fn admin_override_event_occurrence(
         .override_event_occurrence(current_user.member.id, series_uuid, idx, overrides, reason)
         .await
     {
-        Ok(event) => {
+        Ok((_, public_site)) if public_site.is_failed() => partials::admin_alert(
+            "warning",
+            &format!(
+                "Occurrence overridden. {}",
+                public_site.admin_note().unwrap_or_default()
+            ),
+            true,
+        )
+        .into_response(),
+        Ok((event, _)) => {
             let token = csrf_service
                 .generate_token(&session_info.session_id)
                 .await
@@ -305,7 +328,16 @@ pub async fn admin_restore_event_occurrence(
         .restore_event_occurrence(current_user.member.id, series_uuid, idx)
         .await
     {
-        Ok(maybe_event) => {
+        Ok((_, public_site)) if public_site.is_failed() => partials::admin_alert(
+            "warning",
+            &format!(
+                "Exception restored. {}",
+                public_site.admin_note().unwrap_or_default()
+            ),
+            true,
+        )
+        .into_response(),
+        Ok((maybe_event, _)) => {
             // Whether the restore created a new row (cancelled →
             // re-materialize) or reset an existing one (overridden), the
             // current state on disk is the source of truth for the row.
