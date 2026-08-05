@@ -249,6 +249,41 @@ instance updated for months kept the scripts from the release that
 provisioned it, so `RESTORE.md` could name a `restore.sh` that was not on
 the box.
 
+### Update reports host discrepancies, and does not fix them
+
+Because a refreshed unit file is not an activated one, `update` finishes
+by checking whether the host is actually in the state the release it just
+installed expects — starting with whether the units under `deploy/` are
+enabled — and printing what it found:
+
+```
+Host state this release expects but did not find:
+  - coterie-backup.timer ships with this release but is not enabled on this host.
+      sudo cp /opt/coterie/deploy/coterie-backup.timer /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now coterie-backup.timer
+Reported only — this update enabled, started, and reloaded nothing.
+```
+
+- **It reports; you resolve.** Update runs no `systemctl enable`, `start`,
+  or `daemon-reload` on your behalf — it only asks `is-enabled`. Enabling
+  a unit you deliberately switched off, on a host whose layout it cannot
+  see, is not a call an update gets to make. Run the printed command if
+  the finding is one you want fixed.
+- **Silence means nothing was found.** There is no header and no
+  all-clear line on a conformant host; the section appearing at all is
+  the signal. If you see nothing here, every unit the release ships is
+  enabled.
+- **A finding never fails the update.** `update` exits zero either way —
+  the update itself succeeded. Nothing here is a reason to stop trusting
+  the exit code.
+- **A check that can't tell says nothing.** If the host query itself
+  cannot run (no systemd, for instance), no finding is reported rather
+  than a guessed one.
+
+This exists because `coterie-backup.timer` shipped in a release, was
+never enabled on an instance provisioned before the wizard installed it,
+and no backup ran for months — while `VERSION` reported a current release
+and the scripts sat beside it looking installed.
+
 Rollback isn't automated. If a release introduces problems:
 
 1. Restore the previous binary

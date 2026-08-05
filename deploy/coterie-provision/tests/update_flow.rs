@@ -657,13 +657,14 @@ fn update_never_activates_a_unit_or_writes_outside_the_install_dir() {
     );
     // ...and nothing enabled, reloaded, or installed it. The only
     // systemctl verbs an update may use are the service stop/start it
-    // already performs.
+    // already performs, plus the read-only `is-enabled` the host
+    // conformance report asks.
     for call in sys.calls.borrow().iter() {
         if call.cmd == "systemctl" {
             assert!(
                 matches!(
                     call.args.first().map(String::as_str),
-                    Some("stop") | Some("start") | Some("restart")
+                    Some("stop") | Some("start") | Some("restart") | Some("is-enabled")
                 ),
                 "update must not run `systemctl {}`",
                 call.args.join(" ")
@@ -701,4 +702,93 @@ fn update_never_activates_a_unit_or_writes_outside_the_install_dir() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------
+// a56 — update reports host state the release expects but does not find
+// ---------------------------------------------------------------------
+
+/// The report's header. Its absence is what a conformant host asserts.
+const CONFORMANCE_HEADER: &str = "Host state this release expects but did not find:";
+
+#[test]
+fn unenabled_shipped_unit_is_named_in_the_output_and_still_exits_zero() {
+    let sys = FakeSystem::new();
+    let fs = FakeFs::new();
+    let snap = FakeSnapshotter::new();
+    let fetch = FakeReleaseFetcher::new(releases_fixture());
+    let out = CaptureOutput::new();
+    stage_world(&fs);
+    checksum_matches(&sys);
+    // The case that motivated this: the release ships the backup timer,
+    // this host was provisioned before the wizard installed it.
+    sys.respond_to(
+        "systemctl",
+        &["is-enabled", "coterie-backup.timer"],
+        CommandOutput {
+            status: 1,
+            stdout: String::new(),
+            stderr: "Failed to get unit file state".to_string(),
+        },
+    );
+
+    let code = update::run_with_paths(base_args(), &sys, &fs, &snap, &fetch, &out, &paths(), NOW)
+        .expect("a discrepancy must not fail the update");
+
+    assert_eq!(code, 0, "an advisory finding still exits 0");
+    assert!(
+        out.contains(CONFORMANCE_HEADER),
+        "the report appears; got:\n{}",
+        out.joined()
+    );
+    assert!(
+        out.contains("coterie-backup.timer ships with this release but is not enabled"),
+        "the finding names the unit; got:\n{}",
+        out.joined()
+    );
+    assert!(
+        out.contains("systemctl enable --now coterie-backup.timer"),
+        "the finding carries the resolving command; got:\n{}",
+        out.joined()
+    );
+    // Reporting is not fixing: the update enabled nothing.
+    for call in sys.calls.borrow().iter() {
+        assert!(
+            !(call.cmd == "systemctl"
+                && matches!(
+                    call.args.first().map(String::as_str),
+                    Some("enable") | Some("daemon-reload") | Some("reload")
+                )),
+            "update must not run `systemctl {}`",
+            call.args.join(" ")
+        );
+    }
+}
+
+#[test]
+fn conformant_host_gets_no_conformance_section_and_exits_zero() {
+    let sys = FakeSystem::new();
+    let fs = FakeFs::new();
+    let snap = FakeSnapshotter::new();
+    let fetch = FakeReleaseFetcher::new(releases_fixture());
+    let out = CaptureOutput::new();
+    stage_world(&fs);
+    checksum_matches(&sys);
+    // FakeSystem answers every unregistered command — `is-enabled`
+    // included — with exit 0: every shipped unit is enabled.
+
+    let code = update::run_with_paths(base_args(), &sys, &fs, &snap, &fetch, &out, &paths(), NOW)
+        .expect("a conformant host updates cleanly");
+
+    assert_eq!(code, 0);
+    assert!(
+        !out.contains(CONFORMANCE_HEADER),
+        "silence is the signal — no header on a conformant host; got:\n{}",
+        out.joined()
+    );
+    assert!(
+        !out.contains("is not enabled"),
+        "and no findings either; got:\n{}",
+        out.joined()
+    );
 }
