@@ -127,8 +127,13 @@ impl PublicSiteNotifier {
     pub fn new(settings: Arc<SettingsService>) -> Self {
         let client = reqwest::Client::builder()
             .timeout(NOTIFY_TIMEOUT)
+            // NOT `unwrap_or_default()`: the default client carries no
+            // timeout, so a builder failure would silently drop the one
+            // bound that keeps an unresponsive endpoint from hanging an
+            // admin's withdrawal. Failing at startup is the loud version
+            // of a fault that has no non-broken fallback.
             .build()
-            .unwrap_or_default();
+            .expect("reqwest client (rustls-tls) always builds");
         Self { settings, client }
     }
 
@@ -234,6 +239,13 @@ impl PublicSiteNotifier {
 
 /// The notification triple for a content variant, or `None` when the
 /// variant is not about public content.
+///
+/// Exhaustive, with no `_` arm, for the same reason
+/// [`crate::integrations::delivery_for`] is: this is the second place a
+/// new variant has to be decided about, and a `_` arm here would answer
+/// for it silently. A variant routed to `Bus` or `Synchronous` but
+/// falling into a catch-all would send nothing at all, which is exactly
+/// the failure the compile-time forcing exists to prevent.
 fn describe(event: &IntegrationEvent) -> Option<(&'static str, Uuid, &'static str)> {
     match event {
         IntegrationEvent::EventPublished(e) | IntegrationEvent::EventUpdated(e) => {
@@ -244,7 +256,12 @@ fn describe(event: &IntegrationEvent) -> Option<(&'static str, Uuid, &'static st
             Some((KIND_ANNOUNCEMENT, a.id, ACTION_UPDATED))
         }
         IntegrationEvent::AnnouncementDeleted(a) => Some((KIND_ANNOUNCEMENT, a.id, ACTION_DELETED)),
-        _ => None,
+        // Member and operational traffic is not public content — the
+        // same set `delivery_for` answers `Delivery::None` for.
+        IntegrationEvent::MemberActivated(_)
+        | IntegrationEvent::MemberExpired(_)
+        | IntegrationEvent::MemberUpdated { .. }
+        | IntegrationEvent::AdminAlert { .. } => None,
     }
 }
 
