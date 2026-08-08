@@ -9,6 +9,8 @@
 //!
 //! Run: cargo test --test public_events_projection_test
 
+use std::collections::BTreeSet;
+
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -29,6 +31,29 @@ const INTERNAL_FIELDS: &[&str] = &[
     "event_type_id",
     "series_id",
     "occurrence_index",
+];
+
+/// The CLOSED field list enumerated by the `public-content-feeds`
+/// requirement "Members-only events appear in /public/events with
+/// sanitized fields". Canon says the projection SHALL expose only these,
+/// so this is a transcription of canon and not a fixture to update when a
+/// field is added — amend the requirement first.
+const PROJECTION_FIELDS: &[&str] = &[
+    "id",
+    "title",
+    "description",
+    "description_html",
+    "event_type",
+    "visibility",
+    "start_time",
+    "end_time",
+    "timezone",
+    "location",
+    "image_url",
+    "max_attendees",
+    "rsvp_required",
+    "registration_url",
+    "guest_price_cents",
 ];
 
 async fn get_events(app: Router) -> (StatusCode, serde_json::Value) {
@@ -156,6 +181,42 @@ async fn members_only_event_sanitized_and_omits_internal_fields() {
         assert!(
             !event.contains_key(*field),
             "members-only event must omit internal field `{field}`",
+        );
+    }
+}
+
+// a58 — the enumerated list is CLOSED, so the guard is set EQUALITY, not
+// containment: it fails on a field added to `PublicEvent` and on a field
+// removed from it. Enumerating internal fields (above) only catches the
+// leaks someone thought to name — `description_html` was added to the
+// struct, the list in canon was never amended, and nothing failed.
+#[tokio::test]
+async fn projection_key_set_equals_the_enumerated_field_list() {
+    let pool = fresh_pool().await;
+    let actor = make_member(&pool).await;
+    insert_event(&pool, actor, "Public").await;
+    insert_event(&pool, actor, "MembersOnly").await;
+
+    let app = coterie::api::create_app(build_app_state(pool.clone()).await);
+    let (status, json) = get_events(app).await;
+    assert_eq!(status, StatusCode::OK);
+    let events = json.as_array().expect("array response");
+
+    let expected: BTreeSet<&str> = PROJECTION_FIELDS.iter().copied().collect();
+    // Both visibilities: sanitization nulls values, it never drops keys.
+    for visibility in ["Public", "MembersOnly"] {
+        let event = find_by_visibility(events, visibility);
+        let actual: BTreeSet<&str> = event.keys().map(String::as_str).collect();
+        assert_eq!(
+            actual,
+            expected,
+            "the {visibility} entry's key set must equal the field list enumerated by the \
+             public-content-feeds requirement \"Members-only events appear in /public/events \
+             with sanitized fields\" — that list is canon and closed, not an arbitrary \
+             fixture. Unlisted keys present: {:?}. Enumerated keys missing: {:?}. Amend the \
+             requirement, then this list.",
+            actual.difference(&expected).collect::<Vec<_>>(),
+            expected.difference(&actual).collect::<Vec<_>>(),
         );
     }
 }
