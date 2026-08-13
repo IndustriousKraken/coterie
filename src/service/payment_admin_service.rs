@@ -957,6 +957,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refunding_a_lifetime_membership_retracts_nothing() {
+        // Lifetime "extends" dues to DateTime::MAX_UTC — a span of ~8e12
+        // seconds that subtraction can't give back (it underflows). So
+        // the extension records no delta at all, and the refund leaves
+        // the window alone instead of stamping the financial record with
+        // a multi-million-day retraction that moved nothing.
+        let pool = fresh_pool().await;
+        let (svc, repo) = make_service(pool.clone(), None, permissive_limiter());
+        let member = make_actor(&pool).await;
+        let payment = insert_payment(
+            &repo,
+            member,
+            PaymentMethod::Manual,
+            PaymentStatus::Completed,
+            None,
+        )
+        .await;
+        repo.extend_dues_for_payment_atomic(payment.id, member, BillingPeriod::Lifetime)
+            .await
+            .unwrap()
+            .expect("this call extended dues");
+        let lifetime = member_dues(&pool, member).await.expect("extended");
+
+        svc.refund(member, payment.id, loopback()).await.unwrap();
+
+        assert_eq!(
+            member_dues(&pool, member).await.expect("still set"),
+            lifetime,
+            "a lifetime window is left for an operator to decide, not silently kept",
+        );
+        assert_eq!(
+            audit_count(&pool, "membership_dues_retracted", &member.to_string()).await,
+            0,
+            "and nothing claims a retraction that never happened",
+        );
+    }
+
+    #[tokio::test]
     async fn retraction_applied_twice_reduces_the_window_once() {
         // The admin refund and its own charge.refunded echo can both
         // reach the retraction; the second must not take another year.

@@ -31,6 +31,13 @@ pub struct PendingLogin {
     pub member_id: Uuid,
     pub remember_me: bool,
     pub expires_at: DateTime<Utc>,
+    /// The identifier the first factor was submitted with (a username
+    /// or an email on the web surface, an email on the API one). The
+    /// credential budget is keyed on the identifier as submitted, so
+    /// the second factor has to spend it under the same string rather
+    /// than under whatever the member_id resolves to. `None` only for
+    /// rows minted before the column existed.
+    pub identifier: Option<String>,
 }
 
 pub struct PendingLoginService {
@@ -45,21 +52,31 @@ impl PendingLoginService {
     /// Mint a fresh pending-login row and return the plaintext token
     /// that the caller should set on the cookie. The cookie is
     /// deliberately separate from `session` — see module docs.
-    pub async fn create(&self, member_id: Uuid, remember_me: bool) -> Result<String> {
+    ///
+    /// `identifier` is what the first factor was submitted with — see
+    /// the field of the same name on [`PendingLogin`].
+    pub async fn create(
+        &self,
+        member_id: Uuid,
+        remember_me: bool,
+        identifier: &str,
+    ) -> Result<String> {
         let token = generate_token();
         let token_hash = hash_token(&token);
         let id = Uuid::new_v4().to_string();
         let expires_at = (Utc::now() + TTL).naive_utc();
 
         sqlx::query(
-            "INSERT INTO pending_logins (id, member_id, token_hash, remember_me, expires_at) \
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO pending_logins \
+             (id, member_id, token_hash, remember_me, expires_at, identifier) \
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(member_id.to_string())
         .bind(&token_hash)
         .bind(if remember_me { 1i32 } else { 0 })
         .bind(expires_at)
+        .bind(identifier)
         .execute(&self.pool)
         .await
         .map_err(AppError::Database)?;
@@ -76,8 +93,8 @@ impl PendingLoginService {
         let token_hash = hash_token(token);
         let now = Utc::now().naive_utc();
 
-        let row: Option<(String, i32, DateTime<Utc>)> = sqlx::query_as(
-            "SELECT member_id, remember_me, expires_at \
+        let row: Option<(String, i32, DateTime<Utc>, Option<String>)> = sqlx::query_as(
+            "SELECT member_id, remember_me, expires_at, identifier \
              FROM pending_logins \
              WHERE token_hash = ? AND expires_at > ? \
              LIMIT 1",
@@ -89,13 +106,14 @@ impl PendingLoginService {
         .map_err(AppError::Database)?;
 
         Ok(match row {
-            Some((member_id_str, remember_me, expires_at)) => {
+            Some((member_id_str, remember_me, expires_at, identifier)) => {
                 let member_id = Uuid::parse_str(&member_id_str)
                     .map_err(|e| AppError::Internal(e.to_string()))?;
                 Some(PendingLogin {
                     member_id,
                     remember_me: remember_me != 0,
                     expires_at,
+                    identifier,
                 })
             }
             None => None,
@@ -110,10 +128,10 @@ impl PendingLoginService {
         let token_hash = hash_token(token);
         let now = Utc::now().naive_utc();
 
-        let row: Option<(String, i32, DateTime<Utc>)> = sqlx::query_as(
+        let row: Option<(String, i32, DateTime<Utc>, Option<String>)> = sqlx::query_as(
             "DELETE FROM pending_logins \
              WHERE token_hash = ? AND expires_at > ? \
-             RETURNING member_id, remember_me, expires_at",
+             RETURNING member_id, remember_me, expires_at, identifier",
         )
         .bind(&token_hash)
         .bind(now)
@@ -122,13 +140,14 @@ impl PendingLoginService {
         .map_err(AppError::Database)?;
 
         Ok(match row {
-            Some((member_id_str, remember_me, expires_at)) => {
+            Some((member_id_str, remember_me, expires_at, identifier)) => {
                 let member_id = Uuid::parse_str(&member_id_str)
                     .map_err(|e| AppError::Internal(e.to_string()))?;
                 Some(PendingLogin {
                     member_id,
                     remember_me: remember_me != 0,
                     expires_at,
+                    identifier,
                 })
             }
             None => None,

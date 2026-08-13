@@ -105,9 +105,9 @@ pub trait PaymentRepository: Send + Sync {
     /// Returns `Some((member_id, seconds))` if THIS call performed the
     /// retraction (callers audit off that); `None` when there is
     /// nothing to retract — the payment granted no dues extension
-    /// (any non-membership payment, or a row predating the delta
-    /// column), it was already retracted, or its member row is gone.
-    /// None of those is an error.
+    /// (any non-membership payment, a lifetime membership, or a row
+    /// predating the delta column), it was already retracted, or its
+    /// member row is gone. None of those is an error.
     ///
     /// Deliberately does NOT write member status: where the retracted
     /// window leaves a member no longer paid up, the daily expiration
@@ -745,8 +745,21 @@ impl PaymentRepository for SqlitePaymentRepository {
         // `retract_dues_for_payment`). The delta, not the before/after
         // pair: a member may hold dues from several payments and only
         // the refunded one is ever undone.
+        //
+        // Lifetime records NO delta. Its "extension" is a jump to
+        // DateTime::MAX_UTC, so the span is ~8e12 seconds and
+        // subtracting it back off underflows instead of restoring the
+        // prior window — a retraction that moves nothing while auditing
+        // a 95-million-day reduction. NULL here means the retraction
+        // claim skips the row (`dues_extension_seconds IS NOT NULL`), so
+        // a refunded lifetime membership is an operator's call, the same
+        // as a partial refund.
+        let extension_seconds = match billing_period {
+            BillingPeriod::Lifetime => None,
+            _ => Some((new_dues_date - base_date).num_seconds()),
+        };
         sqlx::query("UPDATE payments SET dues_extension_seconds = ? WHERE id = ?")
-            .bind((new_dues_date - base_date).num_seconds())
+            .bind(extension_seconds)
             .bind(payment_id.to_string())
             .execute(&mut *tx)
             .await

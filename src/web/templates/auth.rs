@@ -304,8 +304,16 @@ pub async fn login_handler(
                     None,
                     Some("2fa_required"),
                 );
+                // The submitted identifier rides along so /login/totp
+                // spends the same account budget this attempt would
+                // have — a member who signs in with their username
+                // keys under that username on both factors.
                 let pending_token = match pending_login_service
-                    .create(member.id, credentials.remember_me.is_some())
+                    .create(
+                        member.id,
+                        credentials.remember_me.is_some(),
+                        &credentials.username,
+                    )
                     .await
                 {
                     Ok(t) => t,
@@ -763,11 +771,16 @@ pub async fn login_totp_handler(
     // address the attacker is using: switching surfaces buys no fresh
     // allowance for brute-forcing the 6-digit code space. Checked before
     // the code is verified, like the first factor.
-    // ponytail: the email is the account key here, so a first factor
-    // submitted as a *username* keys elsewhere and its failures don't
-    // carry over to this step. The second factor still enforces its own
-    // five, which is the budget that bounds the code space.
-    if !login_limiter.0.check(ip, &member.email, "auth.totp") {
+    //
+    // Keyed on the identifier the first factor was SUBMITTED with, which
+    // the pending login carries. This surface accepts a username or an
+    // email, and the budget is keyed as submitted so spending it can't
+    // reveal which accounts exist — re-deriving a key from the member
+    // here would give username logins a second, fresh budget for the
+    // code space. (The email is the fallback only for rows minted
+    // before that column existed.)
+    let budget_key = pending.identifier.as_deref().unwrap_or(&member.email);
+    if !login_limiter.0.check(ip, budget_key, "auth.totp") {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(LoginResponse {
@@ -799,7 +812,7 @@ pub async fn login_totp_handler(
     };
 
     if !totp_ok && !used_recovery {
-        login_limiter.0.record_failure(ip, &member.email);
+        login_limiter.0.record_failure(ip, budget_key);
         auth_log::denied(
             "auth.totp",
             "totp_invalid",

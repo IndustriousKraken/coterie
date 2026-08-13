@@ -155,7 +155,7 @@ async fn a_run_of_successful_logins_is_never_rejected() {
     let pending = state
         .service_context
         .pending_login_service
-        .create(member_id, false)
+        .create(member_id, false, &email)
         .await
         .expect("create pending");
     let code =
@@ -377,7 +377,7 @@ async fn wrong_second_factor_codes_spend_the_accounts_budget() {
     let pending = state
         .service_context
         .pending_login_service
-        .create(member_id, false)
+        .create(member_id, false, &email)
         .await
         .expect("create pending");
 
@@ -399,6 +399,38 @@ async fn wrong_second_factor_codes_spend_the_accounts_budget() {
         post_login(&app, &email, PASSWORD).await.0,
         StatusCode::TOO_MANY_REQUESTS,
         "the account budget is shared across surfaces"
+    );
+}
+
+/// The web surface accepts a username OR an email, and the budget keys
+/// on whichever was submitted — so the second factor has to key on that
+/// same string. Keying it on the member's email instead handed a
+/// stolen-password attacker who knows the username a fresh five guesses
+/// at the 6-digit code space.
+#[tokio::test]
+async fn a_username_first_factor_and_its_second_factor_share_one_budget() {
+    let (state, app) = harness().await;
+    let (member_id, _email, username) = active_member(&state).await;
+
+    let pending = state
+        .service_context
+        .pending_login_service
+        .create(member_id, false, &username)
+        .await
+        .expect("create pending");
+
+    for attempt in 1..=ACCOUNT_BUDGET {
+        assert_eq!(
+            post_login(&app, &username, WRONG).await.0,
+            StatusCode::UNAUTHORIZED,
+            "failure {attempt} keys on the username as submitted"
+        );
+    }
+
+    assert_eq!(
+        post_totp(&app, "000000", &pending).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the second factor spends the budget the username-submitted first factor exhausted"
     );
 }
 

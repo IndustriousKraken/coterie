@@ -166,7 +166,11 @@ pub async fn login(
             None,
             Some("2fa_required"),
         );
-        let pending_token = pending_login_service.create(member.id, false).await?;
+        // The submitted identifier rides along so /auth/login/totp
+        // spends the same account budget this attempt would have.
+        let pending_token = pending_login_service
+            .create(member.id, false, &req.email)
+            .await?;
         let pending_cookie = crate::auth::pending_login::create_cookie(
             &pending_token,
             settings.server.cookies_are_secure(),
@@ -304,7 +308,14 @@ pub async fn login_totp(
     // address the attacker is using: switching surfaces buys no fresh
     // allowance for brute-forcing the 6-digit code space. Checked before
     // the code is verified, like the first factor.
-    if !login_limiter.0.check(ip, &member.email, "auth.totp") {
+    //
+    // Keyed on the identifier the first factor was SUBMITTED with, which
+    // the pending login carries — the budget is keyed as submitted so
+    // spending it can't reveal which accounts exist, and re-deriving a
+    // key from the member here would key the two factors differently.
+    // (The email is the fallback only for rows minted before that column.)
+    let budget_key = pending.identifier.as_deref().unwrap_or(&member.email);
+    if !login_limiter.0.check(ip, budget_key, "auth.totp") {
         return Err(AppError::TooManyRequests);
     }
 
@@ -325,7 +336,7 @@ pub async fn login_totp(
             .unwrap_or(false)
     };
     if !totp_ok && !used_recovery {
-        login_limiter.0.record_failure(ip, &member.email);
+        login_limiter.0.record_failure(ip, budget_key);
         auth_log::denied(
             "auth.totp",
             "totp_invalid",

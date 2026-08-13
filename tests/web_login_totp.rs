@@ -228,7 +228,7 @@ async fn web_login_totp_returns_429_after_budget_exhausted() {
     let pending = state
         .service_context
         .pending_login_service
-        .create(member_id, false)
+        .create(member_id, false, &email)
         .await
         .expect("create pending");
 
@@ -357,7 +357,7 @@ async fn totp_completion_applies_the_same_destination_allow_list() {
         let pending = state
             .service_context
             .pending_login_service
-            .create(member_id, false)
+            .create(member_id, false, &email)
             .await
             .expect("create pending");
         let resp = app

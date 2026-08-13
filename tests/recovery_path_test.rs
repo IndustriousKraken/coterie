@@ -225,7 +225,7 @@ async fn totp_still_shares_the_credential_budget_with_login() {
     let pending = state
         .service_context
         .pending_login_service
-        .create(member_id, false)
+        .create(member_id, false, &email)
         .await
         .expect("create pending");
 
