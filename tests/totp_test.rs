@@ -285,14 +285,20 @@ async fn recovery_codes_format_normalization() {
 #[tokio::test]
 async fn pending_login_consume_is_atomic() {
     let pool = fresh_pool().await;
-    let (member_id, _) = make_member(&pool).await;
+    let (member_id, email) = make_member(&pool).await;
     let svc = PendingLoginService::new(pool.clone());
 
-    let token = svc.create(member_id, true).await.unwrap();
+    let token = svc.create(member_id, true, &email).await.unwrap();
     let consumed_first = svc.consume(&token).await.unwrap();
     assert!(consumed_first.is_some());
     assert_eq!(consumed_first.as_ref().unwrap().member_id, member_id);
     assert!(consumed_first.as_ref().unwrap().remember_me);
+    // The identifier the first factor was submitted with rides along so
+    // the second factor spends the same credential budget.
+    assert_eq!(
+        consumed_first.as_ref().unwrap().identifier.as_deref(),
+        Some(email.as_str())
+    );
 
     // Second consume of the same token must fail — the row is gone.
     let consumed_again = svc.consume(&token).await.unwrap();
@@ -302,10 +308,10 @@ async fn pending_login_consume_is_atomic() {
 #[tokio::test]
 async fn pending_login_find_does_not_consume() {
     let pool = fresh_pool().await;
-    let (member_id, _) = make_member(&pool).await;
+    let (member_id, email) = make_member(&pool).await;
     let svc = PendingLoginService::new(pool.clone());
 
-    let token = svc.create(member_id, false).await.unwrap();
+    let token = svc.create(member_id, false, &email).await.unwrap();
     assert!(svc.find(&token).await.unwrap().is_some(), "find #1");
     assert!(
         svc.find(&token).await.unwrap().is_some(),
@@ -426,8 +432,8 @@ async fn pending_login_disable_clears_member_rows() {
     .unwrap();
 
     // Mint two pending tokens so we can verify disable() wipes them all.
-    let _t1 = pl.create(member_id, false).await.unwrap();
-    let _t2 = pl.create(member_id, true).await.unwrap();
+    let _t1 = pl.create(member_id, false, &email).await.unwrap();
+    let _t2 = pl.create(member_id, true, &email).await.unwrap();
 
     totp.disable(member_id).await.unwrap();
 

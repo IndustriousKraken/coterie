@@ -508,6 +508,160 @@ async fn charge_refunded_for_completed_row_flips_to_refunded() {
     assert_eq!(payment_status(&h.pool, payment_id).await, "Refunded");
 }
 
+#[tokio::test]
+async fn charge_refunded_retracts_the_dues_that_payment_granted() {
+    // The dashboard-refund twin of the admin route: a membership
+    // payment refunded out-of-band gives back the dues it bought, so
+    // the window a refunded member is read against is truthful.
+    let h = build_harness().await;
+    let member_id = insert_member(&h.pool, Some("cus_oob_dues"), BillingMode::Manual).await;
+    let payment_id = Uuid::new_v4();
+    let pi_id = "pi_oob_dues";
+
+    let before = Utc::now() + Duration::days(100);
+    sqlx::query("UPDATE members SET dues_paid_until = ? WHERE id = ?")
+        .bind(before)
+        .bind(member_id.to_string())
+        .execute(&h.pool)
+        .await
+        .expect("seed dues");
+    let before = member_dues_paid_until(&h.pool, member_id)
+        .await
+        .expect("seeded dues");
+
+    insert_pending_payment(
+        &h.pool,
+        Payment {
+            id: payment_id,
+            payer: Payer::Member(member_id),
+            amount_cents: 100_00,
+            currency: "USD".to_string(),
+            status: PaymentStatus::Completed,
+            payment_method: PaymentMethod::Stripe,
+            external_id: Some(StripeRef::PaymentIntent(pi_id.to_string())),
+            description: "Dues".to_string(),
+            kind: PaymentKind::Membership,
+            paid_at: Some(Utc::now()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        },
+    )
+    .await;
+
+    // The 'member' membership type is seeded by migrations, so this is
+    // the real extension path the checkout webhook takes.
+    h.billing
+        .auto_renew
+        .extend_member_dues_by_slug(payment_id, member_id, "member")
+        .await
+        .expect("extend dues");
+    let extended = member_dues_paid_until(&h.pool, member_id)
+        .await
+        .expect("extended");
+    assert!(extended > before, "the payment moved the window forward");
+
+    h.dispatcher
+        .dispatch_charge_refunded(build_charge("ch_oob_dues", 100_00, 100_00, Some(pi_id)))
+        .await
+        .expect("dispatch ok");
+
+    assert_eq!(payment_status(&h.pool, payment_id).await, "Refunded");
+    assert_eq!(
+        member_dues_paid_until(&h.pool, member_id)
+            .await
+            .expect("still set"),
+        before,
+        "the dashboard refund retracts exactly what that payment granted",
+    );
+
+    let detail: Option<String> = sqlx::query_scalar(
+        "SELECT new_value FROM audit_logs WHERE action = 'membership_dues_retracted'",
+    )
+    .fetch_optional(&h.pool)
+    .await
+    .expect("query audit")
+    .flatten();
+    let detail = detail.expect("the retraction is audited");
+    assert!(
+        detail.contains(&payment_id.to_string()),
+        "the audit entry names the payment that caused it: {detail}",
+    );
+}
+
+#[tokio::test]
+async fn partial_refund_leaves_the_row_and_the_dues_window_alone() {
+    // Partial refunds stay excluded from automatic retraction — but the
+    // alert has to say so, or an operator assumes it was handled.
+    let h = build_harness().await;
+    let member_id = insert_member(&h.pool, Some("cus_partial"), BillingMode::Manual).await;
+    let payment_id = Uuid::new_v4();
+    let pi_id = "pi_partial";
+
+    insert_pending_payment(
+        &h.pool,
+        Payment {
+            id: payment_id,
+            payer: Payer::Member(member_id),
+            amount_cents: 100_00,
+            currency: "USD".to_string(),
+            status: PaymentStatus::Completed,
+            payment_method: PaymentMethod::Stripe,
+            external_id: Some(StripeRef::PaymentIntent(pi_id.to_string())),
+            description: "Dues".to_string(),
+            kind: PaymentKind::Membership,
+            paid_at: Some(Utc::now()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        },
+    )
+    .await;
+    h.billing
+        .auto_renew
+        .extend_member_dues_by_slug(payment_id, member_id, "member")
+        .await
+        .expect("extend dues");
+    let extended = member_dues_paid_until(&h.pool, member_id)
+        .await
+        .expect("extended");
+
+    h.dispatcher
+        .dispatch_charge_refunded(build_charge("ch_partial", 100_00, 40_00, Some(pi_id)))
+        .await
+        .expect("dispatch ok");
+
+    assert_eq!(
+        payment_status(&h.pool, payment_id).await,
+        "Completed",
+        "a partial refund leaves the row as-is",
+    );
+    assert_eq!(
+        member_dues_paid_until(&h.pool, member_id)
+            .await
+            .expect("still set"),
+        extended,
+        "and leaves the dues window as-is",
+    );
+
+    let bodies: Vec<String> = h
+        .recorded_events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            IntegrationEvent::AdminAlert { body, .. } => Some(body.clone()),
+            _ => None,
+        })
+        .collect();
+    let alert = bodies
+        .iter()
+        .find(|b| b.contains("partially refunded"))
+        .expect("a partial refund alerts an operator");
+    assert!(
+        alert.contains("dues window was NOT adjusted"),
+        "the alert states the dues consequence: {alert}",
+    );
+}
+
 // ---------------------------------------------------------------------
 // 3. Stripe→Coterie auto-renew migration: subscription.deleted echo for
 //    an already-migrated member must NOT flip them back to manual

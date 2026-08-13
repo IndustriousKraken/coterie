@@ -160,8 +160,9 @@ https://api.yourorg.com/public/feed/rss
 - Session-based authentication
 - Secure cookies (HttpOnly, SameSite=Lax, Secure)
 - Role-based access control (member vs admin), declared per-router
-- Rate limiting on login (5 attempts / 15min / IP) and money-moving
-  endpoints (10/min/IP)
+- Rate limiting on login (5 **failed** attempts / 15min / account, plus 20
+  distinct accounts / 15min / address for sustained abuse — successes cost
+  nothing) and money-moving endpoints (10/min/IP)
 
 ### CSRF — top-level, secure-by-default
 

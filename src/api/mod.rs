@@ -22,8 +22,8 @@ use state::AppState;
 ///
 /// The caller (currently `main.rs`) constructs exactly one `AppState`
 /// for the process and hands the same value to `create_app` and
-/// `create_web_routes`. Sharing the state means the per-IP rate
-/// limiters (`login_limiter`, `money_limiter`) and the first-boot
+/// `create_web_routes`. Sharing the state means the rate limiters
+/// (`login_limiter`, `money_limiter`) and the first-boot
 /// `setup_lock` are shared across both surfaces — without this an
 /// attacker hitting `/auth/login` on one router and `/login` on the
 /// other would get 2× the budget, and two concurrent setup-wizard

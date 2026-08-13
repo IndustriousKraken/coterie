@@ -86,6 +86,19 @@ impl RefundError {
     }
 }
 
+/// Audit detail for a retracted dues extension. Shared with the
+/// `charge.refunded` webhook so a refund issued from Stripe's dashboard
+/// and one issued from the admin UI leave the same record. Names the
+/// payment: a member's dues window moving without a traceable cause is
+/// not acceptable on a financial record.
+pub(crate) fn dues_retraction_detail(payment_id: Uuid, seconds: i64) -> String {
+    format!(
+        "Dues window reduced by {} days — refunded payment {}",
+        seconds / 86_400,
+        payment_id,
+    )
+}
+
 pub struct PaymentAdminService {
     payment_repo: Arc<dyn PaymentRepository>,
     /// Refunding an event fee also releases its seat — a member doesn't
@@ -139,11 +152,13 @@ impl PaymentAdminService {
     /// Already-Refunded payments return `Err(AlreadyRefunded)` without
     /// touching Stripe again (idempotent against double-clicks).
     ///
-    /// Refunds DO NOT roll back `dues_paid_until`. Refunding is
-    /// usually a customer-service gesture rather than an access
-    /// revocation; an admin can manually adjust dues afterward via
-    /// the existing extend/set-dues UI if they actually want to kick
-    /// someone out.
+    /// A refund undoes what its payment bought: an event fee releases
+    /// its seat, a class pass cancels its enrollment, and a membership
+    /// payment gives back the dues extension it granted. The dues
+    /// retraction subtracts THAT payment's extension, so a member
+    /// holding dues from several payments keeps the rest; it never
+    /// writes member status, leaving the daily expiration sweep as the
+    /// one path to `Expired`.
     pub async fn refund(
         &self,
         actor_id: Uuid,
@@ -416,6 +431,37 @@ impl PaymentAdminService {
                 .await;
         }
 
+        // A refunded membership payment gives back the dues it granted —
+        // the same rule as the seat and the enrollment above. Not gated
+        // on payment kind: the repository retracts only what a payment
+        // actually extended, so a fee or a pass reaching here is a
+        // no-op, and a membership row that never extended dues is too.
+        match self.payment_repo.retract_dues_for_payment(payment.id).await {
+            Ok(Some((member_id, seconds))) => {
+                self.audit_service
+                    .log(
+                        Some(actor_id),
+                        "membership_dues_retracted",
+                        "member",
+                        &member_id.to_string(),
+                        None,
+                        Some(&dues_retraction_detail(payment.id, seconds)),
+                        None,
+                    )
+                    .await;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                // The money is already back; a stale dues window is the
+                // lesser problem and an admin can correct it by hand.
+                tracing::error!(
+                    "Refunded payment {} but could not retract its dues extension: {}",
+                    payment.id,
+                    e,
+                );
+            }
+        }
+
         // 8. Audit. Failures are logged via tracing and swallowed
         //    inside AuditService::log.
         self.audit_service
@@ -458,11 +504,12 @@ impl PaymentAdminService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
     use std::time::Duration;
 
     use crate::{
         api::state::RateLimiter,
-        domain::{Payer, Payment, PaymentKind, StripeRef},
+        domain::{configurable_types::BillingPeriod, Payer, Payment, PaymentKind, StripeRef},
         payments::StripeClient,
         repository::{PaymentRepository, SqlitePaymentRepository},
     };
@@ -570,6 +617,43 @@ mod tests {
             updated_at: now,
         };
         repo.create(p).await.unwrap()
+    }
+
+    async fn member_dues(pool: &SqlitePool, member_id: Uuid) -> Option<chrono::DateTime<Utc>> {
+        sqlx::query_scalar::<_, Option<chrono::DateTime<Utc>>>(
+            "SELECT dues_paid_until FROM members WHERE id = ?",
+        )
+        .bind(member_id.to_string())
+        .fetch_one(pool)
+        .await
+        .expect("query dues_paid_until")
+    }
+
+    /// Seed a dues window and read it back, so comparisons are against
+    /// the value as SQLite round-trips it rather than the in-memory one.
+    async fn seed_dues(
+        pool: &SqlitePool,
+        member_id: Uuid,
+        until: chrono::DateTime<Utc>,
+    ) -> chrono::DateTime<Utc> {
+        sqlx::query("UPDATE members SET dues_paid_until = ? WHERE id = ?")
+            .bind(until)
+            .bind(member_id.to_string())
+            .execute(pool)
+            .await
+            .expect("seed dues_paid_until");
+        member_dues(pool, member_id).await.expect("seeded")
+    }
+
+    async fn audit_detail(pool: &SqlitePool, action: &str) -> Option<String> {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT new_value FROM audit_logs WHERE action = ? LIMIT 1",
+        )
+        .bind(action)
+        .fetch_optional(pool)
+        .await
+        .expect("query audit detail")
+        .flatten()
     }
 
     async fn audit_count(pool: &SqlitePool, action: &str, entity_id: &str) -> i64 {
@@ -793,6 +877,207 @@ mod tests {
         assert_eq!(
             audit_count(&pool, "refund_payment", &payment.id.to_string()).await,
             0
+        );
+    }
+
+    // ---- Refund retracts the dues the payment granted ----------------
+
+    #[tokio::test]
+    async fn membership_refund_retracts_the_dues_that_payment_granted() {
+        let pool = fresh_pool().await;
+        let (svc, repo) = make_service(pool.clone(), None, permissive_limiter());
+        let member = make_actor(&pool).await;
+
+        // Dues already run 100 days out from an earlier payment, so the
+        // retraction has to be a subtraction rather than a reset.
+        let before = seed_dues(&pool, member, Utc::now() + chrono::Duration::days(100)).await;
+        let payment = insert_payment(
+            &repo,
+            member,
+            PaymentMethod::Manual,
+            PaymentStatus::Completed,
+            None,
+        )
+        .await;
+        repo.extend_dues_for_payment_atomic(payment.id, member, BillingPeriod::Yearly)
+            .await
+            .unwrap()
+            .expect("this call extended dues");
+        let extended = member_dues(&pool, member).await.expect("extended");
+        assert!(extended > before, "the payment moved the window forward");
+
+        svc.refund(member, payment.id, loopback()).await.unwrap();
+
+        assert_eq!(
+            member_dues(&pool, member).await.expect("still set"),
+            before,
+            "the refund gives back exactly the year that payment bought",
+        );
+        assert_eq!(
+            audit_count(&pool, "membership_dues_retracted", &member.to_string()).await,
+            1,
+            "the retraction is audited against the member",
+        );
+        let detail = audit_detail(&pool, "membership_dues_retracted")
+            .await
+            .expect("audit detail");
+        assert!(
+            detail.contains(&payment.id.to_string()),
+            "the audit entry names the payment that caused it: {detail}",
+        );
+    }
+
+    #[tokio::test]
+    async fn refunding_a_payment_that_granted_no_dues_retracts_nothing() {
+        let pool = fresh_pool().await;
+        let (svc, repo) = make_service(pool.clone(), None, permissive_limiter());
+        let member = make_actor(&pool).await;
+        let before = seed_dues(&pool, member, Utc::now() + chrono::Duration::days(100)).await;
+
+        // Never extended: no dues_extension_seconds on the row.
+        let payment = insert_payment(
+            &repo,
+            member,
+            PaymentMethod::Manual,
+            PaymentStatus::Completed,
+            None,
+        )
+        .await;
+
+        svc.refund(member, payment.id, loopback())
+            .await
+            .expect("a payment that granted no dues refunds without error");
+
+        assert_eq!(member_dues(&pool, member).await.expect("still set"), before);
+        assert_eq!(
+            audit_count(&pool, "membership_dues_retracted", &member.to_string()).await,
+            0,
+            "nothing was retracted, so nothing is audited",
+        );
+    }
+
+    #[tokio::test]
+    async fn refunding_a_lifetime_membership_retracts_nothing() {
+        // Lifetime "extends" dues to DateTime::MAX_UTC — a span of ~8e12
+        // seconds that subtraction can't give back (it underflows). So
+        // the extension records no delta at all, and the refund leaves
+        // the window alone instead of stamping the financial record with
+        // a multi-million-day retraction that moved nothing.
+        let pool = fresh_pool().await;
+        let (svc, repo) = make_service(pool.clone(), None, permissive_limiter());
+        let member = make_actor(&pool).await;
+        let payment = insert_payment(
+            &repo,
+            member,
+            PaymentMethod::Manual,
+            PaymentStatus::Completed,
+            None,
+        )
+        .await;
+        repo.extend_dues_for_payment_atomic(payment.id, member, BillingPeriod::Lifetime)
+            .await
+            .unwrap()
+            .expect("this call extended dues");
+        let lifetime = member_dues(&pool, member).await.expect("extended");
+
+        svc.refund(member, payment.id, loopback()).await.unwrap();
+
+        assert_eq!(
+            member_dues(&pool, member).await.expect("still set"),
+            lifetime,
+            "a lifetime window is left for an operator to decide, not silently kept",
+        );
+        assert_eq!(
+            audit_count(&pool, "membership_dues_retracted", &member.to_string()).await,
+            0,
+            "and nothing claims a retraction that never happened",
+        );
+    }
+
+    #[tokio::test]
+    async fn retraction_applied_twice_reduces_the_window_once() {
+        // The admin refund and its own charge.refunded echo can both
+        // reach the retraction; the second must not take another year.
+        let pool = fresh_pool().await;
+        let (svc, repo) = make_service(pool.clone(), None, permissive_limiter());
+        let member = make_actor(&pool).await;
+        let before = seed_dues(&pool, member, Utc::now() + chrono::Duration::days(100)).await;
+        let payment = insert_payment(
+            &repo,
+            member,
+            PaymentMethod::Manual,
+            PaymentStatus::Completed,
+            None,
+        )
+        .await;
+        repo.extend_dues_for_payment_atomic(payment.id, member, BillingPeriod::Yearly)
+            .await
+            .unwrap()
+            .expect("extended");
+
+        svc.refund(member, payment.id, loopback()).await.unwrap();
+        let once = member_dues(&pool, member).await.expect("still set");
+        assert_eq!(once, before);
+
+        let second = repo.retract_dues_for_payment(payment.id).await.unwrap();
+        assert!(second.is_none(), "the second retraction is a no-op");
+        assert_eq!(
+            member_dues(&pool, member).await.expect("still set"),
+            once,
+            "the window is reduced once, not twice",
+        );
+    }
+
+    #[tokio::test]
+    async fn refunding_one_of_two_payments_keeps_the_others_extension() {
+        let pool = fresh_pool().await;
+        let (svc, repo) = make_service(pool.clone(), None, permissive_limiter());
+        let member = make_actor(&pool).await;
+        let before = seed_dues(&pool, member, Utc::now() + chrono::Duration::days(100)).await;
+
+        let first = insert_payment(
+            &repo,
+            member,
+            PaymentMethod::Manual,
+            PaymentStatus::Completed,
+            None,
+        )
+        .await;
+        repo.extend_dues_for_payment_atomic(first.id, member, BillingPeriod::Yearly)
+            .await
+            .unwrap()
+            .expect("extended");
+        let after_first = member_dues(&pool, member).await.expect("set");
+
+        let second = insert_payment(
+            &repo,
+            member,
+            PaymentMethod::Manual,
+            PaymentStatus::Completed,
+            None,
+        )
+        .await;
+        repo.extend_dues_for_payment_atomic(second.id, member, BillingPeriod::Yearly)
+            .await
+            .unwrap()
+            .expect("extended");
+        let after_second = member_dues(&pool, member).await.expect("set");
+
+        svc.refund(member, first.id, loopback()).await.unwrap();
+        let after_refund = member_dues(&pool, member).await.expect("still set");
+
+        // What survives is exactly the span the OTHER payment granted.
+        // Asserted as a span rather than a date because the two yearly
+        // extensions differ by the leap day they each spanned, and the
+        // retraction gives back the first payment's span, not the second's.
+        assert_eq!(
+            after_refund - before,
+            after_second - after_first,
+            "the unrefunded payment's extension stays on the window",
+        );
+        assert!(
+            after_refund > before,
+            "the member keeps coverage they still paid for",
         );
     }
 

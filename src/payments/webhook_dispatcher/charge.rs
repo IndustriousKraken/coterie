@@ -96,6 +96,11 @@ impl WebhookDispatcher {
                      The local Coterie payment row {} is unchanged — partial \
                      refunds aren't supported in our admin UI because they \
                      muddle dues / campaign accounting.\n\n\
+                     The member's dues window was NOT adjusted. A full \
+                     refund gives back the dues that payment granted; a \
+                     partial one can't, because a half-refunded term is \
+                     not obviously half a membership. If this payment was \
+                     membership dues, the window is yours to correct.\n\n\
                      If this was intentional, mark the payment Refunded \
                      manually in the DB and adjust dues / campaign totals \
                      to match. Otherwise investigate who issued the \
@@ -171,6 +176,42 @@ impl WebhookDispatcher {
                     Some(super::STRIPE_WEBHOOK_SOURCE),
                 )
                 .await;
+        }
+
+        // A refunded membership payment gives back the dues extension it
+        // granted, the same rule as the two branches above: a member
+        // doesn't keep a membership whose fee went back to them. Not
+        // gated on payment kind — the repository retracts only what a
+        // payment actually extended, so a fee, a pass, or a membership
+        // that never extended dues all no-op here.
+        match self.payment_repo.retract_dues_for_payment(payment.id).await {
+            Ok(Some((member_id, seconds))) => {
+                self.audit_service
+                    .log(
+                        None,
+                        "membership_dues_retracted",
+                        "member",
+                        &member_id.to_string(),
+                        None,
+                        Some(
+                            &crate::service::payment_admin_service::dues_retraction_detail(
+                                payment.id, seconds,
+                            ),
+                        ),
+                        Some(super::STRIPE_WEBHOOK_SOURCE),
+                    )
+                    .await;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                // The money is already back; a stale dues window is the
+                // lesser problem and an admin can correct it by hand.
+                tracing::error!(
+                    "Marked payment {} Refunded but could not retract its dues extension: {}",
+                    payment.id,
+                    e,
+                );
+            }
         }
 
         tracing::info!(

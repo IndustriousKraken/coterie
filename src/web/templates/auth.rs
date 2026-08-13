@@ -156,9 +156,14 @@ pub async fn login_handler(
     headers: HeaderMap,
     Json(credentials): Json<LoginRequest>,
 ) -> Response {
-    // Rate-limit login attempts per IP
+    // Budget check BEFORE any lookup or hashing, and read-only: the
+    // budget is spent at the bottom, only when the credentials are
+    // actually wrong.
     let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
-    if !login_limiter.0.check_and_record(ip, "auth.login") {
+    if !login_limiter
+        .0
+        .check(ip, &credentials.username, "auth.login")
+    {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(LoginResponse {
@@ -299,8 +304,16 @@ pub async fn login_handler(
                     None,
                     Some("2fa_required"),
                 );
+                // The submitted identifier rides along so /login/totp
+                // spends the same account budget this attempt would
+                // have — a member who signs in with their username
+                // keys under that username on both factors.
                 let pending_token = match pending_login_service
-                    .create(member.id, credentials.remember_me.is_some())
+                    .create(
+                        member.id,
+                        credentials.remember_me.is_some(),
+                        &credentials.username,
+                    )
                     .await
                 {
                     Ok(t) => t,
@@ -498,7 +511,12 @@ pub async fn login_handler(
         );
     }
 
-    // Invalid credentials
+    // Invalid credentials. Both denial paths above (wrong password, no
+    // such member) fall through here, so one call spends the budget for
+    // both — and neither the status-rejected paths nor any success
+    // reaches it.
+    login_limiter.0.record_failure(ip, &credentials.username);
+
     (
         StatusCode::UNAUTHORIZED,
         Json(LoginResponse {
@@ -662,21 +680,9 @@ pub async fn login_totp_handler(
     jar: CookieJar,
     Json(payload): Json<LoginTotpRequest>,
 ) -> Response {
-    // Share the per-IP budget with /login so an attacker holding a
-    // stolen password can't switch surfaces to get a fresh allowance
-    // when brute-forcing the 6-digit TOTP code.
+    // The account budget is checked below, once the pending login names
+    // the member — the second factor carries no identifier of its own.
     let ip = crate::api::state::client_ip(&headers, settings.server.trust_forwarded_for());
-    if !login_limiter.0.check_and_record(ip, "auth.totp") {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(LoginResponse {
-                success: false,
-                redirect: None,
-                error: Some("Too many login attempts. Please try again later.".to_string()),
-            }),
-        )
-            .into_response();
-    }
 
     let pending_token = match jar.get(crate::auth::pending_login::COOKIE_NAME) {
         Some(c) => c.value().to_string(),
@@ -760,6 +766,32 @@ pub async fn login_totp_handler(
         }
     };
 
+    // Second-factor failures spend the SAME account budget /login
+    // spends, keyed on the account under attack rather than on whatever
+    // address the attacker is using: switching surfaces buys no fresh
+    // allowance for brute-forcing the 6-digit code space. Checked before
+    // the code is verified, like the first factor.
+    //
+    // Keyed on the identifier the first factor was SUBMITTED with, which
+    // the pending login carries. This surface accepts a username or an
+    // email, and the budget is keyed as submitted so spending it can't
+    // reveal which accounts exist — re-deriving a key from the member
+    // here would give username logins a second, fresh budget for the
+    // code space. (The email is the fallback only for rows minted
+    // before that column existed.)
+    let budget_key = pending.identifier.as_deref().unwrap_or(&member.email);
+    if !login_limiter.0.check(ip, budget_key, "auth.totp") {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(LoginResponse {
+                success: false,
+                redirect: None,
+                error: Some("Too many login attempts. Please try again later.".to_string()),
+            }),
+        )
+            .into_response();
+    }
+
     // Try TOTP first; if that fails, try the recovery-code path. The
     // two formats don't overlap (6 digits vs hyphenated alphanumeric)
     // so a valid input only ever satisfies one branch.
@@ -780,6 +812,7 @@ pub async fn login_totp_handler(
     };
 
     if !totp_ok && !used_recovery {
+        login_limiter.0.record_failure(ip, budget_key);
         auth_log::denied(
             "auth.totp",
             "totp_invalid",

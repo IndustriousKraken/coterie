@@ -507,7 +507,7 @@ async fn main() -> anyhow::Result<()> {
         );
 
     // Build a single AppState shared by both the API router and the web
-    // router. Per-IP rate limiters and the first-boot setup_lock are
+    // router. The rate limiters and the first-boot setup_lock are
     // fields on AppState; constructing two states would silently halve
     // their effectiveness (login_limiter on /auth/login and /login would
     // be different maps).

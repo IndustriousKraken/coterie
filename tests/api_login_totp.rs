@@ -508,7 +508,7 @@ async fn json_login_totp_returns_429_after_budget_exhausted() {
     let pending = state
         .service_context
         .pending_login_service
-        .create(member_id, false)
+        .create(member_id, false, &email)
         .await
         .expect("create pending");
 
