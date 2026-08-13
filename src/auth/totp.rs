@@ -230,7 +230,7 @@ impl TotpService {
 
 fn random_secret() -> Vec<u8> {
     let mut bytes = vec![0u8; SECRET_LEN];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     bytes
 }
 
@@ -296,6 +296,13 @@ mod tests {
     #[test]
     fn random_secret_is_correct_length() {
         assert_eq!(random_secret().len(), SECRET_LEN);
+    }
+
+    #[test]
+    fn random_secret_never_repeats_across_many_draws() {
+        let draws = 1000;
+        let secrets: std::collections::HashSet<_> = (0..draws).map(|_| random_secret()).collect();
+        assert_eq!(secrets.len(), draws, "TOTP secrets must not repeat");
     }
 
     #[test]

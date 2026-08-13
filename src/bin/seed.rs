@@ -17,7 +17,7 @@ use coterie::{
 };
 use fake::faker::name::en::{FirstName, LastName};
 use fake::Fake;
-use rand::seq::SliceRandom;
+use rand::seq::{IndexedRandom, SliceRandom};
 use rand::Rng;
 use serde::Deserialize;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -265,7 +265,7 @@ fn make_username(first: &str, last: &str, rng: &mut impl Rng) -> String {
             last.to_lowercase().chars().next().unwrap_or('x')
         ),
         format!("{}.{}", first.to_lowercase(), last.to_lowercase()),
-        format!("{}_{}", first.to_lowercase(), rng.gen_range(10..99)),
+        format!("{}_{}", first.to_lowercase(), rng.random_range(10..99)),
         format!(
             "{}{}",
             first.to_lowercase().chars().next().unwrap_or('x'),
@@ -285,18 +285,18 @@ struct MemberGenConfig {
 }
 
 fn generate_member_config(rng: &mut impl Rng, types: &[DbMembershipTypeConfig]) -> MemberGenConfig {
-    let roll: u8 = rng.gen_range(0..100);
+    let roll: u8 = rng.random_range(0..100);
     // Pick a random type across whatever the org configured. Seed
     // data doesn't care which specific type — variety beats fidelity.
-    let any_type_id = types[rng.gen_range(0..types.len())].id;
+    let any_type_id = types[rng.random_range(0..types.len())].id;
 
     let (status, months_active, bypass_dues, notes) = match roll {
-        0..=69 => (MemberStatus::Active, rng.gen_range(1..=24), false, None),
-        70..=79 => (MemberStatus::Expired, rng.gen_range(3..=12), false, None),
+        0..=69 => (MemberStatus::Active, rng.random_range(1..=24), false, None),
+        70..=79 => (MemberStatus::Expired, rng.random_range(3..=12), false, None),
         80..=87 => (MemberStatus::Pending, 0, false, None),
         88..=92 => (
             MemberStatus::Suspended,
-            rng.gen_range(2..=8),
+            rng.random_range(2..=8),
             false,
             Some("Suspended - under review".to_string()),
         ),
@@ -308,7 +308,7 @@ fn generate_member_config(rng: &mut impl Rng, types: &[DbMembershipTypeConfig]) 
         ),
         _ => (
             MemberStatus::Active,
-            rng.gen_range(12..=36),
+            rng.random_range(12..=36),
             true,
             Some("Lifetime member".to_string()),
         ),
@@ -353,7 +353,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Seeding database with '{}' example...", args.example);
     println!("   Generating {} members with history", args.member_count);
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // Initialize database connection
     let database_url =
@@ -668,13 +668,17 @@ async fn seed_members(
     while generated < random_count && attempts < MAX_ATTEMPTS {
         attempts += 1;
 
-        let first_name: String = FirstName().fake_with_rng(rng);
-        let last_name: String = LastName().fake_with_rng(rng);
+        // `fake` 2.x is still on rand 0.8, so its `fake_with_rng` won't
+        // take our 0.9 generator. `fake()` uses fake's own OS-seeded
+        // thread-local CSPRNG — names aren't secrets, and this seeder
+        // was never reproducible anyway.
+        let first_name: String = FirstName().fake();
+        let last_name: String = LastName().fake();
         let full_name = format!("{} {}", first_name, last_name);
 
         let mut username = make_username(&first_name, &last_name, rng);
         if used_usernames.contains(&username) {
-            username = format!("{}_{}", username, rng.gen_range(100..999));
+            username = format!("{}_{}", username, rng.random_range(100..999));
         }
         if used_usernames.contains(&username) {
             continue;
@@ -715,17 +719,17 @@ async fn seed_members(
             .await?;
 
         let months_ago = gen_config.months_active;
-        let joined = Utc::now() - Duration::days(months_ago * 30 + rng.gen_range(0..30));
+        let joined = Utc::now() - Duration::days(months_ago * 30 + rng.random_range(0..30));
 
         let dues_until = match gen_config.status {
             MemberStatus::Active => {
                 if gen_config.bypass_dues {
                     None
                 } else {
-                    Some(Utc::now() + Duration::days(rng.gen_range(7..90)))
+                    Some(Utc::now() + Duration::days(rng.random_range(7..90)))
                 }
             }
-            MemberStatus::Expired => Some(Utc::now() - Duration::days(rng.gen_range(1..90))),
+            MemberStatus::Expired => Some(Utc::now() - Duration::days(rng.random_range(1..90))),
             _ => None,
         };
 
@@ -801,7 +805,7 @@ async fn seed_events(
 
         // Add random attendees to past events
         if event_config.days_offset < 0 {
-            let attendee_count = rng.gen_range(8..25);
+            let attendee_count = rng.random_range(8..25);
             let mut shuffled: Vec<_> = all_members.iter().collect();
             shuffled.shuffle(rng);
             for (member_id, _) in shuffled.iter().take(attendee_count) {
@@ -947,8 +951,8 @@ async fn seed_payments(
         // Monthly payments
         let months = gen_config.months_active.min(24);
         for month in 0..months {
-            let days_ago = month * 30 + rng.gen_range(1..10);
-            let method = if rng.gen_bool(0.85) {
+            let days_ago = month * 30 + rng.random_range(1..10);
+            let method = if rng.random_bool(0.85) {
                 PaymentMethod::Stripe
             } else {
                 PaymentMethod::Manual
@@ -970,14 +974,14 @@ async fn seed_payments(
         }
 
         // Add failed payment for expired members
-        if gen_config.status == MemberStatus::Expired && rng.gen_bool(0.6) {
+        if gen_config.status == MemberStatus::Expired && rng.random_bool(0.6) {
             let payment = make_payment(
                 *member_id,
                 default_dues,
                 PaymentStatus::Failed,
                 PaymentMethod::Stripe,
                 "Monthly dues - Payment declined",
-                rng.gen_range(1..30),
+                rng.random_range(1..30),
             );
             payment_repo.create(payment).await?;
             payment_count += 1;

@@ -12,7 +12,7 @@
 //! existing callers (logout cleanup, background task) compile unchanged.
 
 use hmac::{Hmac, Mac};
-use rand::{rngs::OsRng, RngCore};
+use rand::RngCore;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
@@ -49,7 +49,7 @@ impl CsrfService {
     /// Async signature kept for API compatibility; no IO happens.
     pub async fn generate_token(&self, session_id: &str) -> Result<String> {
         let mut nonce = [0u8; NONCE_LEN];
-        OsRng.fill_bytes(&mut nonce);
+        rand::rng().fill_bytes(&mut nonce);
         let mac = self.mac(session_id, &nonce);
 
         let mut out = Vec::with_capacity(TOKEN_LEN);

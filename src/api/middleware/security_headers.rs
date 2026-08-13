@@ -50,7 +50,7 @@ pub async fn security_headers(
     // Generate a fresh script-src nonce for this request. 24 random
     // bytes → 32 base64 chars, well above the 128-bit minimum.
     let mut bytes = [0u8; 24];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     let nonce = base64::engine::general_purpose::STANDARD.encode(bytes);
 
     let response = next.run(request).await;

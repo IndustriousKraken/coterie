@@ -593,7 +593,7 @@ fn gather_caddy_inputs<P: Prompter>(
 
 fn generate_session_secret() -> SecretString {
     let mut buf = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut buf);
+    rand::rng().fill_bytes(&mut buf);
     SecretString::new(hex::encode(buf))
 }
 
@@ -604,6 +604,23 @@ mod tests {
     use crate::install::tests::make_args;
     use crate::output::CaptureOutput;
     use crate::test_support::{FakeFs, FakeSystem, MockPrompter};
+
+    /// The session secret is the one value this tool generates that an
+    /// attacker would want to predict. A seedable generator here would
+    /// still emit 64 hex chars and pass every other check.
+    #[test]
+    fn session_secret_is_32_bytes_and_never_repeats() {
+        let draws = 1000;
+        let secrets: std::collections::HashSet<String> = (0..draws)
+            .map(|_| {
+                let s = generate_session_secret();
+                let hex = s.expose_secret().to_string();
+                assert_eq!(hex.len(), 64, "32 bytes hex-encoded is 64 chars");
+                hex
+            })
+            .collect();
+        assert_eq!(secrets.len(), draws, "session secrets must not repeat");
+    }
 
     #[test]
     fn missing_required_input_fails_under_no_prompt() {
