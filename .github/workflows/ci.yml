@@ -14,6 +14,12 @@ on:
   push:
     branches: [master]
   pull_request:
+  # For the advisory job below. An advisory is news about code already shipped,
+  # so a check that only fired on pushes would be silent exactly when it
+  # matters: a crate we already depend on becomes vulnerable without anything
+  # here changing. Off-the-hour to miss the top-of-hour cron rush.
+  schedule:
+    - cron: '17 6 * * *'
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,6 +28,9 @@ jobs:
   test:
     name: Test and warm cache
     runs-on: ubuntu-latest
+    # The daily schedule exists for the advisory job; re-running the full build
+    # on it would spend ~10 minutes to re-learn what the last push already said.
+    if: github.event_name != 'schedule'
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -66,3 +75,40 @@ jobs:
         run: |
           cargo build --release --target x86_64-unknown-linux-musl --bins
           cargo build --release --target x86_64-unknown-linux-musl -p coterie-provision
+
+  # Its own job rather than a step in `test`: an advisory failure and a test
+  # failure call for different responses, and separate jobs say which one
+  # happened without anyone opening a log.
+  audit:
+    name: Advisory check (RustSec)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch, pinned
+
+      # Fixed key, unlike the per-ref rust-cache above, because the cached copy
+      # is only a warm start: `cargo audit` fetches advisory-db updates itself on
+      # every run, so freshness never depends on this. Saving a new entry per run
+      # would buy nothing and push the musl-release cache toward the 10GB
+      # eviction limit. Bump the suffix to pick up a newer cargo-audit.
+      - name: Cache advisory database and cargo-audit
+        id: audit-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/advisory-db
+            ~/.cargo/bin/cargo-audit
+          key: cargo-audit-v1
+
+      - name: Install cargo-audit
+        if: steps.audit-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-audit --locked
+
+      # Reads Cargo.lock, so the whole resolved graph is covered — most of what
+      # the application is exposed to never appears in a Cargo.toml. Exits
+      # non-zero naming the crate when a RustSec advisory matches.
+      - name: cargo audit
+        run: cargo audit

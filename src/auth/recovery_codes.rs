@@ -180,7 +180,7 @@ pub fn pretty(code: &str) -> String {
 // --------------------------------------------------------------------
 
 fn random_code() -> String {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut buf = [0u8; GROUPS * GROUP_LEN];
     rng.fill_bytes(&mut buf);
     let chars: String = buf
@@ -232,7 +232,7 @@ fn argon2_verify(normalized_code: &str, hash: &str) -> bool {
 #[cfg(test)]
 fn shuffled<T>(mut v: Vec<T>) -> Vec<T> {
     use rand::seq::SliceRandom;
-    v.shuffle(&mut rand::thread_rng());
+    v.shuffle(&mut rand::rng());
     v
 }
 
@@ -246,6 +246,16 @@ mod tests {
         assert_eq!(codes.plaintext.len(), RECOVERY_CODE_COUNT);
         let unique: std::collections::HashSet<_> = codes.plaintext.iter().collect();
         assert_eq!(unique.len(), RECOVERY_CODE_COUNT, "codes must not collide");
+    }
+
+    /// `generate()` argon2-hashes each code, so it's too slow to run
+    /// enough draws to catch a small-state generator. `random_code`
+    /// alone is cheap enough to hammer.
+    #[test]
+    fn random_code_never_repeats_across_many_draws() {
+        let draws = 1000;
+        let codes: std::collections::HashSet<_> = (0..draws).map(|_| random_code()).collect();
+        assert_eq!(codes.len(), draws, "recovery codes must not repeat");
     }
 
     #[test]

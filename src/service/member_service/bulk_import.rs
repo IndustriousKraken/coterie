@@ -192,7 +192,7 @@ impl MemberService {
             // claim their account through password-reset (the existing
             // forgot-password flow accepts any registered email).
             let mut bytes = [0u8; 24];
-            rand::thread_rng().fill_bytes(&mut bytes);
+            rand::rng().fill_bytes(&mut bytes);
             let sentinel_password = format!("import-no-password-{}", hex::encode(bytes),);
 
             // Normalize the optional billing-migration strings: trim

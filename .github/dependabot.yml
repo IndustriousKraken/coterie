@@ -8,3 +8,29 @@ updates:
     directory: /
     schedule:
       interval: weekly
+
+  # The same reasoning, applied to the crates the application actually links.
+  # Until this entry existed nothing scheduled Rust updates, so the only cargo
+  # PRs were the ones Dependabot's security alerts raised on their own — and
+  # they rotted: the two oldest sat six weeks and went conflicted with no CI
+  # run, while the configured github-actions ecosystem stayed current and green.
+  #
+  # Grouped so a period's routine bumps arrive as one review instead of one PR
+  # per crate. A queue that is never empty is one that never gets triaged, which
+  # is what let security-relevant updates sit indistinguishably beside cosmetic
+  # ones. Major bumps fall outside the group's `update-types` and so still get
+  # their own PR — those can carry breaking API changes and need reading.
+  #
+  # `directory: /` is the workspace root; its Cargo.lock resolves every member,
+  # including deploy/coterie-provision.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo-routine:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
