@@ -74,6 +74,18 @@ pub fn client_ip(headers: &HeaderMap, trust_forwarded: bool) -> IpAddr {
     IpAddr::from([127, 0, 0, 1])
 }
 
+/// Lock a limiter map, recovering from a poisoned mutex rather than
+/// propagating the panic. A poisoned state means some prior call
+/// panicked while holding the lock — the data may be slightly stale but
+/// rate limiting is best-effort anyway, and falling over here would deny
+/// service to every login attempt.
+fn lock_recovering<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!("rate limiter mutex was poisoned; recovering");
+        poisoned.into_inner()
+    })
+}
+
 /// Simple in-memory rate limiter keyed by IP address.
 #[derive(Clone)]
 pub struct RateLimiter {
@@ -104,18 +116,7 @@ impl RateLimiter {
     /// Rejections are log-only: their volume is attacker-controlled, so
     /// an `audit_logs` row per trip would be a write-amplification lever.
     pub fn check_and_record(&self, ip: IpAddr, endpoint: &str) -> bool {
-        // Recover from a poisoned mutex rather than propagating the
-        // panic. A poisoned state means some prior call panicked while
-        // holding the lock — the data may be slightly stale but the
-        // rate limiter is best-effort anyway, and falling over here
-        // would deny service to every login attempt.
-        let mut map = match self.attempts.lock() {
-            Ok(g) => g,
-            Err(poisoned) => {
-                tracing::warn!("RateLimiter mutex was poisoned; recovering");
-                poisoned.into_inner()
-            }
-        };
+        let mut map = lock_recovering(&self.attempts);
         let now = Instant::now();
         let cutoff = now - self.window;
 
@@ -141,14 +142,160 @@ impl RateLimiter {
     /// Prune entries for IPs that have no recent attempts. Call periodically
     /// to prevent the map from growing unboundedly.
     pub fn cleanup(&self) {
-        let mut map = match self.attempts.lock() {
-            Ok(g) => g,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let mut map = lock_recovering(&self.attempts);
         let cutoff = Instant::now() - self.window;
         map.retain(|_, timestamps| {
             timestamps.retain(|t| *t > cutoff);
             !timestamps.is_empty()
+        });
+    }
+}
+
+/// Failure budget for the credential endpoints (`/auth/login`, `/login`,
+/// `/auth/login/totp`, `/login/totp`).
+///
+/// Two things separate this from [`RateLimiter`]:
+///
+/// 1. **Only failures count.** [`Self::check`] is read-only; the caller
+///    calls [`Self::record_failure`] after verification fails, so a
+///    successful authentication consumes nothing. Counting successes
+///    rationed the outcome the limiter exists to protect: on 2026-08-13
+///    an administrator was locked out of production by five consecutive
+///    *successful* logins — one of them a correct second factor, two of
+///    them a single double-submitted form. A success costing nothing is
+///    also why no de-duplication of repeated submissions exists here.
+/// 2. **The tight budget keys on the account, not the address.** Brute
+///    force targets an account, so that is where a tight budget belongs.
+///    Ten members at an event venue present one NAT address; under a
+///    per-address budget a few mistyped passwords among them denied
+///    login to everyone in the room, including members who had attempted
+///    nothing.
+///
+/// The address budget survives as a deliberately hard-to-reach
+/// sustained-abuse path, measured by the **breadth** of accounts a
+/// source fails against rather than by raw failure count. A room of
+/// members produces failures concentrated on a few accounts by people
+/// who roughly know their own passwords; credential stuffing spreads
+/// thin across many accounts, a large share of them names that match no
+/// member. A raw count cannot tell those apart.
+#[derive(Clone)]
+pub struct CredentialLimiter {
+    /// Normalized identifier -> failure timestamps within the window.
+    account_failures: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
+    /// Address -> (normalized identifier -> its most recent failure).
+    /// The budget is the SIZE of the inner map, i.e. breadth. Failures
+    /// against identifiers matching no member count here too: a source
+    /// guessing at accounts that do not exist is not a member mistyping
+    /// their own password.
+    address_breadth: Arc<Mutex<HashMap<IpAddr, HashMap<String, Instant>>>>,
+    /// Failures allowed per account within `window`.
+    max_failures: usize,
+    /// Distinct accounts one address may fail against within `window`.
+    max_accounts: usize,
+    window: Duration,
+}
+
+impl CredentialLimiter {
+    pub fn new(max_failures: usize, max_accounts: usize, window: Duration) -> Self {
+        Self {
+            account_failures: Arc::new(Mutex::new(HashMap::new())),
+            address_breadth: Arc::new(Mutex::new(HashMap::new())),
+            max_failures,
+            max_accounts,
+            window,
+        }
+    }
+
+    /// The budget key for a submitted identifier.
+    ///
+    /// Keyed **as submitted** — normalized, but never required to
+    /// resolve to a member, so that spending budget cannot reveal which
+    /// accounts exist. Trimmed and lower-cased because login treats
+    /// those as the same account and an attacker must not get a fresh
+    /// budget per capitalization. Bounded in length because the key is
+    /// attacker-supplied and the map holds it for the window.
+    pub fn account_key(identifier: &str) -> String {
+        identifier.trim().to_lowercase().chars().take(254).collect()
+    }
+
+    /// Read-only: is this attempt within both budgets? Records nothing.
+    ///
+    /// Call this BEFORE verifying credentials — an attempt that is
+    /// already over the limit must do no password hashing, which is the
+    /// difference between a rate limiter and a hashing-DoS amplifier.
+    ///
+    /// `endpoint` names the endpoint class for the `auth.rate_limited`
+    /// event emitted on rejection. It is a parameter rather than a
+    /// per-call-site log line so a new limiter call site cannot forget
+    /// it — 174 rejections went unlogged in production before this.
+    /// Rejections are log-only: their volume is attacker-controlled, so
+    /// an `audit_logs` row per trip would be a write-amplification lever.
+    pub fn check(&self, ip: IpAddr, identifier: &str, endpoint: &str) -> bool {
+        let key = Self::account_key(identifier);
+        let cutoff = Instant::now() - self.window;
+
+        let account_failures = lock_recovering(&self.account_failures)
+            .get(&key)
+            .map_or(0, |ts| ts.iter().filter(|t| **t > cutoff).count());
+        let address_breadth = lock_recovering(&self.address_breadth)
+            .get(&ip)
+            .map_or(0, |ids| ids.values().filter(|t| **t > cutoff).count());
+
+        // Either budget rejects, and the rejection is the same one: the
+        // caller must not learn which budget it hit, because "the
+        // address budget" and "this account's budget" would together
+        // answer whether the account exists.
+        if account_failures >= self.max_failures || address_breadth >= self.max_accounts {
+            crate::util::auth_log::denied(
+                "auth.rate_limited",
+                "rate_limited",
+                None,
+                Some(ip),
+                None,
+                Some(endpoint),
+            );
+            return false;
+        }
+        true
+    }
+
+    /// Spend budget. Call this ONLY after credential verification has
+    /// failed — a successful authentication spends nothing.
+    pub fn record_failure(&self, ip: IpAddr, identifier: &str) {
+        let key = Self::account_key(identifier);
+        let now = Instant::now();
+        let cutoff = now - self.window;
+
+        {
+            let mut map = lock_recovering(&self.account_failures);
+            let timestamps = map.entry(key.clone()).or_default();
+            timestamps.retain(|t| *t > cutoff);
+            timestamps.push(now);
+        }
+
+        let mut map = lock_recovering(&self.address_breadth);
+        let identifiers = map.entry(ip).or_default();
+        identifiers.retain(|_, t| *t > cutoff);
+        // Overwrite rather than append: five failures against one
+        // account are one account's worth of breadth, so a member
+        // locking themselves out advances this by exactly 1 and stays a
+        // private matter between them and their own account.
+        identifiers.insert(key, now);
+    }
+
+    /// Prune entries with no recent failures. Call periodically: the
+    /// per-address maps are self-bounding (once breadth is reached
+    /// nothing more is recorded from that address), but the set of
+    /// addresses and accounts seen over a long uptime is not.
+    pub fn cleanup(&self) {
+        let cutoff = Instant::now() - self.window;
+        lock_recovering(&self.account_failures).retain(|_, timestamps| {
+            timestamps.retain(|t| *t > cutoff);
+            !timestamps.is_empty()
+        });
+        lock_recovering(&self.address_breadth).retain(|_, identifiers| {
+            identifiers.retain(|_, t| *t > cutoff);
+            !identifiers.is_empty()
         });
     }
 }
@@ -171,8 +318,10 @@ pub struct AppState {
     /// field.
     pub billing_service: Arc<BillingService>,
     pub settings: Arc<Settings>,
-    /// Rate limiter for login endpoints (5 attempts per 15 minutes per IP).
-    pub login_limiter: RateLimiter,
+    /// Failure budget for the login endpoints: 5 failed attempts per 15
+    /// minutes per **account**, plus a per-address breadth allowance.
+    /// Successes cost nothing — see [`CredentialLimiter`].
+    pub login_limiter: CredentialLimiter,
     /// Rate limiter for password recovery (`POST /forgot-password`).
     /// Same 5-per-15-minutes shape as `login_limiter` but a SEPARATE
     /// bucket: a member who has just failed five logins is exactly the
@@ -224,7 +373,19 @@ impl AppState {
             stripe,
             billing_service,
             settings,
-            login_limiter: RateLimiter::new(5, Duration::from_secs(15 * 60)),
+            // 5 failures per account, and 20 distinct accounts per
+            // address, both per 15 minutes.
+            //
+            // 20 is chosen against the venue case: ten members behind
+            // one NAT address, several mistyping, produce breadth equal
+            // to the number of *members* fumbling — one member burning
+            // all five of their own failures still advances this by 1.
+            // Twice the venue leaves the room room to spare while
+            // stuffing, which sprays one or two tries across dozens of
+            // accounts, crosses it almost immediately.
+            // ponytail: one global number; make it configurable only if
+            // a deployment reports a legitimate address exceeding it.
+            login_limiter: CredentialLimiter::new(5, 20, Duration::from_secs(15 * 60)),
             recovery_limiter: RateLimiter::new(5, Duration::from_secs(15 * 60)),
             money_limiter: money_limiter.0,
             setup_lock: Arc::new(AsyncMutex::new(())),
@@ -565,12 +726,12 @@ impl FromRef<AppState> for SqlitePool {
 
 // --- Rate limiters and locks ---
 //
-// RateLimiter appears three times on AppState (login_limiter,
-// recovery_limiter, money_limiter), so a bare `FromRef<AppState> for
-// RateLimiter` would be ambiguous. Each limiter gets a newtype wrapper.
+// RateLimiter appears twice on AppState (recovery_limiter,
+// money_limiter), so a bare `FromRef<AppState> for RateLimiter` would be
+// ambiguous. Each limiter gets a newtype wrapper.
 
 #[derive(Clone)]
-pub struct LoginLimiter(pub RateLimiter);
+pub struct LoginLimiter(pub CredentialLimiter);
 
 /// Password-recovery budget. Deliberately NOT `LoginLimiter` — see the
 /// `recovery_limiter` field comment.
@@ -640,5 +801,147 @@ mod tests {
         // Safe-by-default: header ignored, collapses to loopback bucket.
         let ip = client_ip(&headers("1.2.3.4, 9.9.9.9"), false);
         assert_eq!(ip, IpAddr::from([127, 0, 0, 1]));
+    }
+
+    // -----------------------------------------------------------------
+    // CredentialLimiter
+    //
+    // The venue and stuffing cases are asserted here rather than through
+    // the HTTP surface because each failed login there costs a full
+    // Argon2 hash, and these need dozens of attempts.
+    // -----------------------------------------------------------------
+
+    /// Production shape: 5 failures per account, 20 accounts per address.
+    fn limiter() -> CredentialLimiter {
+        CredentialLimiter::new(5, 20, Duration::from_secs(15 * 60))
+    }
+
+    fn venue() -> IpAddr {
+        "203.0.113.7".parse().unwrap()
+    }
+
+    #[test]
+    fn successes_consume_nothing() {
+        let limiter = limiter();
+        // A hundred logins that never call record_failure — including
+        // the same submission twice, which is the double-submit that
+        // needs no de-duplication once successes are free.
+        for _ in 0..100 {
+            assert!(limiter.check(venue(), "admin@example.com", "auth.login"));
+            assert!(limiter.check(venue(), "admin@example.com", "auth.totp"));
+        }
+    }
+
+    #[test]
+    fn sixth_failure_against_one_account_is_rejected() {
+        let limiter = limiter();
+        for _ in 0..5 {
+            assert!(limiter.check(venue(), "admin@example.com", "auth.login"));
+            limiter.record_failure(venue(), "admin@example.com");
+        }
+        assert!(!limiter.check(venue(), "admin@example.com", "auth.login"));
+    }
+
+    #[test]
+    fn one_member_locking_themselves_out_does_not_reach_the_address_budget() {
+        let limiter = limiter();
+        // The venue: four members fumbling behind one NAT address, one
+        // of them burning their whole budget.
+        for _ in 0..5 {
+            limiter.record_failure(venue(), "unlucky@example.com");
+        }
+        for who in ["b@example.com", "c@example.com", "d@example.com"] {
+            limiter.record_failure(venue(), who);
+            limiter.record_failure(venue(), who);
+        }
+
+        assert!(
+            !limiter.check(venue(), "unlucky@example.com", "auth.login"),
+            "the member who spent their own budget is locked out of login"
+        );
+        for who in ["b@example.com", "c@example.com", "e@example.com"] {
+            assert!(
+                limiter.check(venue(), who, "auth.login"),
+                "{who} shares only an address with them, not a budget"
+            );
+        }
+    }
+
+    #[test]
+    fn breadth_across_many_accounts_trips_the_address_budget() {
+        let limiter = limiter();
+        // One try each against 20 distinct accounts: no account is
+        // anywhere near its own limit, but the spread is the signature
+        // of stuffing rather than of people who know their passwords.
+        for i in 0..20 {
+            let who = format!("victim{i}@example.com");
+            assert!(limiter.check(venue(), &who, "auth.login"));
+            limiter.record_failure(venue(), &who);
+        }
+        assert!(!limiter.check(venue(), "victim99@example.com", "auth.login"));
+        assert!(
+            !limiter.check(venue(), "victim0@example.com", "auth.login"),
+            "the address is over budget regardless of which account is named"
+        );
+        assert!(
+            limiter.check(
+                "198.51.100.1".parse().unwrap(),
+                "victim0@example.com",
+                "auth.login"
+            ),
+            "and another address is unaffected"
+        );
+    }
+
+    #[test]
+    fn identifiers_matching_no_member_count_toward_breadth() {
+        // The limiter never resolves identifiers, so a run of names that
+        // match nothing counts exactly as much as real ones — which is
+        // the point: a source guessing at accounts that do not exist is
+        // not a member mistyping their own password.
+        let limiter = limiter();
+        for i in 0..20 {
+            limiter.record_failure(venue(), &format!("no-such-user-{i}"));
+        }
+        assert!(!limiter.check(venue(), "real@example.com", "auth.login"));
+    }
+
+    #[test]
+    fn capitalization_and_padding_do_not_buy_a_fresh_budget() {
+        let limiter = limiter();
+        for variant in [
+            "Admin@Example.com",
+            " admin@example.com ",
+            "ADMIN@EXAMPLE.COM",
+            "admin@example.com",
+            "aDmIn@ExAmPlE.cOm",
+        ] {
+            assert!(limiter.check(venue(), variant, "auth.login"));
+            limiter.record_failure(venue(), variant);
+        }
+        assert!(!limiter.check(venue(), "admin@example.com", "auth.login"));
+        assert_eq!(
+            CredentialLimiter::account_key(" Admin@Example.com "),
+            "admin@example.com"
+        );
+    }
+
+    #[test]
+    fn a_short_window_expires_both_budgets() {
+        let limiter = CredentialLimiter::new(1, 1, Duration::from_millis(30));
+        limiter.record_failure(venue(), "admin@example.com");
+        assert!(!limiter.check(venue(), "admin@example.com", "auth.login"));
+        std::thread::sleep(Duration::from_millis(45));
+        assert!(limiter.check(venue(), "admin@example.com", "auth.login"));
+    }
+
+    #[test]
+    fn cleanup_drops_expired_entries() {
+        let limiter = CredentialLimiter::new(5, 20, Duration::from_millis(30));
+        limiter.record_failure(venue(), "admin@example.com");
+        std::thread::sleep(Duration::from_millis(45));
+        limiter.cleanup();
+        assert!(lock_recovering(&limiter.account_failures).is_empty());
+        assert!(lock_recovering(&limiter.address_breadth).is_empty());
     }
 }

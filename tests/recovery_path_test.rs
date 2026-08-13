@@ -29,8 +29,9 @@ use common::{build_app_state, fresh_pool, merged_router};
 const PASSWORD: &str = "p4ssword_long_enough";
 const NEW_PASSWORD: &str = "N3wp4ssword_long_enough";
 
-/// Budget shape shared by `login_limiter` and `recovery_limiter`: 5 per
-/// 15 minutes per IP. Independent buckets, identical size.
+/// Budget size shared by `login_limiter` and `recovery_limiter`: 5 per 15
+/// minutes. Independent buckets, identical size — and since a60, different
+/// keys: failed credential attempts per account, recovery requests per IP.
 const BUDGET: usize = 5;
 
 async fn harness() -> (SqlitePool, AppState, Router) {
@@ -211,10 +212,22 @@ async fn exhausting_the_recovery_budget_leaves_login_reachable() {
 /// The sharing that a47 explicitly does NOT relax: the second factor stays
 /// on the credential budget, so a stolen password can't buy a fresh 5
 /// guesses at the 6-digit TOTP space.
+///
+/// a60 re-keyed that shared budget from the address to the account, so the
+/// second-factor attempt has to name an account for the carry-over to mean
+/// anything — hence the pending login, minted before the budget is spent
+/// (afterwards the first factor itself would be refused).
 #[tokio::test]
 async fn totp_still_shares_the_credential_budget_with_login() {
     let (_pool, state, app) = harness().await;
-    let (_id, email) = active_member(&state, PASSWORD).await;
+    let (member_id, email) = active_member(&state, PASSWORD).await;
+
+    let pending = state
+        .service_context
+        .pending_login_service
+        .create(member_id, false)
+        .await
+        .expect("create pending");
 
     for _ in 0..BUDGET {
         post_login(&app, &email, "Wr0ngPassword!!").await;
@@ -227,6 +240,7 @@ async fn totp_still_shares_the_credential_budget_with_login() {
                 .method("POST")
                 .uri("/login/totp")
                 .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, format!("pending_login={pending}"))
                 .body(Body::from(
                     serde_json::json!({ "code": "000000" }).to_string(),
                 ))

@@ -57,9 +57,11 @@ pub async fn login(
     jar: CookieJar,
     Json(req): Json<LoginRequest>,
 ) -> Result<Response> {
-    // Rate-limit login attempts per IP
+    // Budget check BEFORE any hashing, so an over-limit attempt costs no
+    // Argon2. Read-only: the budget is spent below, and only if
+    // verification actually fails.
     let ip = state::client_ip(&headers, settings.server.trust_forwarded_for());
-    if !login_limiter.0.check_and_record(ip, "auth.login") {
+    if !login_limiter.0.check(ip, &req.email, "auth.login") {
         return Err(AppError::TooManyRequests);
     }
 
@@ -80,6 +82,7 @@ pub async fn login(
         None => {
             // User not found — burn Argon2 time to prevent timing-based enumeration.
             auth::AuthService::verify_dummy(&req.password).await;
+            login_limiter.0.record_failure(ip, &req.email);
             auth_log::denied(
                 "auth.login",
                 "unknown_email",
@@ -94,6 +97,7 @@ pub async fn login(
 
     // Verify password
     if !auth::AuthService::verify_password(&req.password, &password_hash).await? {
+        login_limiter.0.record_failure(ip, &req.email);
         auth_log::denied(
             "auth.login",
             "bad_password",
@@ -219,13 +223,9 @@ pub async fn login_totp(
     jar: CookieJar,
     Json(req): Json<LoginTotpRequest>,
 ) -> Result<Response> {
-    // Share the per-IP budget with /auth/login so an attacker holding a
-    // stolen password can't switch surfaces to get a fresh allowance
-    // when brute-forcing the 6-digit TOTP code.
+    // The account budget is checked below, once the pending login names
+    // the member — the second factor carries no identifier of its own.
     let ip = state::client_ip(&headers, settings.server.trust_forwarded_for());
-    if !login_limiter.0.check_and_record(ip, "auth.totp") {
-        return Err(AppError::TooManyRequests);
-    }
 
     let token = jar
         .get(crate::auth::pending_login::COOKIE_NAME)
@@ -299,6 +299,15 @@ pub async fn login_totp(
         }
     };
 
+    // Second-factor failures spend the SAME account budget /auth/login
+    // spends, keyed on the account under attack rather than on whatever
+    // address the attacker is using: switching surfaces buys no fresh
+    // allowance for brute-forcing the 6-digit code space. Checked before
+    // the code is verified, like the first factor.
+    if !login_limiter.0.check(ip, &member.email, "auth.totp") {
+        return Err(AppError::TooManyRequests);
+    }
+
     // Try TOTP first; if that fails, try the recovery-code path. Their
     // formats don't overlap (6 digits vs hyphenated alphanumeric), so a
     // valid submission only ever satisfies one branch. On total failure
@@ -316,6 +325,7 @@ pub async fn login_totp(
             .unwrap_or(false)
     };
     if !totp_ok && !used_recovery {
+        login_limiter.0.record_failure(ip, &member.email);
         auth_log::denied(
             "auth.totp",
             "totp_invalid",

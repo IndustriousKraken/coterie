@@ -183,7 +183,8 @@ with Argon2id + TOTP 2FA · single-binary deploy behind Caddy.
 - **Public API** — signup, donations, public event and announcement reads, RSS
   and iCal feeds; documented as OpenAPI at `/api/docs`.
 - **Security** — session cookies (HttpOnly / Secure / SameSite); top-level CSRF;
-  per-IP rate limiting on auth and money-moving endpoints; full audit logging;
+  rate limiting on auth (failed attempts, per account) and money-moving
+  endpoints (per IP); full audit logging;
   optional admin-mandatory 2FA.
 - **Integrations** — Discord role sync by dues status (with email fallback);
   UniFi Access API client wired up; signed change notifications to a companion
