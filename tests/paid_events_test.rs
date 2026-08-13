@@ -610,6 +610,13 @@ async fn admin_refund_cancels_the_seat() {
     let creator = h.active_member("creator").await;
     let event = h.event(creator.id, 3000, Some(1)).await;
     let m = h.active_member("m").await;
+    let dues_before = h
+        .member_repo
+        .find_by_id(m.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .dues_paid_until;
 
     // A manual (at-the-door) event fee: refundable with no Stripe call.
     let payment = h
@@ -662,6 +669,20 @@ async fn admin_refund_cancels_the_seat() {
         "the seat is available to another member",
     );
     assert_eq!(h.audit_count("event_registration_refunded").await, 1);
+
+    // A refunded membership payment retracts the dues it granted; an
+    // event fee never granted any, so the window must not move.
+    assert_eq!(
+        h.member_repo
+            .find_by_id(m.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .dues_paid_until,
+        dues_before,
+        "refunding an event fee is not a dues retraction",
+    );
+    assert_eq!(h.audit_count("membership_dues_retracted").await, 0);
 }
 
 #[tokio::test]

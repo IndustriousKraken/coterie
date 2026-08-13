@@ -87,6 +87,33 @@ pub trait PaymentRepository: Send + Sync {
         billing_period: crate::domain::configurable_types::BillingPeriod,
     ) -> Result<Option<MemberStatus>>;
 
+    /// Give back the dues extension a single payment granted — the
+    /// inverse of `extend_dues_for_payment_atomic`, for when that
+    /// payment is refunded.
+    ///
+    /// Subtracts the extension THIS payment applied
+    /// (`dues_extension_seconds`, recorded by the extension) from the
+    /// member's current `dues_paid_until`. It is a subtraction, not a
+    /// reset: a member holding dues granted by several payments keeps
+    /// the others' contributions.
+    ///
+    /// Idempotent by the same claim-then-update shape as the extension,
+    /// anchored on `dues_retracted_at` — the admin refund path and its
+    /// own `charge.refunded` echo can both reach it, and the second
+    /// caller must not reduce the window again.
+    ///
+    /// Returns `Some((member_id, seconds))` if THIS call performed the
+    /// retraction (callers audit off that); `None` when there is
+    /// nothing to retract — the payment granted no dues extension
+    /// (any non-membership payment, or a row predating the delta
+    /// column), it was already retracted, or its member row is gone.
+    /// None of those is an error.
+    ///
+    /// Deliberately does NOT write member status: where the retracted
+    /// window leaves a member no longer paid up, the daily expiration
+    /// sweep transitions them, so there stays one path to `Expired`.
+    async fn retract_dues_for_payment(&self, payment_id: Uuid) -> Result<Option<(Uuid, i64)>>;
+
     // ---- Paid-event support -------------------------------------------
 
     /// The payer's live event-fee payment for this event, if any —
@@ -713,6 +740,18 @@ impl PaymentRepository for SqlitePaymentRepository {
             BillingPeriod::Lifetime => DateTime::<Utc>::MAX_UTC,
         };
 
+        // Record how much this payment moved the window, so a refund of
+        // it can give back exactly that and no more (see
+        // `retract_dues_for_payment`). The delta, not the before/after
+        // pair: a member may hold dues from several payments and only
+        // the refunded one is ever undone.
+        sqlx::query("UPDATE payments SET dues_extension_seconds = ? WHERE id = ?")
+            .bind((new_dues_date - base_date).num_seconds())
+            .bind(payment_id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+
         // Revival: a completed dues payment makes Expired members
         // Active (restoration) and Pending members Active (pay-at-
         // signup activation — payment IS the approval).
@@ -736,6 +775,86 @@ impl PaymentRepository for SqlitePaymentRepository {
         Ok(Some(
             MemberStatus::from_str(&prior_status_str).unwrap_or(MemberStatus::Active),
         ))
+    }
+
+    async fn retract_dues_for_payment(&self, payment_id: Uuid) -> Result<Option<(Uuid, i64)>> {
+        let mut tx = self.pool.begin().await.map_err(AppError::Database)?;
+
+        // Atomic claim, mirroring the extension's. Only the first caller
+        // for this payment stamps dues_retracted_at; the admin refund's
+        // own webhook echo (or a webhook retry) sees 0 rows and no-ops.
+        // The `dues_extension_seconds IS NOT NULL` half is what makes
+        // "this payment granted no dues" a silent no-op rather than an
+        // error — every non-membership refund reaches here too.
+        let claim = sqlx::query(
+            "UPDATE payments SET dues_retracted_at = ? \
+             WHERE id = ? AND dues_extension_seconds IS NOT NULL \
+               AND dues_retracted_at IS NULL",
+        )
+        .bind(Utc::now().naive_utc())
+        .bind(payment_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+        if claim.rows_affected() == 0 {
+            tx.commit().await.map_err(AppError::Database)?;
+            return Ok(None);
+        }
+
+        let row: Option<(Option<String>, i64)> =
+            sqlx::query_as("SELECT member_id, dues_extension_seconds FROM payments WHERE id = ?")
+                .bind(payment_id.to_string())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(AppError::Database)?;
+
+        // A dues-extending payment with no resolvable member is a corrupt
+        // row; the claim stands so retries stay no-ops.
+        let member_id = row
+            .as_ref()
+            .and_then(|(m, _)| m.as_deref())
+            .and_then(|m| Uuid::parse_str(m).ok());
+        let (Some((_, seconds)), Some(member_id)) = (&row, member_id) else {
+            tx.commit().await.map_err(AppError::Database)?;
+            return Ok(None);
+        };
+        let seconds = *seconds;
+
+        // Read-then-write inside the transaction for the same reason the
+        // extension does: SQLite's write lock serializes us against a
+        // concurrent extension for this member, so the two can't both
+        // compute from the same starting date and lose one another.
+        let current_dues: Option<Option<DateTime<Utc>>> =
+            sqlx::query_scalar("SELECT dues_paid_until FROM members WHERE id = ?")
+                .bind(member_id.to_string())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(AppError::Database)?;
+
+        let Some(Some(current_dues)) = current_dues else {
+            // Member row gone, or never had a dues window to reduce.
+            tx.commit().await.map_err(AppError::Database)?;
+            return Ok(None);
+        };
+
+        // Status is left alone on purpose — the daily expiration sweep
+        // owns the Active→Expired transition and reads this same column.
+        sqlx::query(
+            "UPDATE members SET dues_paid_until = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        )
+        .bind(
+            current_dues
+                .checked_sub_signed(chrono::Duration::seconds(seconds))
+                .unwrap_or(current_dues),
+        )
+        .bind(member_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+        tx.commit().await.map_err(AppError::Database)?;
+        Ok(Some((member_id, seconds)))
     }
 
     async fn find_event_fee_payment(

@@ -971,6 +971,13 @@ async fn out_of_band_refund_webhook_cancels_the_enrollment() {
     let creator = h.active_member("creator").await;
     let series = h.class(creator.id, paid(12_000), &[7, 14]).await;
     let m = h.active_member("m").await;
+    let dues_before = h
+        .member_repo
+        .find_by_id(m.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .dues_paid_until;
 
     let payment = h.enroll_and_pay(&m, &series).await;
     let pi = payment.external_id.as_ref().unwrap().as_str().to_string();
@@ -1004,6 +1011,20 @@ async fn out_of_band_refund_webhook_cancels_the_enrollment() {
         );
     }
     assert_eq!(h.audit_count("series_enrollment_refunded").await, 1);
+
+    // A refunded membership payment retracts the dues it granted; a
+    // class pass never granted any, so the window must not move.
+    assert_eq!(
+        h.member_repo
+            .find_by_id(m.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .dues_paid_until,
+        dues_before,
+        "refunding a class pass is not a dues retraction",
+    );
+    assert_eq!(h.audit_count("membership_dues_retracted").await, 0);
 }
 
 // ---------------------------------------------------------------------

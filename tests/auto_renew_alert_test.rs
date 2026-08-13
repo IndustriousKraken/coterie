@@ -1,5 +1,7 @@
-//! Integration tests for `AutoRenew::process_scheduled_payment`'s
-//! terminal-failure AdminAlert dispatch (a22).
+//! Integration tests for `AutoRenew::process_scheduled_payment` — its
+//! terminal-failure AdminAlert dispatch (a22), and whether it charges at
+//! all when the coverage a queued renewal was scheduled against has been
+//! refunded (a59).
 //!
 //! Hits a real in-memory SQLite + migrations + `BillingService` so the
 //! actual production path executes end-to-end. The test
@@ -13,8 +15,12 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use coterie::{
+    api::state::{MoneyLimiter, RateLimiter},
     auth::SecretCrypto,
-    domain::{CreateMemberRequest, SavedCard, ScheduledPayment, ScheduledPaymentStatus},
+    domain::{
+        CreateMemberRequest, Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus, SavedCard,
+        ScheduledPayment, ScheduledPaymentStatus,
+    },
     email::{EmailMessage, EmailSender},
     error::{AppError, Result as CoterieResult},
     integrations::{Integration, IntegrationEvent, IntegrationManager},
@@ -30,7 +36,7 @@ use coterie::{
     },
     service::{
         billing_service::BillingService, membership_type_service::MembershipTypeService,
-        settings_service::SettingsService,
+        payment_admin_service::PaymentAdminService, settings_service::SettingsService,
     },
 };
 use sqlx::SqlitePool;
@@ -98,6 +104,8 @@ struct Harness {
     fake: Arc<FakeStripeGateway>,
     scheduled_repo: Arc<SqliteScheduledPaymentRepository>,
     saved_card_repo: Arc<SqliteSavedCardRepository>,
+    payment_repo: Arc<dyn PaymentRepository>,
+    payment_admin: PaymentAdminService,
     recorded_events: Arc<Mutex<Vec<IntegrationEvent>>>,
 }
 
@@ -135,9 +143,25 @@ async fn build_harness() -> Harness {
         member_repo.clone(),
     ));
 
+    // The admin refund route, so the refund→renewal tests below drive
+    // the real operator action rather than poking the repository.
+    let payment_admin = PaymentAdminService::new(
+        payment_repo.clone(),
+        event_repo.clone(),
+        Arc::new(coterie::repository::SqliteSeriesEnrollmentRepository::new(
+            pool.clone(),
+        )),
+        Arc::new(coterie::payments::StripeHandle::preloaded(None, None)),
+        Arc::new(coterie::service::audit_service::AuditService::new(
+            pool.clone(),
+        )),
+        integrations.clone(),
+        MoneyLimiter(RateLimiter::new(1000, std::time::Duration::from_secs(60))),
+    );
+
     let billing = BillingService::new(
         scheduled_repo.clone() as Arc<dyn ScheduledPaymentRepository>,
-        payment_repo,
+        payment_repo.clone(),
         saved_card_repo.clone() as Arc<dyn SavedCardRepository>,
         member_repo,
         event_repo,
@@ -159,6 +183,8 @@ async fn build_harness() -> Harness {
         fake,
         scheduled_repo,
         saved_card_repo,
+        payment_repo,
+        payment_admin,
         recorded_events,
     }
 }
@@ -323,9 +349,151 @@ async fn seed_stripe_subscription_member(pool: &SqlitePool) -> Uuid {
     member.id
 }
 
+/// Put a member one billing period into a paid membership: a Completed
+/// membership payment that extended their dues, plus the renewal that
+/// extension queued, both wound forward to the day the coverage runs
+/// out — the day the runner charges. There is no clock to advance in a
+/// test, so the two dates move instead of "now".
+///
+/// Returns (member_id, payment_id, scheduled_payment_id).
+async fn seed_paid_member_due_for_renewal(h: &Harness) -> (Uuid, Uuid, Uuid) {
+    let (member_id, mt_id) = seed_coterie_managed_member(&h.pool).await;
+    seed_default_card(&h.saved_card_repo, member_id).await;
+
+    let now = Utc::now();
+    let payment = h
+        .payment_repo
+        .create(Payment {
+            id: Uuid::new_v4(),
+            payer: Payer::Member(member_id),
+            amount_cents: 500,
+            currency: "USD".to_string(),
+            status: PaymentStatus::Completed,
+            payment_method: PaymentMethod::Manual,
+            kind: PaymentKind::Membership,
+            external_id: None,
+            description: "Membership dues".to_string(),
+            paid_at: Some(now),
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("create membership payment");
+
+    h.billing
+        .auto_renew
+        .extend_member_dues(payment.id, member_id, mt_id)
+        .await
+        .expect("extend dues");
+    h.billing
+        .auto_renew
+        .reschedule_after_payment(member_id, "member")
+        .await
+        .expect("queue the renewal this payment earns");
+
+    sqlx::query("UPDATE members SET dues_paid_until = ? WHERE id = ?")
+        .bind(now)
+        .bind(member_id.to_string())
+        .execute(&h.pool)
+        .await
+        .expect("wind the dues window to its last day");
+    sqlx::query("UPDATE scheduled_payments SET due_date = ? WHERE member_id = ?")
+        .bind(now.date_naive())
+        .bind(member_id.to_string())
+        .execute(&h.pool)
+        .await
+        .expect("wind the queued renewal to today");
+
+    let scheduled_id: String =
+        sqlx::query_scalar("SELECT id FROM scheduled_payments WHERE member_id = ?")
+            .bind(member_id.to_string())
+            .fetch_one(&h.pool)
+            .await
+            .expect("the queued renewal");
+
+    (
+        member_id,
+        payment.id,
+        Uuid::parse_str(&scheduled_id).expect("scheduled uuid"),
+    )
+}
+
+fn charged_the_card(fake: &Arc<FakeStripeGateway>) -> bool {
+    fake.calls()
+        .iter()
+        .any(|c| matches!(c, FakeCall::CreatePaymentIntent(_)))
+}
+
 // ---------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------
+
+/// Control for the test below: the same member, unrefunded, IS charged
+/// on the day their coverage ends. Without this, "no renewal charge"
+/// could pass for any reason at all.
+#[tokio::test]
+async fn a_member_whose_coverage_ends_today_is_renewed() {
+    let h = build_harness().await;
+    let (_member_id, _payment_id, scheduled_id) = seed_paid_member_due_for_renewal(&h).await;
+    assert_eq!(
+        payments_count(&h.pool).await,
+        1,
+        "just the original payment"
+    );
+
+    h.billing
+        .auto_renew
+        .run_billing_cycle()
+        .await
+        .expect("billing cycle");
+
+    assert_eq!(scheduled_status(&h.pool, scheduled_id).await, "completed");
+    assert_eq!(payments_count(&h.pool).await, 2, "the renewal charged");
+    assert!(charged_the_card(&h.fake), "the saved card was charged");
+}
+
+/// The production symptom, end to end: a member charged for a month and
+/// then refunded was still charged a renewal when that (already
+/// returned) month would have ended. The refund now retracts the dues
+/// the payment granted, and the renewal queued against that coverage
+/// stops rather than billing for a period nobody holds.
+#[tokio::test]
+async fn a_refunded_membership_payment_does_not_renew() {
+    let h = build_harness().await;
+    let (member_id, payment_id, scheduled_id) = seed_paid_member_due_for_renewal(&h).await;
+
+    h.payment_admin
+        .refund(member_id, payment_id, "127.0.0.1".parse().unwrap())
+        .await
+        .expect("admin refund");
+
+    let dues_after_refund = member_dues_until(&h.pool, member_id).await;
+    assert!(
+        dues_after_refund.is_some(),
+        "the window is reduced, not cleared",
+    );
+
+    h.billing
+        .auto_renew
+        .run_billing_cycle()
+        .await
+        .expect("billing cycle");
+
+    assert_eq!(
+        scheduled_status(&h.pool, scheduled_id).await,
+        "cancelled",
+        "the renewal was queued against coverage that got refunded",
+    );
+    assert_eq!(
+        payments_count(&h.pool).await,
+        1,
+        "no renewal payment row — a refund must not produce a charge",
+    );
+    assert!(
+        !charged_the_card(&h.fake),
+        "the member's card was never touched",
+    );
+}
 
 #[tokio::test]
 async fn terminal_failure_dispatches_admin_alert() {

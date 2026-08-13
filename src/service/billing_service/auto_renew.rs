@@ -633,6 +633,41 @@ impl AutoRenew {
             return Ok(());
         }
 
+        // `schedule_renewal` sets due_date to the day the member's paid
+        // coverage runs out. If their window now ends EARLIER than that,
+        // the coverage this renewal was queued against was taken back —
+        // a refunded membership payment retracts the dues it granted —
+        // and charging would renew a period the member no longer holds.
+        // This is the production symptom: a payment refunded a month
+        // after it was made still produced a renewal charge on the day
+        // its (already-returned) coverage would have ended.
+        let member = self.member_repo.find_by_id(sp.member_id).await?;
+        if let Some(dues_paid_until) = member.and_then(|m| m.dues_paid_until) {
+            if dues_paid_until.date_naive() < sp.due_date {
+                tracing::info!(
+                    "Cancelling scheduled payment {} for member {}: dues now run to {} \
+                     but this renewal was queued for {} — the coverage it renews was retracted",
+                    id,
+                    sp.member_id,
+                    dues_paid_until.date_naive(),
+                    sp.due_date,
+                );
+                self.scheduled_payment_repo
+                    .update_status(
+                        id,
+                        ScheduledPaymentStatus::Cancelled,
+                        Some(format!(
+                            "Dues window ends {} — earlier than this renewal's due date {}; \
+                             the coverage it renews was refunded",
+                            dues_paid_until.date_naive(),
+                            sp.due_date,
+                        )),
+                    )
+                    .await?;
+                return Ok(());
+            }
+        }
+
         let runtime = self.stripe_handle.current();
         let stripe_client = runtime
             .client
