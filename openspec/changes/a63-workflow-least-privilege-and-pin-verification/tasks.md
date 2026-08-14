@@ -34,7 +34,11 @@
   without opening a log.
 - [ ] 2.6 A pin whose comment names no version, or a version that does not exist
   upstream, fails. An unverifiable pin is not a verified one.
-- [ ] 2.7 The job needs only repository read and network access to the upstream
+- [ ] 2.7 Fail when one action appears at two different SHAs across the
+  workflows. A per-pin check passes both — `actions/checkout` was at v7.0.1 in
+  one job and v7.0.0 in another, because the update that bumped it predated the
+  job it missed, and nothing reported the split.
+- [ ] 2.8 The job needs only repository read and network access to the upstream
   API; declare it accordingly per section 1.
 
 ## 3. Remove the third party from the deploy path
@@ -61,9 +65,11 @@
   and this is asserted, not assumed.
 - [ ] 4.3 It fails on a SHA deliberately mismatched from its comment.
 - [ ] 4.4 It fails on a pin whose comment names no version.
-- [ ] 4.5 Confirm each workflow's token carries no write scope, except
+- [ ] 4.5 It fails when one action is pinned at two SHAs across workflows, and
+  passes when every occurrence agrees.
+- [ ] 4.6 Confirm each workflow's token carries no write scope, except
   `release.yml`.
-- [ ] 4.6 Exercise the rewritten deploy against the staging host and confirm the
+- [ ] 4.7 Exercise the rewritten deploy against the staging host and confirm the
   same artifacts land and the service restarts. This is a behavior-preserving
   rewrite of a step that reaches production infrastructure, so it is verified by
   running it, not by reading it.

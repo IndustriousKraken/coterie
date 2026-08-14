@@ -61,6 +61,14 @@ The check SHALL fail the build on a reference that is not a full SHA, and on a
 SHA that does not match its claimed version. It SHALL name the offending
 reference.
 
+The check SHALL also fail when one action is pinned to two different versions
+across the workflows. This is not hypothetical: `actions/checkout` was pinned to
+`v7.0.1` in one job and `v7.0.0` in another after an update landed that predated
+the job it missed. Both pins were individually valid and matched their comments,
+so a per-pin check passes them both — yet one job silently runs an older action
+than the repository believes it has standardized on, and the next update will
+move only one of them again.
+
 Verification SHALL NOT be satisfied by reviewing the contents of an updated
 action. Reading the full diff of every action update does not scale to a
 dependency's release history and therefore does not happen; a control that is not
@@ -78,6 +86,12 @@ secrets are already bounded by the requirement above.
 
 - **WHEN** an action is referenced by tag or branch rather than by full commit SHA
 - **THEN** the build SHALL fail and name that reference
+
+#### Scenario: The same action pinned to two versions fails
+
+- **WHEN** one action is referenced at two different commits across the workflows,
+  each pin individually matching its own comment
+- **THEN** the build SHALL fail and name both references
 
 #### Scenario: An annotated tag verifies correctly
 
