@@ -514,8 +514,15 @@ Two layers of protection beyond Coterie's own backups:
 
 The same `release-deploy.sh` you used in step 5 handles updates. On
 subsequent runs (with the binary already present at `/opt/coterie/`)
-it does the service-stop / swap / restart dance instead of running
-install.sh.
+it delegates to `coterie-provision update` — the hardened path that
+snapshots the DB, swaps the binaries, health-checks after restart, and
+rolls back on failure — instead of running install.sh.
+
+`coterie-provision` is not installed on the droplet, and does not need to
+be: `deploy/update.sh` downloads the latest stable one, verifies its
+checksum, and runs it from a temp directory. The script prints that it is
+bootstrapping when it takes that route. See
+[OPS.md](OPS.md#coterie-provision-is-fetched-per-update-not-installed).
 
 Update to the latest tagged release:
 

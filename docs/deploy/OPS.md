@@ -222,6 +222,31 @@ To upgrade in place:
    hosts no signup page of its own — `/public/signup` is the POST-only
    API your public site submits to, not a page a browser can open.
 
+### `coterie-provision` is fetched per update, not installed
+
+`/opt/coterie/coterie-provision` does not exist on a normal install, and
+nothing places it there. That is expected, not a broken install.
+
+The update logic lives in the `coterie-provision update` binary, and
+`deploy/update.sh` bootstraps it: it downloads the **latest stable**
+`coterie-provision` release asset, verifies its SHA256, and execs it from
+a temp directory that is removed when the run ends. Fetching it per run is
+the point — the update logic is always current, even when you are pinning
+Coterie itself to an older tag with `--tag`.
+
+So `release-deploy.sh` on an existing install resolves in this order:
+
+1. `/opt/coterie/coterie-provision`, then a `coterie-provision` on `PATH`
+   — used only if you deliberately put one there;
+2. otherwise `deploy/update.sh`, which fetches one. The script says so on
+   stdout when it takes this route, so an operator who *did* install a
+   binary can see that it was not the one used.
+
+`update.sh` is a bash script and is exec'd directly, honouring its
+shebang. Running it under `sh` on Debian (where `/bin/sh` is dash) fails
+with `trap: bad trap` — `tests/deploy_script_interpreter_test.rs` keeps
+any caller in this repo from doing that.
+
 ### `deploy/` tracks the installed release
 
 `coterie-provision update` refreshes `/opt/coterie/deploy/` from the

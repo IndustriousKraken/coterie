@@ -16,7 +16,16 @@
 # All flags (including --tag) are forwarded verbatim to
 # `coterie-provision update`. The downloaded provision binary is always
 # the latest stable so the update logic itself is current even when
-# rolling Coterie back to an older tag.
+# rolling Coterie back to an older tag. It is NOT installed: it lives in
+# a temp dir for the length of the run, which is why an installed host
+# has no /opt/coterie/coterie-provision.
+#
+# This script is bash, not POSIX sh — the `trap ... ERR` below is a bash
+# pseudo-signal. Run it directly (it is executable) or with `bash`.
+# Running it with `sh` fails on Debian, where /bin/sh is dash:
+# "trap: 26: bad trap". tests/deploy_script_interpreter_test.rs enforces
+# that no script in this repo invokes another with a contradicting
+# interpreter.
 
 set -euo pipefail
 
