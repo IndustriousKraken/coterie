@@ -25,9 +25,12 @@ Four things are checked:
      match its own comment while one job silently runs an older action.
 
 Comment grammar: the first whitespace-separated token after `#` is the claimed
-ref. The claim is a MOVING reference if the rest of the comment contains the
-word "branch" or "moving"; otherwise it is a tag claim, which is the stronger
-assertion and the default.
+ref, and the SECOND must be exactly "branch" or "moving" to mark it as a moving
+reference — `# stable branch — moving ref, pinned 2026-07-09`. Anything else is
+a tag claim, which is the stronger assertion and the default. The marker is
+positional rather than a search of the comment text so that prose which happens
+to mention a branch (`# v1.2.3 fixes branch handling`) cannot silently downgrade
+a pin from equality to existence-only.
 
 The transport is injectable: `--refs FILE` reads a JSON fixture of API path ->
 response instead of calling GitHub, so the tests run offline against the same
@@ -52,7 +55,7 @@ from typing import NamedTuple, Optional
 
 USES = re.compile(r"^\s*(?:-\s+)?uses:\s*(?P<ref>\S+)\s*(?:#\s*(?P<comment>.*?))?\s*$")
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
-MOVING = re.compile(r"\b(branch|moving)\b", re.IGNORECASE)
+MOVING_MARKERS = ("branch", "moving")
 
 API = "https://api.github.com"
 
@@ -142,7 +145,7 @@ def collect_pins(workflows: Path) -> list[Pin]:
                     action=action,
                     sha=sha,
                     claim=tokens[0] if tokens else None,
-                    moving=bool(MOVING.search(comment)),
+                    moving=len(tokens) > 1 and tokens[1].lower() in MOVING_MARKERS,
                 )
             )
     return pins

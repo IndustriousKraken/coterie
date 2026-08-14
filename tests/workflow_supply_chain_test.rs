@@ -261,6 +261,31 @@ fn a_moving_reference_outside_the_repository_fails() {
 }
 
 #[test]
+fn a_tag_comment_mentioning_a_branch_is_still_a_tag_claim() {
+    // The marker is positional — second token — so prose that happens to say
+    // "branch" or "moving" does not quietly drop the pin to existence-only,
+    // which is the whole assertion for ten of the fourteen pins here.
+    let scratch = Scratch::new("incidental-branch").workflow(
+        "w.yml",
+        &step(&format!(
+            "acme/action@{SHA_A} # v1.2.3 fixes branch handling"
+        )),
+    );
+    let refs = format!(
+        "{{{}, {}}}",
+        lightweight("acme/action", "v1.2.3", SHA_B),
+        commit_exists("acme/action", SHA_A)
+    );
+    let (passed, stderr) = scratch.check(&refs);
+
+    assert!(
+        !passed && stderr.contains("claims tag 'v1.2.3'"),
+        "a comment that merely mentions a branch must still be held to \
+         equality:\n{stderr}"
+    );
+}
+
+#[test]
 fn a_tag_claim_is_not_rescued_by_existence() {
     // Existence upstream is the fallback for moving references only. Lowering
     // every pin to it would discard the check's value for the ten of fourteen
@@ -426,11 +451,21 @@ fn workflow_uses() -> Vec<Uses> {
             let Some((action, sha)) = reference.split_once('@') else {
                 continue;
             };
+            // Same grammar as scripts/verify_action_pins.py: claim first, then
+            // the marker in second position. A looser rule here would build a
+            // tag fixture for a pin the checker treats as moving (or the
+            // reverse), and `the_current_tree_verifies` would fail with a
+            // message about the wrong thing.
+            let mut tokens = comment.split_whitespace();
+            let claim = tokens.next().map(str::to_string);
+            let moving = tokens
+                .next()
+                .is_some_and(|t| matches!(t.to_lowercase().as_str(), "branch" | "moving"));
             all.push(Uses {
                 action: action.to_string(),
                 sha: sha.to_string(),
-                claim: comment.split_whitespace().next().map(str::to_string),
-                moving: comment.to_lowercase().contains("branch"),
+                claim,
+                moving,
             });
         }
     }

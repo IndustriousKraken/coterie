@@ -354,8 +354,11 @@ the upstream repository:
 
 - a **tag** claim must equal the tag's commit (annotated tags are
   dereferenced first);
-- a **moving** claim — a comment naming a branch, such as
-  `dtolnay/rust-toolchain`'s `stable` — must only *exist* upstream.
+- a **moving** claim — written `# <ref> branch …` or `# <ref> moving …`,
+  the marker in second position, such as `dtolnay/rust-toolchain`'s
+  `# stable branch — moving ref, pinned 2026-07-09` — must only *exist*
+  upstream. The marker is positional so a tag comment that merely mentions
+  a branch keeps the stronger equality check.
   Equality is the wrong assertion there: the branch advances by design,
   and this one is force-pushed, so the pinned commit is neither its head
   nor an ancestor of it while still being present in the repository;
