@@ -30,6 +30,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Every job here reads the repository and writes nothing back to it, so the
+# token says exactly that. Workflow-level rather than per-job: all three jobs
+# need the same thing, and a job added later inherits the floor instead of the
+# repository default. Pinning bounds WHEN third-party code is adopted; this
+# bounds what it can reach once running.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -45,7 +53,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch, pinned
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch — moving ref, pinned 2026-07-09
         with:
           targets: x86_64-unknown-linux-musl
 
@@ -103,7 +111,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch, pinned
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch — moving ref, pinned 2026-07-09
 
       # Fixed key, unlike the per-ref rust-cache above, because the cached copy
       # is only a warm start: `cargo audit` fetches advisory-db updates itself on
@@ -112,7 +120,11 @@ jobs:
       # eviction limit. Bump the suffix to pick up a newer cargo-audit.
       - name: Cache advisory database and cargo-audit
         id: audit-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        # Same pin as deploy.yml. These were at v4.3.0 here and v6.1.0 there —
+        # each matching its own comment, so a per-pin check passed both while
+        # this job silently ran an older action. That split is what the `pins`
+        # job below now refuses.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/advisory-db
@@ -128,3 +140,24 @@ jobs:
       # non-zero naming the crate when a RustSec advisory matches.
       - name: cargo audit
         run: cargo audit
+
+  # The `# vX.Y.Z` beside every pinned SHA is decorative — GitHub resolves the
+  # SHA and never reads the comment — so a pin that never pointed where it said
+  # is invisible to review. This resolves each claim upstream and compares.
+  #
+  # Runs on the daily schedule too, unlike `test`: a tag moved or deleted
+  # upstream is news that arrives without anything here changing, and the check
+  # costs seconds rather than the ten minutes a build would.
+  pins:
+    name: Verify action pins
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Read-only API calls; the token is here for the rate limit, not access.
+      # No toolchain, no cache, no build — the workflow files are the input.
+      - name: Verify action pins
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/verify_action_pins.py

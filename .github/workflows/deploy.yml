@@ -5,6 +5,11 @@ on:
     branches: [staging]
   workflow_dispatch:  # allows manual trigger from any branch
 
+# Checks out, builds, and rsyncs to a host. Nothing here writes to the
+# repository, so the token carries no scope that could.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -16,7 +21,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch, pinned
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch — moving ref, pinned 2026-07-09
 
       - name: Cache cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -44,18 +49,52 @@ jobs:
           cp -r config dist/
           cp -r examples dist/
 
+      # Same files, same host, same protocol, same remote commands as the
+      # `easingthemes/ssh-deploy` step this replaces — done here rather than by
+      # a third party, because the credential is an SSH key for a host on which
+      # the next lines run `sudo cp` into /etc/systemd/system and `systemctl
+      # restart`. That is root-equivalent access, and the convenience bought by
+      # handing it to somebody else's code is not writing an rsync invocation.
+      #
+      # The key never touches disk: it goes from the env into an agent over
+      # stdin, and the agent dies with the step. The host key is pinned from
+      # SSH_KNOWN_HOSTS rather than accepted blindly — a deploy that trusts
+      # whatever host answers would be a weaker link than the action removed
+      # here, which would make this a net loss. See docs/deploy/OPS.md for how
+      # to produce that secret; the deploy fails closed until it exists.
       - name: Deploy to server
-        uses: easingthemes/ssh-deploy@2cc5b27bf3029d0455dd5e09fe02633904031447 # v6.0.3
-        with:
+        env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
           REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
           REMOTE_USER: ${{ secrets.REMOTE_USER }}
-          SOURCE: "dist/"
-          TARGET: "/opt/coterie/"
-          SCRIPT_BEFORE: |
-            # Fix ownership so rsync can write files
-            sudo chown -R ${{ secrets.REMOTE_USER }}:${{ secrets.REMOTE_USER }} /opt/coterie || true
-          SCRIPT_AFTER: |
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SSH_KNOWN_HOSTS:-}" ]; then
+            echo "SSH_KNOWN_HOSTS secret is not set — see docs/deploy/OPS.md" >&2
+            exit 1
+          fi
+
+          KNOWN_HOSTS="$(mktemp "${RUNNER_TEMP:-/tmp}/known_hosts.XXXXXX")"
+          eval "$(ssh-agent -s)" > /dev/null
+          trap 'ssh-agent -k >/dev/null 2>&1 || true; rm -f "$KNOWN_HOSTS"' EXIT
+
+          printf '%s\n' "$SSH_PRIVATE_KEY" | ssh-add -
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$KNOWN_HOSTS"
+
+          SSH="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KNOWN_HOSTS"
+          REMOTE="$REMOTE_USER@$REMOTE_HOST"
+
+          # Fix ownership so rsync can write files
+          $SSH "$REMOTE" "sudo chown -R $REMOTE_USER:$REMOTE_USER /opt/coterie || true"
+
+          # -rltgoDzvO: the flags ssh-deploy passed by default, so the transfer
+          # is byte-for-byte the one that ran before.
+          rsync -rltgoDzvO -e "$SSH" dist/ "$REMOTE:/opt/coterie/"
+
+          $SSH "$REMOTE" '
+            set -e
             # Install service file if changed
             sudo cp /opt/coterie/deploy/coterie.service /etc/systemd/system/
             sudo systemctl daemon-reload
@@ -67,3 +106,4 @@ jobs:
             sudo systemctl restart coterie
 
             echo "Deployment complete!"
+          '
