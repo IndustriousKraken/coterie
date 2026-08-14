@@ -222,6 +222,31 @@ To upgrade in place:
    hosts no signup page of its own — `/public/signup` is the POST-only
    API your public site submits to, not a page a browser can open.
 
+### `coterie-provision` is fetched per update, not installed
+
+`/opt/coterie/coterie-provision` does not exist on a normal install, and
+nothing places it there. That is expected, not a broken install.
+
+The update logic lives in the `coterie-provision update` binary, and
+`deploy/update.sh` bootstraps it: it downloads the **latest stable**
+`coterie-provision` release asset, verifies its SHA256, and execs it from
+a temp directory that is removed when the run ends. Fetching it per run is
+the point — the update logic is always current, even when you are pinning
+Coterie itself to an older tag with `--tag`.
+
+So `release-deploy.sh` on an existing install resolves in this order:
+
+1. `/opt/coterie/coterie-provision`, then a `coterie-provision` on `PATH`
+   — used only if you deliberately put one there;
+2. otherwise `deploy/update.sh`, which fetches one. The script says so on
+   stdout when it takes this route, so an operator who *did* install a
+   binary can see that it was not the one used.
+
+`update.sh` is a bash script and is exec'd directly, honouring its
+shebang. Running it under `sh` on Debian (where `/bin/sh` is dash) fails
+with `trap: bad trap` — `tests/deploy_script_interpreter_test.rs` keeps
+any caller in this repo from doing that.
+
 ### `deploy/` tracks the installed release
 
 `coterie-provision update` refreshes `/opt/coterie/deploy/` from the
@@ -292,6 +317,98 @@ Rollback isn't automated. If a release introduces problems:
 
 Forward-compatible migrations are the norm; rollback is an escape
 hatch, not a routine.
+
+---
+
+## CI/CD workflow settings
+
+### Repository settings that are not in the repository
+
+Two GitHub repository settings are load-bearing and live only in the
+web UI, so they are recorded here. Both were applied **2026-08-13** and
+are deliberate; restore them if the repository is ever recreated or
+forked into a new home.
+
+**Settings → Actions → General → Workflow permissions:**
+
+1. **Default `GITHUB_TOKEN` permissions: Read repository contents.**
+   Every workflow here declares its own `permissions:` block, and those
+   declarations are what the workflows rely on. This setting is the
+   floor beneath them: a workflow added later without a block is
+   harmless rather than fully privileged.
+2. **"Allow GitHub Actions to create and approve pull requests": off.**
+   A workflow approving a pull request defeats review by the account
+   that runs the workflow.
+
+Nothing in the repository can verify or restore these — they are
+account-side state. If you are auditing, read them in the UI.
+
+### Action pins are verified, not just pinned
+
+Every third-party action is pinned to a full commit SHA with the
+version in a trailing comment. GitHub resolves the SHA and never reads
+the comment, so a pin that says `# v3.0.2` while pointing somewhere
+else looks correct forever. The `Verify action pins` job in `ci.yml`
+runs `scripts/verify_action_pins.py`, which resolves each claim against
+the upstream repository:
+
+- a **tag** claim must equal the tag's commit (annotated tags are
+  dereferenced first);
+- a **moving** claim — written `# <ref> branch …` or `# <ref> moving …`,
+  the marker in second position, such as `dtolnay/rust-toolchain`'s
+  `# stable branch — moving ref, pinned 2026-07-09` — must only *exist*
+  upstream. The marker is positional so a tag comment that merely mentions
+  a branch keeps the stronger equality check.
+  Equality is the wrong assertion there: the branch advances by design,
+  and this one is force-pushed, so the pinned commit is neither its head
+  nor an ancestor of it while still being present in the repository;
+- no action may appear at two different SHAs across the workflows.
+
+When it fails, it names the file, line, and reference. A failure is
+either a stale comment (fix the comment or the SHA) or a pin that never
+pointed where it claimed (read the upstream history before touching
+anything).
+
+### The staging deploy transfers files itself
+
+`deploy.yml` rsyncs over SSH in a `run:` step rather than handing the
+deploy key to a third-party action — the same key opens a host where
+the next commands run `sudo cp` into `/etc/systemd/system` and
+`systemctl restart`.
+
+**`SSH_KNOWN_HOSTS` must exist before the deploy can succeed.** The
+workflow pins the remote host key instead of accepting whatever host
+answers, and fails closed with a message naming the secret if it is
+unset. Produce it from a machine that can reach the deploy host:
+
+```bash
+ssh-keyscan staging.example.com          # or the IP in REMOTE_HOST
+```
+
+Paste the full output into Settings → Secrets and variables → Actions →
+`SSH_KNOWN_HOSTS`. A host's public key is not itself secret; it is a
+repository secret only because the value has to come from somewhere a
+workflow run cannot reach. Re-run `ssh-keyscan` and update the secret if
+the host is rebuilt — a rebuilt host presents a new key and the deploy
+will refuse to connect until the secret matches.
+
+### Verifying a deploy after changing the deploy workflow
+
+The rewrite above preserves behaviour — same files, same host, same
+protocol, same remote commands — but nothing in CI reaches real
+infrastructure, so confirm it once by hand after a change to
+`deploy.yml` lands:
+
+1. Actions → **Deploy to Staging** → **Run workflow** (`workflow_dispatch`).
+2. On the host, confirm the files arrived:
+   ```bash
+   ls -l /opt/coterie
+   ```
+3. Confirm the service came back up on the new binary:
+   ```bash
+   systemctl status coterie
+   ```
+   Look for `active (running)` and a start timestamp from the deploy.
 
 ---
 

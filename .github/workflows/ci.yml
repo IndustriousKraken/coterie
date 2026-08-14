@@ -30,6 +30,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Every job here reads the repository and writes nothing back to it, so the
+# token says exactly that. Workflow-level rather than per-job: all three jobs
+# need the same thing, and a job added later inherits the floor instead of the
+# repository default. Pinning bounds WHEN third-party code is adopted; this
+# bounds what it can reach once running.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -45,7 +53,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch, pinned
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch — moving ref, pinned 2026-07-09
         with:
           targets: x86_64-unknown-linux-musl
 
@@ -103,7 +111,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch, pinned
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch — moving ref, pinned 2026-07-09
 
       # Fixed key, unlike the per-ref rust-cache above, because the cached copy
       # is only a warm start: `cargo audit` fetches advisory-db updates itself on
@@ -112,7 +120,11 @@ jobs:
       # eviction limit. Bump the suffix to pick up a newer cargo-audit.
       - name: Cache advisory database and cargo-audit
         id: audit-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        # Same pin as deploy.yml. These were at v4.3.0 here and v6.1.0 there —
+        # each matching its own comment, so a per-pin check passed both while
+        # this job silently ran an older action. That split is what the `pins`
+        # job below now refuses.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/advisory-db
@@ -126,5 +138,80 @@ jobs:
       # Reads Cargo.lock, so the whole resolved graph is covered — most of what
       # the application is exposed to never appears in a Cargo.toml. Exits
       # non-zero naming the crate when a RustSec advisory matches.
+      #
+      # The `--ignore` flags below are waivers, and each one is a decision about
+      # a single advisory: one identifier per flag, no wildcard, no crate-wide
+      # suppression, no "ignore anything older than" rule. An advisory not named
+      # here fails the build, including a new one against a crate already listed.
+      # Nothing is waived that an upgrade or a removal would resolve —
+      # RUSTSEC-2026-0213 (ammonia) is absent because ammonia moved to 4.1.4.
+      #
+      # Revisit dates are a prompt to re-check the reasoning, not an expiry: an
+      # entry stays until the finding is fixed or the argument stops holding.
       - name: cargo audit
-        run: cargo audit
+        run: |
+          # RUSTSEC-2023-0071 — rsa 0.9.10, Marvin attack (key recovery via a
+          # timing side-channel). No fixed version exists.
+          #
+          # Not built. `rsa` is reachable only through `sqlx-mysql`, and this
+          # application is SQLite-only: `sqlx` is declared with
+          # `default-features = false` and the `sqlite` driver alone, so neither
+          # crate is compiled or linked. `cargo tree -i rsa --target all` prints
+          # nothing. It appears here anyway because Cargo records a package's
+          # optional dependencies in Cargo.lock whether or not a feature enables
+          # them, and this check reads the lockfile — deliberately, since that is
+          # what covers transitive exposure. Narrowing the sqlx features cannot
+          # drop the lockfile entry; only sqlx dropping the optional dependency
+          # would. Revisit 2026-11-14 — and this waiver is void the moment a
+          # MySQL driver is enabled, because then the crate is really in the
+          # binary.
+          #
+          # The other three are all rustls-webpki 0.101.7, reached by one path:
+          # async-stripe 0.39.1 -> hyper-rustls 0.24 -> rustls 0.21 ->
+          # rustls-webpki 0.101.7. That is not the application's own TLS —
+          # the server, reqwest and lettre's SMTP all run on rustls 0.23 with
+          # rustls-webpki 0.103, which is unaffected. The old stack is compiled,
+          # and is used for exactly one thing: the Stripe client's outbound
+          # HTTPS to api.stripe.com.
+          #   * RUSTSEC-2026-0104 — panic parsing a certificate revocation list.
+          #     The Stripe client configures no CRLs, so nothing reaches the
+          #     affected parser.
+          #   * RUSTSEC-2026-0098 — name constraints for URI names incorrectly
+          #     accepted. Exploiting it needs a certificate chaining to a
+          #     name-constrained CA in the trust store; this client validates
+          #     api.stripe.com against the webpki roots.
+          #   * RUSTSEC-2026-0099 — name constraints accepted for a certificate
+          #     asserting a wildcard name. Same trust path, same reasoning.
+          # No fix is reachable: async-stripe 0.39.1 is the newest stable release
+          # (checked 2026-08-14), and the only newer publication is 1.0.0-rc.8, a
+          # prerelease that reorganises the crate into a different API surface.
+          # Taking a release candidate of the payment client to move a transitive
+          # TLS dependency is the larger of the two risks. Revisit 2026-11-14, or
+          # when async-stripe 1.0 ships stable, whichever comes first — that
+          # upgrade clears all three at once along with the second TLS stack.
+          cargo audit \
+            --ignore RUSTSEC-2023-0071 \
+            --ignore RUSTSEC-2026-0104 \
+            --ignore RUSTSEC-2026-0098 \
+            --ignore RUSTSEC-2026-0099
+
+  # The `# vX.Y.Z` beside every pinned SHA is decorative — GitHub resolves the
+  # SHA and never reads the comment — so a pin that never pointed where it said
+  # is invisible to review. This resolves each claim upstream and compares.
+  #
+  # Runs on the daily schedule too, unlike `test`: a tag moved or deleted
+  # upstream is news that arrives without anything here changing, and the check
+  # costs seconds rather than the ten minutes a build would.
+  pins:
+    name: Verify action pins
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Read-only API calls; the token is here for the rate limit, not access.
+      # No toolchain, no cache, no build — the workflow files are the input.
+      - name: Verify action pins
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/verify_action_pins.py

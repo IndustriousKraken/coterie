@@ -15,6 +15,14 @@
 #     delegates to the single hardened update path
 #     (`coterie-provision update`, bootstrapping via update.sh if the
 #     binary isn't on the box). The positional tag becomes `--tag`.
+#
+#     `coterie-provision` is normally NOT on the box: nothing installs
+#     it persistently, by design. update.sh downloads the LATEST STABLE
+#     one per run, verifies its SHA256, and execs it from a temp dir, so
+#     the update logic is current even when pinning Coterie to an older
+#     tag. Bootstrapping is therefore the expected route, not a
+#     degraded one — but it is announced, because a local binary that
+#     was supposed to be used and wasn't should not be silent.
 #   * On a FIRST install (no binary yet) it performs the minimal
 #     download + bootstrap, because there is no running service to
 #     health-check nor database to snapshot. That path is what
@@ -46,11 +54,23 @@ if [ -f "$INSTALL_DIR/coterie" ]; then
         echo "release-deploy.sh: delegating to coterie-provision update"
         exec coterie-provision update "$@"
     fi
+    echo "release-deploy.sh: no coterie-provision installed on this host (expected)"
+    echo "release-deploy.sh: bootstrapping one via update.sh — it downloads and"
+    echo "release-deploy.sh: verifies the latest stable coterie-provision, then updates"
     SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)"
     for cand in "$SCRIPT_DIR/update.sh" "$INSTALL_DIR/deploy/update.sh"; do
         if [ -f "$cand" ]; then
             echo "release-deploy.sh: delegating to $cand"
-            exec sh "$cand" "$@"
+            # exec the file itself so ITS shebang picks the interpreter.
+            # update.sh is bash; running it under this script's /bin/sh
+            # (dash on Debian) dies on its `trap ... ERR` — "bad trap".
+            if [ -x "$cand" ]; then
+                exec "$cand" "$@"
+            fi
+            # Exec bit lost in placement: name an interpreter, but never
+            # `sh` — bash is what update.sh's shebang asks for.
+            echo "release-deploy.sh: $cand is not executable; invoking bash directly" >&2
+            exec bash "$cand" "$@"
         fi
     done
     echo "ERROR: could not locate coterie-provision or update.sh to perform the update" >&2
@@ -158,6 +178,11 @@ cp -f "$STAGE_DIR/deploy/"*.service   "$INSTALL_DIR/deploy/" 2>/dev/null || true
 cp -f "$STAGE_DIR/deploy/"*.openrc    "$INSTALL_DIR/deploy/" 2>/dev/null || true
 cp -f "$STAGE_DIR/deploy/"*.timer     "$INSTALL_DIR/deploy/" 2>/dev/null || true
 cp -f "$STAGE_DIR/deploy/Caddyfile.example" "$INSTALL_DIR/deploy/" 2>/dev/null || true
+# cp keeps an EXISTING destination's mode, so a script that was placed
+# 0644 by an older release stays 0644. These are exec'd directly (see the
+# update.sh delegation above), so assert the bit rather than inherit it —
+# `coterie-provision update` does the same on refresh.
+chmod 0755 "$INSTALL_DIR/deploy/"*.sh 2>/dev/null || true
 
 # Record the version.
 cp "$STAGE_DIR/VERSION" "$INSTALL_DIR/VERSION"
