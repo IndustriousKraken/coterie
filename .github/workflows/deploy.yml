@@ -78,11 +78,26 @@ jobs:
           fi
 
           KNOWN_HOSTS="$(mktemp)"
+          SSH_ADD_LOG="$(mktemp)"
           eval "$(ssh-agent -s)" >/dev/null
-          cleanup() { ssh-agent -k >/dev/null 2>&1 || true; rm -f "$KNOWN_HOSTS"; }
+          cleanup() {
+            ssh-agent -k >/dev/null 2>&1 || true
+            rm -f "$KNOWN_HOSTS" "$SSH_ADD_LOG"
+          }
           trap cleanup EXIT
 
-          printf '%s\n' "$SSH_PRIVATE_KEY" | ssh-add - >/dev/null 2>&1
+          # ssh-add's stderr is held rather than discarded, and printed when it
+          # fails. A malformed or empty SSH_PRIVATE_KEY otherwise aborts the
+          # step silently and resurfaces as a generic auth refusal several
+          # commands later — the least helpful place to learn the key is bad.
+          # Held rather than passed straight through because on success
+          # ssh-add names the key's comment field, which need not be in a log.
+          if ! printf '%s\n' "$SSH_PRIVATE_KEY" | ssh-add - >/dev/null 2>"$SSH_ADD_LOG"; then
+            echo "ssh-add could not load SSH_PRIVATE_KEY:" >&2
+            cat "$SSH_ADD_LOG" >&2
+            exit 1
+          fi
+
           printf '%s\n' "$SSH_KNOWN_HOSTS" > "$KNOWN_HOSTS"
 
           SSH_OPTS="-o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KNOWN_HOSTS -o BatchMode=yes"

@@ -68,26 +68,68 @@ fn every_waiver_names_a_single_advisory() {
     }
 }
 
+/// The Makefile's comment paragraphs: runs of `#` lines, broken by a bare `#`
+/// or by anything that is not a comment. One waiver's argument is one
+/// paragraph — which is what makes "argued" and "dated" checkable per waiver
+/// rather than as a count over the whole file.
+fn comment_blocks(makefile: &str) -> Vec<String> {
+    let mut blocks: Vec<String> = vec![String::new()];
+    for line in makefile.lines() {
+        let trimmed = line.trim();
+        if trimmed == "#" || !trimmed.starts_with('#') {
+            if !blocks.last().expect("never empty").is_empty() {
+                blocks.push(String::new());
+            }
+            continue;
+        }
+        // Unwrapped into one flat paragraph: the comment prose wraps at 79
+        // columns, and a `Revisit 2027-02-13` split across two lines is a
+        // dated waiver however it is laid out.
+        let block = blocks.last_mut().expect("never empty");
+        block.push_str(trimmed.trim_start_matches('#').trim());
+        block.push(' ');
+    }
+    blocks
+}
+
+/// A `Revisit <YYYY-MM-DD>` in the paragraph. The date's shape is checked, not
+/// just the word: "Revisit when convenient" is an undated waiver wearing it.
+fn states_a_revisit_date(block: &str) -> bool {
+    block.split("Revisit ").skip(1).any(|rest| {
+        let date = rest.as_bytes();
+        date.len() >= 10
+            && date[..10].iter().enumerate().all(|(i, b)| {
+                if i == 4 || i == 7 {
+                    *b == b'-'
+                } else {
+                    b.is_ascii_digit()
+                }
+            })
+    })
+}
+
 #[test]
 fn every_waiver_is_argued_and_dated() {
     let makefile = makefile();
+    let blocks = comment_blocks(&makefile);
+
     for id in waived_advisories() {
-        // The `--ignore` line itself is one mention; the comment block above
-        // it is the other. One mention means an entry nobody explained.
-        let mentions = makefile.matches(&id).count();
+        // Per waiver, not per file: a count over the whole Makefile stays
+        // green when a fifth entry lands with no argument and no date of its
+        // own, as long as the existing four keep theirs.
+        let argued: Vec<&String> = blocks.iter().filter(|b| b.contains(&id)).collect();
         assert!(
-            mentions >= 2,
+            !argued.is_empty(),
             "{id} appears only in the ignore list — a waiver carries its \
              reachability reasoning beside it"
         );
+        assert!(
+            argued.iter().any(|b| states_a_revisit_date(b)),
+            "{id} is argued but never dated — no `Revisit <YYYY-MM-DD>` in the \
+             comment block that waives it, and an undated waiver is permanent \
+             by default"
+        );
     }
-
-    let revisits = makefile.matches("Revisit ").count();
-    assert!(
-        revisits > 0,
-        "no waiver states a revisit date; an undated waiver is permanent by \
-         default"
-    );
 }
 
 #[test]
