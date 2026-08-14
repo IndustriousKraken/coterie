@@ -53,7 +53,11 @@ sudo bash /tmp/update.sh --tag v1.2.3    # pin, or roll back, to a specific tag
 
 `update.sh` is a thin bootstrap: it downloads the `coterie-provision` binary,
 verifies its checksum, and hands off to `coterie-provision update`, which does
-the work in testable Rust.
+the work in testable Rust. `coterie-provision` also ships in the release
+tarball, so an installed instance already has it at
+`/opt/coterie/coterie-provision` — run that directly and skip the download.
+`deploy/release-deploy.sh` prefers it and only falls back to the bootstrap
+(saying so) when it isn't there.
 
 The update downloads a **prebuilt release** — nothing is ever compiled on the
 server — and **snapshots the database automatically** (a SQLite `VACUUM INTO`

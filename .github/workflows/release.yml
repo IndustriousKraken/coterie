@@ -140,6 +140,10 @@ jobs:
           # create_admin is built by the main `cargo build --bins` step.
           [ -f target/x86_64-unknown-linux-musl/release/create_admin ] && \
               cp target/x86_64-unknown-linux-musl/release/create_admin "dist/$STAGE/" || true
+          # coterie-provision ships alongside coterie/create_admin so an
+          # installed instance HAS the update path release-deploy.sh
+          # delegates to, instead of bootstrapping a download every time.
+          cp target/x86_64-unknown-linux-musl/release/coterie-provision "dist/$STAGE/"
           cp -r static "dist/$STAGE/"
           cp -r migrations "dist/$STAGE/"
           cp -r deploy "dist/$STAGE/"

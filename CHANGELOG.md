@@ -30,9 +30,20 @@ Added / Changed / Deprecated / Removed / Fixed / Security.
 
 ### Added
 
+- `coterie-provision` now ships in the main release tarball and is installed to
+  `/opt/coterie/coterie-provision` by both the first install and every update,
+  so the hardened update path `release-deploy.sh` delegates to is actually on
+  the box instead of being downloaded on every run.
+
 ### Changed
 
 ### Fixed
+
+- `release-deploy.sh` no longer runs `deploy/update.sh` through `sh`. `update.sh`
+  is bash and `/bin/sh` is dash on Debian, so an update on an instance without
+  `coterie-provision` died with `trap: 26: bad trap` and deployed nothing. The
+  script is now exec'd directly so its shebang chooses the interpreter, and
+  falling back to that bootstrap is announced instead of silent.
 
 ## [v1.0.20] — 2026-07-31
 

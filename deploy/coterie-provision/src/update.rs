@@ -520,6 +520,21 @@ fn swap_binaries<F: FileSystem, O: Output>(
             .context("promoting the new seed binary")?;
     }
 
+    // coterie-provision itself: the update path `release-deploy.sh`
+    // delegates to. Without it on disk that delegation is unreachable and
+    // every update falls through to the bash bootstrap. Staged then
+    // renamed like the others — this may be the binary now executing, and
+    // writing a running executable in place is ETXTBSY.
+    let provision_src = stage_dir.join("coterie-provision");
+    if fs.is_file(&provision_src) {
+        let provision_new = install_dir.join("coterie-provision.new");
+        fs.copy_file(&provision_src, &provision_new)
+            .context("staging the new coterie-provision binary")?;
+        fs.chmod(&provision_new, 0o755)?;
+        fs.rename(&provision_new, &install_dir.join("coterie-provision"))
+            .context("promoting the new coterie-provision binary")?;
+    }
+
     // Replace static + migrations wholesale.
     for sub in ["static", "migrations"] {
         let dest = install_dir.join(sub);
@@ -564,6 +579,7 @@ fn swap_binaries<F: FileSystem, O: Output>(
     for item in [
         "coterie",
         "seed",
+        "coterie-provision",
         "static",
         "migrations",
         "deploy",

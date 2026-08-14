@@ -79,16 +79,16 @@ on the branches that work.
 
 ## Tasks
 
-- [ ] Reproduce: on a host without `coterie-provision`, run `release-deploy.sh`
+- [x] Reproduce: on a host without `coterie-provision`, run `release-deploy.sh`
   against an existing install and observe `bad trap`.
-- [ ] Fix the invocation so `update.sh` runs under the interpreter its shebang
+- [x] Fix the invocation so `update.sh` runs under the interpreter its shebang
   names.
-- [ ] Make the fallback announce itself, so taking the bootstrap path is visible
+- [x] Make the fallback announce itself, so taking the bootstrap path is visible
   rather than silent.
-- [ ] Determine what should install `coterie-provision` and ensure an installed
+- [x] Determine what should install `coterie-provision` and ensure an installed
   instance has it, or state plainly in the script and the docs that its absence
   is expected and what the consequence is.
-- [ ] Add a test that `update.sh` is not invoked with an interpreter its shebang
+- [x] Add a test that `update.sh` is not invoked with an interpreter its shebang
   contradicts — the class of defect, not just this instance.
-- [ ] Verify the executable bit on `deploy/*.sh` survives placement by the update
+- [x] Verify the executable bit on `deploy/*.sh` survives placement by the update
   path.

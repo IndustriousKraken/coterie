@@ -74,6 +74,10 @@ fn stage_world(fs: &FakeFs) {
         b"new-seed",
     );
     fs.put(
+        Path::new("/work/coterie-v1.1.0-x86_64-linux-musl/coterie-provision"),
+        b"new-provision",
+    );
+    fs.put(
         Path::new("/work/coterie-v1.1.0-x86_64-linux-musl/.env.example"),
         b"NEW_SETTING=1\n",
     );
@@ -642,6 +646,42 @@ fn shell_scripts_keep_their_executable_bit() {
     assert!(
         chmodded("/opt/coterie/deploy/restore.sh"),
         "restore.sh is 0755"
+    );
+}
+
+/// The update path `release-deploy.sh` delegates to has to exist on the
+/// box, or that delegation silently falls through to the bash bootstrap
+/// on every update — which is how it went unnoticed for months.
+#[test]
+fn coterie_provision_from_the_release_is_placed_beside_the_binary() {
+    let (_sys, fs, _out) = updated_world();
+
+    assert_eq!(
+        fs.get(Path::new("/opt/coterie/coterie-provision"))
+            .as_deref(),
+        Some(&b"new-provision"[..]),
+        "the release's coterie-provision is installed"
+    );
+
+    use coterie_provision::test_support::FsOp;
+    let ops = fs.ops.borrow();
+    assert!(
+        ops.iter().any(|op| matches!(op,
+            FsOp::Chmod(p, 0o755) if p == Path::new("/opt/coterie/coterie-provision.new"))),
+        "coterie-provision is executable"
+    );
+    // Staged then renamed: this may be the binary now executing, and
+    // writing a running executable in place is ETXTBSY.
+    assert!(
+        !ops.iter().any(|op| matches!(op,
+            FsOp::CopyFile(_, to) if to == Path::new("/opt/coterie/coterie-provision"))),
+        "coterie-provision is never written in place"
+    );
+    assert!(
+        ops.iter().any(|op| matches!(op,
+            FsOp::Chown(p, u, g) if p == Path::new("/opt/coterie/coterie-provision")
+                && u == "coterie" && g == "coterie")),
+        "coterie-provision is chowned like the other placed files"
     );
 }
 

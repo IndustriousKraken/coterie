@@ -13,8 +13,13 @@
 # Behaviour:
 #   * On an EXISTING install (a coterie binary is already present) it
 #     delegates to the single hardened update path
-#     (`coterie-provision update`, bootstrapping via update.sh if the
-#     binary isn't on the box). The positional tag becomes `--tag`.
+#     (`coterie-provision update`). The positional tag becomes `--tag`.
+#     That binary ships in the release tarball and is placed by the
+#     first-install path below and by every update, so it is normally
+#     right there. If it isn't — an install older than the release that
+#     started shipping it — update.sh bootstraps a download of it, and
+#     the fallback is announced, because it means the hardened path was
+#     unavailable rather than unused.
 #   * On a FIRST install (no binary yet) it performs the minimal
 #     download + bootstrap, because there is no running service to
 #     health-check nor database to snapshot. That path is what
@@ -26,7 +31,9 @@
 set -eu
 
 REPO="IndustriousKraken/coterie"
-INSTALL_DIR="/opt/coterie"
+# Overridable so the delegation logic below is testable without a real
+# /opt/coterie. Operators have no reason to set it.
+INSTALL_DIR="${COTERIE_INSTALL_DIR:-/opt/coterie}"
 TAG="${1:-}"
 
 # ---------------------------------------------------------------------
@@ -46,12 +53,28 @@ if [ -f "$INSTALL_DIR/coterie" ]; then
         echo "release-deploy.sh: delegating to coterie-provision update"
         exec coterie-provision update "$@"
     fi
+    # No provision binary on the box. It ships in the release tarball and
+    # is placed by the first-install path below and by every
+    # `coterie-provision update`, so this means an install older than the
+    # release that started shipping it. The bootstrap downloads the binary
+    # and runs the same hardened update; it just costs a download, and the
+    # copy it places is picked up next time. Say so — falling back
+    # silently is how this went unnoticed.
+    echo "release-deploy.sh: no executable coterie-provision at $INSTALL_DIR or on PATH" >&2
     SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)"
     for cand in "$SCRIPT_DIR/update.sh" "$INSTALL_DIR/deploy/update.sh"; do
-        if [ -f "$cand" ]; then
-            echo "release-deploy.sh: delegating to $cand"
-            exec sh "$cand" "$@"
+        [ -f "$cand" ] || continue
+        # Older installs were placed without the exec bit; restore it so
+        # the exec below can honour the shebang.
+        [ -x "$cand" ] || chmod +x "$cand" 2>/dev/null || true
+        if [ -x "$cand" ]; then
+            echo "release-deploy.sh: falling back to the bootstrap updater $cand" >&2
+            # exec'd directly, NOT via `sh`: update.sh is bash, /bin/sh is
+            # dash on Debian, and dash rejects its `trap ... ERR` with
+            # "bad trap". The shebang names the interpreter; honour it.
+            exec "$cand" "$@"
         fi
+        echo "release-deploy.sh: $cand is not executable and chmod failed" >&2
     done
     echo "ERROR: could not locate coterie-provision or update.sh to perform the update" >&2
     exit 1
@@ -139,6 +162,14 @@ install -m 0755 "$STAGE_DIR/create_admin" "$INSTALL_DIR/create_admin.new"
 mv "$INSTALL_DIR/coterie.new"      "$INSTALL_DIR/coterie"
 mv "$INSTALL_DIR/seed.new"         "$INSTALL_DIR/seed"
 mv "$INSTALL_DIR/create_admin.new" "$INSTALL_DIR/create_admin"
+# coterie-provision is the hardened update path every later run of this
+# script delegates to; without it on disk that delegation is unreachable
+# and updates fall through to the bootstrap. Guarded because tarballs
+# from before it shipped in the main archive don't carry it.
+if [ -f "$STAGE_DIR/coterie-provision" ]; then
+    install -m 0755 "$STAGE_DIR/coterie-provision" "$INSTALL_DIR/coterie-provision.new"
+    mv "$INSTALL_DIR/coterie-provision.new" "$INSTALL_DIR/coterie-provision"
+fi
 
 # Static, migrations: replace wholesale.
 rm -rf "$INSTALL_DIR/static" "$INSTALL_DIR/migrations"
@@ -158,6 +189,10 @@ cp -f "$STAGE_DIR/deploy/"*.service   "$INSTALL_DIR/deploy/" 2>/dev/null || true
 cp -f "$STAGE_DIR/deploy/"*.openrc    "$INSTALL_DIR/deploy/" 2>/dev/null || true
 cp -f "$STAGE_DIR/deploy/"*.timer     "$INSTALL_DIR/deploy/" 2>/dev/null || true
 cp -f "$STAGE_DIR/deploy/Caddyfile.example" "$INSTALL_DIR/deploy/" 2>/dev/null || true
+# cp preserves the source mode; these are run directly (update.sh is
+# exec'd by this script, backup.sh by the systemd unit) so the exec bit
+# has to be there regardless of what the tarball carried.
+chmod 0755 "$INSTALL_DIR/deploy/"*.sh 2>/dev/null || true
 
 # Record the version.
 cp "$STAGE_DIR/VERSION" "$INSTALL_DIR/VERSION"

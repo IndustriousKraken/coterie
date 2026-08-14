@@ -529,12 +529,26 @@ Roll back to a specific earlier version:
 /usr/local/bin/coterie-release-deploy v1.2.3
 ```
 
-The script downloads the tarball, verifies its SHA-256 checksum
-against the release's `.sha256` asset, stops the `coterie` service,
-swaps the binaries + `static/` + `migrations/` atomically, restores
-ownership, restarts the service, and prints the resulting service
-status. It's idempotent — if the requested version is already
-installed, it exits without restarting.
+On an existing install the script does not update anything itself — it
+delegates, in this order:
+
+1. `/opt/coterie/coterie-provision update` — the hardened path. That
+   binary ships in the release tarball and is placed beside `coterie` by
+   the first install and by every update, so a current instance has it.
+2. `coterie-provision` on `PATH`, if you keep one there.
+3. `deploy/update.sh` — the bootstrap, which downloads
+   `coterie-provision` for the latest stable release and runs the same
+   update. Reaching it means the binary was missing (an instance older
+   than the release that started shipping it); the script says so on
+   stderr, and the copy the update places is used from then on.
+
+The update downloads the tarball, verifies its SHA-256 checksum against
+the release's `.sha256` asset, snapshots the database, stops the
+`coterie` service, swaps the binaries + `static/` + `migrations/`
+atomically, restores ownership, restarts the service, and health-checks
+it — rolling back to the previous binary if it doesn't come up. It's
+idempotent — if the requested version is already installed, it exits
+without restarting.
 
 To automate updates (after a stable initial period):
 

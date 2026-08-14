@@ -227,6 +227,10 @@ To upgrade in place:
 `coterie-provision update` refreshes `/opt/coterie/deploy/` from the
 release it installs, so the ops scripts beside the binary are the ones
 that shipped with it. It names every script it changed in its output.
+The update also places the release's `coterie-provision` at
+`/opt/coterie/coterie-provision`, which is what `release-deploy.sh`
+delegates to; if it isn't there yet, `release-deploy.sh` says so and
+bootstraps a download of it via `deploy/update.sh` instead.
 
 - **A locally-modified script is preserved.** Where update replaces a
   script it first copies the current contents to `<name>.prev` beside it
