@@ -52,6 +52,34 @@ is indistinguishable from a correct one by inspection, and is the exact shape of
 an attack against a consumer who has pinned: not a moved tag, but a pin that
 never pointed where it said.
 
+Where the adjacent comment names a **moving reference** — a branch, or a tag the
+upstream repository republishes — the check SHALL verify that the pinned commit
+exists in the upstream repository, and SHALL NOT assert equality with that
+reference's current commit.
+
+Equality is the wrong assertion for a moving reference, and asserting it would
+defeat the pin it is meant to protect. A branch advances by design, so an
+equality check fails on every upstream push and pressures the consumer to chase
+the branch — which is precisely the tracking that pinning exists to avoid.
+Reachability is not a workable substitute either: an upstream that rebases or
+force-pushes such a branch leaves a legitimately pinned commit unreachable from
+it. This is the observed case rather than a hypothesis — `dtolnay/rust-toolchain`
+publishes its `stable` branch that way, and a pin taken from it reports as
+diverged, ahead by four and behind by one, while the commit itself remains
+present upstream.
+
+Existence in the upstream repository is therefore the strongest assertion
+available for these, and it still refuses what matters: a commit that is not in
+that repository at all, whether from a fork, a typo, or an invention.
+
+The check SHALL apply the strongest assertion each claim admits, and SHALL NOT
+lower every pin to the weakest one. A tag claim remains subject to equality; only
+claims that name something inherently mutable fall back.
+
+A pin on a moving reference SHALL record in its comment that the reference moves
+and when the pin was taken, so a reader understands equality was never the
+intent and is not left to infer it from a check that passes.
+
 Verification SHALL dereference annotated tags before comparing. A tag reference
 resolves to a tag object rather than to a commit, so comparing without
 dereferencing reports every correct pin as a mismatch. A check that reports false
@@ -92,6 +120,25 @@ secrets are already bounded by the requirement above.
 - **WHEN** one action is referenced at two different commits across the workflows,
   each pin individually matching its own comment
 - **THEN** the build SHALL fail and name both references
+
+#### Scenario: A pin on a moving branch verifies by existence
+
+- **WHEN** a pin's comment names a branch and the pinned commit exists in the
+  upstream repository, but the branch has since advanced or been rebased away
+  from it
+- **THEN** the check SHALL pass
+
+#### Scenario: A pin naming a branch but pointing outside the repository fails
+
+- **WHEN** a pin's comment names a branch and the pinned commit is not present in
+  the upstream repository
+- **THEN** the build SHALL fail and name that reference
+
+#### Scenario: A tag claim is not weakened by the moving-reference rule
+
+- **WHEN** a pin's comment names a tag whose commit differs from the pinned SHA
+- **THEN** the build SHALL fail, and existence upstream SHALL NOT be accepted in
+  place of equality
 
 #### Scenario: An annotated tag verifies correctly
 
