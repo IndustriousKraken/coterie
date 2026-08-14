@@ -54,6 +54,11 @@ pub fn is_member_visible(status: &crate::domain::PaymentStatus) -> bool {
 /// Admin surfaces read `find_by_member` directly — they must keep
 /// seeing `Pending`/`Failed`, which is how an abandoned checkout gets
 /// diagnosed.
+///
+/// A read failure degrades to an empty list: callers are HTMX fragments
+/// that swap into a live page, and an empty payment widget beats an
+/// error card wedged into the dashboard. It's logged, because on the
+/// rendered page an empty list is indistinguishable from "no payments".
 pub async fn member_visible_payments(
     payment_repo: &dyn crate::repository::PaymentRepository,
     member_id: uuid::Uuid,
@@ -61,7 +66,14 @@ pub async fn member_visible_payments(
     payment_repo
         .find_by_member(member_id)
         .await
-        .unwrap_or_default()
+        .unwrap_or_else(|e| {
+            tracing::error!(
+                "member payment history read failed for member {}: {}",
+                member_id,
+                e
+            );
+            Vec::new()
+        })
         .into_iter()
         .filter(|p| is_member_visible(&p.status))
         .collect()
