@@ -12,7 +12,7 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, dev]
   pull_request:
   # For the advisory job below. An advisory is news about code already shipped,
   # so a check that only fired on pushes would be silent exactly when it
@@ -20,6 +20,15 @@ on:
   # here changing. Off-the-hour to miss the top-of-hour cron rush.
   schedule:
     - cron: '17 6 * * *'
+
+# Supersede in-progress runs for the same ref — but only for pull requests.
+# Pushing three times to a PR branch in a minute otherwise leaves three full
+# builds racing to tell you about the first commit. Branch pushes are NOT
+# cancelled: those are the runs that save the shared build cache, and killing
+# one halfway leaves the next release build to start cold.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -52,26 +61,33 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
           df -h /
 
-      # SAME key as release.yml so a master run's cache is what tag builds read.
-      # Shared cache with release.yml (same shared-key). Saves only on master
-      # pushes so the default-branch cache stays warm for tag builds to restore;
-      # PRs restore but don't save. rust-cache keeps target/ trimmed to deps, so
-      # the cache stays small enough to avoid runner disk-full.
-      - name: Rust build cache (save on master, restore on PRs)
+      # SAME key as release.yml so a default-branch run's cache is what tag
+      # builds read. Shared cache with release.yml (same shared-key). rust-cache
+      # keeps target/ trimmed to deps, so the cache stays small enough to avoid
+      # runner disk-full.
+      #
+      # Saves only on the DEFAULT branch, resolved at run time rather than named
+      # here. A tag ref can restore a cache from its own ref, its base, or the
+      # default branch — nothing else — so the saving branch and the default
+      # branch have to be the same one. Hardcoding a name means the day the
+      # default changes, releases silently start building cold with nothing
+      # failing to say so.
+      - name: Rust build cache (save on the default branch, restore elsewhere)
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: musl-release
-          save-if: ${{ github.event_name == 'push' }}
+          save-if: ${{ github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}
 
       # Debug tests: fast to compile, same correctness signal as release-mode.
       - name: Test
         run: cargo test --features test-utils
 
       # Warm the exact artifacts the Release build needs (musl-static, release
-      # profile). Only on master — a PR's cache saves to the PR ref, which tag
-      # builds can't read, so warming on PRs would just waste minutes.
+      # profile). Only on the default branch, for the same reason the cache
+      # saves there: a cache written from any other ref is one tag builds
+      # cannot read, so warming elsewhere spends ten minutes for nothing.
       - name: Warm release build (musl)
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
         run: |
           cargo build --release --target x86_64-unknown-linux-musl --bins
           cargo build --release --target x86_64-unknown-linux-musl -p coterie-provision
@@ -84,7 +100,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch, pinned
