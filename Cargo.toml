@@ -31,7 +31,12 @@ hyper = { version = "1.0", features = ["full"] }
 tokio = { version = "1", features = ["full"] }
 
 # Database
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid"] }
+# SQLite-only. `default-features = false` keeps sqlx's default set (`any`,
+# `json`) from linking the MySQL and PostgreSQL drivers into an application
+# that can never call them — `sqlx-mysql` is the sole reason `rsa` (and its
+# unfixable RUSTSEC-2023-0071) appeared in the audit. `macros`/`migrate` are
+# re-added because `sqlx::migrate!` needs both.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid", "macros", "migrate"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -131,7 +136,11 @@ csv = "1.3"
 # parsing — use the maintained libraries, not a hand-rolled subset.
 # comrak default-features off drops the CLI/syntect/clap stack we don't use.
 comrak = { version = "0.54", default-features = false }
-ammonia = "4"
+# >=4.1.4 fixes RUSTSEC-2026-0213 (XSS via SVG `animate`/`set`). Not
+# reachable through our allow-list — it has no SVG element — but this crate
+# is the boundary that makes member Markdown safe to serve publicly, so the
+# floor is stated rather than left to resolution.
+ammonia = "4.1.4"
 
 [features]
 # Exposes test-only helpers (FakeStripeGateway, etc.) so integration

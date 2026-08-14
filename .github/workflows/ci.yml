@@ -135,8 +135,13 @@ jobs:
       # Reads Cargo.lock, so the whole resolved graph is covered — most of what
       # the application is exposed to never appears in a Cargo.toml. Exits
       # non-zero naming the crate when a RustSec advisory matches.
+      #
+      # Via `make audit` rather than `cargo audit` directly: the waiver list
+      # lives in the Makefile, individually per advisory identifier with the
+      # reachability argument and revisit date beside it, and running it the
+      # same way here is what keeps a local check and this one from diverging.
       - name: cargo audit
-        run: cargo audit
+        run: make audit
 
   # Every action here is pinned to a commit SHA with a `# version` comment
   # beside it. GitHub resolves the SHA and never reads the comment, so nothing
