@@ -30,8 +30,18 @@ tower-http = { version = "0.5", features = ["trace", "cors", "compression-gzip",
 hyper = { version = "1.0", features = ["full"] }
 tokio = { version = "1", features = ["full"] }
 
-# Database
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid"] }
+# Database. `default-features = false` narrows sqlx to what a SQLite-only
+# application uses; the defaults additionally carry `any` (the driver
+# multiplexer) and `json`, which nothing here calls. `macros` + `migrate` are
+# load-bearing — they back `sqlx::migrate!("./migrations")`.
+#
+# This does not remove `sqlx-mysql`/`sqlx-postgres` (and so `rsa`,
+# RUSTSEC-2023-0071) from Cargo.lock, and never could: they are optional
+# dependencies of sqlx, which Cargo records in the lockfile whether or not a
+# feature enables them. They were not in the build graph before this either —
+# the driver features reach them through weak `sqlx-mysql?/...` references
+# that activate nothing. See the waiver in .github/workflows/ci.yml.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid", "macros", "migrate"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -131,7 +141,9 @@ csv = "1.3"
 # parsing — use the maintained libraries, not a hand-rolled subset.
 # comrak default-features off drops the CLI/syntect/clap stack we don't use.
 comrak = { version = "0.54", default-features = false }
-ammonia = "4"
+# 4.1.4 is the floor, not decoration: earlier 4.1.x let SVG `animate`/`set`
+# through the sanitizer (RUSTSEC-2026-0213).
+ammonia = "4.1.4"
 
 [features]
 # Exposes test-only helpers (FakeStripeGateway, etc.) so integration
