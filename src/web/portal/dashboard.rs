@@ -4,7 +4,7 @@ use askama::Template;
 use axum::{extract::State, response::IntoResponse, Extension};
 use serde::Serialize;
 
-use super::{events::render_rsvp_button, MemberInfo};
+use super::{events::render_rsvp_button, partials, MemberInfo};
 use crate::{
     api::middleware::auth::{CurrentUser, SessionInfo},
     auth::CsrfService,
@@ -470,11 +470,13 @@ pub async fn recent_payments(
     State(payment_repo): State<Arc<dyn PaymentRepository>>,
     Extension(current_user): Extension<CurrentUser>,
 ) -> impl IntoResponse {
-    // Most-recent five payments for this member, regardless of status.
-    let mut payments = payment_repo
-        .find_by_member(current_user.member.id)
-        .await
-        .unwrap_or_default();
+    // The member's five most recent *settled* payments. The filter is
+    // inside the shared read, so it runs before this truncate: five
+    // abandoned checkouts must not push settled payments out of the
+    // widget, and this fragment must agree with the Payments page it
+    // links to (issue #120).
+    let mut payments =
+        partials::member_visible_payments(payment_repo.as_ref(), current_user.member.id).await;
     payments.truncate(5);
 
     // Transform to our summary format
@@ -534,4 +536,298 @@ pub async fn recent_payments(
     };
 
     axum::response::Html(html)
+}
+
+// Both member-facing payment lists — this fragment and the Payments
+// page — must show the same thing: settled payments only. Issue #120
+// filtered the page and left this fragment showing the abandoned
+// checkouts the page hid.
+#[cfg(test)]
+mod payment_visibility_tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        routing::get,
+        Router,
+    };
+    use chrono::{Duration, Utc};
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    use crate::{
+        domain::{
+            CreateMemberRequest, Member, Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus,
+        },
+        repository::{MemberRepository, SqliteMemberRepository, SqlitePaymentRepository},
+    };
+
+    /// A member plus a payment repo on a fresh migrated in-memory DB.
+    async fn fixture() -> (Arc<dyn PaymentRepository>, Member) {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let member_repo: Arc<dyn MemberRepository> =
+            Arc::new(SqliteMemberRepository::new(pool.clone()));
+        let member = member_repo
+            .create(CreateMemberRequest {
+                email: "member@example.com".to_string(),
+                username: "member".to_string(),
+                full_name: "Member".to_string(),
+                password: "p4ssword_long_enough".to_string(),
+                membership_type_id: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let payment_repo: Arc<dyn PaymentRepository> = Arc::new(SqlitePaymentRepository::new(pool));
+        (payment_repo, member)
+    }
+
+    /// Seed one payment. `settled_days_ago` is `None` for unsettled rows
+    /// (no `paid_at` — the money never moved), which makes them sort
+    /// newest, since `find_by_member` orders by
+    /// `COALESCE(paid_at, created_at) DESC` and `created_at` is stamped
+    /// at insert.
+    async fn seed(
+        repo: &Arc<dyn PaymentRepository>,
+        member_id: Uuid,
+        description: &str,
+        status: PaymentStatus,
+        settled_days_ago: Option<i64>,
+    ) {
+        let now = Utc::now();
+        repo.create(Payment {
+            id: Uuid::new_v4(),
+            payer: Payer::Member(member_id),
+            amount_cents: 5000,
+            currency: "USD".to_string(),
+            status,
+            payment_method: PaymentMethod::Stripe,
+            kind: PaymentKind::Membership,
+            external_id: None,
+            description: description.to_string(),
+            paid_at: settled_days_ago.map(|d| now - Duration::days(d)),
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .unwrap();
+    }
+
+    fn app(payment_repo: Arc<dyn PaymentRepository>, member: Member) -> Router {
+        Router::new()
+            .route("/portal/api/payments/recent", get(recent_payments))
+            .route(
+                "/portal/api/payments/list",
+                get(crate::web::portal::payments::views::payments_list_api),
+            )
+            .route(
+                "/portal/admin/members/:id/payments",
+                get(crate::web::portal::admin::members::dues::admin_member_payments),
+            )
+            .layer(Extension(CurrentUser { member }))
+            .with_state(payment_repo)
+    }
+
+    async fn body_of(app: Router, uri: &str) -> String {
+        let resp = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    /// The subset of `names` present in `body`, in the order they appear.
+    fn shown_in_order(body: &str, names: &[&str]) -> Vec<String> {
+        let mut found: Vec<(usize, String)> = names
+            .iter()
+            .filter_map(|n| body.find(n).map(|at| (at, n.to_string())))
+            .collect();
+        found.sort_by_key(|(at, _)| *at);
+        found.into_iter().map(|(_, n)| n).collect()
+    }
+
+    // 3.1 — the reported bug: an abandoned checkout showed on the
+    // dashboard and vanished on the page the dashboard links to.
+    #[tokio::test]
+    async fn failed_payment_is_hidden_on_every_member_surface() {
+        let (repo, member) = fixture().await;
+        seed(
+            &repo,
+            member.id,
+            "Abandoned checkout",
+            PaymentStatus::Failed,
+            None,
+        )
+        .await;
+        seed(
+            &repo,
+            member.id,
+            "Dues 2026",
+            PaymentStatus::Completed,
+            Some(1),
+        )
+        .await;
+
+        for uri in ["/portal/api/payments/recent", "/portal/api/payments/list"] {
+            let body = body_of(app(repo.clone(), member.clone()), uri).await;
+            assert!(
+                body.contains("Dues 2026"),
+                "{uri} lost a settled payment: {body}"
+            );
+            assert!(
+                !body.contains("Abandoned checkout"),
+                "{uri} still shows an abandoned checkout: {body}"
+            );
+        }
+    }
+
+    // 3.2 — the two surfaces agree: the dashboard shows a prefix of the
+    // payments page, never a different set.
+    #[tokio::test]
+    async fn dashboard_shows_a_prefix_of_the_payments_list() {
+        let (repo, member) = fixture().await;
+        let settled = [
+            "Settled one",
+            "Settled two",
+            "Settled three",
+            "Settled four",
+            "Settled five",
+            "Settled six",
+        ];
+        for (i, name) in settled.iter().enumerate() {
+            let status = if i % 2 == 0 {
+                PaymentStatus::Completed
+            } else {
+                PaymentStatus::Refunded
+            };
+            seed(&repo, member.id, name, status, Some(i as i64 + 1)).await;
+        }
+        seed(
+            &repo,
+            member.id,
+            "Unsettled pending",
+            PaymentStatus::Pending,
+            None,
+        )
+        .await;
+        seed(
+            &repo,
+            member.id,
+            "Unsettled failed",
+            PaymentStatus::Failed,
+            None,
+        )
+        .await;
+
+        let all: Vec<&str> = settled
+            .iter()
+            .copied()
+            .chain(["Unsettled pending", "Unsettled failed"])
+            .collect();
+
+        let dashboard = shown_in_order(
+            &body_of(
+                app(repo.clone(), member.clone()),
+                "/portal/api/payments/recent",
+            )
+            .await,
+            &all,
+        );
+        let list = shown_in_order(
+            &body_of(
+                app(repo.clone(), member.clone()),
+                "/portal/api/payments/list",
+            )
+            .await,
+            &all,
+        );
+
+        assert_eq!(list, settled, "payments page: {list:?}");
+        assert_eq!(dashboard.len(), 5, "dashboard shows five: {dashboard:?}");
+        assert_eq!(
+            dashboard,
+            list[..dashboard.len()],
+            "dashboard must be a prefix of the payments page"
+        );
+    }
+
+    // 3.3 — the ordering guard for the filter-before-truncate rule.
+    // Fails if the filter ever moves after `truncate(5)`.
+    #[tokio::test]
+    async fn settled_payments_survive_five_newer_abandoned_checkouts() {
+        let (repo, member) = fixture().await;
+        for i in 0..5 {
+            seed(
+                &repo,
+                member.id,
+                &format!("Abandoned {i}"),
+                PaymentStatus::Failed,
+                None,
+            )
+            .await;
+        }
+        seed(
+            &repo,
+            member.id,
+            "Older dues",
+            PaymentStatus::Completed,
+            Some(30),
+        )
+        .await;
+        seed(
+            &repo,
+            member.id,
+            "Older refund",
+            PaymentStatus::Refunded,
+            Some(60),
+        )
+        .await;
+
+        let body = body_of(app(repo, member), "/portal/api/payments/recent").await;
+        assert!(
+            body.contains("Older dues") && body.contains("Older refund"),
+            "settled payments were truncated away by newer unsettled rows: {body}"
+        );
+        assert!(!body.contains("Abandoned "), "unsettled row leaked: {body}");
+    }
+
+    // 3.4 — admins keep seeing everything; that is how an abandoned
+    // checkout gets diagnosed.
+    #[tokio::test]
+    async fn admin_still_sees_every_status() {
+        let (repo, member) = fixture().await;
+        for (name, status) in [
+            ("Row completed", PaymentStatus::Completed),
+            ("Row refunded", PaymentStatus::Refunded),
+            ("Row pending", PaymentStatus::Pending),
+            ("Row failed", PaymentStatus::Failed),
+        ] {
+            seed(&repo, member.id, name, status, Some(1)).await;
+        }
+
+        let admin = Member {
+            is_admin: true,
+            ..member.clone()
+        };
+        let body = body_of(
+            app(repo, admin),
+            &format!("/portal/admin/members/{}/payments", member.id),
+        )
+        .await;
+
+        for name in ["Row completed", "Row refunded", "Row pending", "Row failed"] {
+            assert!(body.contains(name), "admin view lost {name}: {body}");
+        }
+    }
 }
