@@ -62,6 +62,7 @@ Add these in your repo: Settings -> Secrets and variables -> Actions
 | `SSH_PRIVATE_KEY` | Private key for SSH access to droplet |
 | `REMOTE_HOST` | Droplet IP address or hostname |
 | `REMOTE_USER` | SSH username (the deploy user) |
+| `SSH_KNOWN_HOSTS` | Output of `ssh-keyscan -t ed25519 <droplet>` — the deploy verifies the host key and fails without it (see `OPS.md`) |
 
 ## First Deploy
 

@@ -299,6 +299,88 @@ hatch, not a routine.
 
 ---
 
+## GitHub Actions: token scope, action pins, deploy key
+
+### Repository settings (Settings → Actions → General)
+
+Two settings, applied 2026-08-13, both deliberate. Nothing in the repo
+enforces them, so restore them by hand if this repository is ever
+recreated or migrated:
+
+- **Workflow permissions: "Read repository contents and packages
+  permissions"** (read-only). Each workflow declares the scope it needs
+  — `ci.yml` and `deploy.yml` declare `contents: read`, `release.yml`
+  declares `contents: write` because it creates releases. The repository
+  default is the floor beneath those declarations: a workflow added
+  later without a `permissions:` block is harmless rather than fully
+  privileged.
+- **"Allow GitHub Actions to create and approve pull requests": off.**
+
+Pinning an action to a commit SHA limits *when* new third-party code is
+adopted; it says nothing about what that code can reach once it runs.
+With a write-scoped default token, a toolchain installer or cache action
+can push to this repository. That is closed by these two settings, not
+by review.
+
+### Pins are verified in CI
+
+Every `uses:` reference is pinned to a full commit SHA with a `# version`
+comment beside it. GitHub resolves the SHA and never reads the comment,
+so the CI job `Action pin verification`
+(`.github/scripts/verify-action-pins.sh`) checks that the two agree: full
+SHA rather than tag or branch, SHA matching what the named version
+resolves to upstream (annotated tags dereferenced), and no action pinned
+at two different SHAs across workflows. It names the offending reference
+when it fails. Run it locally the same way CI does:
+
+```bash
+.github/scripts/verify-action-pins.sh
+```
+
+It needs network access to api.github.com; set `GITHUB_TOKEN` to avoid
+the anonymous rate limit.
+
+### `SSH_KNOWN_HOSTS` (required for staging deploys)
+
+`deploy.yml` rsyncs to the staging host itself rather than handing the
+SSH key to a third-party action, and it verifies the host key instead of
+accepting whatever answers. That needs a `SSH_KNOWN_HOSTS` repository
+secret (Settings → Secrets and variables → Actions), alongside the
+existing `SSH_PRIVATE_KEY`, `REMOTE_HOST`, and `REMOTE_USER`.
+
+**The deploy fails until it exists** — that is the intended behavior; a
+deploy that trusts an unknown host is worse than one that stops.
+
+Produce the value from a machine that can reach the host, and check the
+fingerprint against the host itself before trusting it:
+
+```bash
+ssh-keyscan -t ed25519 <deploy-host>   # paste the output as SSH_KNOWN_HOSTS
+```
+
+Use the host's IP or DNS name exactly as `REMOTE_HOST` gives it —
+`known_hosts` entries are matched on that string. Re-run and update the
+secret if the host is rebuilt or its keys are rotated; the deploy will
+fail loudly with a host-key mismatch until you do.
+
+### Verifying a deploy after the workflow changes
+
+The rsync rewrite is behavior-preserving, but it reaches real
+infrastructure, so confirm it once by hand after merging:
+
+1. Run the staging deploy from the Actions tab via **workflow_dispatch**.
+2. On the host, confirm `/opt/coterie` was updated:
+   ```bash
+   ls -l /opt/coterie
+   ```
+3. Confirm the service came back:
+   ```bash
+   systemctl status coterie
+   ```
+   Expect `active (running)` with a start time inside the deploy window.
+
+---
+
 ## Routine maintenance
 
 - **Audit log size**: prunes automatically based on

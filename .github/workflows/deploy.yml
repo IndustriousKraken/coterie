@@ -5,6 +5,11 @@ on:
     branches: [staging]
   workflow_dispatch:  # allows manual trigger from any branch
 
+# Checks out, builds, and rsyncs to a host. Nothing here writes to the
+# repository, and the deploy credentials are secrets rather than token scope.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -44,18 +49,59 @@ jobs:
           cp -r config dist/
           cp -r examples dist/
 
+      # rsync over SSH, run here rather than handed to a third-party action.
+      # The key below reaches a host where the commands underneath it run sudo
+      # cp into /etc/systemd/system and sudo systemctl restart — root-equivalent
+      # access. The operation being bought with that trust is an rsync
+      # invocation, so it is written out instead.
+      #
+      # The key lives in an ssh-agent that dies with the step: never written to
+      # disk, so no later step can read it back off the runner.
+      #
+      # SSH_KNOWN_HOSTS pins the host. A deploy that accepts whatever answers on
+      # that address is a weaker link than the action this replaces, so host-key
+      # checking is never relaxed: an absent secret fails the deploy rather than
+      # trusting an unknown host. docs/deploy/OPS.md records how to produce the
+      # value.
       - name: Deploy to server
-        uses: easingthemes/ssh-deploy@2cc5b27bf3029d0455dd5e09fe02633904031447 # v6.0.3
-        with:
+        env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
           REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
           REMOTE_USER: ${{ secrets.REMOTE_USER }}
-          SOURCE: "dist/"
-          TARGET: "/opt/coterie/"
-          SCRIPT_BEFORE: |
-            # Fix ownership so rsync can write files
-            sudo chown -R ${{ secrets.REMOTE_USER }}:${{ secrets.REMOTE_USER }} /opt/coterie || true
-          SCRIPT_AFTER: |
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SSH_KNOWN_HOSTS:-}" ]; then
+            echo "SSH_KNOWN_HOSTS secret is empty — see docs/deploy/OPS.md." >&2
+            exit 1
+          fi
+
+          KNOWN_HOSTS="$(mktemp)"
+          eval "$(ssh-agent -s)" >/dev/null
+          cleanup() { ssh-agent -k >/dev/null 2>&1 || true; rm -f "$KNOWN_HOSTS"; }
+          trap cleanup EXIT
+
+          printf '%s\n' "$SSH_PRIVATE_KEY" | ssh-add - >/dev/null 2>&1
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$KNOWN_HOSTS"
+
+          SSH_OPTS="-o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KNOWN_HOSTS -o BatchMode=yes"
+          TARGET_HOST="$REMOTE_USER@$REMOTE_HOST"
+
+          # Fix ownership so rsync can write files. $REMOTE_USER expands here,
+          # on the runner, as it did when the action interpolated the secret.
+          # shellcheck disable=SC2029,SC2086  # $SSH_OPTS is meant to split
+          ssh $SSH_OPTS "$TARGET_HOST" \
+            "sudo chown -R $REMOTE_USER:$REMOTE_USER /opt/coterie || true"
+
+          # -rlgoDzvc mirrors what the previous action sent: recurse, keep
+          # links/perms, compress, and compare by checksum rather than mtime.
+          rsync -rlgoDzvc -i -e "ssh $SSH_OPTS" dist/ "$TARGET_HOST:/opt/coterie/"
+
+          # Single-quoted: this half runs on the host, so nothing expands here.
+          # shellcheck disable=SC2086
+          ssh $SSH_OPTS "$TARGET_HOST" '
+            set -e
             # Install service file if changed
             sudo cp /opt/coterie/deploy/coterie.service /etc/systemd/system/
             sudo systemctl daemon-reload
@@ -67,3 +113,4 @@ jobs:
             sudo systemctl restart coterie
 
             echo "Deployment complete!"
+          '
