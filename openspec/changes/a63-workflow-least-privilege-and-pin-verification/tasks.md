@@ -10,10 +10,14 @@
   is the model the others are being brought up to.
 - [ ] 1.4 Declare at the narrowest useful level. A workflow-level block is fine
   where every job needs the same thing; use job-level where they differ.
-- [ ] 1.5 Set the repository default workflow permission to read, and disable
-  workflow approval of pull requests. This is a repository setting, not a file —
-  record in the docs that it is part of the configuration, or the next person
-  restoring the repo will not know it was deliberate.
+- [ ] 1.5 Record the repository-level half of this in `docs/deploy/OPS.md`: the
+  default workflow permission is read-only and "Allow GitHub Actions to create
+  and approve pull requests" is off, both deliberate, both to be restored if the
+  repository is ever recreated. The settings themselves were applied on
+  2026-08-13 and are already in effect — this task is the record, so a future
+  reader knows the state is intended rather than accidental. Do not attempt to
+  change repository settings from a run; verify nothing and assume nothing about
+  them.
 
 ## 2. Pin verification
 
@@ -51,13 +55,19 @@
   install the unit file, chown, `systemctl daemon-reload`, restart.
 - [ ] 3.3 Pin the remote host key rather than accepting it blindly. A deploy that
   trusts whatever host answers is a weaker link than the action it replaces, and
-  swapping one for the other would be a net loss.
+  swapping one for the other would be a net loss. Write the workflow to consume a
+  `SSH_KNOWN_HOSTS` repository secret and write it to a `known_hosts` file for the
+  step; do NOT use `StrictHostKeyChecking=no`. A host's public key is not itself
+  secret, but obtaining it requires reaching the host, which a run cannot do — so
+  the workflow consumes the value and `docs/deploy/OPS.md` records how it is
+  produced (`ssh-keyscan` against the deploy host) and that the deploy fails
+  until it exists. Failing closed is correct here.
 - [ ] 3.4 Ensure the key does not survive the step and is not written to a path
   another step could read.
 - [ ] 3.5 Keep `actions/checkout` and the other pinned actions as they are — this
   removes a third party from the *credential* path, not from the workflow.
 
-## 4. Tests and verification
+## 4. Tests and static verification
 
 - [ ] 4.1 Pin verification fails on a reference by tag; passes on the current
   tree.
@@ -69,7 +79,23 @@
   passes when every occurrence agrees.
 - [ ] 4.6 Confirm each workflow's token carries no write scope, except
   `release.yml`.
-- [ ] 4.7 Exercise the rewritten deploy against the staging host and confirm the
-  same artifacts land and the service restarts. This is a behavior-preserving
-  rewrite of a step that reaches production infrastructure, so it is verified by
-  running it, not by reading it.
+- [ ] 4.7 Assert statically that `deploy.yml` hands no secret to a third party:
+  fail if any `uses:` step in that workflow carries a `with:` input referencing
+  `secrets.`, and assert the rsync step configures a `known_hosts` file rather
+  than disabling host-key checking. A run cannot reach the deploy host, so the
+  property is asserted against the workflow file — which is where the property
+  actually lives.
+- [ ] 4.8 Make the pin resolver injectable so the checks in 4.1–4.5 run offline
+  against fixtures, with the live upstream API used only when CI runs it. A test
+  that needs network is a test that gets skipped.
+
+## 5. Documentation
+
+- [ ] 5.1 In `docs/deploy/OPS.md`, record the post-merge deploy verification: run
+  the staging deploy via `workflow_dispatch`, confirm `/opt/coterie` is updated
+  and `systemctl status coterie` shows the service restarted. This is a
+  behavior-preserving rewrite of a step that reaches real infrastructure, so it
+  wants a human confirmation once — recorded where operators look, not as a
+  checkbox in a change that will be archived.
+- [ ] 5.2 Same file: note that `SSH_KNOWN_HOSTS` must exist before the rewritten
+  deploy can succeed, and how to produce it.
