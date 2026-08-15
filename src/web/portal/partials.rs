@@ -41,6 +41,44 @@ pub fn is_member_visible(status: &crate::domain::PaymentStatus) -> bool {
     matches!(status, PaymentStatus::Completed | PaymentStatus::Refunded)
 }
 
+/// The member-visible read of a member's payments, newest first. Every
+/// member-facing surface that lists payments reads through here, so a
+/// new surface gets the filter without remembering to apply it — the
+/// first pass at issue #120 filtered the Payments page and left the
+/// dashboard showing the rows that page hides.
+///
+/// Filtering here also means it happens before any caller-side limit: a
+/// surface showing "the most recent five" can't truncate settled
+/// payments out of view behind five abandoned checkouts.
+///
+/// Admin surfaces read `find_by_member` directly — they must keep
+/// seeing `Pending`/`Failed`, which is how an abandoned checkout gets
+/// diagnosed.
+///
+/// A read failure degrades to an empty list: callers are HTMX fragments
+/// that swap into a live page, and an empty payment widget beats an
+/// error card wedged into the dashboard. It's logged, because on the
+/// rendered page an empty list is indistinguishable from "no payments".
+pub async fn member_visible_payments(
+    payment_repo: &dyn crate::repository::PaymentRepository,
+    member_id: uuid::Uuid,
+) -> Vec<crate::domain::Payment> {
+    payment_repo
+        .find_by_member(member_id)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!(
+                "member payment history read failed for member {}: {}",
+                member_id,
+                e
+            );
+            Vec::new()
+        })
+        .into_iter()
+        .filter(|p| is_member_visible(&p.status))
+        .collect()
+}
+
 pub fn member_payment_row_from(payment: &crate::domain::Payment) -> MemberPaymentRow {
     use crate::domain::PaymentStatus;
     let status = match payment.status {
@@ -149,9 +187,10 @@ mod tests {
         }
     }
 
-    // The member payment list filters through `is_member_visible`
-    // (see `payments/views.rs::payments_list_api`); the admin list does
-    // not. These two tests pin both halves of issue #120.
+    // Every member payment list filters through `is_member_visible`
+    // via `member_visible_payments`; the admin list does not. These two
+    // tests pin both halves of issue #120 at the mapping level — the
+    // per-surface tests live with their handlers.
 
     #[test]
     fn member_view_shows_only_settled_payments() {

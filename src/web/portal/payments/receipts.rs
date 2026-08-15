@@ -508,3 +508,195 @@ pub async fn admin_member_statement_page(
     .await?;
     Ok(HtmlTemplate(template).into_response())
 }
+
+// Receipts and the dues statement are a stricter cut than the member
+// payment lists — Completed only, not Completed-or-Refunded. These pin
+// that, so a change to the member-visible payment filter (issue #120)
+// can't quietly widen or narrow what an accountant is handed.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        extract::FromRef,
+        http::{Request, StatusCode},
+        routing::get,
+        Router,
+    };
+    use chrono::{Datelike, Duration, Utc};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    use crate::{
+        auth::SecretCrypto,
+        domain::{
+            CreateMemberRequest, Member, Payer, Payment, PaymentKind, PaymentMethod, PaymentStatus,
+        },
+        repository::{MemberRepository, SqliteMemberRepository, SqlitePaymentRepository},
+    };
+
+    #[derive(Clone)]
+    struct TestState {
+        payment_repo: Arc<dyn PaymentRepository>,
+        csrf: Arc<CsrfService>,
+    }
+
+    impl FromRef<TestState> for Arc<dyn PaymentRepository> {
+        fn from_ref(s: &TestState) -> Self {
+            s.payment_repo.clone()
+        }
+    }
+
+    impl FromRef<TestState> for Arc<CsrfService> {
+        fn from_ref(s: &TestState) -> Self {
+            s.csrf.clone()
+        }
+    }
+
+    async fn fixture() -> (Arc<dyn PaymentRepository>, Arc<SettingsService>, Member) {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let member_repo: Arc<dyn MemberRepository> =
+            Arc::new(SqliteMemberRepository::new(pool.clone()));
+        let member = member_repo
+            .create(CreateMemberRequest {
+                email: "member@example.com".to_string(),
+                username: "member".to_string(),
+                full_name: "Member".to_string(),
+                password: "p4ssword_long_enough".to_string(),
+                membership_type_id: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let payment_repo: Arc<dyn PaymentRepository> =
+            Arc::new(SqlitePaymentRepository::new(pool.clone()));
+        let settings_service = Arc::new(SettingsService::new(
+            pool,
+            Arc::new(SecretCrypto::new("test-secret-please-ignore")),
+        ));
+        (payment_repo, settings_service, member)
+    }
+
+    async fn seed(
+        repo: &Arc<dyn PaymentRepository>,
+        member_id: Uuid,
+        description: &str,
+        status: PaymentStatus,
+        paid_at: chrono::DateTime<Utc>,
+    ) {
+        let now = Utc::now();
+        repo.create(Payment {
+            id: Uuid::new_v4(),
+            payer: Payer::Member(member_id),
+            amount_cents: 5000,
+            currency: "USD".to_string(),
+            status,
+            payment_method: PaymentMethod::Stripe,
+            kind: PaymentKind::Membership,
+            external_id: None,
+            description: description.to_string(),
+            paid_at: Some(paid_at),
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .unwrap();
+    }
+
+    /// One Completed payment plus one of every non-Completed status.
+    async fn seed_one_of_each(
+        repo: &Arc<dyn PaymentRepository>,
+        member_id: Uuid,
+        at: chrono::DateTime<Utc>,
+    ) {
+        for (name, status) in [
+            ("Receipt completed", PaymentStatus::Completed),
+            ("Receipt refunded", PaymentStatus::Refunded),
+            ("Receipt pending", PaymentStatus::Pending),
+            ("Receipt failed", PaymentStatus::Failed),
+        ] {
+            seed(repo, member_id, name, status, at).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn receipts_page_lists_completed_payments_only() {
+        let (payment_repo, _settings, member) = fixture().await;
+        // Mid-year so the calendar-year grouping can't straddle a
+        // timezone boundary.
+        let at = Utc::now() - Duration::days(30);
+        seed_one_of_each(&payment_repo, member.id, at).await;
+
+        let app = Router::new()
+            .route("/portal/payments/receipts", get(receipts_page))
+            .layer(Extension(CurrentUser {
+                member: member.clone(),
+            }))
+            .layer(Extension(SessionInfo {
+                session_id: "test-session".to_string(),
+            }))
+            .with_state(TestState {
+                payment_repo,
+                csrf: Arc::new(CsrfService::new("test-secret-please-ignore")),
+            });
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/portal/payments/receipts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(body.contains("Receipt completed"), "got: {body}");
+        for absent in ["Receipt refunded", "Receipt pending", "Receipt failed"] {
+            assert!(
+                !body.contains(absent),
+                "receipts must show Completed payments only, found {absent}: {body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dues_statement_lists_completed_payments_only() {
+        let (payment_repo, settings_service, member) = fixture().await;
+        let tz = settings_service.org_timezone().await;
+        let at = Utc::now() - Duration::days(30);
+        let year = at.with_timezone(&tz).year();
+        seed_one_of_each(&payment_repo, member.id, at).await;
+
+        let statement = build_statement(
+            &payment_repo,
+            &settings_service,
+            member.id,
+            &member.full_name,
+            &member.email,
+            year,
+        )
+        .await
+        .unwrap();
+
+        let descriptions: Vec<&str> = statement
+            .lines
+            .iter()
+            .map(|l| l.description.as_str())
+            .collect();
+        assert_eq!(descriptions, ["Receipt completed"]);
+        assert_eq!(statement.dues_total_display, "$50.00");
+    }
+}
