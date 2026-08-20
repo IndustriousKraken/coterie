@@ -189,11 +189,36 @@ jobs:
           # TLS dependency is the larger of the two risks. Revisit 2026-11-14, or
           # when async-stripe 1.0 ships stable, whichever comes first — that
           # upgrade clears all three at once along with the second TLS stack.
+          #
+          # RUSTSEC-2026-0258 — h2 unbounded empty DATA frames. Published
+          # 2026-08-17; the scheduled run caught it on 2026-08-19 against code
+          # that had not changed, which is what that schedule is for.
+          #
+          # Two h2 versions are in the lockfile and only one is waived here.
+          # h2 0.4 (hyper 1.x — this application's own HTTP stack) HAS a fix and
+          # took it: 0.4.12 -> 0.4.18. The remaining instance is h2 0.3.27, via
+          # async-stripe 0.39.1 -> hyper 0.14 -> h2 0.3, and the advisory's fix
+          # is `>=0.4.16`: there is no 0.3.x release to move to. `cargo update
+          # -p h2@0.3.27` locks 0 packages. Same root and same exit as the three
+          # rustls-webpki waivers above, and the same revisit trigger.
+          #
+          # Reachability: h2 0.3 here is a client speaking HTTP/2 outbound to
+          # api.stripe.com. The frames the advisory concerns arrive from the
+          # peer, so exploiting it requires the peer to be hostile — Stripe, or
+          # something that has already broken TLS. Coterie terminates no TLS and
+          # serves no HTTP/2 itself.
+          #
+          # CAVEAT, deliberately recorded: `--ignore` is keyed by advisory ID,
+          # not by package version, so this line would ALSO mask this advisory
+          # if it ever applied to the 0.4 line again. What keeps that from going
+          # unnoticed is the routine cargo cadence keeping 0.4 current, not this
+          # waiver. Revisit 2026-11-14 with the others.
           cargo audit \
             --ignore RUSTSEC-2023-0071 \
             --ignore RUSTSEC-2026-0104 \
             --ignore RUSTSEC-2026-0098 \
-            --ignore RUSTSEC-2026-0099
+            --ignore RUSTSEC-2026-0099 \
+            --ignore RUSTSEC-2026-0258
 
   # The `# vX.Y.Z` beside every pinned SHA is decorative — GitHub resolves the
   # SHA and never reads the comment — so a pin that never pointed where it said
