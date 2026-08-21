@@ -34,6 +34,59 @@ Added / Changed / Deprecated / Removed / Fixed / Security.
 
 ### Fixed
 
+## [v1.0.24] — 2026-08-20
+
+### Security
+
+- Updates `h2` to 0.4.18, taking the fix for RUSTSEC-2026-0258 (unbounded empty DATA frames) in the application's own HTTP stack. The advisory's other hit — `h2` 0.3, reached through `async-stripe`'s `hyper` 0.14 — has no fixed 0.3.x release and is waived explicitly, with the same recorded reasoning and revisit date as the other `async-stripe` findings: that `h2` is used there as an outbound HTTP/2 client to Stripe, so the frames the advisory concerns would have to arrive from a hostile peer. Coterie terminates no TLS and serves no HTTP/2 itself.
+
+## [v1.0.23] — 2026-08-15
+
+### Fixed
+
+- Fixes `release-deploy.sh` failing with `trap: 26: bad trap` and deploying nothing on an existing install. The script executed the bash `update.sh` under `sh` — `dash` on Debian — which discarded the shebang that says which interpreter the file needs; it now runs the file directly. Falling back to the bootstrap path is also announced rather than silent, since it means the hardened `coterie-provision update` path was unavailable, and `coterie-provision` is now present on an installed instance so that path is actually taken.
+- Fixes the dashboard's Recent Payments listing abandoned-checkout rows that the Payments page hides — a member saw a `Failed` entry for money that was never taken, clicked through, and found it gone. The settled-only rule is now a property of every member-facing payment list rather than of one route, and the filter runs before the five-row limit, so a member with several abandoned checkouts still sees their completed payments. Admin views are unchanged and still show every status.
+
+### Security
+
+- Runs CI workflows least-privileged and verifies every action pin. `ci.yml` and `deploy.yml` previously ran third-party actions with a `GITHUB_TOKEN` that could write to the repository; each workflow now declares the scope it needs, the repository default is read-only, and workflow approval of pull requests is off. CI additionally checks that each `uses:` reference is a full commit SHA and that it resolves to the tag its decorative `# vX.Y.Z` comment advertises, dereferencing annotated tags. The deploy step performs its rsync over SSH directly instead of handing an SSH key for a root-equivalent host to somebody else's action; the same files reach the same host by the same protocol.
+- Clears the outstanding RustSec advisories, mostly by deleting dependencies that were never used. `sqlx` was declared with its default features, which pulled the MySQL and Postgres drivers into a SQLite-only application; removing them deletes `rsa` — and its Marvin timing advisory, for which no fixed version exists — entirely. `ammonia`, the sanitizer that makes member-authored Markdown safe to serve publicly, moves to a fixed version, and the three `rustls-webpki` findings in `async-stripe`'s old TLS stack are waived individually, each naming the advisory, why it is unreachable here, and a date to look again. No database, TLS, or sanitizer behavior changes.
+
+## [v1.0.22] — 2026-08-14
+
+### Added
+
+- Adds Markdown rendering for event descriptions, through the same shared pipeline and the same safe subset announcements already use, so the formatting organizers were already typing stops leaking as literal asterisks onto the marketing calendar, the registration page, and the Open Graph preview a shared link renders as. `GET /public/events` now carries a server-rendered, server-sanitized `description_html` alongside the raw description, matching `/public/announcements`, and the event editor finally says Markdown is supported. Stored descriptions are untouched — they simply begin rendering.
+- Adds a host conformance report to `coterie-provision update` — after an update completes, it names each way the host differs from the state the installed release expects, along with the command that resolves it. The first check is whether the units a release ships are enabled; the backup timer shipped in a release, was never enabled on an instance provisioned before the wizard installed it, and no backup ran for months while everything on disk looked current. Update still enables, starts, and installs nothing, never fails on a conformance finding, and prints nothing at all when the host conforms.
+
+### Changed
+
+- Migrates to `rand` 0.9 across all ten call sites that generate a secret — email and reset tokens, TOTP secrets, recovery codes, CSP nonces, bulk-import passwords, and provisioning secrets. Behavior is deliberately identical (the same OS-seeded thread-local CSPRNG, the same lengths), and the requirement now states the property — 256 bits from a cryptographically secure, OS-seeded generator — rather than naming a function of a crate version that an upstream rename can invalidate. A test asserts the property so a substitution that merely compiles cannot pass silently.
+
+### Fixed
+
+- Fixes credential rate limiting counting successes, which let an admin lock themselves out of production with five consecutive *successful* logins and no wrong password. Only failed attempts now consume budget, and the primary budget keys on the account being attempted rather than the IP address, so a handful of mistyped passwords at a venue no longer locks out everyone sharing that NAT address — and a correct second factor no longer spends a second slot. A separate per-address budget still catches sustained abuse, evaluated on how many distinct accounts a source is failing against rather than on raw failure count; the five-failures-in-fifteen-minutes threshold is unchanged, denials look identical either way, and password recovery keeps its own budget.
+- Fixes a refunded membership payment leaving in place the dues it bought. Event fees released their seat and class passes cancelled their enrollment, but refunded dues moved neither `dues_paid_until` nor the member's status, so the member stayed Active on money the organization had given back — and on the production instance the renewal runner then charged one such member again, reading a window a refund should have retracted. Both refund paths (the admin route and the out-of-band `charge.refunded` webhook) now retract exactly the extension that payment granted and record it in the audit log. Partial refunds still raise an admin alert rather than adjusting the window, and the alert now says so; existing refunded-but-unretracted rows need an operator decision and are not migrated.
+
+### Security
+
+- Puts Rust dependencies on a scheduled update cadence and adds a RustSec advisory check to CI. `dependabot.yml` declared only `github-actions`, so nothing scheduled cargo updates and the cargo PRs that did appear sat for weeks; updates are now grouped into one pull request per week (major bumps stay ungrouped), and every build consults the advisory database against the lockfile, so a known-vulnerable transitive crate fails the build instead of waiting to be noticed. Routine `lettre` and `quinn-proto` bumps landed over the same window and had already cleared two of the seven findings the first run reported. Auto-merge is not enabled — dependency updates land by the same review as everything else.
+
+## [v1.0.21] — 2026-08-05
+
+### Added
+
+- Adds change notifications for a companion public website. A site rendering Coterie's public events and announcements could previously only learn about a change by polling, which put a floor on how long a mistaken publication stays up after an admin retracts it; Coterie now emits update, delete, and visibility-change signals alongside the existing creation ones and posts a signed notification to a configured endpoint. Retraction is delivered synchronously and its outcome shown to the admin who clicked unpublish, and every event and announcement admin page gets a per-item resend control as the retry. The notification that leaves the host carries only the kind, the id, and what happened — never item content — so a receiver reads content from the public API or not at all. Without a configured URL nothing is sent and nothing changes.
+
+### Changed
+
+- Refreshes `deploy/` on `coterie-provision update`, so the ops scripts beside a binary are the ones that shipped with it rather than whatever release first provisioned the box — a production instance was found running v1.0.20 beside scripts four months stale, holding a `backup.sh` that did not back up uploads and no `restore.sh` at all, while `VERSION` and the files looked equally current. A replaced script is preserved as a sibling rather than overwritten, matching the `.prev` convention the binary swap uses, and update reports which scripts changed. Update still installs, enables, and starts nothing: an instance provisioned before the wizard installed the backup units still needs them enabled once.
+
+### Fixed
+
+- Fixes the shareable registration pages, `/events/:id/register` and `/classes/:id/register`, charging a signed-in member the guest price. Both built their page as though every visitor were anonymous, so a member following the link from Discord filled in the guest form and paid guest pricing against a guest attendee row rather than their own account — a real Stripe charge, undone only by manual admin work per person. The pages now resolve an existing session and register a member as themselves at the member price, without a bot challenge or a name and email the system already has, and say so when they already hold a seat. A genuinely anonymous visitor sees the same guest form as before, with a login link that now returns them to the registration page instead of stranding them on their dashboard.
+- Fixes an event dropping out of every "upcoming" list the moment it starts instead of when it ends — the portal events list, the dashboard, `/public/events`, and every subscribed calendar client lost the event while it was happening and people were still walking in. The predicate now has one home in the domain rather than three separate implementations, and an event with no recorded end time stays listed for two hours after its start, since a missing end means unknown rather than immediate. Reminders, the "can this class still be bought" check, and the occurrence cancel/override controls stay start-based, and past events remain excluded from the default listing.
+
 ## [v1.0.20] — 2026-07-31
 
 ### Added
