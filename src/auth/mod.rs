@@ -268,7 +268,9 @@ pub fn validate_password_logged(
 /// one path an attacker controls the volume of.
 pub async fn get_password_hash(pool: &SqlitePool, email: &str) -> Result<Option<(Uuid, String)>> {
     let result = sqlx::query_as::<_, (String, String)>(
-        "SELECT id, password_hash FROM members WHERE email = ?",
+        // Case-insensitive, like every member-identifier lookup — see
+        // `SqliteMemberRepository::find_by_email`.
+        "SELECT id, password_hash FROM members WHERE email = ? COLLATE NOCASE",
     )
     .bind(email)
     .fetch_optional(pool)

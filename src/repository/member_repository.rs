@@ -366,6 +366,12 @@ impl MemberRepository for SqliteMemberRepository {
         }
     }
 
+    // Email and username match without regard to case (ASCII, via
+    // COLLATE NOCASE), and migration 049 makes them unique the same way,
+    // so a lookup can never be ambiguous. Stored values keep the case
+    // they were entered with. Byte-exact matching locked members out of
+    // valid accounts: `Mia@…` typed as `mia@…` was "unknown", including
+    // on the password-reset path, which silently sent nothing.
     async fn find_by_email(&self, email: &str) -> Result<Option<Member>> {
         let row = sqlx::query_as::<_, MemberRow>(
             r#"
@@ -374,7 +380,7 @@ impl MemberRepository for SqliteMemberRepository {
                    stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
                    dues_reminder_sent_at, discord_id, created_at, updated_at
             FROM members
-            WHERE email = ?
+            WHERE email = ? COLLATE NOCASE
             "#,
         )
         .bind(email)
@@ -396,7 +402,7 @@ impl MemberRepository for SqliteMemberRepository {
                    stripe_customer_id, stripe_subscription_id, billing_mode, email_verified_at,
                    dues_reminder_sent_at, discord_id, created_at, updated_at
             FROM members
-            WHERE username = ?
+            WHERE username = ? COLLATE NOCASE
             "#,
         )
         .bind(username)
