@@ -796,7 +796,7 @@ dependencies = [
  "sha2",
  "sqlx",
  "subtle",
- "thiserror 1.0.69",
+ "thiserror 2.0.14",
  "tokio",
  "tokio-util",
  "totp-rs",
